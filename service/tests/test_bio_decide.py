@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""bio_pages.decide: the pure rules of the public bio app, as ofl.ink v2 (~/oflinkv2/app) answers them.
-
-Tables: destination (destination.js), geo rule, visitor location + event fields, guard (click-guard.js), same-origin,
-host normalisation, request grammar (host-resolver.js), bootstrap escaping (server.js), path normalisation (Hono +
-@hono/node-server), Profile JSON (public-profile.js), reserved names, pinned asset md5s.
-
-Run: ./venv/bin/python service/tests/test_bio_decide.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 import hashlib  # noqa: E402
 import json  # noqa: E402
@@ -49,7 +41,6 @@ def case_destination_table():
         (_link(), "12\n", "https://of.com/x"),
         (_link(), "0", "https://of.com/x/c0"),  # "0" is a truthy string
         (_link("/local/path"), None, "/local/path"),
-        # a stored destination the editor's rule refuses is never answered (javascript:/data:, protocol-relative)
         (_link("javascript:alert(1)"), None, None),
         (_link("JavaScript:alert(1)//https://of.com"), "4242", None),
         (_link("data:text/html,<script>alert(1)</script>"), None, None),
@@ -164,16 +155,15 @@ def case_same_origin_table():
     ]
     for h, want in rows:
         assert d.same_origin(_hdr(**h)) is want, (h, want)
-    # Path mode via a trusted proxy (Next's /p rewrite): Host is the bio container, X-Forwarded-Host the browser's.
     via_next = {"origin": "https://app.test", "host": "openinflowwww-bio:8788", "x_forwarded_host": "app.test",
                 "x_forwarded_proto": "https"}
     fwd = [
         (via_next, True, True),
-        (via_next, False, False),  # host mode / untrusted peer: X-Forwarded-Host is not believed
+        (via_next, False, False),
         ({**via_next, "x_forwarded_host": "evil.test"}, True, False),
         ({**via_next, "x_forwarded_host": "app.test, evil.test"}, True, False),
         ({**via_next, "x_forwarded_proto": None}, True, False),
-        ({"origin": "http://ofl.test", "host": "ofl.test"}, True, True),  # no X-Forwarded-Host: Host as ever
+        ({"origin": "http://ofl.test", "host": "ofl.test"}, True, True),
         ({**via_next, "sec_fetch_site": "cross-site"}, True, False),
     ]
     for h, forwarded, want in fwd:
@@ -333,14 +323,12 @@ def case_username_lookup():
 
 
 def case_reserved_matches_v2():
-    # ~/oflinkv2/app/bin/reserved-usernames prints FIXED + routed segments + public/ entries, USERNAME-shaped only;
-    # every routed segment and public entry of the v2 app is one of these or fails the 3-30 pattern.
     assert d.RESERVED == ("api", "edit", "images", "internal", "netlify")
     assert all(d.USERNAME_NEW.fullmatch(n) for n in d.RESERVED)
 
 
+# re-pin with scripts/bio-contract-diff/corpus.py:ASSET_SHA256 after reviewing both asset versions
 def case_assets_pinned():
-    # Re-pin with scripts/bio-contract-diff/corpus.py:ASSET_SHA256 after reviewing both asset versions.
     pins = {"index.html": "9d3bf69e6730643866b6fd62695f8a3f", "script.js": "dbe4593d76c5dee4c3303bc01a8c41a1",
             "style.css": "29d2294e4395b02c9ad9589f93a0bbef"}
     for name, md5 in pins.items():
@@ -353,7 +341,6 @@ def case_assets_pinned():
 
 
 def case_public_page_loads_nothing_off_origin():
-    # Instagram visitors' browsers must contact only our host: no CDN stylesheet, font, badge or script.
     absolute = re.compile(r"(?:https?:)?//[\w.-]+", re.I)
     for sample in ('<link href="https://cdnjs.example/x.css">',
                    '<img src="https://upload.wikimedia.example/badge.svg">',
@@ -362,7 +349,6 @@ def case_public_page_loads_nothing_off_origin():
                    '<script>fetch("https://cdn.example/x")</script>',
                    '<style>@font-face{src:url(//cdn.example/x.woff)}</style>'):
         assert absolute.search(sample), sample
-    # asHttps regex, Instagram scheme, and Turnstile's script: loaded only for a Profile JSON with a gated Link
     allowed_js_matches = {"//i", "//extbrowser", "https://challenges.cloudflare.com"}
     for sample in ('fetch("https://cdn.example/x")', '"//cdn.example/x.css"'):
         assert any(m.group() not in allowed_js_matches for m in absolute.finditer(sample)), sample
@@ -377,7 +363,6 @@ def case_public_page_loads_nothing_off_origin():
         assert not re.search(r"(?:href|src)\s*=\s*[\"']?(?:https?:)?//", f.read_text(), re.I), f
 
 
-# ── owner admin validation (PR2a) ────────────────────────────────────
 
 def _bad(r, field, msg=None):
     assert isinstance(r, d.Invalid) and r.field == field and (msg is None or r.msg == msg), (r, field, msg)

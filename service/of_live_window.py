@@ -1,44 +1,3 @@
-"""service/of_live_window.py: the Creator's OnlyFans session for the desktop
-Go live window (ticket 127, D28).
-
-Go live is OnlyFans's own /my/streaming page in a desktop window. The desktop's
-main process seeds that window's in-memory partition from here: the auth cookies
-(never Cloudflare's own) and x_bc, which OF's page keeps as localStorage
-bcTokenSha (a cookie copy without it killed the session in the D26 spike).
-
-- `GET  /api/of/live-window`: the switch probe the app reads (404 when off).
-- `POST /api/of/live-window/session`: the session for the Creator in
-  X-Account-Id, only for a signed-in owner (or the Master) of that Creator;
-  every chatter is refused (403), whatever their role grants, as for the
-  owner-only consent PUT (of_consent_api). Answers `{"session": {cookies,
-  x_bc}}`, or `{"session": null}` only when the Creator has no captured session
-  file (`no_session`), the one case the desktop opens OF's login page for; a
-  broken session stays a 503 the desktop refuses.
-  POST + `Cache-Control: no-store` so no cache or proxy keeps it; rate limited
-  per owner; the log line and the audit row (audit_log, an empty body) name
-  the Creator and the owner, never a value. The desktop never writes back.
-
-Both answer 404 while the `OF_LIVE_WINDOW_ENABLED` switch (runtime_switches,
-default off) is off, so the web and desktop Go live stay Not available.
-
-ASSUMPTION: the cookies come from the pooled client's jar (the one the relay
-sends with, so the freshest copy), not the session file. Overturned by: the jar
-holding cookies the file does not, in a way OF rejects from a second client.
-ASSUMPTION: an owner access token (`Bearer ifw_…`, scripts and MCP) is refused:
-the session is for a person at a desktop, who signs in with a cookie.
-Overturned by: an owner asking for Go live from a token client.
-ASSUMPTION: chatters are refused outright (rung 4: a Creator's session is a
-full account takeover; the Go live page also gates the harmless schedule form,
-and with role enforcement off every chatter holds every page). Overturned by:
-the owner wanting chatters to go live, via an OPT_IN_PAGES opt-in.
-ASSUMPTION: a loaded client whose jar lacks `sess` or x_bc is a broken session
-(503, refused), not "no session" (login page). Overturned by: the owner wanting
-the login page for a logged-out session too.
-ASSUMPTION: 6 reads per operator per minute (one open is one read). Overturned
-by: an operator opening more Creators than that in a minute.
-ASSUMPTION (ticket 127, guess): two IPs on one OF session at once (the relay's
-proxy and the operator's desktop) are not flagged by OF; ADR-0030 unobserved.
-"""
 from __future__ import annotations
 
 import logging
@@ -63,7 +22,6 @@ RATE_WINDOW_S = 60.0
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _OF_DOMAIN = "onlyfans.com"
 
-# principal key -> monotonic times of its recent reads. One relay process per DB.
 _reads: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -80,8 +38,6 @@ def _of_domain(domain: str) -> bool:
 
 
 def session_cookies(jar, *, now: float | None = None) -> list[dict]:
-    """The jar's OnlyFans cookies a browser may carry: OF domain only, unexpired,
-    Cloudflare's dropped. Domain cookies keep a leading dot; host-only ones none."""
     now = time.time() if now is None else now
     out: list[dict] = []
     for c in jar:
@@ -103,8 +59,6 @@ def session_cookies(jar, *, now: float | None = None) -> list[dict]:
 
 
 def _owner() -> tuple[str, frozenset[str]]:
-    """The signed-in owner's (or the Master's) rate key and Creators: 401 when
-    nobody is signed in, 403 for every chatter."""
     user = get_request_user()
     if user is not None:
         return f"user:{user.id}", user.account_ids
@@ -125,7 +79,6 @@ def _rate_ok(key: str) -> bool:
 
 
 def _client_for(account_id: str):
-    # Lazy: server imports this module at boot.
     import server
     return server._load_client(account_id)
 
@@ -133,8 +86,7 @@ def _client_for(account_id: str):
 @router.get("/api/of/live-window")
 async def live_window_probe():
     _require_on()
-    # Unlike /api/of/ofm-writes (any signed-in role; its writes are role-checked per route), this probe is owner-only:
-    # Go live hands out the session, so chatters get 403 and their web Start stays today's disabled control.
+    # Go live hands out the session: owner-only, chatters get 403.
     _owner()
     return JSONResponse({"enabled": True}, headers=_NO_STORE)
 

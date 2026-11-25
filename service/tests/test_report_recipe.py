@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Report recipe (`report_recipe`, `POST /admin/reports/run`, `GET /admin/reports/catalogue`) on two seeded
-Agencies sharing a Creator: a foreign Creator is refused, the Master sees its own links only, no engine is
-ever handed None (or an empty list), no other-Agency Employee row shows, `employee_sales` refuses a shared
-Creator, owners only, one run per Agency, the three formats, fan_spend's sort + limit in SQL, the report
-zone (a fractional one read by the minute).
-
-Seeded straight into the temp DB; no network.
-
-Run: ./venv/bin/python service/tests/test_report_recipe.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -52,7 +42,7 @@ def _seed() -> dict[str, int]:
             await s.flush()
             out = {k: e.id for k, e in emps.items()}
         async with get_session() as s:
-            s.add(UserAccount(user_id=IDS["agency_b_owner"], account_id=SHARED))  # co-owned by A and B
+            s.add(UserAccount(user_id=IDS["agency_b_owner"], account_id=SHARED))
             s.add(UserAccount(user_id=IDS["agency_master"], account_id=MASTER_C))
             for aid, fan, kind, cents in ((SHARED, 11, "ppv_message", 1000), (SHARED, 11, "tip", 500),
                                           (SHARED, 12, "tip", 300), (B_ONLY, 21, "tip", 700),
@@ -147,8 +137,6 @@ def case_employee_sales_refuses_shared_creator():
 
 
 def case_master_oversight_link_is_no_co_owner():
-    """A Master also linking an Agency's Creator: the Agency's employee_sales still exports it (the
-    attribution reads that Agency's rules); the Master's own refuses it; a second real Agency still refuses."""
     link = {"u": IDS["agency_master"], "a": B_ONLY}
     with ENGINE.begin() as conn:
         conn.execute(text("INSERT INTO user_accounts (user_id, account_id) VALUES (:u, :a)"), link)
@@ -188,7 +176,7 @@ def case_no_engine_gets_none():
             _run(client, {"dataset": ds, "window": WEEK})
         assert {n for n, _ in seen} == {n for _, n, _ in patched}, seen
         seen.clear()
-        none = fx.login_owner("agency_c_owner")  # an Agency with no Creators: an empty table, no read
+        none = fx.login_owner("agency_c_owner")
         for ds in ("sales", "employee_sales", "chat_activity", "fan_spend"):
             assert _run(none, {"dataset": ds, "window": WEEK})["rows"] == []
         assert seen == [], seen
@@ -213,7 +201,7 @@ def case_one_run_per_agency():
     try:
         r = _run(A, {"dataset": "sales", "window": WEEK}, status=429)
         assert "already running" in r.json()["errors"]["run"]
-        _run(B, {"dataset": "sales", "window": WEEK})  # another Agency is not held up
+        _run(B, {"dataset": "sales", "window": WEEK})
     finally:
         report_recipe._running.discard(IDS["agency_a_owner"])
     _run(A, {"dataset": "sales", "window": WEEK})
@@ -232,7 +220,7 @@ def case_formats():
     r = _run(A, recipe, "csv")
     assert r.headers["content-type"].startswith("text/csv")
     assert 'filename="sales_' in r.headers["content-disposition"] and r.headers["cache-control"] == "no-store"
-    lines = r.text.splitlines()  # then notes ("# …"): the bench's Creators were added today (history gaps)
+    lines = r.text.splitlines()
     assert lines[:2] == ["Creator,Gross ($)", "creator_a,18.0"] and all(x.startswith("# ") for x in lines[2:]), r.text
     x = _run(A, recipe, "xlsx")
     assert x.headers["content-type"].startswith("application/vnd.openxmlformats")
@@ -250,8 +238,6 @@ def case_fan_spend_sort_and_limit_in_sql():
 
 
 def case_fan_spend_sql_orders_by_what_shape_orders_by():
-    # Review F1: Zed spends the most in total, Amy tips the most. metrics=["tips"] + limit 1 is the biggest
-    # tipper (SQL used to cut by total first); sort "fan" + limit 1 is refused (SQL cannot cut by a label).
     async def _go():
         async with get_session() as s:
             s.add_all([Fan(account_id=MASTER_C, fan_id=41, of_display_name="Zed"),
@@ -269,7 +255,6 @@ def case_fan_spend_sql_orders_by_what_shape_orders_by():
 
 
 def case_engine_notes_reach_json_and_files():
-    # Review F16: credited_sales' fallback line is a note in json and the last line of a file.
     real = report_recipe.ENGINES["sales"]
 
     async def noted(r, sc):
@@ -288,8 +273,6 @@ def case_engine_notes_reach_json_and_files():
 
 
 def case_sales_history_gap_is_a_note():
-    # W30 C3: days before a Creator was added with no OF figure stored (earnings_window's gaps): the totals there
-    # are the ledger's only, a note in json and the last line of a file, never a silent partial total.
     real = of_stats_daily.earnings_window
 
     async def gapped(*a, **k):
@@ -305,13 +288,11 @@ def case_sales_history_gap_is_a_note():
         assert b"# 3 Creator-days" in sheet
     finally:
         of_stats_daily.earnings_window = real
-    # the real read: the bench's Creators were added today, so last week's days are gaps
     assert [n for n in _run(A, {"dataset": "sales", "window": WEEK})["notes"] if "Creator-day" in n], "real gaps"
-    assert _run(A, {"dataset": "chat_activity", "window": WEEK})["notes"] == []  # only sales reads OF's figure
+    assert _run(A, {"dataset": "chat_activity", "window": WEEK})["notes"] == []
 
 
 def case_file_byte_cap_both_routes():
-    # W30 F4: one byte cap in build_file: the export (/run csv, xlsx) and the held file both 413, nothing held.
     import report_files
     real = report_recipe.MAX_FILE_BYTES
     report_recipe.MAX_FILE_BYTES = 10

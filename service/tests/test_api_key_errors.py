@@ -1,34 +1,5 @@
 #!/usr/bin/env python3
-"""A missing, empty or rejected API key is ONE typed error, shown to the owner.
-
-Before this, a feature with no usable key failed however its call site happened
-to fail: a vault sweep stamped every item `failed` and said "1,777 could not be
-described", a customs brief returned `ok: false` with a developer string, a
-background automation paid one rejected call per fan and logged it. These cases
-pin the shared contract that replaced all of that:
-
-  * `llm_client.chat` raises `LLMKeyError(kind)` — `missing` before any request
-    (no owned-agency key, an empty one, an un-owned account with no house key),
-    `invalid` for 401/403, `no_credit` for 402 — exactly once, never retried.
-    429 stays a transient, retried fault and is NOT a key error.
-  * `server.py` answers it as HTTP 424 with `detail = key_error_payload(...)`:
-    {error: "api_key_<kind>", feature, provider, fix_url: "/settings/ai-keys",
-    message, fix}.
-  * No part of the key ever reaches the payload or the log, even when the
-    provider's own error body echoes it back.
-  * Vault describe refuses before pulling a frame and leaves `describe_status`
-    alone (so the item is retried once a key is added); describe-all refuses to
-    start; a key rejected mid-sweep stops the sweep after one item.
-  * The customs brief raises the same 424 instead of a soft `ok: false`.
-  * `/admin/ai-key-status` (the automation pages' notice) reports a missing key
-    and an automation's stored `key_error`, and is per-agency: B cannot read A's,
-    and A's notice never names another agency or account.
-
-Transport is stubbed (no network, no key spend).
-
-Run: ./venv/bin/python service/tests/test_api_key_errors.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -50,16 +21,13 @@ from db.models import (Account, AccountAiConfig, AutomationRun, GrokCall,  # noq
 from llm_client import LLMConfigError, LLMHTTPError, LLMKeyError, chat  # noqa: E402
 
 MODEL = "deepseek-v4-flash"
-SENTINEL = "sk-SENTINEL-9f3c2e71b0d4"   # must never appear in a payload or a log
+SENTINEL = "sk-SENTINEL-9f3c2e71b0d4"
 
-llm_client._LLM_RETRY_BACKOFF_S = 0  # the 429 case retries; don't sleep for it
+llm_client._LLM_RETRY_BACKOFF_S = 0
 
 
-# ── Transport stub ────────────────────────────────────────────────────────
 
 class _Transport:
-    """httpx.AsyncClient stand-in answering every POST with `status` (and a body
-    that echoes SENTINEL, as some providers echo the key they refused)."""
 
     status = 200
     calls = 0
@@ -86,7 +54,6 @@ class _Transport:
 
 
 async def _call(account_id: str, status: int = 200, purpose: str = "gen_info"):
-    """Run one chat() against a stubbed transport; return (exception, calls)."""
     _Transport.status, _Transport.calls = status, 0
     orig = llm_client.httpx.AsyncClient
     llm_client.httpx.AsyncClient = _Transport
@@ -101,7 +68,6 @@ async def _call(account_id: str, status: int = 200, purpose: str = "gen_info"):
 
 
 class _LogTap(logging.Handler):
-    """Every formatted record (with traceback) any logger emits."""
 
     def __init__(self):
         super().__init__(logging.DEBUG)
@@ -124,7 +90,6 @@ def _untap(tap: _LogTap) -> str:
     return "\n".join(tap.text)
 
 
-# ── Seeding ───────────────────────────────────────────────────────────────
 
 async def _user(username: str, password: str = "pw-for-tests") -> str:
     uid = uuid.uuid4().hex
@@ -144,15 +109,12 @@ async def _account(account_id: str, *owners: str) -> None:
 
 
 def _anon_admin(on: bool) -> None:
-    """These HTTP cases test the key path, not the account gate — the documented
-    escape hatch, read per call. The isolation case runs with it OFF."""
     if on:
         os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
     else:
         os.environ.pop("ALLOW_ANONYMOUS_ADMIN", None)
 
 
-# ── 1. What chat() raises ────────────────────────────────────────────────
 
 async def case_owned_agency_without_a_key_is_missing_and_sends_nothing():
     a = await _user("keyerr_agency_nokey")
@@ -169,8 +131,7 @@ async def case_owned_agency_without_a_key_is_missing_and_sends_nothing():
         "message": "Gen-Info can't run: no DeepSeek API key is set.",
         "fix": "Add it in Settings › AI keys.",
     }, p
-    # The developer text (which names the owner + account) stays in str(e) for
-    # logs; the owner-facing payload must not carry it.
+    # str(e) keeps the developer text for logs; the owner-facing payload must not carry it.
     assert "keyerr_agency_nokey" not in json.dumps(p), p
 
 
@@ -178,7 +139,7 @@ async def case_an_empty_key_is_missing_too():
     a = await _user("keyerr_agency_empty")
     await _account("keyerr_acct_empty", a)
     await tenant_keys.set_keys(a, {"deepseek": "sk-was-here"})
-    await tenant_keys.set_keys(a, {"deepseek": ""})  # cleared in Settings
+    await tenant_keys.set_keys(a, {"deepseek": ""})
     e, calls = await _call("keyerr_acct_empty")
     assert isinstance(e, LLMKeyError) and e.kind == "missing", repr(e)
     assert calls == 0
@@ -214,8 +175,7 @@ async def case_rejected_keys_are_typed_and_never_retried():
         assert SENTINEL not in json.dumps(p), "the payload echoed the key"
         assert SENTINEL not in logs, f"HTTP {status}: the key reached a log line: " + " // ".join(l[:300] for l in logs.splitlines() if SENTINEL in l)
     assert "out of credit" in p["message"] and "Top it up at DeepSeek" in p["fix"], p
-    # Nor is it STORED: the audit row keeps the status, not the provider body
-    # that echoed the key.
+    # The audit row keeps the status, not the provider body that echoed the key.
     async with get_session() as s:
         texts = (await s.execute(select(GrokCall.error_text).where(
             GrokCall.account_id == "keyerr_acct_wrong"))).scalars().all()
@@ -232,12 +192,10 @@ async def case_429_is_still_retried_and_not_a_key_error():
     assert calls == llm_client._LLM_MAX_ATTEMPTS, f"429 must be retried, got {calls} call(s)"
 
 
-# ── 2. The 424 the app reads ─────────────────────────────────────────────
 
 async def _vault_item(aid: str, mid: int) -> None:
     from datetime import datetime
     from _jev_fixtures import video_jev
-    # A clip with a current `_jev`: the qwen describe this file is about is fed it (D54, `vault_describe_jev`).
     async with get_session() as s:
         s.add(VaultItem(account_id=aid, media_id=mid, kind="video",
                         created_at=datetime(2026, 6, 1), tags="[]",
@@ -389,7 +347,6 @@ async def _seed_customs():
     await _account("keyerr_customs", a)
 
 
-# ── 3. The automation pages' notice, per agency ──────────────────────────
 
 _ISO: dict = {}
 
@@ -401,7 +358,6 @@ async def case_seed_two_agencies_for_the_notice():
     await _account("keyerr_alpha_keyed", _ISO["a"])
     await _account("keyerr_bravo_acct", _ISO["b"])
     await tenant_keys.set_keys(_ISO["b"], {"deepseek": "sk-bravo"})
-    # A keyed agency whose last funnel run stopped on a rejected key.
     alpha2 = await _user("keyerr_agency_alpha2", password="alpha2-pw")
     _ISO["a2"] = alpha2
     await _account("keyerr_alpha2_keyed", alpha2)
@@ -432,7 +388,6 @@ def case_the_notice_reports_a_missing_key_per_feature():
     assert n["error"] == "api_key_missing" and n["provider"] == "deepseek", n
     assert n["message"] == ("Auto-reply, Get to know fans and Follow-ups can't run: "
                             "no DeepSeek API key is set."), n
-    # Never another agency's name, never another account.
     for other in ("keyerr_agency_bravo", "keyerr_bravo_acct", "keyerr_alpha_keyed"):
         assert other not in r.text, f"the notice named {other}"
 
@@ -451,8 +406,6 @@ def case_the_notice_reports_a_stored_key_error():
 
 
 async def case_resaving_the_key_clears_the_stored_key_error():
-    # Owner pastes a new key after the failed run: the new key hasn't failed,
-    # so the notice must clear now, not after the next (daily) run.
     await tenant_keys.set_keys(_ISO["a2"], {"deepseek": "sk-alpha2-new"})
     c = _login("keyerr_agency_alpha2", "alpha2-pw")
     r = c.get("/admin/ai-key-status",
@@ -472,7 +425,6 @@ def case_no_key_cannot_switch_an_ai_automation_on():
     r = c.post("/admin/automation-rules", json={
         "account_id": "keyerr_alpha_nokey", "kind": "autoreply", "is_enabled": True})
     assert r.status_code == 424, (r.status_code, r.text)
-    # Off always works; a keyed agency switches on.
     r = c.post("/admin/automation-rules/switch", json={**on, "enable": False})
     assert r.status_code == 200, (r.status_code, r.text)
     c2 = _login("keyerr_agency_bravo", "bravo-pw")
@@ -482,9 +434,6 @@ def case_no_key_cannot_switch_an_ai_automation_on():
 
 
 async def case_a_static_funnel_walker_switches_on_without_a_key():
-    """W30-SM F8: the funnel walker bills an LLM only for a generated step. A Creator
-    whose funnel broadcasts all have written messages switches it on with no key;
-    once one of its broadcasts walks a generated step, no key → 424."""
     from db.models import MassMessageFunnel, MassRun
     aid = "keyerr_alpha_static_funnel"
     await _account(aid, _ISO["a"])
@@ -509,9 +458,6 @@ async def case_a_static_funnel_walker_switches_on_without_a_key():
 
 
 async def case_an_aged_out_generated_funnel_needs_no_key():
-    """W30-SM F23: only broadcasts the walker still walks count. An old generated
-    broadcast past the discovery window with nobody pending is never walked →
-    no key needed; a fan still pending on it makes it walked again → 424."""
     from datetime import datetime, timedelta
     from automations.reply_mass_funnel import DISCOVERY_WINDOW_DAYS
     from db.models import FunnelState, MassMessageFunnel, MassRun
@@ -541,9 +487,6 @@ async def case_an_aged_out_generated_funnel_needs_no_key():
 
 
 async def case_a_broadcast_still_sending_counts_for_the_walker_key():
-    """W30-SM F34: the broadcast turns the walker on (ensure_funnel_walker) before
-    it closes its run, so the new run is still `running`. Its generated step needs
-    a key all the same: no key → refused (424), no rule switched on."""
     from db.models import AutomationRule, MassMessageFunnel, MassRun
     from funnels_api import ensure_funnel_walker
     aid = "keyerr_alpha_sending_funnel"

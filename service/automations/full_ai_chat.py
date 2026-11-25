@@ -86,6 +86,11 @@ async def _state(s, account_id: str, fan_id: int, cut, turn: list[Message],
 
 
 async def _reads(s, account_id: str, fan_id: int, cut, turn: list[Message]) -> tuple[list, Message | None, Transaction | None]:
+    """(thread rows, Pending offer, his last purchase) of one Turn, read in session `s`: the `THREAD_LINES` lines at or before
+    `cut` (her outbound that opened the run, None for none), the Pending offer
+    among them, and his last purchase at or before its Anchor (`turn[-1]`):
+    only rows created at or before that Anchor, their paid flags (`is_paid`,
+    `purchased_at`) as they stand at decide time."""
     chat = (Message.account_id == account_id, Message.fan_id == fan_id)
     thread_rows, offer = [], None
     if cut is not None:
@@ -94,6 +99,8 @@ async def _reads(s, account_id: str, fan_id: int, cut, turn: list[Message]) -> t
             .where(*chat, Message.direction.in_(("in", "out")), _before_or_at(*cut))
             .order_by(Message.created_at.desc(), Message.message_id.desc())
             .limit(router.THREAD_LINES))).scalars().all()))
+        # The Pending offer stand-in: her newest priced, unbought, not-unsent
+        # outbound before his Turn, from any Lane or a human, of any age.
         offer = (await s.execute(
             select(Message)
             .where(*chat, Message.direction == "out", Message.price_cents > 0,

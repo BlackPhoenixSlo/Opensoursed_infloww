@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_photos — Full AI Chat reads the photo he sends (side key `describe_fan_photos`).
-
-Run: ./venv/bin/python service/tests/test_full_ai_photos.py
-
-No paid call: the vision call is a fake `llm_client.chat` on the describe purposes (as
-test_autoreply.py fakes it), the CDN download and key check are faked, Writers and Jev use the
-Full AI fakes. Covers: key off reads every line as before; key on puts Auto-reply's
-`[he sent: <desc>]` in the Router state and the Writer history; one describe per photo (the
-second Turn is a cache hit); a video still is labelled; no key / cap / model failure answer with
-`MEDIA_ONLY`; Shadow reads cached descriptions only (a stored config that will not parse reads
-the key off); the Test chat's photo route describes once
-for both sides, a side with the key off reads `MEDIA_ONLY`, a reload shows it; upload limits.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import base64  # noqa: E402
 import contextlib  # noqa: E402
@@ -45,12 +32,9 @@ _DESCRIBE = {inbound_describe.PURPOSE, inbound_describe.PURPOSE_TEST}
 T0 = datetime(2026, 11, 10, 12, 0)
 
 
-# ── Fakes ─────────────────────────────────────────────────────────────
 
 @contextlib.contextmanager
 def _vision(reply="ok", *, key: bool = True):
-    """The describe call faked on its purposes only (Writers keep the real `llm_client.chat` over
-    the faked wire): `reply` is the description, or an exception to raise. Yields the calls."""
     calls: list[dict] = []
     real = llm_client.chat
 
@@ -118,11 +102,8 @@ def _config(checkpoint: bool, draft: bool) -> None:
                       "draft": {"describe_fan_photos": draft}, "rev": 0})
 
 
-# ── The one line rule (pure) ──────────────────────────────────────────
 
 def case_key_off_lines_identical():
-    """Key off: a described photo reads exactly as it did before the feature (`MEDIA_ONLY`, or
-    his text alone) and the whole Jev state equals the rows' with no description at all."""
     def rows(desc):
         return ([_row("out", "hey babe", 1)],
                 [_row("in", "", 2, media=1, desc=desc, mins=1), _row("in", "rate me", 3, media=1, desc=desc, mins=2)])
@@ -135,8 +116,6 @@ def case_key_off_lines_identical():
 
 
 def case_key_on_tag_in_state():
-    """Key on: his described photo reads Auto-reply's tag, after his text; an undescribed one
-    stays `MEDIA_ONLY`; her media never takes a tag."""
     th = [_row("in", "", 1, media=1, desc="old pic of a dog"), _row("out", "", 2, media=1, desc="x", mins=1)]
     turn = [_row("in", "", 3, media=1, desc=DESC, mins=2), _row("in", "rate me", 4, media=1, desc=DESC, mins=3),
             _row("in", "", 5, media=1, mins=4)]
@@ -144,15 +123,12 @@ def case_key_on_tag_in_state():
     assert st["fan_new_messages"] == [f"[he sent: {DESC}]", f"rate me [he sent: {DESC}]", MEDIA_ONLY], st
     assert router.line_text(th[0]) == "[he sent: old pic of a dog]"
     assert router.line_text(th[1]) == router.HER_MEDIA
-    runner.build_state(turn, th, None, None, photos=False)     # switched back per Turn
+    runner.build_state(turn, th, None, None, photos=False)
     assert router.line_text(th[0]) == MEDIA_ONLY and router.line_text(turn[1]) == "rate me"
 
 
-# ── describe_turn: the real-messages step ─────────────────────────────
 
 def case_describe_once_then_cache():
-    """The Turn's undescribed photo is described once (row cached); the next Turn's read is a
-    cache hit with no call."""
     fan = 7101
     _db(lambda: _seed(fan, [dict(message_id=71011, direction="in", body="<p>what u think</p>", media_count=1,
                                  raw_json=_PHOTO_RAW, created_at=T0)]))
@@ -167,7 +143,7 @@ def case_describe_once_then_cache():
         prompt = _describes(calls)[0]["messages"][0]["content"][0]["text"]
         assert prompt.startswith(inbound_describe._PROMPT) and prompt.endswith("what u think"), prompt
         again = _db(lambda: _msgs(fan))
-        assert again[0].image_desc == DESC          # cached on messages.image_desc
+        assert again[0].image_desc == DESC
         rec2 = _db(lambda: full_ai_photo.describe_turn(A, again, object()))
         assert rec2 == {"outcome": "cached", "model": None, "ms": None}, rec2
     assert len(_describes(calls)) == 1, calls
@@ -185,8 +161,6 @@ def case_video_still_labelled():
 
 
 def case_failures_answer_media_only():
-    """No key (before any download), cap, a provider error and a crash: no description, the
-    line stays `MEDIA_ONLY`, and each outcome is recorded."""
     cases = [("no_key", dict(key=False)), ("cap", dict(reply=_CAP)),
              ("none", dict(reply=llm_client.LLMError("502"))), ("failed", dict(reply=RuntimeError("boom"))),
              ("none", dict(reply="I can't help with that."))]
@@ -199,15 +173,12 @@ def case_failures_answer_media_only():
             rec = _db(lambda turn=turn: full_ai_photo.describe_turn(A, turn, object()))
         assert rec["outcome"] == want, (want, rec)
         if want == "no_key":
-            assert calls == [], calls               # key check before the CDN download
+            assert calls == [], calls
         router.read_photos(turn, True)
         assert router.line_text(turn[0]) == MEDIA_ONLY and turn[0].image_desc is None, (want, turn[0].image_desc)
 
 
 def case_shadow_reads_cached_only():
-    """Shadow (no OF client): with the checkpoint key on, a cached description reads as the tag
-    and the row records `cached`; an undescribed photo records `no_client` and reads
-    `MEDIA_ONLY`; key off: no record."""
     fan = 7120
     _db(lambda: _seed(fan, [
         dict(message_id=71200, direction="out", body="hey", created_at=T0),
@@ -227,7 +198,7 @@ def case_shadow_reads_cached_only():
     assert f"[he sent: {DESC}]" in json.dumps(st2["thread"]), st2["thread"]
     _config(False, False)
     assert _db(lambda: runner._photos_on(A)) is False
-    for bad in ("{not json", '{"checkpoint": 3}'):        # rwl-a F10: a bad stored blob reads off
+    for bad in ("{not json", '{"checkpoint": 3}'):
         async def put(bad=bad):
             async with get_session() as s:
                 (await s.get(AccountAiConfig, A)).full_ai_config_json = bad
@@ -243,7 +214,6 @@ def case_shadow_reads_cached_only():
     assert _db(jev_json)["photo"] == p1
 
 
-# ── Test chat: the photo route and both sides ─────────────────────────
 
 def _turn(body: dict, *, writer: str = OK_LINE, jev=None):
     fake_w, fake_j = FakeWriterHTTP({NANO: writer}), FakeJev((jev or QUIET, 1.0))
@@ -258,8 +228,6 @@ def _writer_text(fake_w: FakeWriterHTTP) -> str:
 
 
 def case_test_chat_one_describe_both_sides():
-    """The photo is described once; the checkpoint (key on) Router and Writer read the tag, the
-    draft (key off) reads `MEDIA_ONLY`; the session read and the next Turn's thread keep it."""
     _config(True, False)
     with _vision() as calls:
         r = OWNER_A.post(PHOTO, json={"account_id": A, "image": _png(), "text": ""})
@@ -280,15 +248,12 @@ def case_test_chat_one_describe_both_sides():
     assert [f["read"] for f in fp] == [True, False] and {f["desc"] for f in fp} == {DESC}, fp
     got = OWNER_A.get("/admin/full-ai/test/session", params={"account_id": A, "pair": pair}).json()["rows"]
     assert [(x["text"], x["photo"]["desc"], x["photo"]["read"]) for x in got] == [("", DESC, True), ("", DESC, False)], got
-    # Turn 2 on the checkpoint: his photo is in the thread, still tagged (rebuilt off the row).
     w2, j2 = _turn(_body(pair, n=2, text="so?"))
     assert f"[he sent: {DESC}]" in json.dumps(j2.calls[0]["state"]["thread"]), j2.calls[0]["state"]
     assert f"[he sent: {DESC}]" in _writer_text(w2)
 
 
 def case_test_chat_keys_off_no_call():
-    """Both sides off: the route makes no vision call and returns outcome off; his text with the
-    photo reads as his text."""
     _config(False, False)
     with _vision() as calls:
         photo = OWNER_A.post(PHOTO, json={"account_id": A, "image": _png("JPEG"), "text": "hi"}).json()
@@ -299,10 +264,6 @@ def case_test_chat_keys_off_no_call():
 
 
 def case_test_chat_dare_reads_and_rates_his_photo():
-    """Keys off (the owner's 2026-11-15 Test chat): "are u a bot" gets the joke (step 1); the
-    photo he then sends is described anyway (her dare is due on that side) and its Writer gets
-    DARE_RATE with the tag, never the dare, even though `asks_if_ai` fires again; the side with
-    no bot check behind reads MEDIA_ONLY; without `pair` the route stays off."""
     from automations import full_ai_writers as wr
     _config(False, False)
     pair, bot = "photo-dare", {**QUIET, "asks_if_ai": 0.95}
@@ -322,14 +283,10 @@ def case_test_chat_dare_reads_and_rates_his_photo():
     sys2 = _writer_text_raw(w2)
     assert wr.DARE_RATE in sys2 and wr.DARE not in sys2 and f"[he sent: {DESC}]" in sys2
     assert _reply(_rows(A, pair)[1])["fan_photo"]["read"] is True
-    # The draft side has no bot check behind it: key off reads as before, and it jokes (step 1).
     assert DESC not in json.dumps(j_r.calls[0]["state"]) and wr.BRUSH_OFF in _writer_text_raw(w_r)
 
 
 def case_test_chat_rated_bot_check_dares_no_more():
-    """F1 (rwl2): "are u a bot" with a picture she reads gets DARE_RATE on the ai_dare row; that
-    closes the check, so his next chat Turn has no dare due (no DARE_NEXT "send a picture"), off
-    the stored rows."""
     from automations import full_ai_writers as wr
     _config(True, True)
     pair, bot = "photo-dare-rated", {**QUIET, "asks_if_ai": 0.95}
@@ -343,8 +300,6 @@ def case_test_chat_rated_bot_check_dares_no_more():
 
 
 def case_test_chat_dare_due_only_after_a_sent_joke_this_sitting():
-    """F2 (rwl2): the step-2 dare needs her joke sent (a failed row he never saw: no dare) and
-    inside this Sitting (a joke over `SITTING_GAP_S` ago: no dare); a fresh sent joke dares."""
     from sqlalchemy import update
     from automations import full_ai_test as ft
     from automations import full_ai_writers as wr
@@ -370,9 +325,6 @@ def case_test_chat_dare_due_only_after_a_sent_joke_this_sitting():
 
 
 def case_dared_only_when_a_reply_carried_the_dare():
-    """F2 (rwl2), pure: her dare stands only when the reply after a sent joke dared (chat / sext with
-    no picture, or ai_dare again); a sell_now reply after it, an unsent follow-up or an unsent joke
-    never dared."""
     from automations import full_ai_test as ft
 
     def r(i, route, status="sent", photo=None):
@@ -389,7 +341,7 @@ def case_dared_only_when_a_reply_carried_the_dare():
         assert ft.dared_of(rows) is want, ([x.route for x in rows], want)
     later = T0 + timedelta(minutes=1)
     assert ft.dare_due_of([joke], later) and not ft.dare_due_of(
-        [r(0, "ai_dare", photo={"outcome": "cached"})], later)   # a live row's read picture
+        [r(0, "ai_dare", photo={"outcome": "cached"})], later)
     assert not ft.dare_due_of([joke], T0 + timedelta(seconds=ft.SITTING_GAP_S + 1))
 
 
@@ -398,8 +350,6 @@ def _writer_text_raw(fake_w: FakeWriterHTTP) -> str:
 
 
 def case_test_chat_no_key_424_and_cap_429():
-    """The account's own DeepInfra key missing: llm_client's key error → 424 (the page's key
-    notice), nothing sent anywhere; the cost cap → 429."""
     _config(True, True)
     fake_w = FakeWriterHTTP({})
     with fake_w.on():
@@ -428,11 +378,9 @@ def case_upload_validation():
     big = "data:image/png;base64," + "A" * (full_ai_photo.MAX_UPLOAD * 4 // 3 + 8)
     r = OWNER_A.post(PHOTO, json={"account_id": A, "image": big})
     assert r.status_code == 413 and r.json()["detail"] == "The image is larger than 20 MB.", r.status_code
-    # A turn needs text or a photo; a forged photo must look like the route's.
     assert OWNER_A.post(TURN, json=_body("photo3", text="")).status_code == 422
     forged = {"desc": DESC, "thumb": "https://evil/x.png", "outcome": "described"}
     assert OWNER_A.post(TURN, json={**_body("photo3", text=""), "photo": forged}).status_code == 422
-    # Another Agency's account: refused before any work.
     from _full_ai_chat_helpers import B
     assert OWNER_A.post(PHOTO, json={"account_id": B, "image": _png()}).status_code == 403
 

@@ -1,9 +1,3 @@
-"""service/ultra_schema.py — an Ultra plan's shape, written once (docs/plans/ultra-mode).
-
-MCP `propose_plan` validates its args with PlanArgs; the in-app planner's `submit_plan` parameters are its JSON
-schema (`parameters`, refs inlined); a judge step's keys (ultra_judge_decide.KEYS) are PlanStep's minus tool/args.
-The plan's own rules (refs, send chain, judge sources) stay in ultra_decide / ultra_judge_decide.
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -17,8 +11,8 @@ from toolbox_args import Args
 MAX_STEPS = 20
 MAX_SUMMARY = 500
 MAX_QUESTION = 500
-MAX_PICK = ts.MAX_MEDIA   # a judge's pick_n (≤ ultra_judge_decide.PICK_CARD with confirm)
-TOOL_KEYS = frozenset({"id", "tool", "args"})  # a tool step's keys
+MAX_PICK = ts.MAX_MEDIA
+TOOL_KEYS = frozenset({"id", "tool", "args"})
 
 
 class PlanStep(Args):
@@ -54,6 +48,5 @@ def _inline(node: Any, defs: dict[str, Any]) -> Any:
 
 
 def parameters() -> dict[str, Any]:
-    """PlanArgs as a tool's JSON parameters, with no $ref (one self-contained schema)."""
     schema = td.args_schema(PlanArgs)
     return _inline({k: v for k, v in schema.items() if k != "$defs"}, schema.get("$defs", {}))

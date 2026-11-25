@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""The Fansly Manager's Scheduled Posts page (roadmap 8.1) over the Relay's OF routes.
-
-It lists through `GET /api/of/v2/schedules` and cancels through OF's message-queue cancel,
-`DELETE /api/of/v2/messages/queue/{id}`. On a Fansly Creator that route is an ALIAS: the shim's
-`cancel_scheduled` is Fansly's post-lane `POST /post/scheduled/{postId}/cancel`, and the id is a
-queue item's post id. These cases drive the Relay's own handlers with a real FanslyShimClient whose
-`_request` only records (no request leaves the process), so a change on either side of the alias
-fails here.
-
-  case_cancel_route_reaches_the_fansly_post_lane_cancel
-  case_schedules_route_answers_the_shim_queue_items
-
-Run: ./venv/bin/python service/tests/test_fansly_cancel_scheduled_route.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -61,7 +47,7 @@ def _with(client, fn):
 
 
 class _NoAccount:
-    """A request the handler cannot resolve a Creator from: its local bookkeeping is skipped."""
+    pass
 
 
 def case_cancel_route_reaches_the_fansly_post_lane_cancel():

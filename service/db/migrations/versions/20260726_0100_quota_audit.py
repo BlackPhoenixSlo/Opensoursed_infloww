@@ -1,42 +1,3 @@
-"""quota_audit — item 21c's daily-quota decision ledger
-
-Revision ID: 0056_quota_audit
-Revises: 0055_translation_cache
-Create Date: 2026-07-26
-
-One NEW table, no changes to any existing one, so no batch mode and no row can be
-touched. `create_all()` already materializes it on a fresh or catch-up boot
-(init_db in db/engine.py); this file exists to keep the alembic chain linear for
-the alembic-managed copies.
-
-  quota_audit   (account_id, fan_id, day, reason, enforced)  ← FIVE-column PK
-                n, quota, used, runway_left, wait_h, dry_h, updated_at
-                + ix_quota_audit_day (account_id, day, reason), matching the model
-
-`enforced` IS PART OF THE KEY, and that is the whole reason this file cannot be a
-plain create-if-absent. The rollout is "shadow for a week, then flip
-`daily_quota_enforce`", and that flip happens MID-DAY. With `enforced` as an
-ordinary column it was last-write-wins beside an ACCUMULATING counter (`n`), so
-the first enforced sweep of the day absorbed that morning's shadow evaluations
-into the same row and relabelled every one of them as enforced — destroying the
-shadow/served distinction on precisely the one day it matters most.
-
-The table shipped inside this branch with the 4-column key before that was found,
-so a box that booted the intermediate commit has the wrong shape on disk, and
-neither `create_all()` (skips existing tables) nor init_db's additive catch-up
-(only ever ADDs columns) can fix a PRIMARY KEY. SQLite cannot ALTER one either.
-Hence the rename-create-copy-drop below, guarded so it only runs where the shape
-is actually wrong.
-
-Rows are safe to carry across: the copy re-aggregates by the NEW key, summing `n`
-per group. On a shadow-only table every row already has enforced=0, so the sum is
-a no-op; on a table that saw the flip mid-day it is the closest honest reading
-available — the two labels were already conflated by the old key, and summing
-keeps the evaluation count right even though it cannot un-mix them.
-
-Inspector-guarded + idempotent (house convention so a create_all-built DB whose
-alembic_version lags doesn't trip).
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -82,8 +43,6 @@ def upgrade() -> None:
                         ["account_id", "day", "reason"])
         return
 
-    # Table exists. Is `enforced` already in the key? If so there is nothing to do
-    # — this migration is then just recording that the chain has reached here.
     pk = set(sa.inspect(bind).get_pk_constraint("quota_audit").get(
         "constrained_columns") or [])
     if pk == set(_PK):
@@ -93,7 +52,7 @@ def upgrade() -> None:
                             ["account_id", "day", "reason"])
         return
 
-    # Wrong shape: SQLite cannot ALTER a PRIMARY KEY, so rebuild and re-aggregate.
+    # SQLite cannot ALTER a PRIMARY KEY: rebuild, re-aggregating by the new key (n summed; shadow vs enforced already conflated by the old key, cannot be un-mixed).
     op.rename_table("quota_audit", "quota_audit_old")
     _create()
     op.execute(

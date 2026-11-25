@@ -1,47 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_migration — `ai_decisions` (the Decision ledger) reaches every box.
-
-  case_upgrade_matches_create_all   0116 -> 0120 on a temp SQLite gives the
-                                    columns and indexes `create_all` gives;
-                                    a second upgrade over it is a no-op;
-                                    downgrade drops the table
-  case_single_head                  alembic has one head, 0117 and 0119 on its line
-  case_0119_adds_nullable_columns   0118 -> 0119 adds ai_decisions.reply_json and
-                                    account_ai_config.full_ai_config_json, both
-                                    nullable TEXT; again = no-op; downgrade drops them
-  case_init_db_adds_0119_columns    init_db's column catch-up adds both to an old DB
-  case_init_db_creates_it           init_db on an existing copy (alembic
-                                    version, no table) creates it with the
-                                    UNIQUE Turn key and both indexes; an existing
-                                    table missing acct_mode_time gets it (catch-up)
-  case_duplicate_turn_key_refused   a second row on (account, fan, mode,
-                                    trigger_key) is refused by the DB
-  case_0120_adds_offer_columns      0119 -> 0120 adds the 8 nullable Offer columns and the
-                                    partial UNIQUE (account_id, offer_message_id); again =
-                                    no-op; downgrade drops them
-  case_init_db_adds_0120            init_db's catch-up adds the Offer columns and the index
-  case_duplicate_offer_message_refused  a second row on (account, offer_message_id) is
-                                    refused; NULL offer_message_id never clashes
-  case_head_is_0120                 one head; 0120_full_ai_offers sits on 0119
-  case_0130_adds_offer_attempt_at   0129 -> 0130 adds the nullable ai_decisions.offer_attempt_at
-                                    (W30 F3: the carrier POST was attempted); again = no-op;
-                                    downgrade drops it. The 0121..0129 steps touch other tables,
-                                    so the ai_decisions upgrades stamp across them.
-  case_0130_marks_legacy_attempts   W30 C4: 0130 stamps `offer_attempt_at = created_at` on legacy live
-                                    priced rows that may have POSTed (`sending`; `sent` / `unconfirmed`
-                                    with no `offer_message_id`), no other row; a rerun over the column
-                                    stamps nothing
-  case_init_db_marks_legacy_attempts_once  the same on the boot whose catch-up adds the column (init_db,
-                                    `data_migrations` marker): reap then keeps a legacy `sending` Offer,
-                                    settle links a legacy `sent` row's card; a second boot stamps nothing
-                                    new; nor does a boot with the column but no marker (W30 L5c: a dev
-                                    DB new code wrote)
-
-Run: ./venv/bin/python service/tests/test_full_ai_migration.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness
 
 _harness.bootstrap()
 
@@ -75,7 +35,6 @@ COLUMNS = ("id", "account_id", "fan_id", "mode", "trigger_kind", "trigger_key", 
            *OFFER_COLUMNS, "offer_attempt_at")
 
 
-# The tables 0116 -> 0119 alter besides ai_decisions, at their pre-0117 minimum.
 _OLD_TABLES = ("CREATE TABLE accounts (id VARCHAR PRIMARY KEY)",
                "CREATE TABLE users (id VARCHAR PRIMARY KEY)",
                "CREATE TABLE actions (id INTEGER PRIMARY KEY)",
@@ -84,7 +43,6 @@ _OLD_TABLES = ("CREATE TABLE accounts (id VARCHAR PRIMARY KEY)",
 
 
 def _cols(path, table) -> dict[str, tuple[str, int]]:
-    """{column: (type, notnull)} of `table`."""
     con = sqlite3.connect(path)
     try:
         return {r[1]: (r[2], r[3]) for r in con.execute(f"PRAGMA table_info({table})")}
@@ -105,7 +63,6 @@ def _shape(path):
 
 
 def _partial(path) -> bool:
-    """The Offer index is partial: its DDL carries the NOT NULL guard."""
     con = sqlite3.connect(path)
     try:
         (sql,) = con.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
@@ -131,7 +88,6 @@ def _alembic(url: str, fn, rev: str) -> None:
 
 
 def _to_attempt(url: str) -> None:
-    """Upgrade to 0120, stamp across 0121..0129 (other tables), then 0130."""
     _alembic(url, command.upgrade, OFFERS)
     _alembic(url, command.stamp, BEFORE_ATTEMPT)
     _alembic(url, command.upgrade, ATTEMPT)
@@ -158,7 +114,6 @@ def case_upgrade_matches_create_all():
         assert want[1][OFFER_INDEX] == (1, ("account_id", "offer_message_id")), want[1]
         assert _partial(old) and _partial(fresh)
 
-        # Again over a table that is already there (a box init_db brought it to).
         _alembic(url, command.stamp, PRIOR)
         _to_attempt(url)
         assert _shape(old) == want
@@ -173,7 +128,7 @@ def case_upgrade_matches_create_all():
 
 def case_single_head():
     script = ScriptDirectory.from_config(_cfg())
-    heads = script.get_heads()  # later revisions chain after REV; still one head, REV on its line
+    heads = script.get_heads()
     assert len(heads) == 1 and REV in {r.revision for r in script.iterate_revisions(heads[0], PRIOR)}, heads
     assert TEST_CHAT in {r.revision for r in script.iterate_revisions(heads[0], PRIOR)}, heads
     assert script.get_revision(TEST_CHAT).down_revision == BEFORE_TEST_CHAT
@@ -194,7 +149,7 @@ def case_0119_adds_nullable_columns():
         _alembic(url, command.upgrade, TEST_CHAT)
         for table, col in NEW_COLUMNS:
             assert _cols(old, table)[col] == ("TEXT", 0), (table, _cols(old, table))
-        _alembic(url, command.stamp, BEFORE_TEST_CHAT)     # again over columns already there
+        _alembic(url, command.stamp, BEFORE_TEST_CHAT)
         _alembic(url, command.upgrade, TEST_CHAT)
         _alembic(url, command.downgrade, BEFORE_TEST_CHAT)
         for table, col in NEW_COLUMNS:
@@ -239,7 +194,6 @@ def case_init_db_creates_it():
     assert idx["uq_ai_decisions_turn"] == (1, ("account_id", "fan_id", "mode", "trigger_key")), idx
     assert idx["ix_ai_decisions_fan_time"] == (0, ("account_id", "fan_id", "created_at")), idx
     assert idx["ix_ai_decisions_acct_mode_time"] == (0, ("account_id", "mode", "created_at")), idx
-    # On a box whose table predates the index, init_db's index catch-up adds it.
     con = sqlite3.connect(path)
     try:
         con.execute("DROP INDEX ix_ai_decisions_acct_mode_time")
@@ -266,13 +220,11 @@ def case_duplicate_turn_key_refused():
             assert "UNIQUE" in str(e), e
         else:
             raise AssertionError("a second row on one Turn key was accepted")
-        # Another mode on the same Turn is its own key.
         con.execute(row.replace("'shadow'", "'test'"))
     finally:
         con.close()
 
 def _old_db(tmp, rev: str):
-    """A pre-0117 SQLite box upgraded to `rev`: (path, url, engine)."""
     old = Path(tmp) / "old.db"
     url = f"sqlite:///{old}"
     engine = sa.create_engine(url)
@@ -295,13 +247,13 @@ def case_0120_adds_offer_columns():
         assert _shape(old)[1][OFFER_INDEX] == (1, ("account_id", "offer_message_id"))
         assert _partial(old)
         before = _shape(old)
-        _alembic(url, command.stamp, TEST_CHAT)           # again over columns already there
+        _alembic(url, command.stamp, TEST_CHAT)
         _alembic(url, command.upgrade, OFFERS)
         assert _shape(old) == before
         _alembic(url, command.downgrade, TEST_CHAT)
         assert not set(OFFER_COLUMNS) & set(_cols(old, TABLE))
         assert OFFER_INDEX not in _shape(old)[1]
-        assert "reply_json" in _cols(old, TABLE)          # 0119's column stays
+        assert "reply_json" in _cols(old, TABLE)
         engine.dispose()
 
 
@@ -336,7 +288,7 @@ def case_duplicate_offer_message_refused():
                "VALUES ('offer_acct', 7, 'test', 'test', '{key}', 'sell_now', 1, 'sell', 'v', 'sent', "
                "{mid}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
         con.execute(row.format(key="t1", mid="NULL"))
-        con.execute(row.format(key="t2", mid="NULL"))     # NULLs never clash (every test row)
+        con.execute(row.format(key="t2", mid="NULL"))
         con.execute(row.format(key="t3", mid="555"))
         try:
             con.execute(row.format(key="t4", mid="555"))
@@ -344,14 +296,14 @@ def case_duplicate_offer_message_refused():
             assert "UNIQUE" in str(e), e
         else:
             raise AssertionError("a second row on one offer_message_id was accepted")
-        con.execute(row.format(key="t5", mid="556"))       # another message id is its own key
+        con.execute(row.format(key="t5", mid="556"))
     finally:
         con.close()
 
 
 def case_head_is_0120():
     script = ScriptDirectory.from_config(_cfg())
-    assert len(script.get_heads()) == 1, script.get_heads()  # later migrations chain after 0120
+    assert len(script.get_heads()) == 1, script.get_heads()
     assert script.get_revision(OFFERS).down_revision == TEST_CHAT
 
 
@@ -363,25 +315,24 @@ def case_0130_adds_offer_attempt_at():
         _alembic(url, command.upgrade, ATTEMPT)
         assert _cols(old, TABLE)["offer_attempt_at"] == ("DATETIME", 0), _cols(old, TABLE)
         before = _shape(old)
-        _alembic(url, command.stamp, BEFORE_ATTEMPT)      # again over the column (init_db added it)
+        _alembic(url, command.stamp, BEFORE_ATTEMPT)
         _alembic(url, command.upgrade, ATTEMPT)
         assert _shape(old) == before
         _alembic(url, command.downgrade, BEFORE_ATTEMPT)
         assert "offer_attempt_at" not in _cols(old, TABLE)
-        assert "join_src" in _cols(old, TABLE)            # 0120's columns stay
+        assert "join_src" in _cols(old, TABLE)
         engine.dispose()
     assert ScriptDirectory.from_config(_cfg()).get_revision(ATTEMPT).down_revision == BEFORE_ATTEMPT
 
 
-# W30 C4: (fan, mode, status, price, offer_message_id, outcome, stamped by the backfill)
 LEGACY = ((1, "live", "sending", 1000, None, None, True),
           (2, "live", "sent", 1000, None, None, True),
           (3, "live", "unconfirmed", 1000, None, None, True),
           (4, "live", "sent", 1000, 555, None, False),
           (5, "live", "no_send", 1000, None, None, False),
-          (6, "live", "sent", None, None, None, False),          # a tease: price NULL
+          (6, "live", "sent", None, None, None, False),
           (7, "test", "sent", 1000, None, None, False),
-          (8, "live", "sent", 0, None, None, False),             # a Free item
+          (8, "live", "sent", 0, None, None, False),
           (9, "live", "sent", 1000, None, "bought", False))
 LEGACY_MEDIA = 7401
 ATTEMPT_MARKER = "20261122_full_ai_offer_attempt"
@@ -417,9 +368,9 @@ def case_0130_marks_legacy_attempts():
         _alembic(url, command.upgrade, ATTEMPT)
         with engine.begin() as con:
             got = _attempts(con, "legacy")
-            _seed_legacy(con, "later", at, LEGACY[:1])          # written after the upgrade: never stamped
+            _seed_legacy(con, "later", at, LEGACY[:1])
         assert got == _want(at), got
-        _alembic(url, command.stamp, BEFORE_ATTEMPT)            # again over the column
+        _alembic(url, command.stamp, BEFORE_ATTEMPT)
         _alembic(url, command.upgrade, ATTEMPT)
         with engine.begin() as con:
             assert _attempts(con, "later") == {1: None}, _attempts(con, "later")
@@ -442,11 +393,11 @@ def case_init_db_marks_legacy_attempts_once():
                             "VALUES (:a, 0, CURRENT_TIMESTAMP)"), {"a": acct})
         con.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"), {"n": ATTEMPT_MARKER})
         _seed_legacy(con, acct, at)
-        con.execute(sa.text("ALTER TABLE ai_decisions DROP COLUMN offer_attempt_at"))   # a pre-0130 box
+        con.execute(sa.text("ALTER TABLE ai_decisions DROP COLUMN offer_attempt_at"))
     asyncio.run(init_db())
     with engine.begin() as con:
         got = _attempts(con, acct)
-        _seed_legacy(con, "legacy_boot_2", at, LEGACY[:1])    # after the first boot: never stamped
+        _seed_legacy(con, "legacy_boot_2", at, LEGACY[:1])
     stamped = {f: v is not None for f, v in got.items()}
     assert stamped == {f: s for f, *_, s in LEGACY}, got
 
@@ -467,7 +418,7 @@ def case_init_db_marks_legacy_attempts_once():
                                      "AND fan_id = 2"), {"a": acct}).scalar()
         again = _attempts(con, "legacy_boot_2")
         con.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"), {"n": ATTEMPT_MARKER})
-    asyncio.run(init_db())                                    # column there, no marker: stamp none
+    asyncio.run(init_db())
     with engine.begin() as con:
         dev = _attempts(con, "legacy_boot_2")
         marked = con.execute(sa.text("SELECT 1 FROM data_migrations WHERE name = :n"),

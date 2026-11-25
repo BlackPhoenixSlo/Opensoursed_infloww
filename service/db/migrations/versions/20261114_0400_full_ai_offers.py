@@ -1,16 +1,3 @@
-"""full_ai_offers — the Offer on its Decision row (Full AI Chat 03b)
-
-Eight nullable columns on `ai_decisions` (spec 03b › Schema): the quoted and list price, the
-locked/preview media, the item ref, the sent Offer's message id (NULL in test; the Phase 05 join
-key), and the outcome with its time and join source. Plus the partial UNIQUE index
-`uq_ai_decisions_offer_message` on `(account_id, offer_message_id) WHERE offer_message_id IS NOT
-NULL`. No new table, no existing row touched. init_db's additive-column and index catch-up brings
-both to a booting box; this file keeps the alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0120_full_ai_offers
-Revises: 0119_full_ai_test_chat
-Create Date: 2026-11-14
-"""
 from __future__ import annotations
 
 from typing import Sequence

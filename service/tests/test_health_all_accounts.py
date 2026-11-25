@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""tests/test_health_all_accounts.py — the /setup probe's admission gate.
-
-`GET /health?all_accounts=1` is one live OF round-trip per account. It used to
-make them serially (7 accounts measured 4.11s then 3.06s against 0.60s for a
-single account) and now makes them concurrently — but a bare fan-out would have
-been a downgrade, and every case below guards one of the reasons why:
-
-  • the fan-out is BOUNDED. These probes call `_load_client()` + `c.me()`
-    directly, not through `_proxy`, so no `_priority_lane` and no per-account
-    cap stands between them and the shared proxy / executor / descriptor
-    ceilings.
-  • the budget is NOT a cancel. `c.me()` blocks in a thread and outlives any
-    cancellation, so a timed-out probe keeps running and keeps its slot. A gate
-    that released on timeout would report a bound it was not holding.
-  • the UI's `retry: 1` must JOIN an in-flight fan-out, not double it.
-  • per-account result association, and the "never raises 500" contract,
-    survive the move off the serial loop.
-
-The route answers only a signed-in caller, for their own Creators (round 2,
-ticket 12), so the two cases that go through it sign in an owner of their
-fleet first, with the `_agency_fixtures` login; the account and proxy
-registries sit on `tempfile.mkdtemp` trees, never the real files.
-
-Run:  ./venv/bin/python service/tests/test_health_all_accounts.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds a throwaway temp DB)
 
 import asyncio  # noqa: E402
@@ -47,10 +22,8 @@ from of_client import OFAPIError  # noqa: E402
 proxy_registry.REGISTRY_PATH = Path(tempfile.mkdtemp(prefix="health_all_proxies_")) / "proxies.json"
 
 
-# ── Fixtures ───────────────────────────────────────────────────────────
 
 class _FakeClient:
-    """Enough OFClient surface for the health row: `me()` and the proxy pair."""
 
     def __init__(self, aid: str, me_fn):
         self.account_id = aid
@@ -65,11 +38,6 @@ class _FakeClient:
 @contextmanager
 def _fleet(accounts: list[dict], *, me_fn=None, load_fn=None,
            concurrency: int | None = None, budget_s: float | None = None):
-    """Bind a fake registry + client loader (and optionally the two knobs).
-
-    Restores everything, including the knobs, so one case cannot leak a 0.2s
-    budget into the next one and fail it for the wrong reason.
-    """
     old_list = server.account_registry.list_accounts
     old_load = server._load_client
     old_conc = admission.HEALTH_PROBE.cap
@@ -103,9 +71,6 @@ def _rows(resp: dict) -> dict[str, dict]:
     return {r["account_id"]: r for r in resp["accounts"]}
 
 
-# The owner of the fleet the route-level cases probe: owns acct0..acct7 in
-# `user_accounts`, so the route's clamp keeps every row. A second owner holds
-# acct0 only, so a caller with a subset can join the same fan-out. Set in __main__.
 FLEET_OWNER = "health_fleet_owner"
 SUBSET_OWNER = "health_subset_owner"
 OWNER = None
@@ -113,9 +78,6 @@ SUBSET = None
 
 
 def _sign_in_fleet_owners(n: int = 8):
-    """Seed the fleet's owner and the subset owner (the shared bench's password
-    and login) and return their signed-in clients. `seed_two_agencies` also
-    moves the account registry onto a temp tree."""
     fx.seed_two_agencies()
 
     async def _seed() -> None:
@@ -133,15 +95,8 @@ def _sign_in_fleet_owners(n: int = 8):
     return fx.login_owner(FLEET_OWNER), fx.login_owner(SUBSET_OWNER)
 
 
-# ── Cases ──────────────────────────────────────────────────────────────
 
 async def case_the_fanout_is_bounded_not_unbounded() -> None:
-    """8 accounts, 3 slots: never more than 3 OF calls in flight at once.
-
-    The whole point of the gate. Without it the answer is 8 — and on a real
-    fleet that is 8 simultaneous proxy connections and 8 executor threads taken
-    by an admin table nobody is watching.
-    """
     lock = threading.Lock()
     live = 0
     peak = 0
@@ -168,18 +123,11 @@ async def case_the_fanout_is_bounded_not_unbounded() -> None:
     assert peak > 1, f"peak was {peak} — the probes never actually overlapped"
     rows = _rows(resp)
     assert len(rows) == 8 and resp["ok"] is True, resp
-    # Association: every row carries ITS OWN account's answer, not a neighbour's.
     for i in range(8):
         assert rows[f"acct{i}"]["name"] == f"name-acct{i}", rows[f"acct{i}"]
 
 
 async def case_every_failure_shape_lands_on_its_own_row() -> None:
-    """Per-account association survives the move off the serial loop.
-
-    One account of each kind, answered out of order (the healthy one is slow so
-    it finishes LAST), so a fan-out that zipped results back positionally by
-    completion order would scramble them here.
-    """
     def load(aid: str):
         if aid == "acct1":
             raise HTTPException(status_code=503, detail={"error": "no_session_yet",
@@ -192,11 +140,11 @@ async def case_every_failure_shape_lands_on_its_own_row() -> None:
 
     def _me(aid: str) -> dict[str, Any]:
         if aid == "acct0":
-            time.sleep(0.15)          # healthy, and deliberately the slowest
+            time.sleep(0.15)
             return {"id": 111, "name": "Ava"}
         if aid == "acct2":
             raise OFAPIError("401 from OF", response=_Resp())
-        raise ValueError("kaboom")     # acct3
+        raise ValueError("kaboom")
 
     with _fleet(_accts(4), load_fn=load, concurrency=4):
         rows = _rows(await server._health_all_accounts())
@@ -243,13 +191,6 @@ async def case_health_profiles_remain_inside_the_ownership_clamp() -> None:
 
 
 async def case_a_timeout_does_not_cancel_the_probe() -> None:
-    """The budget stops WAITING; it does not stop the OF call.
-
-    `c.me()` blocks in a worker thread — cancelling the task that awaits it
-    would return a response while the call kept running anyway. So the row says
-    `timeout` (an honest "still running", not a dead session) and the probe is
-    left to finish. This asserts it actually does.
-    """
     finished = threading.Event()
 
     def probe(aid: str) -> dict[str, Any]:
@@ -268,7 +209,6 @@ async def case_a_timeout_does_not_cancel_the_probe() -> None:
             assert rows["acct1"]["error"] == "timeout", rows["acct1"]
             assert rows["acct1"]["timed_out"] is True, rows["acct1"]
             assert not finished.is_set(), "the slow probe finished before the budget — bad fixture"
-            # Parked, so the loop cannot collect a task nobody else references.
             assert len(server._health_probes_running) == 1, server._health_probes_running
             await asyncio.sleep(0.6)
             assert finished.is_set(), "the abandoned probe was cancelled, not left to finish"
@@ -278,13 +218,6 @@ async def case_a_timeout_does_not_cancel_the_probe() -> None:
 
 
 async def case_a_timeout_does_not_hand_its_slot_to_the_next_probe() -> None:
-    """A slot belongs to the RUNNING call, never to whoever is still waiting.
-
-    One slot, two accounts, and the first probe outruns the budget. If the gate
-    released on timeout, probe 2 would start while probe 1's OF call was still
-    in flight — a bound reported but not held. Instead probe 2 waits for the
-    real completion, so it starts after (and times out too).
-    """
     starts: dict[str, float] = {}
     ends: dict[str, float] = {}
 
@@ -315,10 +248,6 @@ async def case_a_timeout_does_not_hand_its_slot_to_the_next_probe() -> None:
 
 
 async def case_the_uis_retry_joins_the_inflight_probe() -> None:
-    """AccountsTable's query inherits `retry: 1`, so a slow answer can fire a
-    SECOND `?all_accounts=1` on top of the first. Coalesced, that retry joins
-    the in-flight fan-out; uncoalesced it would double every OF call at exactly
-    the moment the relay is already struggling to answer."""
     calls: list[str] = []
 
     def probe(aid: str) -> dict[str, Any]:
@@ -335,9 +264,6 @@ async def case_the_uis_retry_joins_the_inflight_probe() -> None:
         assert r.status_code == 200, f"{r.status_code}: {r.text[:300]}"
         return r.json()
 
-    # All three requests on this one loop, through the real cookie and session
-    # middleware: the fleet's owner and their retry, plus an owner of acct0
-    # alone, who joins the same in-flight fan-out and must get only acct0.
     owner, subset = client(OWNER), client(SUBSET)
     with _fleet(_accts(3), concurrency=3):
         old = server._probe_account_blocking
@@ -351,28 +277,15 @@ async def case_the_uis_retry_joins_the_inflight_probe() -> None:
 
     assert len(calls) == 3, f"{len(calls)} OF probes for 3 accounts — the retry re-fanned out"
     assert first == retry, "the retry got a different answer than the request it joined"
-    # One fan-out, clamped per caller: the subset owner's rows are theirs alone,
-    # and the fleet owner's answer still holds every row.
     assert set(_rows(first)) == {"acct0", "acct1", "acct2"}, first
     assert set(_rows(sub)) == {"acct0"}, f"the subset owner got {set(_rows(sub))}"
     assert _rows(sub)["acct0"] == _rows(first)["acct0"], (sub, first)
 
 
 async def case_one_dead_proxy_does_not_time_out_the_healthy_creators() -> None:
-    """50 Creators, 10 of them behind one dead proxy: the other 40 still answer.
-
-    The default ceiling is sized for this (admission.HEALTH_PROBE): a probe
-    behind a dead proxy keeps its slot past the budget until the client gives
-    up, and one proxy carries 5-10 accounts. Times are production's scaled by
-    1/20 — healthy 0.6 s -> 0.03, stuck to `OFClient.timeout_s` 30 s -> 1.5,
-    the route's 20 s budget -> 1.0 — on an executor the relay's own size, so
-    the threads are not what binds. Then the same fleet at the old 4: the stuck
-    probes take every slot and healthy Creators come back `timeout`, which is
-    the bug this default fixes.
-    """
     from concurrent.futures import ThreadPoolExecutor
-    one = {f"acct{i}" for i in range(0, 50, 5)}            # spread, as a proxy's accounts are
-    two = one | {f"acct{i}" for i in range(1, 50, 5)}      # a second dead proxy: 20 stuck
+    one = {f"acct{i}" for i in range(0, 50, 5)}
+    two = one | {f"acct{i}" for i in range(1, 50, 5)}
     dead: set[str] = set()
 
     def probe(aid: str) -> dict[str, Any]:
@@ -388,11 +301,11 @@ async def case_one_dead_proxy_does_not_time_out_the_healthy_creators() -> None:
         for label, stuck, cap in (("one", one, None), ("two", two, None), ("one at 4", one, 4)):
             dead = stuck
             with _fleet(_accts(50), concurrency=cap, budget_s=1.0):
-                admission.HEALTH_PROBE._sems.clear()    # this loop's semaphore takes the cap under test
+                admission.HEALTH_PROBE._sems.clear()
                 rows = _rows(await server._health_all_accounts())
                 admission.HEALTH_PROBE._sems.clear()
             timed_out[label] = {a for a, r in rows.items() if r.get("timed_out")}
-            await asyncio.sleep(1.6)                     # let the stuck probes finish and free their slots
+            await asyncio.sleep(1.6)
     finally:
         server._probe_account_blocking = old
         pool.shutdown(wait=True)
@@ -405,8 +318,6 @@ async def case_one_dead_proxy_does_not_time_out_the_healthy_creators() -> None:
 
 
 def case_the_clamp_never_mutates_the_coalesced_snapshot() -> None:
-    """Every waiter on the fan-out gets a deep copy today, but the clamp itself
-    must not lean on that: it builds new rows and leaves the snapshot whole."""
     url = "http://user:pass@203.0.113.10:8001"
     snapshot = {"ok": False, "accounts": [
         {"account_id": "acct0", "ok": True, "proxy": {"label": "p0", "url": url}},
@@ -422,8 +333,6 @@ def case_the_clamp_never_mutates_the_coalesced_snapshot() -> None:
 
 
 async def case_a_sessionless_account_is_never_probed() -> None:
-    """No session means no client to load — the row is answered off the
-    registry alone, and must not spend a slot or an OF call to say so."""
     calls: list[str] = []
 
     def probe(aid: str) -> dict[str, Any]:
@@ -447,9 +356,6 @@ async def case_a_sessionless_account_is_never_probed() -> None:
 
 
 def case_the_endpoint_still_never_raises_500() -> None:
-    """The contract the serial loop's try/except used to carry. It now lives in
-    a worker thread, where an escaping exception is no longer inside the loop
-    that wrapped it — so this asserts the whole route end to end, over HTTP."""
     client = OWNER
 
     def load(aid: str):
@@ -467,9 +373,6 @@ def case_the_endpoint_still_never_raises_500() -> None:
 
 
 def case_the_single_account_branch_still_answers() -> None:
-    """The handler is `async def` now, so the single-account body — still two
-    blocking OF calls, `me()` and `egress_ip()` — has to reach a thread rather
-    than run on the event loop. This is the guard that it still runs at all."""
     client = _harness.make_client()
     old = server._get_client
     server._get_client = lambda *a, **k: _FakeClient("acct0", lambda aid: {"id": 7, "name": "Ava"})

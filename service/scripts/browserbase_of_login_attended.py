@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""ATTENDED Browserbase login — one human-solved OnlyFans login attempt.
-
-Creates the session the served login creates (Browserbase's managed proxies,
-solveCaptchas false), prints a LIVE-VIEW url where a human watches and solves
-any Cloudflare / captcha / 2FA challenge, types the credentials into
-OnlyFans' real form, then polls for the logged-in cookie. It PERSISTS NOTHING
-and binds nothing; it only proves the login lands. (The persisting login is
-the Setup page's "Try Browserbase login", which also attaches the chosen
-proxy.)
-
-One attempt per run; never an unattended resubmit loop.
-
-The LIVEVIEW line is flushed at once, so a background run's log can be read
-for it and the url handed to the human.
-
-ENV:  BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, OF_EMAIL, OF_PASSWORD
-"""
 from __future__ import annotations
 
 import os
@@ -29,7 +12,8 @@ if str(_SERVICE) not in sys.path:
 
 import remote_login as rl  # noqa: E402
 
-POLL_WINDOW_S = 270      # under Browserbase's 300 s default session lifetime
+# under Browserbase's 300 s default session lifetime
+POLL_WINDOW_S = 270
 TICK_S = 3
 
 

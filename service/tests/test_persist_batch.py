@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""The event_inbox writer batches commits (20-feed scale).
-
-  • Everything already queued is written in ONE insert_events call, alongside each
-    event's transcode, in queue order — one account's frames keep their order.
-  • A batch the DB refuses is retried row by row, so one bad payload costs its
-    own row, not the batch.
-  • `typing` frames are transcoded (Fan touch) but never written to event_inbox.
-  • A provider id dedups instead of failing the insert (the partial index's
-    WHERE must be in the ON CONFLICT target, or SQLite refuses it).
-  • Two lanes (Fans' DMs, the rest) under one cap, drained in arrival order across
-    both. A full queue displaces the oldest frame that is not a Fan's DM, in O(1),
-    or drops the incoming one when all are DMs (one `queue_full` either way); a
-    stop transcodes the queued DMs first, and what its deadline leaves (queued and
-    in the worker's hand) is counted lost; `enqueue` never awaits or writes.
-
-Run:  ./venv/bin/python service/tests/test_persist_batch.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -35,8 +18,6 @@ A, B = "5101", "5102"
 
 
 async def _run_worker(items, *, insert=None):
-    """Queue `items` (event dicts), run the worker until it has drained them,
-    and return (insert_events calls, transcoded events in order)."""
     calls: list[list[dict]] = []
     transcoded: list[dict] = []
     real_insert = events_persist.insert_events
@@ -67,8 +48,6 @@ async def _run_worker(items, *, insert=None):
         task = asyncio.create_task(events_persist._persist_worker_loop())
         for _ in range(100):
             await asyncio.sleep(0.01)
-            # The transcodes run alongside the batch's inbox write (both go to
-            # the OF-cache writer), so done = both finished.
             if len(transcoded) >= len(items) and persisted:
                 break
         task.cancel()
@@ -127,12 +106,10 @@ async def case_typing_transcoded_not_persisted():
     assert await _inbox(acct) == ["api2_chat_message"]
 
 
-# ── overflow and stop keep Inbound DM frames (phase-0A) ──
 FAN = 354841559
 
 
 def dm(n):
-    """An Inbound DM frame (a Fan's text DM to account A)."""
     return {"__account_id": A, "api2_chat_message": {"id": n, "text": "hi", "fromUser": {"id": FAN}}}
 
 
@@ -142,7 +119,6 @@ def other(kind, n=0):
 
 
 class _Telemetry:
-    """Stands in for events_persist.write_telemetry: counts drops by reason and dequeues."""
     def __init__(self):
         self.drops: dict[str, int] = {}
         self.dequeues = 0
@@ -156,7 +132,7 @@ class _Telemetry:
     async def stop(self):
         pass
 
-    def __getattr__(self, name):        # enqueued / batch / writer / ...: not counted here
+    def __getattr__(self, name):
         import contextlib
         return lambda *a, **k: contextlib.nullcontext()
 
@@ -167,8 +143,6 @@ def _enqueue(ev):
 
 
 async def _overflow(queued, incoming):
-    """Fill a maxsize-3 queue with `queued` through the real `enqueue`, then enqueue each of
-    `incoming`; return (the queued frames in order, drops added, telemetry recorder)."""
     tel, real_tel = _Telemetry(), events_persist.write_telemetry
     events_persist._persist_queue = events_persist._Lanes(3)
     try:
@@ -209,8 +183,6 @@ async def case_overflow_all_dms_drops_incoming():
 
 
 async def case_stop_transcodes_dms_first():
-    """A stop with the worker stuck on its first frame and a backlog of typing, DM, toast, DM
-    transcodes the DMs first, each group in queue order, and loses nothing."""
     first, backlog = other("online"), [other("typing"), dm(1), other("toasts"), dm(2)]
     transcoded: list[dict] = []
     release = asyncio.Event()
@@ -249,7 +221,6 @@ async def case_stop_transcodes_dms_first():
 
 
 async def case_enqueue_never_awaits():
-    """The WS pump never waits on enqueue: a plain function that queues no DB write, even on overflow."""
     import inspect
 
     from db import of_writer
@@ -261,7 +232,6 @@ async def case_enqueue_never_awaits():
 
 
 async def case_mixed_lanes_drain_in_arrival_order():
-    """W30-mu #3: DMs and other frames sit in two lanes; the worker still transcodes them in arrival order."""
     items = [other("typing", 1), dm(1), other("toasts", 2), dm(2), dm(3), other("typing", 3)]
     transcoded: list[dict] = []
 
@@ -317,8 +287,6 @@ async def case_overflow_all_dms_counts_the_dropped_dm():
 
 
 async def case_dropped_dm_queues_a_one_fan_scrape():
-    """A dropped DM's chat gets a one-fan scrape (it reads the message back from OF); a
-    dropped non-DM does not."""
     import webhook_dispatch
     calls = []
 
@@ -337,8 +305,6 @@ async def case_dropped_dm_queues_a_one_fan_scrape():
 
 
 async def case_overflow_is_constant_time():
-    """A full 2000-frame queue under a burst: each overflow is O(1) (the old take-all/refill
-    reshuffled the whole queue on the loop per frame: ~2000 get/put per incoming frame)."""
     import time as _time
     tel, real_tel = _Telemetry(), events_persist.write_telemetry
     events_persist._persist_queue = events_persist._Lanes(events_persist._PERSIST_QUEUE_MAX)
@@ -359,8 +325,6 @@ async def case_overflow_is_constant_time():
 
 
 async def case_stop_deadline_counts_queued_and_inflight_loss():
-    """A stop whose drain runs out of time: the worker's batch in hand and every queued frame (DMs
-    included) are counted lost, never silently dropped."""
     first, backlog = other("online"), [dm(1), other("typing"), dm(2)]
     transcoded: list[dict] = []
     never = asyncio.Event()

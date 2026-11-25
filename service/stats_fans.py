@@ -1,18 +1,3 @@
-"""
-stats_fans.py — Fan reports' reads, split out of stats.py.
-
-  GET /admin/stats/per-fan-data     → per-fan profile data (Fan reports → User
-                                       data), read from our DB
-  GET /admin/stats/fan-report       → Top fans, Traffic source and New fans over
-                                       a window (JSON, or the ranking as CSV)
-
-`new_subs_q` (new subs, each fan once) is per-model's too (stats_per_model.py).
-stats.py includes this router where these routes stood (route order). The
-report zone is read as `stats._report_zone` at call time (imported in the
-route, no import-time cycle), so a patch on `stats` reaches these routes as
-before the split.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -50,13 +35,11 @@ async def per_fan_data(
     rows: list[dict] = []
     for aid in (account_ids or []):
         rows.extend(await build_fan_data(aid, limit))
-    # Spend-desc so the highest-value fans surface first.
     rows.sort(key=lambda r: r.get("total_spend") or 0, reverse=True)
     return {"rows": rows, "count": len(rows), "columns": list(_HEADER)}
 
 
 def fan_spend_scope(account_ids: list[str] | None, start: datetime, end: datetime) -> list[Any]:
-    """The tracked fan sales of the window (on these Creators; all when None)."""
     T = Transaction
     scope = [T.status.in_(TRACKED_STATUSES), T.fan_id.is_not(None), T.occurred_at >= start, T.occurred_at <= end]
     if account_ids is not None:
@@ -66,9 +49,6 @@ def fan_spend_scope(account_ids: list[str] | None, start: datetime, end: datetim
 
 def fan_spend_q(account_ids: list[str] | None, start: datetime, end: datetime,
                 kinds: tuple[str, ...] | None = None) -> Any:
-    """Each fan's spend in the window per Creator: total, net (`net_or_80`),
-    tips, PPV and subscriptions; only the ledger `kinds` when given. Shared
-    by Fan reports' Top fans and the report recipe's `fan_spend`."""
     T = Transaction
 
     def _sum_if(cond: Any) -> Any:
@@ -92,14 +72,7 @@ def fan_spend_q(account_ids: list[str] | None, start: datetime, end: datetime,
 
 
 def new_subs_q(account_ids: list[str] | None, start: datetime, end: datetime) -> Any:
-    """New subs in the window: each fan whose subscription began in it, by a
-    subscription sale (pending too, so a sub that fires today shows at once;
-    a chargeback flips the row's status and drops it) or by OF's own roster
-    (`subscriber_snapshot.subscribe_at`), which also lists free and trial
-    subscribers, who leave no sale (roadmap S6). The roster holds the
-    subscriptions active at its last crawl, so a free sub that has since
-    lapsed is not counted. One row per (account_id, fan_id), `at` his first
-    start in the window; per-model counts them, Fan reports buckets them."""
+    # Pending subs count so a sub that fires today shows at once; a chargeback flips the row's status and drops it.
     b = tx_rollup.Binds()
     acct_in = "" if account_ids is None else " AND " + b.in_("account_id", account_ids)
     s_, e_ = b.bind(start.strftime(tx_rollup.TS_FORMAT)), b.bind(end.strftime(tx_rollup.TS_FORMAT))
@@ -113,7 +86,6 @@ def new_subs_q(account_ids: list[str] | None, start: datetime, end: datetime) ->
     ).bindparams(**b).columns(column("account_id"), column("fan_id"), column("at"))
 
 
-# ── Fan reports: Top fans, Traffic source, New fans (roadmap W5 5.6) ───
 
 FAN_REPORT_FIELDS = ("account_id", "fan_id", "fan_name", "username", "total_cents", "net_or_80_cents",
                      "tips_cents", "ppv_cents", "subs_cents", "subscribed_at")
@@ -121,8 +93,6 @@ _FAN_SORTS = {"total": "total_cents", "tips": "tips_cents", "ppv": "ppv_cents", 
 
 
 def first_claim_order() -> tuple[SQLColumnExpression[Any], ...]:
-    """The one definition of a fan's earliest claim, as an ORDER BY over link_claimers: OF's
-    subscribe_at, else when we first saw it, then id."""
     return func.coalesce(LinkClaimer.subscribe_at, LinkClaimer.first_seen_at), LinkClaimer.id
 
 
@@ -207,8 +177,6 @@ async def fan_report(
             lambda rec: ["" if rec[k] is None else rec[k] for k in FAN_REPORT_FIELDS],
         )
 
-    # Each spender's earliest claim, one index seek per spender (ix_link_claimers_account_fan), then the
-    # window's spend by that link.
     LC = LinkClaimer
     first_claim_id = (
         select(LC.id).where(LC.account_id == spend.c.account_id, LC.fan_id == spend.c.fan_id)
@@ -240,15 +208,14 @@ async def fan_report(
                cast(null(), DateTime).label("subscribe_at"), traffic_rows.c.kind, traffic_rows.c.of_id,
                traffic_rows.c.fans, traffic_rows.c.total_cents.label("sort_cents")),
     ).subquery("fan_report_rows")
-    # UNION emission order is unspecified. Keep each branch's existing order and ties:
-    # top = sort/total desc, fan_id asc; traffic = total desc (no account tie-breaker).
+    # UNION emission order is unspecified: keep each branch's own order and ties.
     combined_q = select(combined).order_by(
         combined.c.branch, combined.c.sort_cents.desc(),
         case((combined.c.branch == 0, combined.c.total_cents)).desc(),
         case((combined.c.branch == 0, combined.c.fan_id)),
     )
 
-    new_q = new_subs_q(account_ids, start, end)  # each fan on his first day in the window
+    new_q = new_subs_q(account_ids, start, end)
     renew_q = (
         select(T.account_id, T.fan_id, T.occurred_at)
         .where(*scope, T.kind == "rebill")
@@ -262,11 +229,6 @@ async def fan_report(
         renew_rows = (await s.execute(renew_q)).all()
         traffic = await _link_names(s, traffic_rows)
 
-    # OF's own daily counts (of_stats_daily) fill what we never see: free and trial subs leave no sale and
-    # the roster is only crawled under a lifecycle Trigger. Per Creator and day the larger of the two, as
-    # the earnings top-ups; OF's days are UTC days, taken as the report day of the same date. A Creator
-    # with OF days in the window has its own rows on UTC days too, so one fan lands on one day each side;
-    # a row whose UTC day is off the report's days (at its edge) keeps its report-zone day, so it stays shown.
     of_rows = await _of_growth(account_ids, start, end)
     of_creators = {r[0] for r in of_rows}
 
@@ -276,12 +238,12 @@ async def fan_report(
     first_day, last_day = _local(start), _local(end)
 
     def _day(aid: str, at: Any) -> str:
-        if isinstance(at, str):  # the text() union hands back SQLite's stored string
+        if isinstance(at, str):
             at = datetime.fromisoformat(at)
         utc = at.date().isoformat()
         return utc if aid in of_creators and first_day <= utc <= last_day else _local(at)
 
-    per: dict[tuple[str, str], dict[str, int]] = {}  # (account_id, day) -> counts
+    per: dict[tuple[str, str], dict[str, int]] = {}
 
     def _bump(aid: str, day: str, key: str) -> None:
         per.setdefault((aid, day), {"new_fans": 0, "renewed_fans": 0})[key] += 1
@@ -306,7 +268,6 @@ async def fan_report(
 
 
 async def _of_growth(account_ids: list[str] | None, start: datetime, end: datetime) -> list[Any]:
-    """(account_id, day, new_subs, renewals) of OF's stored Statistics days the window names."""
     from of_stats_daily import window_days
     lo, hi = window_days(start, end)
     D = OfStatsDaily
@@ -320,10 +281,6 @@ async def _of_growth(account_ids: list[str] | None, start: datetime, end: dateti
 
 
 async def _link_names(s, rows: list[Any]) -> list[dict[str, Any]]:
-    """Traffic rows named: a trial link by its mirror, a promotion by its
-    campaign (through `link_meta.campaign_id`, which a re-armed promotion's
-    earlier OF ids keep, else the campaign's current OF id), and the link's
-    Source as the operator typed it."""
     keys = {(r.account_id, r.kind, int(r.of_id)) for r in rows if r.kind}
     trials: dict[tuple[str, int], str] = {}
     promos: dict[tuple[str, int], str] = {}

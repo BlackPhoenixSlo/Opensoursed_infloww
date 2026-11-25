@@ -22,7 +22,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_offer_details_route.py  (exit 
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from itertools import product  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -32,12 +32,10 @@ from automations import full_ai_decide as fd  # noqa: E402
 
 Q = "asks_offer_details"
 ROOT = Path(__file__).resolve().parents[2]
-# Shadow's `question_version()` (spec A: unchanged by this ticket).
 SHADOW_VERSION = "14f5d4f6222f"
 FIRST = ("promo", "says_under_18", "complains_now", "asks_if_ai", "stop")
 FIRST_ROUTE = {"promo": "no_send", "says_under_18": "no_send", "complains_now": "make_right",
                "asks_if_ai": "ai_dare", "stop": "chat"}
-# The full-Mode facts a test / live Turn passes, plus the gate C turns on.
 ON = {"offer_details": True}
 
 
@@ -81,7 +79,6 @@ def case_existing_rows_unchanged():
     for fired, kw, want in EXISTING:
         for gate in (True, False):
             assert _d(fired, offer_details=gate, **kw) == want, (fired, kw, gate)
-    # jev_failed: chat, Heat 1, whatever fired.
     for gate in (True, False):
         d = fd.decide_turn(_facts({Q, "promo"}, intensity=3.0, jev_ok=False, offer_details=gate))
         assert (d.route, d.heat, d.row) == ("chat", 1, "jev_failed"), (gate, d)
@@ -96,7 +93,6 @@ def case_protected_rows_win():
 def case_pending_tease_is_answered():
     d = fd.decide_turn(_facts({Q}, intensity=2.0, pending_tease=True, **ON))
     assert (d.route, d.heat, d.row, d.fired, d.dropped) == ("chat", 3, "offer_details", frozenset({Q}), ()), d
-    # Without the Noul the Pending tease still sells.
     assert _d((), pending_tease=True, **ON) == ("sell_now", "sell")
 
 
@@ -141,7 +137,7 @@ def case_gate_off_never_the_row():
         po, pt, oo, sell_on, sext_on, draft_on, scene, tease, ok = bits[len(ids):]
         kw = dict(pending_offer=po, pending_tease=pt, open_offer=oo, sell_on=sell_on, sext_on=sext_on,
                   draft_on=draft_on, scene=scene, chat_tease=tease, jev_ok=ok)
-        d = fd.decide_turn(_facts(base | {Q}, **kw))     # `offer_details` defaults off
+        d = fd.decide_turn(_facts(base | {Q}, **kw))
         assert d.row != "offer_details", (sorted(base), kw)
         without = fd.decide_turn(_facts(base, **kw))
         assert (d.route, d.heat, d.row, d.dropped) == (without.route, without.heat, without.row,
@@ -150,7 +146,6 @@ def case_gate_off_never_the_row():
 
 
 def case_pre_offer_price_ask():
-    """"how much for a vid?" with nothing offered: `price` fires, the Noul's "no" keeps it absent."""
     assert _d({"price"}, **ON) == ("tease", "tease_price")
     assert _d({"price", "wants_content"}, **ON) == ("sell_now", "sell")
 
@@ -182,12 +177,10 @@ def case_questions_by_mode():
     assert Q in rj.fired(answers, "test") and Q in rj.fired(answers, "live")
     assert Q not in rj.fired({**answers, Q: 0.59}, "test")
     assert Q not in rj.fired({**answers, Q: 1.0}, "shadow")
-    # The 0.6 is stated as measured (the F replay probe) where it is set.
     src = (ROOT / "service" / "automations" / "_router_jev.py").read_text(encoding="utf-8")
     head = src[:src.index("TEST_THRESHOLDS: dict[str, float] =")]
     note = head[head.rindex("\n\n"):]
     assert Q in note and "measured 2026-11-17" in note, note
-    # Shadow's digest stays; test / live move with the Noul.
     assert rj.question_version() == rj.question_version("shadow") == rj.QUESTION_VERSION == SHADOW_VERSION
     base = rj.question_version("test")
     real = rj.TEST_NOULS

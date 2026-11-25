@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""automations._pools — characterisation tables for the send-time text/media
-randomisers shared by auto_posts + mass_premade (int_list / pick_text /
-has_media_source / pick_media). Pins today's behaviour; no DB, no OF.
-
-Randomness is pinned by seeding the module-level `random` and comparing with
-an independently seeded `random.Random(seed)` doing the documented operation
-(choice over the trimmed pool / sample of the clamped count), so a change to
-the pool, its order or the count shows as a mismatch.
-
-Run: ./venv/bin/python service/tests/test_pools.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -108,7 +97,6 @@ def case_pick_media_no_client_deterministic():
 
 
 def case_pick_media_seeded_sample():
-    # (item, pool after int_list, effective count, label)
     rows = [
         ({"media_files": [1, 2, 3, 4, 5]}, [1, 2, 3, 4, 5], 1, "default count 1"),
         ({"media_files": [1, 2, 3, 4, 5], "media_count": 3}, [1, 2, 3, 4, 5], 3, "count 3"),
@@ -127,7 +115,6 @@ def case_pick_media_seeded_sample():
 
 
 class _FakeVault:
-    """Returns `page` verbatim from vault_media (or raises when `boom`)."""
 
     def __init__(self, page=None, boom=False):
         self.page = page if page is not None else {}
@@ -146,8 +133,6 @@ def _photo(i, url="u", drm=None):
 
 
 def case_pick_media_with_client():
-    """Folder pull: non-DRM photos with a url join the pool (deduped against the
-    explicit ids, explicit ids first); a failing pull is swallowed."""
     items = [_photo(10), _photo(11, drm={"x": 1}), _photo(12, url=""), _photo(2),
              {"id": "bad", "files": {"full": {"url": "u"}}}, {"id": 13}, _photo("14")]
     rows = [
@@ -175,7 +160,6 @@ def case_pick_media_with_client():
 
 
 def case_pick_media_vault_page_shapes():
-    """The vault page envelope, driven through pick_media's folder pull."""
     rows = [
         ({"list": [_photo(1)]}, [1], "list envelope"),
         ({"items": [_photo(2)]}, [2], "items envelope"),

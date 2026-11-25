@@ -21,7 +21,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_live.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -65,13 +65,12 @@ class FakeOF:
 
 @contextlib.contextmanager
 def _world(jev=(QUIET, 1.0)):
-    """FakeOF behind the client factory, unspaced OF writes, faked Jev and Writers."""
     fake, made, purposes = FakeOF(), [], []
     real_make, real_paced = ax._make_client, ax.of_write_paced
 
     async def unpaced(account_id, fn, **kw):
         purposes.append(kw.get("send_purpose"))
-        assert kw.get("min_gap_s") == full_ai_live.WRITE_GAP_S == 2.0, kw   # the Full AI gap, not 11 s
+        assert kw.get("min_gap_s") == full_ai_live.WRITE_GAP_S == 2.0, kw
         return await real_paced(account_id, fn, **{**kw, "min_gap_s": 0.0, "pause_s": 0.0})
 
     def make(account_id):
@@ -121,8 +120,7 @@ async def _clear_pause(aid: str, fan: int) -> None:
 
 async def _dm_run(aid: str, fan: int, mid: int, body: str = "hey you, how was your day", *,
                   at: datetime | None = None, jev=(QUIET, 1.0)):
-    """His DM lands (the hook queues the job), then one run_once: (result, FakeOF, made, purposes)."""
-    await _msg(aid, fan, mid, "in", body, at or datetime.utcnow() - timedelta(minutes=3))   # past "0-2m"
+    await _msg(aid, fan, mid, "in", body, at or datetime.utcnow() - timedelta(minutes=3))
     with _world(jev) as (fake, made, purposes):
         await wd.on_inbound_message(aid, fan, mid)
         res = await run_once(aid, KIND)
@@ -161,7 +159,7 @@ async def case_no_send_route():
     assert (row.status, row.route, row.mode) == ("no_send", "no_send", "live"), (row.status, row.route)
     assert fake.sent == [] and purposes == [], fake.sent
     assert await _leases(aid) == [] and await _out_rows(aid, fan) == []
-    assert await _paused(aid, fan) is None         # nothing sent: no cooldown
+    assert await _paused(aid, fan) is None
 
 
 async def case_same_job_twice():
@@ -172,7 +170,7 @@ async def case_same_job_twice():
     n_out = len(await _out_rows(aid, fan))
     payload = {"only_fan_ids": [fan], "anchor": mid, "_rule_id": await full_ai_live.live_rule(aid)}
     with _world() as (fake, _made, _p):
-        busy = await full_ai_live.run(aid, payload, run_id=0)       # still on its 10 s cooldown
+        busy = await full_ai_live.run(aid, payload, run_id=0)
         await _clear_pause(aid, fan)
         again = await full_ai_live.run(aid, payload, run_id=0)
     assert busy == {"skipped": "busy", "tries": 1} and again == {"skipped": "no_turn"}, (busy, again)
@@ -182,7 +180,7 @@ async def case_same_job_twice():
 
 async def case_shadow_rule_untouched():
     aid, fan, mid = "fa_live_shadow", 504, 7401
-    await _seed(aid, rule=True, gate=False)          # trigger_json has no `mode`: Shadow
+    await _seed(aid, rule=True, gate=False)
     assert await full_ai_live.live_rule(aid) is None
     res, fake, made, purposes = await _dm_run(aid, fan, mid)
     assert res["status"] == "ok", res
@@ -206,7 +204,6 @@ async def case_welcome_after_dm_keeps_turn():
     (row,) = await _rows(aid)
     assert (row.trigger_key, row.status, row.anchor_message_id) == (str(mid), "sent", mid), row
     assert fake.sent and len(fake.sent) == len(json.loads(row.reply_json)["parts"])
-    # A non-welcome outbound after his DM closes the Turn: nothing to answer.
     aid2, fan2 = "fa_live_answered", 506
     await _seed_live(aid2)
     await _msg(aid2, fan2, 7601, "in", "hey", at)
@@ -219,7 +216,7 @@ async def case_longer_pause_not_shortened():
     await _seed_live(aid)
     real = full_ai_live.write_outbound_attribution
 
-    async def and_pause(**kw):        # e.g. a Human yield lands while the Turn sends
+    async def and_pause(**kw):
         await real(**kw)
         await fan_lease.start_fan_cooldown(aid, fan, cooldown_s=3600)
     full_ai_live.write_outbound_attribution = and_pause
@@ -235,14 +232,11 @@ async def case_longer_pause_not_shortened():
 
 _BANNED_MODULES = {"of_client", "automation_executor", "fan_lease", "dm_rate", "of_sends", "of_write"}
 _BANNED_NAMES = {"_make_client", "send_message", "acquire_fan_lease", "start_fan_cooldown"}
-# 04b's owner reads (ticket 79): the OF-app read and the Human yield's pause, never a send.
 _OWNER_IO = {"automation_executor", "fan_lease", "_make_client", "start_fan_cooldown"}
-# 05's priced bubble (ticket 86, `send_priced`): a bubble sender the live loop calls (BUBBLE_SENDERS).
 _SENDERS = ("full_ai_live.py", "full_ai_ppv.py")
 
 
 def _send_paths(source: str) -> list[str]:
-    """test_full_ai_test_chat.py's walker, same banned sets."""
     found = []
     for n in ast.walk(ast.parse(source)):
         if isinstance(n, ast.Import):
@@ -260,7 +254,6 @@ def _send_paths(source: str) -> list[str]:
 
 
 def _imports_live(source: str) -> bool:
-    """Imports a send module (`full_ai_live` or `full_ai_ppv`)."""
     mods = {f.removesuffix(".py") for f in _SENDERS}
     for n in ast.walk(ast.parse(source)):
         if isinstance(n, ast.Import) and any(a.name.rsplit(".", 1)[-1] in mods for a in n.names):
@@ -280,7 +273,6 @@ def case_only_live_sends():
     assert hits.get("full_ai_owner_io.py", set()) <= _OWNER_IO, hits["full_ai_owner_io.py"]
     others = {f: h for f, h in hits.items() if h and f not in (*_SENDERS, "full_ai_owner_io.py")}
     assert others == {}, others
-    # The scans bite.
     assert _imports_live("from automations import full_ai_live\n")
     assert _imports_live("import automations.full_ai_live as x\n")
     assert _imports_live("from automations.full_ai_ppv import send_priced\n")
@@ -288,8 +280,6 @@ def case_only_live_sends():
 
 
 def case_write_gap_env_is_safe():
-    """rwl2 F7: FULL_AI_WRITE_GAP_S never raises and never closes the write gate: bad / inf / nan / negative
-    -> 2.0, above of_write's 11 s -> 11."""
     import os
     saved = os.environ.get("FULL_AI_WRITE_GAP_S")
     try:

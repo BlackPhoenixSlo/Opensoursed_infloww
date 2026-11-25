@@ -1,136 +1,7 @@
 #!/usr/bin/env python3
-"""
-Served Browserbase login (service/remote_login.py, remote_login_api.py).
-
-No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
-
-  case_backend_selector:
-      start_login defaults to "local", which is refused up front
-      (BackendUnavailable); an unknown backend is a ValueError.
-  case_env_and_proxy_fail_loud:
-      missing BROWSERBASE_API_KEY / BROWSERBASE_PROJECT_ID, an unknown proxy
-      choice or a custom proxy without a label raise before any session exists.
-  case_session_payload_shape:
-      the create body asks for Browserbase's managed proxies (`proxies: true`),
-      projectId from env, solveCaptchas False, a 1280x800 viewport (readable
-      live view on a phone); our proxy is never in it.
-  case_form_waited_filled_verified:
-      the typing waits for OnlyFans' late-rendered form (it is not there at
-      domcontentloaded: the live bug left the email empty), declines the
-      optional cookies, fills email then password, verifies both, then clicks
-      LOG IN.
-  case_swallowed_fill_is_retyped:
-      a fill the page swallows (the field still reads empty) is retyped key by
-      key and verified.
-  case_form_never_appears_fails_fast:
-      no login form: the job fails with a clear error well inside the window,
-      instead of sitting on "entering credentials" until the session expires;
-      nothing is typed and the password is never in the error.
-  case_field_never_takes_value_fails:
-      a field that never holds what was typed fails with which field; the
-      password field is not touched after the email failed.
-  case_managed_login_binds_proxy:
-      a served job on a managed-proxy session: ONE create, the live view is
-      that session's, OnlyFans loads, the chosen proxy is bound before the
-      session is persisted, the message says the proxy is attached, and the
-      session is released.
-  case_create_refused_fails_loud:
-      any refused create (402/400/401/429/5xx) fails the job after ONE create
-      call with a clear "couldn't start a Browserbase session" error; no retry.
-  case_nav_error_fails_fast:
-      a failed load of OnlyFans fails the job at once with "couldn't open
-      OnlyFans", the body never runs, and the session is released.
-  case_live_server_is_the_serving_module:
-      uvicorn serves `service.server`; the capture's post-bootstrap hooks (the
-      link to the signed-in user) must run on THAT module, not on a second copy
-      a bare `import server` would execute.
-  case_backend_error_scrubbed:
-      any backend error reaches the job with the OF password scrubbed.
-  case_public_hides_secrets:
-      the status never carries email/password; the live view only while live.
-  case_request_from_capture:
-      the interceptor snapshot becomes paste-curl's parsed shape with the
-      x-relay-* headers the extension adds.
-  case_capture_binds_before_persist:
-      the flow's proxy is bound to the captured user-id with the paste path's
-      registry calls (Inflowwww proxy: assign_pool; custom: assign_account;
-      No proxy: nothing), then from_request persists, then the bootstrap hooks
-      run; a failed bind persists nothing.
-  case_defaulted_pool_keeps_existing_binding:
-      the relay's default Inflowwww proxy (no choice sent) never replaces a
-      custom binding: an account on a custom proxy keeps it (no assign_pool,
-      the job reports that proxy); one on the pool and an unbound one get
-      assign_pool (sticky on the pool unless its failover is due); an explicit
-      "infloww" choice still calls assign_pool on a custom-bound account. With
-      no pool (the default is No proxy) a custom-bound account is reported on
-      its proxy too, never "No proxy"; an explicit "none" still reports none.
-  case_api_proxy_choice:
-      no proxy given: the Inflowwww proxy when the relay has a pool, else none;
-      "infloww" without a pool 409s; a custom label is checked for visibility
-      (another user's or a pool label 404s); unknown choice / custom without a
-      label 400. Only a request with neither proxy nor proxy_label is
-      `proxy_defaulted`.
-  case_api_gates:
-      400 missing password (never a 422 echoing it), 400 unknown backend, 501 local, 404 unknown proxy, 503 env missing,
-      404 unknown job, 403 another principal's job; /admin/login is audit-
-      skipped and chatter-blocked.
-  case_otp_code_signs_in:
-      start over HTTP → login form typed → OnlyFans' 2FA prompt puts the job
-      in "otp" → POST /otp with the code → the job's own thread types it into
-      the 2FA field and clicks its form's own VERIFY button → auth_id →
-      capture → done. The code is in no status, response or log line, nor in
-      the finished job's memory.
-  case_otp_wrong_code_retries:
-      a code OnlyFans does not take leaves the job in "otp" with OTP_REJECTED
-      after OTP_VERIFY_S; while it is checked, another code is 409; a second
-      code is typed over it and signs in.
-  case_otp_prompt_back_within_verify_window:
-      the 2FA prompt goes away after a code and comes back before
-      OTP_VERIFY_S: the job is back in "otp" saying OnlyFans didn't accept
-      that code (OTP_REJECTED, not a fresh ask, not stuck in "typing").
-  case_enter_otp_one_attempt_cancel_and_form_scope:
-      _enter_otp: one fill with short timeouts (a swallowed fill is "couldn't
-      type", no retyping); a cancel between fill and submit is seen before the
-      submit; the code is sent with the 2FA field's own form's visible submit
-      button, never the page's first one (the login form's), and with Enter
-      only when that form shows none; a field that submits itself on the last
-      digit (gone after the fill) is a code sent, not "couldn't type".
-  case_challenge_only_visible:
-      only a visible captcha / Turnstile frame is a challenge: a hidden one, one
-      inside a hidden frame or a detached one is not.
-  case_otp_prompt_beside_a_captcha_frame:
-      the 2FA prompt with a hidden captcha frame, or a visible reCAPTCHA badge,
-      on the page: the job asks for the code (not "challenge") and signs in.
-  case_otp_only_a_visible_field:
-      a stale hidden 2FA input is no prompt (_detect_otp False) and never the
-      field the code is typed into: every _OTP_FIELD selector is `:visible`.
-  case_otp_code_spaces_and_dashes:
-      "123 456" / "123-456" / " 1234-5678 " are accepted as their digits;
-      anything else with them (letters, dots, too few digits) is 400, never
-      echoed.
-  case_otp_scrubbed_from_job_error:
-      an exception whose message carries the submitted code (Playwright echoes
-      filled values) reaches the job error and the log as ***.
-  case_otp_every_code_scrubbed_then_forgotten:
-      every code taken during the job (not only the latest) is *** in the
-      error and the log; the ended job holds no code.
-  case_api_otp_expired_job_is_404:
-      POST /otp on a job past expires_at - CAPTURE_RESERVE_S is the status
-      route's expired 404, even while the job still reads "otp"; nothing lands
-      in the slot.
-  case_api_otp_gates:
-      POST /otp: 404 unknown job, 403 another principal's job, 409 a job not on
-      the 2FA prompt, 400 a code that is not 6-8 digits or a body that is not
-      {"code": "<string>"} (never echoed, nor on malformed JSON); a good code
-      lands in the job's slot, the status says it is being checked, a second
-      code is 409 until the job asks again; leaving the prompt or failing
-      empties the slot.
-
-Run: ./venv/bin/python service/tests/test_remote_login_browserbase.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import io  # noqa: E402
 import json  # noqa: E402
@@ -248,9 +119,6 @@ class _Resp:
 
 
 def _fake_browserbase(create_status=None, create_body=b"{}"):
-    """A fake urlopen. A session create answers `create_status` (None:
-    accepted, session s1); the live view and the release succeed. Records
-    every call."""
     calls = []
 
     def _urlopen(req, timeout=None):
@@ -269,7 +137,6 @@ def _fake_browserbase(create_status=None, create_body=b"{}"):
     return calls, _urlopen
 
 
-# connectUrl → the error its first page.goto raises (None: it loads).
 _NAV_ERRORS: dict[str, str | None] = {}
 _GOTOS: list[str] = []
 
@@ -315,7 +182,6 @@ class _FakePlaywright:
 
 
 def _with_fakes(urlopen, fn):
-    """Run fn() with urlopen and playwright.sync_api faked (no network, no browser)."""
     import importlib.machinery
     import sys
     import types
@@ -323,7 +189,6 @@ def _with_fakes(urlopen, fn):
     fake_mod.sync_playwright = _FakePlaywright
     saved = {k: sys.modules.get(k) for k in ("playwright", "playwright.sync_api")}
     sys.modules["playwright"] = types.ModuleType("playwright")
-    # a spec, so the start route's find_spec("playwright") sees it installed
     sys.modules["playwright"].__spec__ = importlib.machinery.ModuleSpec("playwright", None)
     sys.modules["playwright.sync_api"] = fake_mod
     orig = rl.urllib.request.urlopen
@@ -367,7 +232,7 @@ def case_managed_login_binds_proxy():
     job = _job(proxy=rl.PROXY_CUSTOM, proxy_label="hu-1")
 
     def _body(page, ctx):
-        seen["live"] = job.public()  # mid-job status, as the card polls it
+        seen["live"] = job.public()
         rl._capture_and_persist(job, _Page(), _Ctx())
 
     try:
@@ -402,7 +267,7 @@ def case_create_refused_fails_loud():
         assert job.state == rl.STATE_ERROR, (status, job.state)
         assert "couldn't start a Browserbase session on its managed proxies" in job.error, job.error
         assert f"HTTP {status}" in job.error, (status, job.error)
-        assert not ran and len(calls) == 1, (status, calls)  # one create, no retry
+        assert not ran and len(calls) == 1, (status, calls)
 
 
 def case_nav_error_fails_fast():
@@ -451,7 +316,7 @@ def case_public_hides_secrets():
     assert pub["live_view_url"] and pub["state"] == rl.STATE_STARTING
     j.fail("boom")
     assert j.public()["live_view_url"] is None
-    j.set_state(rl.STATE_DONE)  # a terminal job stays terminal
+    j.set_state(rl.STATE_DONE)
     assert j.state == rl.STATE_ERROR
 
 
@@ -500,7 +365,6 @@ def case_capture_binds_before_persist():
         assert job.state == rl.STATE_DONE and job.account_id == "777"
         assert job.session_file == "session_T.json"
 
-        # The Inflowwww proxy (the default): assign_pool, as POST /admin/proxy-pool/assign does.
         order.clear()
         job = _job()
         assert job.proxy == rl.PROXY_INFLOWWW
@@ -509,7 +373,6 @@ def case_capture_binds_before_persist():
         assert job.message == "session captured; the Inflowwww proxy attached for all later traffic", job.message
         assert job.public()["proxy"] == rl.PROXY_INFLOWWW and job.public()["proxy_label"] == ""
 
-        # No proxy: nothing is bound, so a re-login keeps the account's binding.
         order.clear()
         job = _job(proxy=rl.PROXY_NONE)
         rl._capture_and_persist(job, _Page(), _Ctx())
@@ -526,10 +389,6 @@ def case_capture_binds_before_persist():
         e = _raises(RuntimeError, rl._capture_and_persist, job, _Page(), _Ctx())
         assert "one egress" in str(e)
 
-        # assign_pool raises only when the pool is empty; a pick that fails its
-        # probe, or every pool proxy bad, still binds a Creator on none
-        # (test_proxy_health: unbound_and_no_pick_answers, unbound_and_every_proxy_bad),
-        # so a finished login is lost only when there is no Inflowwww proxy at all.
         def _no_pool(aid):
             raise LookupError("no Inflowwww proxies are set up on this relay")
 
@@ -547,27 +406,23 @@ def case_defaulted_pool_keeps_existing_binding():
     order = []
     restore = _persist_fakes(order)
     try:
-        # Header Add creator re-signs an account on a custom proxy: no choice sent → it stays on keep-1.
         job = _job(proxy_defaulted=True)
         rl._capture_and_persist(job, _Page(), _Ctx())
         assert order == [("persist", "777", None), ("hooks", "777")], order
         assert job.public()["proxy"] == rl.PROXY_CUSTOM and job.public()["proxy_label"] == "keep-1", job.public()
         assert job.message == "session captured; proxy keep-1 attached for all later traffic", job.message
 
-        # An explicit "infloww" is the caller's pick: assign_pool runs (it moves the account onto the pool).
         order.clear()
         job = _job(proxy=rl.PROXY_INFLOWWW, proxy_defaulted=False)
         rl._capture_and_persist(job, _Page(), _Ctx())
         assert order == [("pool", "777"), ("persist", "777", None), ("hooks", "777")], order
 
-        # No pool on the relay: the default is No proxy; the account is still on keep-1 and says so.
         order.clear()
         job = _job(proxy=rl.PROXY_NONE, proxy_defaulted=True)
         rl._capture_and_persist(job, _Page(), _Ctx())
         assert order == [("persist", "777", None), ("hooks", "777")], order
         assert job.public()["proxy"] == rl.PROXY_CUSTOM and job.public()["proxy_label"] == "keep-1", job.public()
 
-        # An explicit "none" (a row's re-link) binds nothing and reports none.
         order.clear()
         job = _job(proxy=rl.PROXY_NONE, proxy_defaulted=False)
         rl._capture_and_persist(job, _Page(), _Ctx())
@@ -577,8 +432,6 @@ def case_defaulted_pool_keeps_existing_binding():
         restore()
         proxy_registry.unbind_account("keep-1", "777")
 
-    # On the pool already: assign_pool still runs (sticky, but a due failover moves it), reported as the Inflowwww
-    # proxy (its label never shown).
     orig_get = proxy_registry.get_for_account
     proxy_registry.get_for_account = lambda aid: {"label": "infloww-0000aaaa", "pool": True}
     order = []
@@ -592,7 +445,6 @@ def case_defaulted_pool_keeps_existing_binding():
         restore()
         proxy_registry.get_for_account = orig_get
 
-    # Unbound: the default binds the pool, as before.
     assert proxy_registry.get_for_account("777") is None
     order = []
     restore = _persist_fakes(order)
@@ -604,11 +456,8 @@ def case_defaulted_pool_keeps_existing_binding():
         restore()
 
 
-# ── Typing into OnlyFans' login form ─────────────────────────────────────────
 
 class _Field:
-    """A fake Playwright locator for one input / button. `swallow` fills are
-    dropped (the field keeps reading empty)."""
 
     def __init__(self, log, name, *, visible=True, appears=True, swallow=0):
         self.log, self.name, self.visible, self.appears = log, name, visible, appears
@@ -674,12 +523,10 @@ class _FormPage:
 
 
 class _Frame:
-    """A fake Playwright frame: its URL, its parent frame (None: the page's
-    main frame) and whether its own <iframe> element is visible."""
 
     def __init__(self, url, *, parent=None, visible=True, detached=False):
         self.url, self.parent_frame, self.visible, self.detached = url, parent, visible, detached
-        self.handles = []  # every element handle given out, and whether it was disposed
+        self.handles = []
 
     def frame_element(self):
         if self.detached:
@@ -702,7 +549,6 @@ def case_form_waited_filled_verified():
     ], page.log
     assert page.fields[rl._EMAIL_FIELD].value == "a@b.com"
     assert page.fields[rl._PASSWORD_FIELD].value == OF_PW
-    # No banner on screen: nothing to decline.
     page = _FormPage()
     page.fields[rl._COOKIE_ONLY_NECESSARY].visible = False
     rl.fill_login_form(page, "a@b.com", OF_PW)
@@ -746,7 +592,7 @@ def case_field_never_takes_value_fails():
     e = _raises(rl.LoginFormError, rl.fill_login_form, page, "a@b.com", OF_PW)
     assert "email field" in str(e) and "a@b.com" not in str(e), e
     attempts = [x for x in page.log if x[1] == "email" and x[0] in ("fill", "type")]
-    assert len(attempts) == rl.FILL_ATTEMPTS, page.log  # one fill, then key-by-key retypes
+    assert len(attempts) == rl.FILL_ATTEMPTS, page.log
     assert not [x for x in page.log if x[1] in ("password", "submit")], page.log
 
 
@@ -783,7 +629,7 @@ def case_api_proxy_choice():
         assert start(proxy="infloww").status_code == 200 and seen[-1]["proxy_defaulted"] is False
         assert start(proxy="none").status_code == 200 and seen[-1]["proxy"] == rl.PROXY_NONE
         assert seen[-1]["proxy_defaulted"] is False
-        r = start(proxy_label="mine-1")  # a label alone means custom
+        r = start(proxy_label="mine-1")
         assert r.status_code == 200 and seen[-1]["proxy"] == rl.PROXY_CUSTOM, r.text
         assert seen[-1]["proxy_label"] == "mine-1" and seen[-1]["proxy_defaulted"] is False
 
@@ -795,7 +641,6 @@ def case_api_proxy_choice():
         assert start(proxy="custom").status_code == 400
         assert start(proxy="bogus").status_code == 400
         assert start(proxy="custom", proxy_label="missing").status_code == 404
-        # Visibility: another user's proxy is invisible to a signed-in user.
         real_user = remote_login_api.remote_login.live_server()._get_request_user
         remote_login_api.remote_login.live_server()._get_request_user = lambda: type("U", (), {"id": "u-me", "account_ids": frozenset()})()
         try:
@@ -815,10 +660,10 @@ def case_api_gates():
     r = client.post("/admin/login/remote/start", json={"email": "a@b.c", "proxy_label": 7})
     assert r.status_code in (400, 422) and OF_PW not in r.text, r.text
     r = client.post("/admin/login/remote/start", json={"email": "a@b.c", "password": ""})
-    assert r.status_code == 400, r.text  # never a 422 echoing the body
+    assert r.status_code == 400, r.text
     r = client.post("/admin/login/remote/start", json={**base, "backend": "nope"})
     assert r.status_code == 400, r.text
-    r = client.post("/admin/login/remote/start", json=base)  # default: local
+    r = client.post("/admin/login/remote/start", json=base)
     assert r.status_code == 501, r.text
     r = client.post("/admin/login/remote/start", json={**base, "proxy_label": "missing",
                                                        "backend": "browserbase"})
@@ -848,15 +693,11 @@ def case_api_gates():
     assert auth.get_request_user() is None
 
 
-# ── 2FA: the code typed in by the job's own thread ──────────────────────────
 
 GOOD_OTP = "246810"
 
 
 class _OtpField(_Field):
-    """OnlyFans' 2FA field in its own form, with its own VERIFY button:
-    sending the form (the button, or Enter in the field) with the right code
-    signs the page in."""
 
     def __init__(self, page):
         super().__init__(page.log, "otp")
@@ -883,7 +724,6 @@ class _OtpField(_Field):
 
 
 class _OtpVerify(_Field):
-    """The 2FA form's own (visible) submit button."""
 
     def __init__(self, otp_field):
         super().__init__(otp_field.log, "otp-form-submit")
@@ -898,9 +738,6 @@ class _OtpVerify(_Field):
 
 
 class _OtpPage(_FormPage):
-    """OnlyFans' login form; once LOG IN is clicked, its 2FA prompt
-    (input[name="code"]) until the right code is entered; then the chats
-    page's signed request."""
 
     def __init__(self):
         super().__init__()
@@ -935,9 +772,6 @@ class _LogTap(logging.Handler):
 
 
 def _otp_login(steps, page=None):
-    """Start a served login over HTTP on an _OtpPage (fake Browserbase,
-    fake persist), run `steps(job_id, page)` once the job asks for the code,
-    and wait for the job to end. Returns (job, page, log lines, statuses)."""
     _set_env()
     _NAV_ERRORS.clear()
     calls, urlopen = _fake_browserbase()
@@ -963,7 +797,7 @@ def _otp_login(steps, page=None):
             statuses.append(client.get(f"/admin/login/remote/{job.id}").json())
             steps(job.id, page, statuses)
             _until(job.is_terminal)
-        finally:  # a failed case must not leave its job running for the next one
+        finally:
             if not job.is_terminal():
                 rl.cancel(job)
                 _until(job.is_terminal)
@@ -997,7 +831,7 @@ def case_otp_code_signs_in():
     assert job.state == rl.STATE_DONE, (job.state, job.error)
     assert job.account_id == "777"
     otp = [e for e in page.log if e[1].startswith("otp")]
-    assert otp == [("fill", "otp"), ("click", "otp-form-submit")], page.log  # the 2FA form's own button
+    assert otp == [("fill", "otp"), ("click", "otp-form-submit")], page.log
     assert page.otp_tries == [GOOD_OTP]
     blob = json.dumps(statuses) + "\n".join(lines)
     assert GOOD_OTP not in blob and OF_PW not in blob, "the code / password leaked into a status or log line"
@@ -1033,8 +867,6 @@ def case_otp_wrong_code_retries():
 
 
 def case_otp_prompt_back_within_verify_window():
-    """A code sent, the prompt gone and back inside OTP_VERIFY_S: rejected,
-    not a fresh ask, also when a visible captcha showed in the gap."""
     main = _Frame("https://onlyfans.com/")
     for gap_captcha in (False, True):
         seen = []
@@ -1043,29 +875,23 @@ def case_otp_prompt_back_within_verify_window():
             job = rl.get_job(jid)
             assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": "000000"}).status_code == 200
             _until(lambda: page.otp_tries == ["000000"])
-            page.hide_prompt = True  # OnlyFans navigates away from the prompt...
-            if gap_captcha:  # ...to a visible captcha...
+            page.hide_prompt = True
+            if gap_captcha:
                 page.frames = [main, _Frame("https://www.google.com/recaptcha/api2/anchor?k=x", parent=main)]
             _until(lambda: job.state == (rl.STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING))
             seen.append(job.public())
-            page.hide_prompt = False  # ...and shows it again, well inside OTP_VERIFY_S (15 s)
+            page.hide_prompt = False
             _until(lambda: job.state == rl.STATE_OTP, timeout=3)
             seen.append(job.public())
             assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP}).status_code == 200
 
         job, page, lines, statuses = _otp_login(_steps)
         assert seen[0]["state"] == (rl.STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING), seen
-        # a code went in OTP_VERIFY_S ago at most: OnlyFans didn't take it (or hasn't answered), not a fresh ask
         assert seen[1]["state"] == rl.STATE_OTP and seen[1]["message"] == rl.OTP_REJECTED, (gap_captcha, seen)
         assert job.state == rl.STATE_DONE and page.otp_tries == ["000000", GOOD_OTP], (job.state, page.otp_tries)
 
 
 class _OtpFormField(_Field):
-    """A 2FA field for _enter_otp alone: records timeouts; `press_fails`
-    makes Enter raise; `on_fill` runs after a fill; `locator()` reaches the
-    field's own form's visible submit button (`button=False`: the form has
-    none); `submits_itself`: the fill sends the form on its last digit and the
-    field is gone (no longer visible, input_value times out)."""
 
     def __init__(self, log, *, swallow=0, press_fails=False, on_fill=None, button=True, submits_itself=False,
                  click_fails=False, on_click=None):
@@ -1100,7 +926,7 @@ class _OtpFormField(_Field):
             return self
         btn = _Field(self.log, "otp-form-submit")
         btn.count = lambda: 1 if self.button else 0
-        if self.click_fails:  # covered (an overlay): Playwright's click times out
+        if self.click_fails:
             def _click(timeout=None):
                 self.log.append(("click", "otp-form-submit"))
                 if self.on_click:
@@ -1117,14 +943,12 @@ def case_enter_otp_one_attempt_cancel_and_form_scope():
         page.fields[rl._OTP_FIELD] = field
         return page
 
-    job = _job(state=rl.STATE_OTP, expires_at=time.time() + 600)  # past _check's CAPTURE_RESERVE_S
-    # one fill attempt, short timeouts: a swallowed fill is not retyped
+    job = _job(state=rl.STATE_OTP, expires_at=time.time() + 600)
     field = _OtpFormField([], swallow=1)
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is False
     assert page.log == [("fill", "otp")], page.log
     assert set(field.timeouts) == {rl.OTP_STEP_TIMEOUT_MS}, field.timeouts
-    # the code is sent with the 2FA form's own visible submit button: no Enter, never the page's first button
     assert rl._OTP_SUBMIT_BUTTON.endswith(":visible"), rl._OTP_SUBMIT_BUTTON
     field = _OtpFormField([])
     page = page_with(field)
@@ -1132,35 +956,28 @@ def case_enter_otp_one_attempt_cancel_and_form_scope():
     assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", rl._OTP_SUBMIT_BUTTON),
                         ("click", "otp-form-submit")], page.log
     assert ("click", "submit") not in page.log
-    # a 2FA form with no visible submit button: Enter in the field
     field = _OtpFormField([], button=False)
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is True
     assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", rl._OTP_SUBMIT_BUTTON),
                         ("press", "otp", "Enter")], page.log
     assert ("click", "submit") not in page.log
-    # a button that will not take the click (covered by an overlay): Enter in the field all the same
     field = _OtpFormField([], click_fails=True)
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is True
     assert page.log[-2:] == [("click", "otp-form-submit"), ("press", "otp", "Enter")], page.log
-    # a cancel that lands while the click times out: no Enter after it
     cjob = _job(state=rl.STATE_OTP, expires_at=time.time() + 600)
     field = _OtpFormField([], click_fails=True, on_click=cjob._cancel.set)
     page = page_with(field)
     assert isinstance(_raises(rl._Cancelled, rl._enter_otp, cjob, page, GOOD_OTP), rl._Cancelled)
     assert ("press", "otp", "Enter") not in page.log, page.log
-    # neither works: the code never went out
     field = _OtpFormField([], click_fails=True, press_fails=True)
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is False
-    # a field that submits itself on the last digit is gone after the fill: the code is in (not "couldn't
-    # type"), and there is nothing left to click or press
     field = _OtpFormField([], submits_itself=True)
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is True
     assert page.log == [("fill", "otp")], page.log
-    # a cancel that lands while the code is typed: no submit
     field = _OtpFormField([], on_fill=job._cancel.set)
     page = page_with(field)
     assert isinstance(_raises(rl._Cancelled, rl._enter_otp, job, page, GOOD_OTP), rl._Cancelled)
@@ -1168,9 +985,6 @@ def case_enter_otp_one_attempt_cancel_and_form_scope():
 
 
 def case_challenge_only_visible():
-    """A captcha / Turnstile frame counts only when it is on screen: its own
-    <iframe> and every frame it sits in are visible. A hidden one (reCAPTCHA's
-    parked challenge frame, a leftover widget) is no verification check."""
     page = _FormPage()
     main = _Frame("https://onlyfans.com/")
     hidden = _Frame("https://www.google.com/recaptcha/api2/bframe?k=x", parent=main, visible=False)
@@ -1184,15 +998,11 @@ def case_challenge_only_visible():
     assert rl._detect_challenge(page) is False, "a detached frame is not on screen"
     page.frames = [_Frame("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x")]
     assert rl._detect_challenge(page) is True, "the page itself on a challenge URL is a challenge"
-    # checked every poll for the job's life: each <iframe> handle is released, the browser keeps none
     handles = [h for f in (main, hidden) for h in f.handles]
     assert handles and all(h.disposed for h in handles), [h.disposed for h in handles]
 
 
 def case_otp_prompt_beside_a_captcha_frame():
-    """OnlyFans' 2FA prompt with a captcha frame on the page (a hidden one, or
-    a visible reCAPTCHA badge): the visible 2FA field wins. The job asks for
-    the code (not stuck in "challenge" with /otp 409) and the code signs in."""
     main = _Frame("https://onlyfans.com/")
     for frame in (_Frame("https://www.google.com/recaptcha/api2/bframe?k=x", parent=main, visible=False),
                   _Frame("https://www.google.com/recaptcha/api2/anchor?k=x&size=invisible", parent=main)):
@@ -1209,9 +1019,6 @@ def case_otp_prompt_beside_a_captcha_frame():
 
 
 def case_otp_every_code_scrubbed_then_forgotten():
-    """Every code taken during the job is scrubbed from its error and its log
-    line, not only the latest; once the job ends no code stays in its memory
-    (a finished job is kept JOB_TTL_S)."""
     from contextlib import contextmanager
 
     @contextmanager
@@ -1246,10 +1053,6 @@ def case_otp_every_code_scrubbed_then_forgotten():
 
 
 def case_api_otp_expired_job_is_404():
-    """A job past its window takes no code: POST /otp is 404, as the status
-    route answers for an expired job, once the job is past expires_at -
-    CAPTURE_RESERVE_S (its thread no longer types a code then), even while
-    the job still reads "otp" (the worker may be in browser I/O)."""
     otp = lambda jid: client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP})
     gone = client.get("/admin/login/remote/nope").json()
     now = time.time()
@@ -1263,7 +1066,6 @@ def case_api_otp_expired_job_is_404():
         j = _job(principal=None, state=rl.STATE_OTP, expires_at=now + rl.CAPTURE_RESERVE_S + 30)
         rl._jobs[j.id] = j
         assert otp(j.id).status_code == 200, "a job inside its window takes the code"
-        # the deadline passing while a submit waits for the job's lock: checked under the lock, no code queued
         import threading
         j = _job(principal=None, state=rl.STATE_OTP, expires_at=time.time() + rl.CAPTURE_RESERVE_S + 30)
         out = []
@@ -1278,8 +1080,8 @@ def case_api_otp_expired_job_is_404():
         with j._lock:
             t = threading.Thread(target=_submit)
             t.start()
-            time.sleep(0.05)  # the submit is waiting for the lock, inside the window
-            j.expires_at = time.time() + rl.CAPTURE_RESERVE_S - 1  # its deadline passes meanwhile
+            time.sleep(0.05)
+            j.expires_at = time.time() + rl.CAPTURE_RESERVE_S - 1
         t.join(2)
         assert out == ["expired"], out
         assert j._otp_code is None and not j._otp_busy and j.message != rl.OTP_CHECKING
@@ -1292,14 +1094,13 @@ def case_api_otp_expired_job_is_404():
 
 def case_otp_only_a_visible_field():
     page = _FormPage()
-    page.fields[rl._OTP_FIELD] = _Field(page.log, "otp", visible=False)  # stale, hidden
-    page.query_selector = lambda sel: page.fields[rl._OTP_FIELD]  # present in the DOM all the same
+    page.fields[rl._OTP_FIELD] = _Field(page.log, "otp", visible=False)
+    page.query_selector = lambda sel: page.fields[rl._OTP_FIELD]
     assert rl._detect_otp(page) is False, "a hidden code input is no 2FA prompt"
     page.fields[rl._OTP_FIELD].visible = True
     assert rl._detect_otp(page) is True
-    del page.fields[rl._OTP_FIELD]  # locator() raising: no prompt, no crash
+    del page.fields[rl._OTP_FIELD]
     assert rl._detect_otp(page) is False
-    # the fill target is the same visible-only selector, so .first skips a hidden input
     parts = rl._OTP_FIELD.split(", ")
     assert len(parts) == len(rl._OTP_SELECTORS) and all(p.endswith(":visible") for p in parts), rl._OTP_FIELD
 
@@ -1325,8 +1126,6 @@ def case_otp_code_spaces_and_dashes():
 
 
 def case_scrub_longest_secret_first():
-    """A code inside another code (or the password): every order of the
-    secrets leaves none of either."""
     for secrets in (("123456", "12345678"), ("12345678", "123456")):
         out = rl.scrub("codes 12345678 and 123456", *secrets)
         assert "1234" not in out and "78" not in out, (secrets, out)
@@ -1377,7 +1176,6 @@ def case_api_otp_gates():
             assert r.status_code == 400, (bad, r.text)
             assert not bad or bad not in r.text
         assert client.post(f"/admin/login/remote/{mine.id}/otp", json={}).status_code == 400
-        # a body that is not {"code": "<string>"}: 400, never a pydantic 422 echoing it
         for body in ({"code": 123456}, 123456, "123456", ["123456"], {"code": ["123456"]}):
             r = client.post(f"/admin/login/remote/{mine.id}/otp", json=body)
             assert r.status_code == 400 and "123456" not in r.text, (body, r.status_code, r.text)
@@ -1390,17 +1188,17 @@ def case_api_otp_gates():
         assert r.json()["message"] == rl.OTP_CHECKING, r.text
         assert GOOD_OTP not in r.text and GOOD_OTP not in client.get(f"/admin/login/remote/{mine.id}").text
         assert GOOD_OTP not in repr(mine)
-        r = otp(mine.id, "135791")  # one code at a time
+        r = otp(mine.id, "135791")
         assert r.status_code == 409 and "already being checked" in r.text and "135791" not in r.text, r.text
         assert mine.take_otp() == GOOD_OTP and mine.take_otp() is None
         assert otp(mine.id, "135791").status_code == 409, "still being checked after the worker took it"
-        mine.otp_retry(rl.OTP_REJECTED)  # the job asks again
+        mine.otp_retry(rl.OTP_REJECTED)
         assert otp(mine.id, "135791").status_code == 200
-        mine.set_state(rl.STATE_TYPING)  # leaving the prompt empties the slot
+        mine.set_state(rl.STATE_TYPING)
         assert mine._otp_code is None and not mine._otp_busy
         mine.set_state(rl.STATE_OTP, rl.OTP_ASK)
         assert otp(mine.id, GOOD_OTP).status_code == 200
-        mine.fail("boom")  # so does failing
+        mine.fail("boom")
         assert mine._otp_code is None and not mine._otp_busy
         assert otp(mine.id, GOOD_OTP).status_code == 409, "a failed job takes no code"
         mine = _job(principal=None, state=rl.STATE_OTP)

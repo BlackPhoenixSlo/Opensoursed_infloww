@@ -1,105 +1,3 @@
-"""
-The Unread total's decision (docs/spec/watched-creator-refresher/phase-02-unread-total-first-paint.md, ADR-0043):
-pure (stdlib only), no clock, no I/O; times are passed (epoch ms, Relay clock). Its shell is unread_total.py; tables
-in tests/test_unread_total_decide.py.
-
-The Unread total of a Creator is OF's own whole-inbox counter, `/users/me` `chatMessagesCount`, as OF returned it.
-ASSUMPTION (spec, parked check C): it counts unread chats (muted included) and drops on a read made on OF web.
-
-  State(n, at, base, adj, rec, due, seen, cut, ws_at): the held total (`n` None: no confirmation yet), `at`, the
-      ask time of the OF read that last confirmed it, the adjustments made since (`adj`, in the order they were made,
-      each stamped) on top of `base`, OF's number they started from (None while `adj` is empty: then `n` is it),
-      `rec`, the Relay's own per-fan record (fan -> (unread, stamp)) of what our flips, replies and DMs set, kept
-      one Cycle: until the second confirmation after it (a record stamped at or before the previous confirmation's
-      ask is dropped), and `due`, the ask time of the confirmation that found a downward drift no window read has
-      served yet (None: none),
-      `seen`, the ask time of the newest `/users/me` answer taken, with a counter or without: the one watermark both
-      kinds order by (kept while the total is unknown); an answer asked before it is older and changes nothing;
-      `cut`, the pre-write `at` of the last mark all read (None: none), `ws_at`, the receipt time of the newest Unread
-      counter frame taken (None: none since start), `poll_at`, the ask time of the newest socket-down poll taken
-      (creator-badges 0C; None: none since start).
-  count(me_body) -> int | None: OF's number from a `/users/me` body: an int >= 0 (not a bool), else None.
-  prior_of(state, fan, window_row) -> UNREAD | READ | UNKNOWN: the chat's state before an event: our own record
-      first, then the held page-0 row (`hasUnread` or `unreadMessagesCount` > 0, as the app), else UNKNOWN.
-  adjust(state, event, now) -> state': a between-Cycle move at 0 OF calls (the spec's adjustment table), clamped at
-      0, kept until a confirmation asked after it landed on OF (the adjustment's stamp); the fan's record set,
-      stamped with the event's own time (its order against the fan's other events):
-        `DmIn(fan, prior, at)`: `at` the message's `createdAt` (OF had it then; None: `now`), both stamps: read +1,
-          unread 0, unknown +1 slack +1; record unread. A DM at or before the held confirmation's ask is in OF's
-          number already (transcoded late): record only, no move. Its order is OF's clock, every other stamp the
-          Relay's (`now`, a flip's pre-write `at`): no skew correction, so a DM within that skew of a flip or reply
-          for the same fan may order either way (OF and the Relay both run NTP; inferred sub-second). A DM at or
-          before `cut` (made before the last mark all, transcoded after it) was read by it: no move, no record.
-        `ReadFlip(fan, 0, at, prior)` (mark read), landed `now`, recorded at its pre-write `at`: read 0, unread -1,
-          unknown -1 (OF is only asked when a tab saw it unread); record read.
-        `ReadFlip(fan, 1, at, prior)` (mark unread): read +1, unread 0, unknown +1 slack +1; record unread.
-        `ReadFlip(None, 0, at, _)` (mark all read), landed `now`: `n` = the chats our record holds unread from a move
-          recorded after `at` (the DMs that landed after the write was asked; ASSUMPTION: a mark unread after it
-          counts too); every older record becomes read.
-        `Reply(fan, prior, at)` ordered by the pre-send stamp (fallback `now`): read 0, unread -1, unknown 0 slack +1; record read. ASSUMPTION (spec): a
-          reply makes an unread chat read on OF.
-      An event older than the fan's record (a mark read asked before a DM it never saw, a DM transcoded after our
-      later read or reply) changes nothing: the newer one stands, as in the tabs.
-      Any move whose own time (a DM's `createdAt`, a flip's pre-write `at`, a reply's `now`) is at or before `ws_at`
-      is recorded but moves nothing: the frame received after it counts it already (a mark read's frame lands
-      ≈0.23 s after the call, often before the write returns).
-      No total yet: `n` stays None (the moves are still kept, for the first confirmation).
-  slack(state) -> int: the unknown-prior moves held (since the last mark all) that could leave OF's number lower.
-  expected(state, at) -> int | None: the held value at `at`: `base` plus the adjustments landed at or before it.
-  reconcile(state, observed, asked_at, now) -> (state', actions): a confirming read adopts OF's number plus only the
-      adjustments that landed after `asked_at` (still held, slack included, for the next one: a read asked while
-      our write was in flight may predate it; the rest and their slack dropped); an unchanged `n` moves `at` alone;
-      publishing is the shell's (`badge_version`);
-      `LOG_DRIFT` when OF's number is below `expected` at `asked_at` minus the slack held then (down: a read made
-      elsewhere), or above it (up); none on a first confirmation; `WINDOW_READ` on a down drift when none is pending
-      (`due` set to `asked_at`): a second drift before the read asks no second one (the refresher reads at most one
-      window per Creator per Cycle, whatever asked; a drift still due waits for its next Cycle). A read asked before
-      `seen` (landed late) changes nothing.
-  reconcile(..., via="ws"): an Unread counter frame (`chat_messages`, creator-badges 0B) received at `asked_at`:
-      the same confirmation and watermark, but never `LOG_DRIFT` or `WINDOW_READ` and `due` left as it was
-      (attributing a drop is Phase C's; a window read per elsewhere-read would add OF calls).
-  reconcile(..., via="poll"): a Complete socket-down Unread list poll asked at `asked_at` (creator-badges 0C): as
-      a frame, but stamps `poll_at` instead of `ws_at`. `via="me"` (default): a `/users/me` answer.
-  unconfirmed(state, asked_at) -> state': a `/users/me` answer without a counter, asked at `asked_at`: it confirms
-      nothing, so the total goes (`n`, `at`, `base`; records, adjustments and `due` stay) and `seen` moves to it; one
-      asked before `seen` changes nothing.
-  read_window(state, asked_at) -> state': a page-0 window read asked at `asked_at` landed: a drift found by a
-      confirmation asked at or before it is served (`due` cleared); one asked later stays due.
-  flips(old_rows | None, new_rows, asked_at, drift_down) -> [(fan, unread)]: the window read's `chat_read_changed`s,
-      in `new_rows` order: with old rows held, each fan in both whose unread state (as `prior_of` reads a row)
-      flipped; no old rows, on a drift read (`drift_down`), `(fan, 0)` per read row, on a routine read none (a
-      restart's `resync` refetches the tabs' lists). Never `(fan, 0)` for a row whose `lastMessage.createdAt` is
-      newer than `asked_at` (undated: not newer). A row new to or gone from the window: none (the head poll).
-  grey_reason(state, r, up_since, now, cause) -> reason | None: why the slot draws grey, the first matching cause in the spec's
-      list order (creator-badges 0B): `unseeded` (no total held), `socket_down` (`up_since`, the epoch ms the Live
-      connection came up, is None, or the held confirmation is older than it: a reconnect alone never un-greys an old
-      number), `r_unknown` (`r` None); else None. Phase C (`now` epoch ms, `cause` the shell's held cause):
-      `dead` / `proxy_down` first (the root cause outranks no value and the socket it takes down); socket down with
-      a poll of this outage (`poll_at` after the newest frame) is not `socket_down`, whatever `/users/me` landed
-      since; `stale` last: that poll older than `STALE_MS`.
-  slot(state, r, up_since, now, cause) -> {n, at, grey}: `values.unread_total` (always an object with the Knob on).
-      `n` is the Red circle: OF's number minus `r` (Restricted unread), floored at 0; None before the first confirmation or while
-      `r` is unknown, so OF's raw number is never published (owner amendment #2); `grey` is `grey_reason`.
-  overlay(rows, events, asked_at, me) -> rows': the page-0 window as of now for the Amber fold (creator-badges 0F):
-      `events` per Fan the newest arrival of each kind (`ECHO` a Creator reply from any client, `DM` an inbound DM,
-      `READ` / `UNREAD` a landed read flip), applied in time order (same ms: read, unread, echo, DM) when after
-      `asked_at` (the window's ask; None: none): echo -> read, last sender `me`; DM -> unread (count kept, at least 1), last sender the Fan; read ->
-      read; unread -> unread. A Fan not in `rows` adds no row; `rows` is not mutated.
-  amber_slot(held) -> {amber, amber_at}: the Amber circle's keys in that slot (creator-badges 0F): `held` the
-      last fold `(count, window fetched-at epoch ms)`, None before any window since restart; `amber` None only then.
-      It never ages out: events keep it, and a stale Creator greys red, which hides amber (one grey circle).
-  badge_version(prev, nxt, v) -> v': `v` + 1 when any key of the published slot changed, never on `at` or
-      `amber_at` alone.
-  excluded_from_badges(fan_id, row, restricted_ids) -> bool: the one Restricted-for-counting rule (creator-badges
-      phase 0B, owner amendments #2, #3): the fan is in our `of_restricted` registry or the row's `canSendMessage` is
-      False (any reason); absent counts as sendable; OF's own `isRestricted` plays no part.
-  of_counts(row) -> bool: OF's counter counts the row: unread, not Muted, sendable, `only_friends` or Restricted
-      (`canNotSendReason` "muted").
-  amber_count(rows, me, restricted_ids, unread_fans) -> int: the Owe reply (Amber circle) fold over the page-0 window
-      (first WINDOW Fans, one row per Fan): read, a last sender not `me`, `isMutedNotifications` exactly False (muting
-      marks read on OF: unknown never owes), not `excluded_from_badges`, not in `unread_fans` (Phase C's latest Unread
-      set; None: no set held, the guard passes).
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -111,16 +9,16 @@ WINDOW_READ = "window_read"
 
 UNREAD, READ, UNKNOWN = "unread", "read", "unknown"
 
-MAX_ADJ = 256       # adjustments held without a confirmation; the oldest folds into `base` (a Creator nobody reads)
-MAX_REC = 2048      # per-fan records held; the oldest go first
+MAX_ADJ = 256
+MAX_REC = 2048
 
 
 @dataclass(frozen=True)
 class Adj:
-    stamp: int                      # when it landed on OF: a confirmation asked after this has it
+    stamp: int
     delta: int = 0
     slack: int = 0
-    set_to: int | None = None       # a mark all read: `n` becomes this
+    set_to: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,14 +39,14 @@ class State:
 class DmIn:
     fan: int
     prior: str
-    at: int | None = None   # the message's createdAt, epoch ms (None: unknown, the move's `now`)
+    at: int | None = None
 
 
 @dataclass(frozen=True)
 class ReadFlip:
-    fan: int | None         # None: mark all read
-    unread: int             # 0: mark read, 1: mark unread
-    at: int                 # pre-write epoch ms
+    fan: int | None
+    unread: int
+    at: int
     prior: str
 
 
@@ -178,7 +76,6 @@ def window_rows(value: dict) -> list:
 
 
 def _row_unread(row: dict) -> bool:
-    """Unread as the app reads a row (app/lib/chatUnread.ts `isUnreadChat`): the flag or a count."""
     return bool(row.get("hasUnread")) or int(row.get("unreadMessagesCount") or 0) > 0
 
 
@@ -191,7 +88,6 @@ def prior_of(state: State, fan: int | None, window_row: Any) -> str:
     return UNREAD if _row_unread(window_row) else READ
 
 
-# (event kind, prior) -> (delta, slack); the record each kind sets: DM / mark unread unread, mark read / reply read.
 _TABLE = {
     ("dm", READ): (1, 0), ("dm", UNREAD): (0, 0), ("dm", UNKNOWN): (1, 1),
     ("read", READ): (0, 0), ("read", UNREAD): (-1, 0), ("read", UNKNOWN): (-1, 0),
@@ -237,7 +133,7 @@ def adjust(state: State, event: Any, now: int) -> State:
             kind, order, unread = "dm", now if event.at is None else event.at, True
             landed = order
             if cut is not None and order <= cut:
-                return state            # made before the last mark all: it read this one too
+                return state
         elif isinstance(event, Reply):
             kind, order, landed, unread = "reply", now if event.at is None else event.at, now, False
         elif isinstance(event, ReadFlip):
@@ -246,10 +142,9 @@ def adjust(state: State, event: Any, now: int) -> State:
             return state
         own = rec.get(event.fan)
         if own is not None and own[1] > order:
-            return state                # older than what we hold for the fan: the newer event stands
+            return state
         delta, slack = _TABLE[(kind, event.prior)]
         rec[event.fan] = (unread, order)
-        # A DM at or before the held confirmation's ask is in its number already (transcoded late).
         counted = (kind == "dm" and state.at is not None and landed <= state.at) or _framed(state, order)
         a = Adj(stamp=landed, delta=delta, slack=slack) if (delta or slack) and not counted else None
     base, adj = _base(state), state.adj + ((a,) if a is not None else ())
@@ -285,14 +180,13 @@ def reconcile(state: State, observed: int, asked_at: int, now: int,
     ask = down and state.due is None
     rec = state.rec if state.at is None else {f: v for f, v in state.rec.items() if v[1] > state.at}
     nxt = State(n=_fold(observed, keep), at=asked_at, base=observed if keep else None, adj=keep, rec=rec,
-                due=asked_at if down else state.due,   # a later drift outlives a window read asked before it
+                due=asked_at if down else state.due,
                 seen=asked_at, cut=state.cut, ws_at=asked_at if via == "ws" else state.ws_at,
                 poll_at=asked_at if via == "poll" else state.poll_at)
     return nxt, ((LOG_DRIFT,) if drift else ()) + ((WINDOW_READ,) if ask else ())
 
 
 def _stale(state: State, asked_at: int) -> bool:
-    """Asked before the newest answer taken (`seen`)."""
     return state.seen is not None and asked_at < state.seen
 
 
@@ -382,7 +276,7 @@ def slot(state: State, r: Restricted | None, up_since: int | None, now: int,
 
 
 ECHO, DM, READ, UNREAD = "echo", "dm", "read", "unread"
-_TIE = {READ: 0, UNREAD: 1, ECHO: 2, DM: 3}   # same ms: the Fan's DM applies last
+_TIE = {READ: 0, UNREAD: 1, ECHO: 2, DM: 3}
 
 
 def arrival_order(event: tuple[str, int]) -> tuple[int, int]:

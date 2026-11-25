@@ -75,6 +75,8 @@ def _client(*, fail: dict[str, str] | None = None,
             return {} if json_body.get("scheduledFor") else {"id": POST}
         if path == "/lists":
             return {"id": LIST, "type": 1, "label": json_body["label"]}
+        if path == "/lists/commands":
+            return json_body["listCommands"]
         if path == "/lists/account":
             return [{"id": LIST, "type": 1, "label": "vip"}]
         if path == "/post/scheduled":

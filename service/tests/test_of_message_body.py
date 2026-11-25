@@ -1,13 +1,3 @@
-"""service/tests/test_of_message_body.py — send_message's wire body, pinned.
-
-`SendsMixin._message_body` is send_message's body before the tag block, pulled
-out as a pure function like `_mass_body`/`_post_body`. The expected dicts were
-captured from send_message on origin/main 9b6dabd0d (auto_tag=False, so the tag
-block leaves them as built) and are compared ITEM BY ITEM IN ORDER: the JSON OF
-receives is byte-identical, not just equal as a dict.
-
-Run:  ./venv/bin/python service/tests/test_of_message_body.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -16,12 +6,10 @@ import json  # noqa: E402
 
 from of_client import API_BASE, OFClient  # noqa: E402
 
-# send_message's defaults: _message_body takes every arg, send_message owns these.
 DEFAULTS = dict(locked_text=False, price=0, media_files=None, previews=None,
                 is_forward=False, reply_to_message_id=None, giphy_id=None,
                 rf_guest=None, rf_partner=None)
 
-# (name, text, kwargs, expected body in wire order)
 TABLE = [
     ('plain', 'hi', dict(),
      {'text': '<p>hi</p>', 'lockedText': False, 'mediaFiles': [], 'price': 0, 'previews': [], 'rfTag': [], 'rfGuest': [], 'rfPartner': [], 'isForward': False}),
@@ -81,8 +69,6 @@ def case_send_message_posts_the_body():
 
 
 def case_operator_tag_lands_in_rf_tag_after_build():
-    """The tag block still runs on the built body: an explicit pick rides in
-    `userTags` and `rfTag`; rfGuest/rfPartner keep the composer's values."""
     c = _capturing_client()
     c.send_message("42", "hi", tagged_users=["7"], rf_guest=[3], auto_tag=False)
     (_, body, plan), = c.sent

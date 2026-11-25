@@ -1,79 +1,3 @@
-"""service/lane_config.py — the durable store behind the Concurrency panel.
-
-WHY THIS EXISTS. Every concurrency ceiling in the relay was an env var, which
-means changing one meant editing an env file (or a compose override that the
-deploy rsync excludes) and redeploying. That is enough friction that the numbers
-never got retuned — the exact failure `admission.py`'s docstring names: "a
-ceiling nobody can read the current value of is a ceiling nobody maintains".
-This module lets the panel WRITE them.
-
-PRECEDENCE, and why it is this way::
-
-    env var  >  stored override  >  code default
-
-The env var wins on purpose. It is the lockout escape hatch: if a value saved
-from the panel makes the process unhealthy, `docker run -e IMG_FETCH_CONCURRENCY=8`
-recovers it without anyone having to find and hand-edit a JSON file inside a
-container. Same reasoning as `ALLOW_ANONYMOUS_ADMIN` — a bad state must be one
-restart away from fixed, never a redeploy.
-
-🚨 CHANGES APPLY AT RESTART, NOT LIVE, and the panel says so. This is not
-laziness — it is forced. Every ceiling here is a semaphore constructed exactly
-once: `Lane.__init__` builds a `threading.BoundedSemaphore(cap)`, the automation
-executor builds its `asyncio.Semaphore` when the supervisor starts, and
-`LoopLane._semaphore()` says it outright ("what makes it useless as a runtime
-knob"). A `ThreadPoolExecutor` cannot be resized at all. Mutating `.cap` after
-the fact would change the NUMBER THE PANEL DISPLAYS and not the ceiling being
-enforced, which is worse than not having the panel.
-
-THE REGISTRY IS DERIVED, NOT DECLARED, and that is the whole design. There is no
-table of knobs in this file. `resolve()` is called once per ceiling, at import,
-by the code that OWNS that ceiling — and that call already carries both facts a
-panel needs: the env var's name, and the default the owner chose. So `resolve()`
-records them, and `describe()` is built from what actually got resolved.
-
-That inversion is load-bearing, because the alternative had two ways to lie. A
-declared table restates a default the call site already owns, so changing one
-makes the panel report the other. And a hand-written map of "live" values means
-a knob added in one place and missed in the other reports `live=None`, which
-computes to `pending=False` — the "restart to apply" banner silently never
-appears for the one knob that needed it. Neither failure is possible here: a
-ceiling nothing resolves is not in the panel, and a ceiling something resolves
-cannot be missing from it.
-
-The live value needs no separate bookkeeping either. Nothing mutates these after
-import — `Lane.cap`, `_EXECUTOR_THREADS`, `_MAX_CONCURRENT_RUNS` are all set once
-and read forever — so what `resolve()` returned the FIRST time it was asked IS
-what this process is enforcing. `record_live()` exists for the single call site
-that clamps a value after resolving it (the background sub-cap, which is pinned
-below total); it is the exception that would otherwise make `_live` subtly wrong.
-
-WHERE IT LIVES, and why not `service/secrets/`. The obvious home was the
-secrets directory — it is bind-mounted and already holds this shape of state.
-It is also, on the current stack, mounted from a path under `/private/tmp`,
-which macOS clears on reboot. Settings that silently revert are worse than
-settings you cannot change, so this writes alongside the SQLite DB instead:
-that is a real docker volume and the one directory in the container that
-actually survives. `LANE_CONFIG_PATH` overrides if that ever stops being true.
-
-SWITCHES. A few knobs are on/off, not ceilings: `resolve_switch()` registers
-one. It is the same store, precedence and panel row, but its legal values are
-0 and 1 (an env var may also say on/off/true/false), and the floor of 1 does
-not apply to it. A switch is read where it is used, every time, so a value
-saved from the panel applies at once (it records itself live, so it never
-reads as pending a restart). First one: `AUTOMATION_RELEASE_SLOT_ON_HOLD`
-(run_slot, ADR 0025).
-
-READ AT USE. A ceiling its owner reads where it is used, every time (not once
-at import), registers through `resolve_live()`: a value saved from the panel
-applies at its next use, so the panel reports it live from the save, never
-pending a restart (ADR 0025: the release floor, the per-account DM rate).
-
-A LEAF, like `admission`. It imports nothing from the relay, because the lanes
-it feeds are constructed at MODULE IMPORT — long before the event loop exists
-or `db_init()` has run. That is also why every read here is sync: there is no
-loop to await on at the moment the value is needed.
-"""
 from __future__ import annotations
 
 import json
@@ -88,17 +12,15 @@ from atomic_json import write_atomic
 
 log = logging.getLogger("of-relay.lane-config")
 
+# Leaf: imports nothing from the relay, since lanes are built at module import before the loop or db_init exist. Precedence env > stored override > code default; env is the lockout escape hatch. Changes apply at restart: semaphores/executors are built once.
 _HERE = Path(__file__).resolve().parent
 
 
 def _default_path() -> Path:
-    """The durable file. See the module docstring for why not `secrets/`."""
     explicit = os.environ.get("LANE_CONFIG_PATH", "").strip()
     if explicit:
         return Path(explicit)
-    # Alongside the SQLite file — the docker volume, i.e. the one mount that is
-    # not under /private/tmp. Parsed rather than assumed so a Postgres URL or a
-    # relocated DB does not silently drop us in an ephemeral directory.
+    # Beside the SQLite file, not secrets/ (mounted under /private/tmp, cleared on reboot); parsed so a Postgres URL or moved DB doesn't land in an ephemeral dir.
     url = os.environ.get("DATABASE_URL", "")
     if url.startswith("sqlite") and "///" in url:
         db_file = Path(url.split("///", 1)[1].split("?", 1)[0])
@@ -110,31 +32,18 @@ def _default_path() -> Path:
 
 
 _PATH = _default_path()
-# The audit trail behind the panel's history list — one JSON object per line,
-# appended on every saved change. Lives beside the store for the same
-# durability reasoning; losing it loses the story, never the settings.
 _HISTORY = _PATH.with_name("lane_config_history.jsonl")
 
 _lock = threading.Lock()
 _stored_cache: dict[str, int] | None = None
 
-# Filled by `resolve()`. See the module docstring: these are the registry, and
-# nothing else declares one.
-_defaults: dict[str, int] = {}   # env var -> the default its owner passed
-_live: dict[str, int] = {}       # env var -> what this process is enforcing
-_switches: set[str] = set()      # env vars registered by resolve_switch (0/1)
-_read_at_use: set[str] = set()   # env vars registered by resolve_live (read every use)
+_defaults: dict[str, int] = {}
+_live: dict[str, int] = {}
+_switches: set[str] = set()
+_read_at_use: set[str] = set()
 
 
 def _clamp(value: Any) -> int:
-    """The one legality rule, shared by every path in and out of this module.
-
-    Floor of 1 and integer-only, which is exactly what the `max(1, int(...))`
-    at each call site did before it moved here — so adopting this changed where
-    a number comes from and never what counts as a legal number. There is no
-    upper bound on purpose: the operator asked for the ceiling to be theirs to
-    set, and a silent clamp would be a cap wearing a text box's clothes.
-    """
     return max(1, int(value))
 
 
@@ -142,7 +51,6 @@ _SWITCH_WORDS = {"0": 0, "1": 1, "off": 0, "on": 1, "false": 0, "true": 1, "no":
 
 
 def _legal(name: str, value: Any) -> int:
-    """`_clamp` for a ceiling; 0 or 1 for a switch (anything else is refused)."""
     if name not in _switches:
         return _clamp(value)
     if isinstance(value, bool):
@@ -154,9 +62,7 @@ def _legal(name: str, value: Any) -> int:
 
 
 def _load() -> dict[str, int]:
-    """Read the file. Never raises: a missing or corrupt store must boot the
-    process on code defaults, not refuse to boot. A ceiling that fails closed
-    at import is an outage, and the value it is protecting is a tuning number."""
+    # Never raises: a missing or corrupt store must boot on code defaults, a ceiling failing closed at import is an outage.
     try:
         raw = json.loads(_PATH.read_text("utf-8"))
     except FileNotFoundError:
@@ -171,9 +77,6 @@ def _load() -> dict[str, int]:
     out: dict[str, int] = {}
     for key, value in raw.items():
         try:
-            # The raw integer: `_current` applies the knob's rule (`_legal`),
-            # which needs to know whether the key is a switch, and switches
-            # register after the first load.
             out[key] = int(value)
         except (TypeError, ValueError):
             log.warning("lane_config: %s=%r is not an int — ignoring", key, value)
@@ -181,13 +84,7 @@ def _load() -> dict[str, int]:
 
 
 def stored() -> dict[str, int]:
-    """Every override currently on disk. Empty dict if nothing was ever set.
-
-    Unknown keys are kept rather than dropped. A knob whose owning module has
-    not been imported yet is indistinguishable from one that was retired, and
-    silently deleting the first on the next save is how a setting disappears
-    for reasons nobody can reconstruct.
-    """
+    # Unknown keys are kept: a knob whose module isn't imported yet looks the same as a retired one, and dropping it on the next save loses a setting.
     global _stored_cache
     with _lock:
         if _stored_cache is None:
@@ -196,13 +93,6 @@ def stored() -> dict[str, int]:
 
 
 def _from_env(env_var: str) -> int | None:
-    """The env layer of the precedence chain, in ONE place.
-
-    `resolve()` and `source()` both have to answer "is an env var pinning this?"
-    and they have to agree. Two copies of this parse is how the panel ends up
-    disabling an input that is not actually pinned — or worse, accepting an edit
-    it cannot deliver.
-    """
     raw = os.environ.get(env_var)
     if raw is None or not str(raw).strip():
         return None
@@ -215,8 +105,6 @@ def _from_env(env_var: str) -> int | None:
 
 
 def _current(env_var: str, default: int) -> tuple[int, str]:
-    """(value, source) under the precedence in the module docstring. The single
-    implementation of that chain — everything public here is a view onto it."""
     from_env = _from_env(env_var)
     if from_env is not None:
         return from_env, "env"
@@ -230,20 +118,10 @@ def _current(env_var: str, default: int) -> tuple[int, str]:
 
 
 def overridden(env_var: str) -> bool:
-    """Is this knob set by the env or a stored panel value, rather than left
-    to its code default? A ceiling the code sizes itself (the run slots,
-    ADR 0025) sizes only while nobody has set it."""
     return _from_env(env_var) is not None or env_var in stored()
 
 
 def resolve(env_var: str, default: int) -> int:
-    """The one function the ceilings call — and the registration that makes the
-    panel possible. See the module docstring on why the registry is derived.
-
-    The FIRST resolution of a knob is recorded as its live value, because these
-    are read once at import and never mutated. Later calls (the panel
-    re-reading, a test) recompute freely without disturbing that.
-    """
     value, _ = _current(env_var, default)
     _defaults[env_var] = _legal(env_var, default)
     _live.setdefault(env_var, value)
@@ -251,8 +129,6 @@ def resolve(env_var: str, default: int) -> int:
 
 
 def resolve_switch(env_var: str, default: bool) -> bool:
-    """An on/off knob (see SWITCHES): read it now, as the process will act on
-    it now. Registers it with the panel and records it live."""
     _switches.add(env_var)
     value, _ = _current(env_var, int(default))
     _defaults[env_var] = int(bool(default))
@@ -261,8 +137,6 @@ def resolve_switch(env_var: str, default: bool) -> bool:
 
 
 def resolve_live(env_var: str, default: int) -> int:
-    """A ceiling read where it is used, every time (see READ AT USE): resolve
-    it now and register it, so the panel reports what is saved as what runs."""
     value = resolve(env_var, default)
     _read_at_use.add(env_var)
     _live[env_var] = value
@@ -270,38 +144,14 @@ def resolve_live(env_var: str, default: int) -> int:
 
 
 def record_live(env_var: str, value: int) -> None:
-    """Correct the recorded live value for a knob that is post-processed after
-    `resolve()` returns.
-
-    Exactly one call site needs this: `ACCOUNT_LANE_BACKGROUND` is clamped below
-    `ACCOUNT_LANE_TOTAL` after resolving, so the number being enforced is not
-    always the number resolved. Without this the panel would report a pending
-    change that will never happen, which is the specific lie it exists to avoid.
-    """
     _live[env_var] = _legal(env_var, value)
 
 
 def knob_names() -> frozenset[str]:
-    """Every knob this process actually reads — the write path's allowlist.
-
-    Derived, so it cannot drift from the ceilings that exist. A name absent here
-    is a name nothing would consult, and storing it would be writing to a key no
-    boot will ever read.
-    """
     return frozenset(_defaults)
 
 
 def set_many(values: dict[str, Any]) -> dict[str, int]:
-    """Persist overrides and return the full stored set.
-
-    Atomic — temp file in the same directory, then `os.replace`. A half-written
-    JSON here would boot the whole process on code defaults (see `_load`), and
-    an interrupted save is exactly when you would least want the ceilings to
-    quietly move.
-
-    A value of `None` DELETES the override, which is how the panel offers
-    "back to default" without needing a second endpoint.
-    """
     known = knob_names()
     clean: dict[str, int | None] = {}
     for name, value in values.items():
@@ -342,23 +192,16 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
 
 
 def _write(data: dict[str, int]) -> None:
-    """Atomic replace of the store. Caller holds `_lock`."""
     write_atomic(_PATH, data)
 
 
 def _append_history(changes: list[dict[str, Any]]) -> None:
-    """Best-effort audit trail behind the panel's history list. Caller holds
-    `_lock`. A failed append must never fail the save it describes — the store
-    is the record that matters; this is the story of how it got there."""
     if not changes:
         return
     try:
         _HISTORY.parent.mkdir(parents=True, exist_ok=True)
         with open(_HISTORY, "a+b") as fh:
-            # Heal a torn tail before appending: a crash or full disk can leave
-            # the file ending mid-line, and appending straight after it would
-            # glue THIS row onto the fragment — losing a change that really
-            # happened, not just the one the crash already lost.
+            # Heal a torn tail first: appending after a half line would glue this row onto the fragment and lose a real change.
             fh.seek(0, os.SEEK_END)
             if fh.tell() > 0:
                 fh.seek(-1, os.SEEK_END)
@@ -372,19 +215,6 @@ def _append_history(changes: list[dict[str, Any]]) -> None:
 
 
 def note_restart() -> None:
-    """Append the one row that is not a knob change: the relay was restarted
-    from the panel.
-
-    It belongs in this file rather than a second log because the story the panel
-    tells is a sequence: a cap changed, and then it was applied. Splitting those
-    across two files would show the operator half of it. Rows carry `event`
-    instead of `key`/`old`/`new`, and `history()` returns both shapes; the panel
-    branches on which one it got.
-
-    Takes no argument on purpose. A free-text sink with exactly one caller
-    invites a second caller with a different phrasing, and the history is read
-    by a UI that has to branch on the shape.
-    """
     with _lock:
         _append_history([{
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -393,17 +223,12 @@ def note_restart() -> None:
 
 
 def history(limit: int = 50) -> list[dict[str, Any]]:
-    """The most recent saved changes, newest first. Never raises — a missing or
-    torn file reads as an empty history, the same stance `_load` takes: the
-    panel must render on a fresh box where nothing was ever changed."""
     try:
         lines = _HISTORY.read_text("utf-8").splitlines()
     except FileNotFoundError:
         return []
     except Exception:
-        # Same breadth as _load, for the same reason — and specifically:
-        # UnicodeDecodeError is a ValueError, not an OSError, and one byte of
-        # block-level corruption here must not 500 the panel's GET and POST.
+        # UnicodeDecodeError is a ValueError, not OSError: one corrupt byte must not 500 the panel's GET and POST.
         log.warning("lane_config history unreadable at %s", _HISTORY,
                     exc_info=True)
         return []
@@ -419,20 +244,11 @@ def history(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def describe() -> list[dict[str, Any]]:
-    """Every knob as a row, for the panel: what the next boot will use, what is
-    running now, where the value came from, and whether those disagree.
-
-    `pending` is the field the whole panel turns on — a value saved but not yet
-    adopted. It is computed here rather than in the UI so "saved but not
-    running" has one definition.
-    """
     rows: list[dict[str, Any]] = []
     saved = stored()
     for env_var in sorted(_defaults):
         default = _defaults[env_var]
         value, src = _current(env_var, default)
-        # A switch, or a ceiling read at use, is read where it is used, every
-        # time: what is saved is what the next read acts on, never pending a restart.
         live = value if env_var in _switches or env_var in _read_at_use else _live.get(env_var)
         rows.append({
             "name": env_var,
@@ -449,6 +265,4 @@ def describe() -> list[dict[str, Any]]:
 
 
 def path() -> str:
-    """Where the file is, for the panel's footer. Operators need to know which
-    file to delete when they want a clean slate."""
     return str(_PATH)

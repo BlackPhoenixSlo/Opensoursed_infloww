@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Stand-alone tests for `service/relay_coalesce.py` (Stage B-2).
-
-The project doesn't ship pytest. Run via:
-
-    ./venv/bin/python service/tests/test_relay_coalesce.py
-
-Exit 0 = all pass. Any failure raises and exits non-zero. Five cases
-mapped to plan/call_reduction_2026_05_24/02_relay_request_coalescer.md
-section "Verification":
-
-  1. 5 concurrent identical calls → fetcher invoked once
-  2. 5 concurrent calls with different keys → fetcher invoked 5 times
-  3. Fetcher exception propagates to all waiters
-  4. Cancelling one waiter doesn't crash the others (or stop the work)
-  5. Keys with the same set of IDs in different orders coalesce
-     (handled by the caller sorting; we assert that the SAME key tuple
-     reused identically coalesces — sorting is a caller responsibility,
-     proven by reusing `tuple(sorted(ids))` from two angles)
-
-Plus a quick safety case:
-  6. Deepcopy isolation — one waiter mutating its returned dict does
-     not affect a sibling waiter's copy.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -54,14 +31,12 @@ async def case_1_dedup_identical() -> None:
     key = ("list_chats", "acct1", 10, 0, "recent", None, None, None)
 
     waiters = [asyncio.create_task(relay_coalesce.coalesce(key, fetcher)) for _ in range(5)]
-    # Let waiters all enter the coalescer before we release the fetcher.
     await asyncio.sleep(0.05)
     gate.set()
     results = await asyncio.gather(*waiters)
 
     _check(calls == 1, f"case 1: fetcher called {calls}x, expected 1")
     _check(all(r == {"ok": True, "n": 1} for r in results), "case 1: bad results")
-    # Each waiter must hold its OWN copy.
     _check(results[0] is not results[1], "case 1: results share identity (deepcopy failed)")
     snap = relay_coalesce.stats()
     _check(snap["coalesced_hits"].get("list_chats") == 4, f"case 1: hits {snap}")
@@ -73,8 +48,6 @@ async def case_2_distinct_keys() -> None:
     relay_coalesce.reset_for_tests()
     calls = 0
 
-    # Per-key fetcher so each one returns a distinguishable value AND
-    # the global `calls` counter still proves the fetcher fired 5 times.
     def make_fetcher(tag: int):
         async def fetcher():
             nonlocal calls
@@ -133,14 +106,12 @@ async def case_4_cancel_one_others_proceed() -> None:
         return {"value": 42}
 
     key = ("my_settings", "acct1")
-    # First waiter is the one that creates the fetcher task. We'll cancel it.
     leader = asyncio.create_task(relay_coalesce.coalesce(key, fetcher))
     await asyncio.sleep(0.01)
     followers = [asyncio.create_task(relay_coalesce.coalesce(key, fetcher)) for _ in range(3)]
     await asyncio.sleep(0.05)
 
     leader.cancel()
-    # Give the cancellation a moment to land.
     await asyncio.sleep(0.01)
     gate.set()
 
@@ -166,9 +137,6 @@ async def case_5_sorted_ids_collide() -> None:
         await gate.wait()
         return {"117183": {"id": 117183}, "9": {"id": 9}, "42": {"id": 42}}
 
-    # Caller is responsible for sorting — server.py does tuple(sorted(ids)).
-    # Two callers with [9, 42, 117183] and [42, 117183, 9] both sort to
-    # the same tuple, so they share an in-flight fetch.
     ids_a = [9, 42, 117183]
     ids_b = [117183, 9, 42]
     key_a = ("list_users", "acct1", "m", tuple(sorted(ids_a)))
@@ -201,7 +169,6 @@ async def case_6_deepcopy_isolation() -> None:
     gate.set()
     results = await asyncio.gather(*waiters)
 
-    # Mutate the first waiter's copy. The other waiters must be unaffected.
     results[0]["list"].append(999)
     results[0]["nested"]["k"] = "MUTATED"
 
@@ -213,9 +180,6 @@ async def case_6_deepcopy_isolation() -> None:
 
 
 async def case_7_user_never_joins_background_led() -> None:
-    """A user read arriving while a background read of the same key is in flight
-    gets its own flight (not the background lane wait, retry or failure); a
-    background read joins a user-led one."""
     relay_coalesce.reset_for_tests()
     cls = {"v": "background"}
     real = relay_coalesce.priority_class
@@ -245,7 +209,6 @@ async def case_7_user_never_joins_background_led() -> None:
             _check(False, "case 7: bg leader should have failed")
         except RuntimeError:
             pass
-        # background joins a user-led flight
         calls.clear()
         gate2 = asyncio.Event()
 
@@ -268,8 +231,6 @@ async def case_7_user_never_joins_background_led() -> None:
 
 
 async def case_8_fresh_never_joins_a_started_run() -> None:
-    """coalesce_fresh: callers that arrive while run 1 is in flight do not get run 1 (it may predate their
-    own write); they all share run 2, which starts after run 1 ends. 1 + 10 callers -> 2 runs."""
     relay_coalesce.reset_for_tests()
     runs = 0
     gates = [asyncio.Event(), asyncio.Event()]
@@ -339,7 +300,7 @@ async def case_10_evicted_client_never_joined() -> None:
     old1 = asyncio.create_task(relay_coalesce.coalesce(k1, fetcher("acct1")))
     old2 = asyncio.create_task(relay_coalesce.coalesce(k2, fetcher("acct2")))
     await asyncio.sleep(0.02)
-    client_pool.evict("acct1")   # re-bootstrap / proxy edit on acct1 only
+    client_pool.evict("acct1")
     new1 = asyncio.create_task(relay_coalesce.coalesce(k1, fetcher("acct1")))
     join2 = asyncio.create_task(relay_coalesce.coalesce(k2, fetcher("acct2")))
     await asyncio.sleep(0.02)

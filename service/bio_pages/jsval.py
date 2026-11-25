@@ -1,11 +1,9 @@
-"""JavaScript value semantics for imported geo JSON."""
 from __future__ import annotations
 
 import re
 from decimal import Decimal
 from typing import Any
 
-# ── JS value semantics (geo rules hold arbitrary JSON) ────────────────
 
 def js_truthy(v: Any) -> bool:
     if v is None or v is False:
@@ -16,11 +14,10 @@ def js_truthy(v: Any) -> bool:
         return v == v and v != 0
     if isinstance(v, str):
         return v != ""
-    return True  # every object and array, empty ones included
+    return True
 
 
 def _js_num(f: float) -> str:
-    """JS Number::toString for a double."""
     if f != f:
         return "NaN"
     if f in (float("inf"), float("-inf")):
@@ -56,7 +53,8 @@ def js_str(v: Any) -> str:
         return "null"
     if isinstance(v, int):
         try:
-            return _js_num(float(v))  # JSON.parse reads every number as a double
+            # JSON.parse reads every number as a double
+            return _js_num(float(v))
         except OverflowError:
             return "Infinity" if v > 0 else "-Infinity"
     if isinstance(v, float):
@@ -72,7 +70,6 @@ _INDEX_KEY = re.compile(r"0|[1-9][0-9]*")
 
 
 def _own(o: Any, k: Any) -> Any:
-    """destination.js `own`: `k` truthy and an own key of `o`, else undefined (None)."""
     if not js_truthy(k) or not isinstance(k, str):
         return None
     if isinstance(o, dict):
@@ -86,7 +83,6 @@ def _own(o: Any, k: Any) -> Any:
 
 
 def geo_tracking_code(geo: Any, country: str, region: str) -> Any:
-    """destination.js:13-22."""
     if not isinstance(geo, (dict, list)):
         return None
     rule = _own(geo, country)

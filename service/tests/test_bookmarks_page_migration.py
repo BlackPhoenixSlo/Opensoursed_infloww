@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""The one-time grant of Bookmarks to stored roles granting Collections (settings_api.migrate_bookmarks_page_once).
-
-Bookmarks left Collections for a page of its own; a stored role (custom, a seeded preset, a saved built-in copy)
-that granted Collections reached it before, so it is given Bookmarks once. A role not granting Collections, or
-already holding the Bookmarks key, is untouched; so is the rest of the blob. A marker keeps it from running twice.
-
-Run: ./venv/bin/python service/tests/test_bookmarks_page_migration.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 _harness.bootstrap()
 
@@ -38,10 +30,10 @@ def _blob(owner: str) -> dict | None:
 A_BEFORE = {
     "enforce": True,
     "roles": [
-        _role("va", {COLL: True, "/messages-pro": True}),        # the seeded VA preset
-        _role("creator", {COLL: True}),                          # a saved built-in Creator copy
-        _role("closer", {COLL: False, "/messages-pro": True}),   # Collections off
-        _role("chosen", {COLL: True, BOOK: False}),              # Bookmarks already chosen
+        _role("va", {COLL: True, "/messages-pro": True}),
+        _role("creator", {COLL: True}),
+        _role("closer", {COLL: False, "/messages-pro": True}),
+        _role("chosen", {COLL: True, BOOK: False}),
         "not a role",
     ],
     "assignments": {"7": "va"},

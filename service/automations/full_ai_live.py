@@ -1,3 +1,44 @@
+"""automations/full_ai_live.py — Full AI Chat's live I/O twin of `full_ai_test` (Mode `live`, 04a).
+
+A Creator whose enabled `full_ai_chat` rule says `trigger_json.mode == "live"` answers a Fan's DM on
+OnlyFans with the Test chat's Turn (`full_ai_turn.run_turn(facts, io)`). The job (`full_ai_chat.run`
+dispatches here) leases the Fan, loads fresh facts (his newest unanswered run is the Turn), runs the
+Turn and sends its text bubbles one by one. Never double-send (ticket 65): just before the first OF
+call the row is INSERTed `sending` on the Turn key (`_reserve`; no id back = another run owns the
+Turn, send nothing); `record` then UPDATEs only its `status`, `reply_json`, `writer_model`
+(and writes the Turn's facts to `fans`). A run
+that dies after the reserve leaves `sending`, which the next run's `reap` turns `unconfirmed`:
+never sent again (`load` finds the row). Last look (ticket 66, `full_ai_look`): `LAST_LOOK`, one
+ordered check list, runs as the pre-look before the Router and again before each bubble; the first
+reason stands the Turn down. Each bubble goes out through its kind's `BUBBLE_SENDERS` entry, on the
+account's write gate (`ax.of_write_paced`); once the gate grants the write, `full_ai_look.gate` re-runs
+the switch, owner and anchor slots (DB only) right before the POST. A DM he sent before her first bubble stands the
+Turn down (`overtaken`, also off the OF read); one during the burst lets it finish (ticket 66), keeps
+his read badge and queues his job, whose `load` takes the DMs that landed mid-burst as its Turn.
+
+  live_rule(account_id)              id of the enabled full_ai_chat rule in Mode live, else None
+  due(config, dm)                    when the reply to `dm` may go: its time + the drawn reply speed
+  enqueue(account, fan, mid, rule)   the Fan's job at `due` (hook + sweep); False = one is pending
+  load(account_id, fan_id, client)   TurnFacts | None (no unanswered Turn, or its row exists)
+  reap(account_id, mine)             `sending` rows -> `unconfirmed`, the Creator's full_ai_chat leases dropped,
+                                     but a Fan whose job runs in this process (`_running`, not `mine`)
+  run(account_id, payload, *, run_id)   reap -> off switch -> cooldown -> scrape wait -> lease -> load -> pre-look -> run_turn
+                                     -> cooldown 10 s + release; busy -> the same payload at +20 s,
+                                     3 runs at most (ticket 67); his one-Fan scrape still queued
+                                     (`_scrape_pending`) -> the same payload at +20 s, no try spent
+                                     (bounded by SCRAPE_WAIT_S); no anchor (the interval job) -> sweep;
+                                     the reserve takes a shutdown-drain slot (`ax.begin_send`, held to
+                                     the end: holds go 0 s while draining, a running one ends); refused (the relay
+                                     drains) -> nothing sent, no row, the same payload at +20 s
+  sweep(account_id)                  missed DMs: due Turn ends with no row / job / cooldown and a clear
+                                     pre-look (no OF read) -> enqueue, 20 per pass
+  catchup_queue(account, fans, ...)  full_ai_catchup's waiting Fans: the sweep's checks over just them
+  catchup_client(account)            full_ai_catchup's OF client (reads only)
+
+The only Full AI module that may import the OF client factory, the lease or the DM rate;
+`full_ai_ppv` also writes through the OF write seam (`ax.of_write_paced`) (AST scan in
+test_full_ai_live.py; `full_ai_look` imports none of them).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -35,15 +76,21 @@ from db.models import AiDecision, AutomationRule, Fan, FanLease, Message, Schedu
 log = logging.getLogger("of-relay.automation.full_ai_live")
 
 MODE, KIND, TRIGGER_KIND = full_ai_look.MODE, "full_ai_chat", "inbound"
-SEND_PURPOSE = "gated"
-COOLDOWN_S = 10
+SEND_PURPOSE = "gated"                 # audience_include.AUDIENCE_SENDER_CLASSIFICATION["full_ai_live"]
+COOLDOWN_S = 10                        # after a send; never shortens a longer pause
+# `fans` columns the loader reads as `fan_info` (empty ones left out); `record` writes back only
+# the extract's fields, never the two name-only ones.
 FACT_FIELDS = tuple(_info_jev._EXTRACT_FIELDS)
 FAN_INFO_FIELDS = (*FACT_FIELDS, "generated_nickname", "of_display_name")
-WELCOME = "welcome"
+WELCOME = "welcome"                    # send_welcome's automation_kind: never answers his DM
 _TURN_KEY = ["account_id", "fan_id", "mode", "trigger_key"]
-BUSY_RETRY_S, BUSY_RUNS = 20, 3
-SCRAPE_WAIT_S = 900
-SWEEP_WINDOW_S, SWEEP_MAX = 86400, 20
+BUSY_RETRY_S, BUSY_RUNS = 20, 3        # a busy Fan: same payload at +20 s; after 3 runs the sweep (68)
+SCRAPE_WAIT_S = 900                    # a one-Fan scrape queued longer ago than this no longer holds his Turn (stuck row)
+SWEEP_WINDOW_S, SWEEP_MAX = 86400, 20  # the sweep answers DMs of the last 24 h, 20 Turns per pass
+# A Full AI DM lets the account's next write start this soon after it (the write gate's gap; every
+# other sender keeps of_write's 11 s). Measured 2026-11-15 on OF: 10 DMs each way (fan -> Creator,
+# Creator -> fan) 1.0-2.8 s apart, none refused. The DM window (dm_rate, OF_DM_PER_MIN) still caps
+# the minute. FULL_AI_WRITE_GAP_S=11 is the old spacing.
 
 
 # Measured on OF: DMs 1.0-2.8 s apart, none refused; the DM window still caps the minute. 11 s is the shared write gap.
@@ -73,6 +120,7 @@ async def live_rule(account_id: str) -> int | None:
 
 
 async def live_accounts() -> set[str]:
+    """Creators with an enabled `full_ai_chat` rule in Mode live (05's fast purchases poll)."""
     async with get_session() as s:
         rules = (await s.execute(select(AutomationRule.account_id, AutomationRule.trigger_json).where(
             AutomationRule.kind == KIND, AutomationRule.is_enabled.is_(True)))).all()
@@ -166,7 +214,7 @@ async def load(account_id: str, fan_id: int, client) -> full_ai_turn.TurnFacts |
     photo = await full_ai_photo.describe_turn(aid, turn, client) if photos else None
     async with get_session() as s:
         thread_rows, _other_lane, _tx = await full_ai_chat._reads(s, aid, fan, run_cut, turn)
-        thread_rows = [*thread_rows, *tail]
+        thread_rows = [*thread_rows, *tail]     # a mid-burst Turn: her bubbles already out after his DM
         f = await s.get(Fan, (aid, fan))
         info = {k: v for k in FAN_INFO_FIELDS
                 if f is not None and isinstance(v := getattr(f, k), str) and v.strip()}
@@ -251,6 +299,7 @@ def fan_updates(loaded: dict, got: dict) -> dict[str, str]:
 
 
 async def _write_facts(s, account_id: str, fan_id: int, updates: dict[str, str]) -> None:
+    """wcfi `_extract_and_fill`'s upsert shape, in the caller's transaction."""
     if not updates:
         return
     now = datetime.utcnow()
@@ -262,9 +311,10 @@ async def _write_facts(s, account_id: str, fan_id: int, updates: dict[str, str])
 
 @dataclass
 class _Run:
-    taken: bool = False
-    lost: run_slot.SlotLost | None = None
-    landed: int = 0
+    """One job's send state, shared by its `send` and `record`."""
+    taken: bool = False                   # the reserve found another run's row: send nothing, write nothing
+    lost: run_slot.SlotLost | None = None  # lost the slot after >= 1 bubble: re-raise once recorded
+    landed: int = 0                       # bubbles on OF (the job's finally rests the Fan when > 0)
 
 
 class _Draining(Exception):
@@ -309,6 +359,7 @@ async def _attribute(account_id: str, fan_id: int, mid: int, body: str, created_
 
 
 async def _dm(client, look: Look, text: str, **kw) -> dict:
+    """One DM on OF; writes its own `messages` row with OF's text and time (attributed)."""
     res = await ax.of_write_paced(look.account_id, lambda: client.send_message(look.fan_id, text, **kw),
                                   send_purpose=SEND_PURPOSE, tries=1, dm=True,
                                   min_gap_s=WRITE_GAP_S, before_write=look.before_write)
@@ -329,6 +380,9 @@ async def _send_gif(client, look: Look) -> dict:
     return res
 
 
+# bubble kind -> (client, look) -> {"id", "attributed", "offer_dropped", "unknown"}; "ppv"
+# (`send_ppv`, ticket 90) is added below its definition. A kind with no sender stands down
+# `("sender", "<kind>_unbuilt")`.
 BUBBLE_SENDERS: dict[str, Callable[[Any, Look], Awaitable[dict]]] = {
     "text": _send_text,
     "gif": _send_gif,
@@ -375,6 +429,7 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
     at = (anchor.created_at, int(anchor.message_id))
 
     async def send(row: dict, parts: list[str], pick=None, *, over=None, desc=None, gif=None) -> None:
+        # The row and bubble shapes of the Test chat (Offer columns included, the gif part last).
         full_ai_test.send(row, parts, pick, over=over, desc=desc)
         if gif:
             row["reply_json"]["parts"].append(gif)
@@ -388,6 +443,8 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
                 stop = ("sender", f"{_kind(part)}_unbuilt", i)
                 break
             try:
+                # The relay drains (SIGTERM): no type-time hold left and a running one ends, so the
+                # Turn ends inside RELAY_DRAIN_S.
                 secs = (typing_delay_seconds(part["text"], wpm)
                         if wpm is not None and "gif" not in part and not ax.draining() else 0)
                 await hold_with_typing(aid, fan, secs, typing_indicator=frame, cut=ax.draining)
@@ -430,13 +487,12 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
                 stop = (*e.why, i)
                 break
             except Exception as e:  # noqa: BLE001 — stop the Turn, never retry a send
-                # Frees only an unused place; nothing reached OF here.
-                dm_rate.release(aid)
+                dm_rate.release(aid)           # frees only an unused place (nothing reached OF)
                 await skip_unreachable_fan(aid, fan, e, log=log)
                 log.warning("full_ai_live send failed account=%s fan=%s", aid, fan, exc_info=True)
                 reply["cut"] = {"check": "send_error", "reason": type(e).__name__, "index": i}
                 break
-            if res.get("offer_dropped"):
+            if res.get("offer_dropped"):       # its sender already cleared the Offer columns
                 reply["offer_dropped"] = res["offer_dropped"]
             # May be on OF: never retried, Offer columns kept.
             if res.get("unknown"):
@@ -536,8 +592,7 @@ async def send_ppv(client, look) -> dict:
             client, row_id=int(row["id"]), account_id=look.account_id, fan_id=look.fan_id, text=b["text"],
             ppv=b["ppv"], over_message_id=over, send_purpose=SEND_PURPOSE, before_write=look.before_write,
             min_gap_s=WRITE_GAP_S)
-    # A raise after the POST was attempted: may be on OF, never retried, never dropped.
-    except full_ai_ppv.MaybeSent as e:
+    except full_ai_ppv.MaybeSent as e:  # may be on OF: never retried, never dropped
         log.warning("full_ai_live ppv raised account=%s fan=%s row=%s", look.account_id, look.fan_id,
                     row["id"], exc_info=True)
         return {**out, "id": e.message_id} if e.message_id else {**out, "unknown": True}
@@ -694,7 +749,7 @@ async def _run(account_id: str, payload: dict) -> dict:
     state = _Run()
     try:
         client = await asyncio.to_thread(ax._make_client, aid)
-        await full_ai_settle.settle_pull(aid, fan)
+        await full_ai_settle.settle_pull(aid, fan)      # 05: purchases settle before the folds read
         facts = await load(aid, fan, client)
         if facts is None:
             return {"skipped": "no_turn"}
@@ -704,7 +759,7 @@ async def _run(account_id: str, payload: dict) -> dict:
         await full_ai_look.after_look(pre, why)
         if why is not None:
             log.info("full_ai_live_stood_down account=%s fan=%s check=%s reason=%s", aid, fan, *why)
-            return {"skipped": "%s:%s" % why}
+            return {"skipped": "%s:%s" % why}   # the pre-look: no Router / Writer call, no row
         res = await full_ai_turn.run_turn(facts, _io(aid, fan, anchor, client, state,
                                                      dict(facts.fan_info), facts.config))
         if state.taken:

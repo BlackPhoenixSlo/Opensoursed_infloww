@@ -121,6 +121,7 @@ import stats_file  # noqa: E402  # lane-stats file: path, read, tmp + os.replace
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
 from bg_lane import BgLane, BgLease  # noqa: E402  # a Creator's background sub-cap, loop + threads
 import relay_hooks  # noqa: E402
+import side_effect_gate  # noqa: E402
 import read_flip  # noqa: E402  # what follows a landed read flip (routes + automations)
 import chats_page  # noqa: E402  # one logical page of OF /chats
 import db_retention  # noqa: E402  # DB retention loops (raw_json, audit, optimize, payload cap)
@@ -3902,15 +3903,21 @@ def _proxy_message_write(fn: Callable[[], Any]) -> Any:
             log.debug("chat_pinned invalidation skipped", exc_info=True)
 
 
-def _platform_write(name: str, what: str) -> Callable[..., Any]:
-    """The current client's write `name`, or 501 when the platform lacks it: a
-    Fansly shim method marked `@fansly_unsupported` (pin, unpin, mark unread)
-    answers success without effect, so the app would show a change the next
-    read takes back. Call inside `_proxy` (it loads the client)."""
-    fn = getattr(_get_client(), name, None)
-    if fn is None or getattr(fn, "fansly_unsupported", None):
+def _platform_call(name: str, what: str) -> Callable[..., Any]:
+    """The current client's `name`, or 501 when the platform lacks it
+    (`side_effect_gate.refusal`: missing, Unsupported or Blocked)."""
+    client = _get_client()
+    if side_effect_gate.refusal(client, name) is not None:
         raise HTTPException(status_code=501, detail=f"{what}: not on this platform")
-    return fn
+    return getattr(client, name)
+
+
+def _refuse_if_platform_lacks(aid: str, name: str, what: str) -> None:
+    """`_platform_call`'s 501 from the account's Backend `Shim` class, so a route
+    can refuse before its first side effect without loading an OnlyFans client early."""
+    backend = platforms.for_account(aid).backend
+    if backend is not None and side_effect_gate.refusal(backend.Shim, name) is not None:
+        raise HTTPException(status_code=501, detail=f"{what}: not on this platform")
 
 
 # ── Users ──────────────────────────────────────────────────────
@@ -4624,7 +4631,7 @@ def of_subscribers_chart(start: str | None = Query(None), end: str | None = Quer
 def of_search_users(q: str = Query(..., min_length=1, max_length=100), limit: int = Query(10, ge=1, le=50),
                     offset: int = Query(0, ge=0)):
     """Search users by name/username (OF's own search box: `/users?query=&view=se`)."""
-    return _proxy(lambda: _get_client().search_users(q, limit=limit, offset=offset))
+    return _proxy(lambda: _platform_call("search_users", "search users")(q, limit=limit, offset=offset))
 
 @app.get("/api/of/v2/users/performers-search")
 def of_performers_search(query: str = Query(..., min_length=1, max_length=100),
@@ -5004,7 +5011,8 @@ def of_get_list(list_id: ListId):
 def of_list_users_in(list_id: ListId, limit: int = Query(20, ge=1, le=50), offset: int = Query(0, ge=0),
                      query: str | None = Query(None, max_length=100)):
     """Fans in a list; `query` is Collections' Search users (OF's own `query` param)."""
-    return _proxy(lambda: _get_client().list_users_in(list_id, limit=limit, offset=offset, query=query or None))
+    return _proxy(lambda: _platform_call("list_users_in", "list members")(
+        list_id, limit=limit, offset=offset, query=query or None))
 
 @app.get("/api/of/v2/lists/{list_id}/posts")
 def of_list_posts_in(list_id: ListId, limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0),
@@ -5265,7 +5273,7 @@ def _bust_chat_list() -> None:
 @app.get("/api/of/v2/messages/queue")
 def of_scheduled_messages(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
     """Messages scheduled for future delivery."""
-    return _proxy(lambda: _get_client().scheduled_messages(limit=limit, offset=offset))
+    return _proxy(lambda: _platform_call("scheduled_messages", "scheduled messages")(limit=limit, offset=offset))
 
 @app.get("/api/of/v2/users/me/stats/messages/group")
 async def of_mass_message_history(
@@ -5286,7 +5294,7 @@ async def of_mass_message_history(
     SQLite without an OF roundtrip."""
     import mass_broadcast_cache as cache
     async with _bg_admission():
-        resp = await asyncio.to_thread(_proxy, lambda: _get_client().engagement_messages(
+        resp = await asyncio.to_thread(_proxy, lambda: _platform_call("engagement_messages", "mass message history")(
             "group", start_date=startDate, end_date=endDate, limit=limit, offset=offset, query=query,
         ))
     # Best-effort write-through. Don't let a cache miss surface as a 502
@@ -5319,6 +5327,7 @@ async def admin_mass_messages_list(
     silently when no-one clicks Refresh."""
     import mass_broadcast_cache as cache
     aid = account_id or _resolve_account_id(request)
+    _refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
     if await cache.is_stale(aid):
         try:
             end = datetime.utcnow()
@@ -5362,6 +5371,7 @@ async def admin_mass_messages_refresh(
     so the UI gets the new state in one roundtrip."""
     import mass_broadcast_cache as cache
     aid = account_id or _resolve_account_id(request)
+    _refuse_if_platform_lacks(aid, "mass_message_history", "mass message history")
     end = datetime.utcnow()
     start = end - timedelta(days=days_back)
     fmt = "%Y-%m-%d %H:%M:%S"
@@ -5559,13 +5569,13 @@ def of_pin_message(message_id: int, user_id: int):
     """Pin a message inside a chat. Path mirrors OF's wire shape
     (`/messages/{msg}/pin/user/{chat_partner}`) — the shorter `/pin` form
     didn't reliably pin to the chat's visible pinned list."""
-    result = _proxy_message_write(lambda: _platform_write("pin_message", "pin message")(message_id, user_id))
+    result = _proxy_message_write(lambda: _platform_call("pin_message", "pin message")(message_id, user_id))
     _bust_chat_detail(None, user_id)  # countPinnedMessages rides the detail
     return result
 
 @app.delete("/api/of/v2/messages/{message_id}/pin/user/{user_id}")
 def of_unpin_message(message_id: int, user_id: int):
-    result = _proxy_message_write(lambda: _platform_write("unpin_message", "unpin message")(message_id, user_id))
+    result = _proxy_message_write(lambda: _platform_call("unpin_message", "unpin message")(message_id, user_id))
     _bust_chat_detail(None, user_id)
     return result
 
@@ -5632,7 +5642,7 @@ async def of_mark_chat_unread(chat_id: int):
     server-side unread) or an upstream error."""
     aid = _current_aid()
     result, at = await read_flip.write(
-        aid, chat_id, lambda: _proxy(lambda: _platform_write("mark_chat_unread", "mark as unread")(chat_id)))
+        aid, chat_id, lambda: _proxy(lambda: _platform_call("mark_chat_unread", "mark as unread")(chat_id)))
     if not await read_flip.after_write(aid, chat_id, 1, result, at=at):
         raise _read_not_landed(result)
     return result
@@ -5682,6 +5692,7 @@ async def of_delete_chat(chat_id: int):
     joins ids with commas, but no live capture vouches for it). Busts the cached
     chat list and the roster badge so the row and its count go on the next read."""
     aid = _current_aid()
+    _refuse_if_platform_lacks(aid, "delete_chat", "delete chat")
     r = await _paced_of_write(aid, lambda: _get_client().delete_chat(chat_id))
     _bust_chat_list_and_badges(aid, chat_id)
     return r
@@ -5719,7 +5730,7 @@ def of_chat_media(
     in the web UI) and is the canonical source for the fan-drawer Sales
     section. `opened=1` is a different filter — items the fan has
     viewed, including free messages — kept for the "any viewed" case."""
-    return _proxy(lambda: _get_client().chat_media(
+    return _proxy(lambda: _platform_call("chat_media", "chat media")(
         chat_id,
         limit=limit,
         offset=offset,
@@ -5744,7 +5755,7 @@ def of_chat_media_kind(
     """One type of this chat's media: OF web's gallery Photos / Videos / Audio
     tabs, which put the type in the PATH (/chats/{id}/media/photos), not the
     query. Same params and `{list, hasMore, nextLastId}` page as /media."""
-    return _proxy(lambda: _get_client().chat_media(
+    return _proxy(lambda: _platform_call("chat_media", "chat media")(
         chat_id,
         limit=limit,
         last_id=last_id,
@@ -5764,16 +5775,16 @@ def of_search_chat(chat_id: int, query: str = Query(..., min_length=1, descripti
     matched message bodies if they aren't in the local cache yet.
 
     OF param is `query` (not `text` — that 200s with an empty list)."""
-    return _proxy(lambda: _get_client().search_chat(chat_id, query, filter))
+    return _proxy(lambda: _platform_call("search_chat", "search chat")(chat_id, query, filter))
 
 @app.post("/api/of/v2/users/{user_id}/block")
 def of_block_user(user_id: int):
     """Block a user (hides chat + prevents future messages from them)."""
-    return _proxy(lambda: _get_client().block_user(user_id))
+    return _proxy(lambda: _platform_call("block_user", "block user")(user_id))
 
 @app.delete("/api/of/v2/users/{user_id}/block")
 def of_unblock_user(user_id: int):
-    return _proxy(lambda: _get_client().unblock_user(user_id))
+    return _proxy(lambda: _platform_call("unblock_user", "unblock user")(user_id))
 
 def _publish_restrict_changed(aid: str, user_id: int, restricted: bool) -> None:
     """`chat_restrict_changed {fan_id, restricted}` once OF took a restrict or lift: every tab of the Creator
@@ -5844,6 +5855,7 @@ async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(Tru
     already in the durable registry (a second click must not send another dot)."""
     from automations._common import load_of_restricted_ids, set_of_restricted_skip
     account_id = _resolve_account_id(request)
+    _refuse_if_platform_lacks(account_id, "restrict_user", "restrict user")
     acked = False
     if ack and int(user_id) not in await load_of_restricted_ids(account_id):
         try:
@@ -5880,7 +5892,7 @@ async def of_unrestrict_user(user_id: int, request: Request, unhide: bool = Quer
     Unrestrict is the one DELETE, and a chat the Creator hid stays hidden."""
     from automations._common import set_of_restricted_skip
     account_id = _resolve_account_id(request)
-    result = await asyncio.to_thread(_proxy, lambda: _get_client().unrestrict_user(user_id))
+    result = await asyncio.to_thread(_proxy, lambda: _platform_call("unrestrict_user", "unrestrict user")(user_id))
     await set_of_restricted_skip(account_id, user_id, False)
     unhidden = False
     if unhide:
@@ -6697,13 +6709,13 @@ def of_create_list(body: _NameBody = Body(...)):
 @app.patch("/api/of/v2/lists/{list_id}")
 def of_rename_list(list_id: ListId, body: _NameBody = Body(...)):
     """Rename a list. OF uses PATCH (not PUT) — verified live."""
-    out = _proxy(lambda: _get_client().rename_list(list_id, body.name))
+    out = _proxy(lambda: _platform_call("rename_list", "rename list")(list_id, body.name))
     _invalidate_chat_folders()
     return out
 
 @app.delete("/api/of/v2/lists/{list_id}")
 def of_delete_list(list_id: ListId):
-    out = _proxy(lambda: _get_client().delete_list(list_id))
+    out = _proxy(lambda: _platform_call("delete_list", "delete list")(list_id))
     _invalidate_chat_folders()
     return out
 
@@ -6807,7 +6819,8 @@ class _DiscountBody(BaseModel):
 @app.put("/api/of/v2/subscriptions/{user_id}/discount")
 def of_set_subscription_discount(user_id: int, body: _DiscountBody = Body(...)):
     """OF web's "Give user a discount": PUT /subscriptions/{id}/discount {discount, period}."""
-    result = _proxy(lambda: _get_client().set_subscription_discount(user_id, body.discount, body.period))
+    result = _proxy(lambda: _platform_call("set_subscription_discount", "subscription discount")(
+        user_id, body.discount, body.period))
     _bust_chat_list_cache()
     return result
 

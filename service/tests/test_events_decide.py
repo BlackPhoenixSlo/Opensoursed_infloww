@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""events_decide: the SSE replay rings (decide_ring) and load-adaptive batching (decide_stream) of
-service/events.py as tables. Pure: no queue, no clock, no I/O.
-
-Pins: ids are `<epoch>.<seq>`, one seq across every ring; a ring keeps the newest RING_MAX (256) and
-remembers the highest seq it dropped; a reconnect from an id inside the ring replays what came after
-it, oldest first, no resync; from before it (an evicted id) resync + what the ring still holds; at
-the head nothing; from the future, another relay process or garbage, resync and nothing; another
-Creator's overflow never resyncs a stream that cannot see it; replays merge rings in seq order, in
-BATCH_MAX chunks (1 with batching off), each coalesced. A stream sends single frames at or under
-SSE_BATCH_MIN_RATE, opens a WINDOW_MS batch above it and a MAX_WINDOW_MS one above 10x; a batch takes
-frames until it is full (BATCH_MAX) or its window ends; a stream-ending frame closes the open batch
-or goes alone (order across batches through the real shell: test_sse_batching.py); coalescing drops
-only superseded typing / queue-progress frames, order kept. decide_ring never mutates its input.
-persist_plan: one event_inbox row per item in queue order except `typing`; the dedup key is the
-first of id / messageId / eventId, typed. A full queue displaces the oldest non-DM item
-(none when all are DMs); a stop takes DMs first, each group in queue order, input untouched. Routing (sees / wants): an Agency-wide event reaches only
-that audience whatever the scope; an untagged one only an unclamped "all"; an account event the
-scope that names it, then the clamp; ids compare as str. Classifiers: the account's own
-post_published is kept, other feed frames dropped; typing's fan id from id / user_id / fromUser /
-user; a typing frame is due at exactly the 3.0 s throttle, not before.
-
-Runs under pytest (parametrized tables) or as a script (the repo's convention, no pytest needed):
-    ./venv/bin/python service/tests/test_events_decide.py
-"""
 from __future__ import annotations
 
 import copy
@@ -39,20 +15,20 @@ from events_decide import (  # noqa: E402
 
 try:
     if __name__ == "__main__":
-        raise ImportError  # script mode uses the runner below, even with pytest installed
+        raise ImportError
     import pytest
     table = pytest.mark.parametrize
-except ImportError:  # script mode: the runner below calls each row
+except ImportError:
     def table(names, rows):
         def mark(fn):
             fn.rows = rows
             return fn
         return mark
 
-E = "abc123"                      # this relay process's epoch
-A, B = "9101", "9102"             # two Creators
+E = "abc123"
+A, B = "9101", "9102"
 KNOBS = Knobs(min_rate=5.0, window_ms=100.0, max_window_ms=250.0)
-OFF = Knobs(min_rate=5.0, window_ms=0.0, max_window_ms=250.0)   # SSE_BATCH_WINDOW_MS=0: batching off
+OFF = Knobs(min_rate=5.0, window_ms=0.0, max_window_ms=250.0)
 
 
 def dm(aid: str, mid: int, fan: int = 1) -> dict:
@@ -70,7 +46,6 @@ def publish(st: Rings, *frames) -> Rings:
 
 
 def flood(aid: str, n: int, st: Rings | None = None) -> Rings:
-    """`n` DMs on `aid`, message id == seq when published on a fresh state."""
     st = st or Rings(E)
     return publish(st, *(dm(aid, st.seq + i + 1) for i in range(n)))
 
@@ -84,7 +59,6 @@ def replayed(effects) -> list[int]:
 
 
 def shape(effects) -> list:
-    """Effects as [("Resync",) | ("Emit", n) | ("Head", eid)]."""
     out = []
     for e in effects:
         out.append(("Emit", len(e.frames)) if isinstance(e, Emit) else
@@ -92,7 +66,6 @@ def shape(effects) -> list:
     return out
 
 
-# ── ids and rings ──
 def test_ids_are_one_seq_across_every_ring():
     st, seen = Rings(E), []
     for f in (dm(A, 1), dm(B, 2), {"permissions_changed": {}, "__agency": "owner-1"}, dm(A, 3)):
@@ -104,11 +77,11 @@ def test_ids_are_one_seq_across_every_ring():
 
 @table("frame, key", [
     (dm(A, 1), A),
-    ({"permissions_changed": {}, "__agency": "owner-1"}, ""),                     # Agency-wide
-    ({"permissions_changed": {}, "__agency": "owner-1", "__account_id": A}, ""),  # __agency wins
-    ({"toasts": {}}, ""),                                                         # no account at all
+    ({"permissions_changed": {}, "__agency": "owner-1"}, ""),
+    ({"permissions_changed": {}, "__agency": "owner-1", "__account_id": A}, ""),
+    ({"toasts": {}}, ""),
     ({"toasts": {}, "__account_id": ""}, ""),
-    ({"toasts": {}, "__account_id": 9101}, "9101"),                               # ids as strings
+    ({"toasts": {}, "__account_id": 9101}, "9101"),
 ])
 def test_ring_key(frame, key):
     assert ed.ring_key(frame) == key
@@ -116,8 +89,8 @@ def test_ring_key(frame, key):
 
 @table("n, kept_from, evicted", [
     (RING_MAX - 1, 1, None),
-    (RING_MAX, 1, None),               # full, nothing dropped yet
-    (RING_MAX + 1, 2, 1),              # the first overflow drops seq 1
+    (RING_MAX, 1, None),
+    (RING_MAX + 1, 2, 1),
     (RING_MAX + 10, 11, 10),
 ])
 def test_a_ring_keeps_the_newest_ring_max(n, kept_from, evicted):
@@ -133,23 +106,21 @@ def test_one_rings_overflow_leaves_the_others_alone():
     assert [s for s, _ in st.rings[B]] == [1] and B not in st.evicted and st.evicted[A] == 6
 
 
-# ── replay from a Last-Event-ID ──
-# A holds 261 DMs: 1..5 evicted, the ring holds 6..261 (message id == seq).
 FULL = flood(A, RING_MAX + 5)
 
 
 @table("last, resync, first, last_replayed", [
-    (None, False, None, None),           # a fresh connect: only the head
+    (None, False, None, None),
     ("", False, None, None),
-    (f"{E}.0", True, 6, 261),            # before the ring: resync + what it still holds
-    (f"{E}.4", True, 6, 261),            # an evicted id: seq 5 is lost
-    (f"{E}.5", False, 6, 261),           # the last evicted id: nothing lost, all replayed
-    (f"{E}.6", False, 7, 261),           # inside the ring
+    (f"{E}.0", True, 6, 261),
+    (f"{E}.4", True, 6, 261),
+    (f"{E}.5", False, 6, 261),
+    (f"{E}.6", False, 7, 261),
     (f"{E}.200", False, 201, 261),
     (f"{E}.260", False, 261, 261),
-    (f"{E}.261", False, None, None),     # the head: nothing missed
-    (f"{E}.262", True, None, None),      # after the head (the future): resync, nothing
-    ("other.6", True, None, None),       # another relay process
+    (f"{E}.261", False, None, None),
+    (f"{E}.262", True, None, None),
+    ("other.6", True, None, None),
     ("garbage", True, None, None),
     (f"{E}.x", True, None, None),
 ])
@@ -165,8 +136,8 @@ def test_replay_from_a_last_id(last, resync, first, last_replayed):
 
 
 @table("knobs, chunks", [
-    (KNOBS, [("Emit", BATCH_MAX), ("Emit", 256 - BATCH_MAX)]),   # BATCH_MAX per batch frame
-    (OFF, [("Emit", 1)] * 256),                                  # batching off: one frame each
+    (KNOBS, [("Emit", BATCH_MAX), ("Emit", 256 - BATCH_MAX)]),
+    (OFF, [("Emit", 1)] * 256),
 ])
 def test_replay_chunks(knobs, chunks):
     assert shape(connect(FULL, f"{E}.5", knobs=knobs)) == chunks + [("Head", f"{E}.261")]
@@ -178,7 +149,6 @@ def test_replay_merges_rings_in_seq_order_and_filters_what_the_stream_may_see():
         st = publish(st, dm((A, B, "9103")[i % 3], i))
     assert replayed(connect(st, f"{E}.2", sees=(A, B, "9103"))) == list(range(3, 13))
     assert replayed(connect(st, f"{E}.2", sees=(A,))) == [3, 6, 9, 12]
-    # `wants` filters inside a ring the stream sees (the Agency-wide "" ring is always read).
     agency = [{"permissions_changed": {"n": n}, "__agency": o} for n, o in ((1, "me"), (2, "them"))]
     st2 = publish(Rings(E), *agency)
     effects = connect(st2, f"{E}.0", sees=(), wants=lambda f: f.get("__agency") == "me")
@@ -214,16 +184,15 @@ def test_decide_ring_never_mutates_its_input():
     assert nxt.evicted == {A: 1} and st.evicted == {}
 
 
-# ── a stream's batching ──
 @table("rate, knobs, window", [
     (0.0, KNOBS, 0.0),
-    (5.0, KNOBS, 0.0),                     # at the threshold: still single frames
-    (5.01, KNOBS, 0.1),                    # over it: WINDOW_MS
-    (50.0, KNOBS, 0.1),                    # 10x exactly: still WINDOW_MS
-    (50.01, KNOBS, 0.25),                  # over 10x: MAX_WINDOW_MS
-    (50.01, Knobs(5.0, 300.0, 250.0), 0.3),  # the max window is never shorter than the window
-    (1e6, OFF, 0.0),                       # WINDOW_MS=0: batching off
-    (0.01, Knobs(0.0, 100.0, 250.0), 0.25),  # MIN_RATE=0: on for any traffic
+    (5.0, KNOBS, 0.0),
+    (5.01, KNOBS, 0.1),
+    (50.0, KNOBS, 0.1),
+    (50.01, KNOBS, 0.25),
+    (50.01, Knobs(5.0, 300.0, 250.0), 0.3),
+    (1e6, OFF, 0.0),
+    (0.01, Knobs(0.0, 100.0, 250.0), 0.25),
 ])
 def test_window(rate, knobs, window):
     assert window_s(rate, knobs) == window
@@ -241,18 +210,18 @@ def _deliver(st: Stream, now: float, *, open_n=0, deadline=0.0, ends=False, knob
 
 
 @table("rate_before, open_n, deadline, now, ends, effect", [
-    (0.0, 0, 0.0, 10.0, False, Send()),                     # quiet: on its own
-    (4.0, 0, 0.0, 10.0, False, Send()),                     # 4 + 1 = 5: not over the threshold
-    (5.0, 0, 0.0, 10.0, False, Open(10.1)),                 # 6/s: a WINDOW_MS batch
-    (60.0, 0, 0.0, 10.0, False, Open(10.25)),               # hot: MAX_WINDOW_MS
-    (60.0, 1, 10.05, 10.0, False, Append()),                # an open batch takes it
-    (60.0, BATCH_MAX - 1, 10.05, 10.0, False, Append()),    # the BATCH_MAX-th frame still fits
-    (60.0, BATCH_MAX, 10.05, 10.0, False, Open(10.25)),     # full: the next opens a new batch
-    (60.0, 3, 10.0, 10.0, False, Open(10.25)),              # its window is over: a new batch
-    (0.0, 3, 10.0, 10.0, False, Send()),                    # ... or alone once the rate fell
-    (60.0, 3, 0.0, 10.0, False, Open(10.25)),               # a closed batch (deadline 0) takes nothing
-    (60.0, 3, 10.05, 10.0, True, Append(close=True)),       # stream-ending: joins and closes it
-    (60.0, 0, 0.0, 10.0, True, Send()),                     # stream-ending, nothing open: alone
+    (0.0, 0, 0.0, 10.0, False, Send()),
+    (4.0, 0, 0.0, 10.0, False, Send()),
+    (5.0, 0, 0.0, 10.0, False, Open(10.1)),
+    (60.0, 0, 0.0, 10.0, False, Open(10.25)),
+    (60.0, 1, 10.05, 10.0, False, Append()),
+    (60.0, BATCH_MAX - 1, 10.05, 10.0, False, Append()),
+    (60.0, BATCH_MAX, 10.05, 10.0, False, Open(10.25)),
+    (60.0, 3, 10.0, 10.0, False, Open(10.25)),
+    (0.0, 3, 10.0, 10.0, False, Send()),
+    (60.0, 3, 0.0, 10.0, False, Open(10.25)),
+    (60.0, 3, 10.05, 10.0, True, Append(close=True)),
+    (60.0, 0, 0.0, 10.0, True, Send()),
     (60.0, BATCH_MAX, 10.05, 10.0, True, Send()),
 ])
 def test_deliver(rate_before, open_n, deadline, now, ends, effect):
@@ -269,17 +238,16 @@ def test_window_off_sends_everything_alone():
         assert effect == Send()
 
 
-# ── coalescing ──
 @table("frames, kept", [
-    ([typing(A, 1, 1), typing(A, 1, 2)], [2]),                         # newest per fan
-    ([typing(A, 1, 1), typing(A, 2, 2), typing(A, 1, 3)], [2, 3]),     # at the newest's position
-    ([typing(A, 1, 1), typing(B, 1, 2)], [1, 2]),                      # per account
-    ([dm(A, 1), dm(A, 1), dm(A, 1)], [1, 1, 1]),                       # DMs never
+    ([typing(A, 1, 1), typing(A, 1, 2)], [2]),
+    ([typing(A, 1, 1), typing(A, 2, 2), typing(A, 1, 3)], [2, 3]),
+    ([typing(A, 1, 1), typing(B, 1, 2)], [1, 2]),
+    ([dm(A, 1), dm(A, 1), dm(A, 1)], [1, 1, 1]),
     ([{"chat_queue_update": {"id": 5, "n": 1}}, {"chat_queue_update": {"id": 5, "n": 2}},
       {"chat_queue_update": {"id": 6, "n": 3}}], [2, 3]),
-    ([{"chat_typing": {"n": 1}}, {"chat_typing": {"n": 2}}], [1, 2]),  # no fan id: kept
+    ([{"chat_typing": {"n": 1}}, {"chat_typing": {"n": 2}}], [1, 2]),
     ([{"chat_queue_finish": {"id": 5, "n": 1}}, {"chat_queue_finish": {"id": 5, "n": 2}}], [1, 2]),
-    ([{"creator_refreshed": {"account_id": A, "n": 1}, "__account_id": A},              # newest snapshot per Creator
+    ([{"creator_refreshed": {"account_id": A, "n": 1}, "__account_id": A},
       {"creator_refreshed": {"account_id": B, "n": 2}, "__account_id": B},
       {"creator_refreshed": {"account_id": A, "n": 3}, "__account_id": A}], [2, 3]),
 ])
@@ -289,7 +257,6 @@ def test_coalesce(frames, kept):
     assert out[-1] is frames[-1], "the last frame is always kept (the batch keeps its id)"
 
 
-# ── the persist worker's batch ──
 def item(aid, event_type):
     return ed.PersistItem(aid, event_type, {}, {"__account_id": aid})
 
@@ -301,9 +268,9 @@ def pid(event_type, persistable):
 @table("batch, rows", [
     ([], []),
     ([item(A, "api2_chat_message")], [(A, "api2_chat_message")]),
-    ([item(A, "typing")], []),                                                   # no row
+    ([item(A, "typing")], []),
     ([item(A, "a"), item(B, "typing"), item(B, "b"), item(A, "c")], [(A, "a"), (B, "b"), (A, "c")]),
-    ([item(A, None)], [(A, "unknown")]),                                         # no type
+    ([item(A, None)], [(A, "unknown")]),
 ])
 def test_persist_plan(batch, rows):
     got = ed.persist_plan(batch)
@@ -315,7 +282,7 @@ def test_persist_plan(batch, rows):
     ({"id": 5}, "t:5"),
     ({"messageId": 6, "eventId": 7}, "t:6"),
     ({"eventId": 7}, "t:7"),
-    ({"id": None, "eventId": 7}, "t:7"),      # a None id is no key
+    ({"id": None, "eventId": 7}, "t:7"),
     ({"x": 1}, None),
     ("not a dict", None),
 ])
@@ -323,60 +290,55 @@ def test_inbox_row_dedup_key(persistable, want):
     assert pid("t", persistable) == want
 
 
-# ── routing ──
 OWNER, OTHER = "owner-1", "owner-2"
 CLAMP = frozenset({A})
 
 
 @table("scope, accounts, account_id, seen", [
-    ("all", None, A, True),                    # unclamped all sees every account
+    ("all", None, A, True),
     ("all", CLAMP, A, True),
-    ("all", CLAMP, B, False),                  # the clamp: not one of the session's Creators
-    ("all", frozenset(), A, False),            # a session with no Creators sees none
+    ("all", CLAMP, B, False),
+    ("all", frozenset(), A, False),
     (f"model:{A}", None, A, True),
     (f"model:{A}", CLAMP, A, True),
-    (f"model:{A}", None, B, False),            # model scope: only that account
-    (f"model:{B}", CLAMP, B, False),           # scope names it, the clamp still holds
-    (f"model:{A}", CLAMP, int(A), True),       # an int id compares as its str
+    (f"model:{A}", None, B, False),
+    (f"model:{B}", CLAMP, B, False),
+    (f"model:{A}", CLAMP, int(A), True),
     ("all", CLAMP, int(B), False),
     ("model:", None, A, False),
-    ("bogus", None, A, False),                 # unknown scope: registered, never matched
+    ("bogus", None, A, False),
 ])
 def test_sees(scope, accounts, account_id, seen):
     assert ed.sees(scope, accounts, account_id) is seen
 
 
 @table("scope, accounts, agencies, event, wanted", [
-    # Agency-wide: only that audience, whatever the scope or clamp.
     ("all", CLAMP, frozenset({OWNER}), {"permissions_changed": {}, "__agency": OWNER}, True),
     (f"model:{B}", frozenset(), frozenset({OWNER}), {"permissions_changed": {}, "__agency": OWNER}, True),
     ("all", None, frozenset({OTHER}), {"permissions_changed": {}, "__agency": OWNER}, False),
     ("all", None, frozenset(), {"permissions_changed": {}, "__agency": OWNER}, False),
-    ("all", CLAMP, frozenset({"1"}), {"permissions_changed": {}, "__agency": 1}, True),         # int agency id
+    ("all", CLAMP, frozenset({"1"}), {"permissions_changed": {}, "__agency": 1}, True),
     ("all", CLAMP, frozenset({OTHER}), {"permissions_changed": {}, "__agency": OWNER, "__account_id": A},
-     False),                                                                                    # __agency wins
-    # Untagged: only an unclamped "all".
+     False),
     ("all", None, frozenset(), {"toasts": {}}, True),
     ("all", CLAMP, frozenset({OWNER}), {"toasts": {}}, False),
     (f"model:{A}", None, frozenset(), {"toasts": {}}, False),
-    # Account events: scope, then the clamp.
     ("all", CLAMP, frozenset({OWNER}), dm(A, 1), True),
     ("all", CLAMP, frozenset({OWNER}), dm(B, 1), False),
     ("all", None, frozenset(), dm(B, 1), True),
     (f"model:{A}", None, frozenset(), dm(A, 1), True),
     (f"model:{A}", None, frozenset(), dm(B, 1), False),
-    ("all", CLAMP, frozenset(), {"toasts": {}, "__account_id": int(A)}, True),                  # int id
+    ("all", CLAMP, frozenset(), {"toasts": {}, "__account_id": int(A)}, True),
 ])
 def test_wants(scope, accounts, agencies, event, wanted):
     assert ed.wants(scope, accounts, agencies, event) is wanted
 
 
-# ── classifiers ──
 @table("event, account_id, noise", [
-    ({"post_published": {"id": 1, "user_id": int(A)}}, A, False),     # the account's own post is kept
+    ({"post_published": {"id": 1, "user_id": int(A)}}, A, False),
     ({"post_published": {"id": 1, "user_id": A}}, int(A), False),
-    ({"post_published": {"id": 1, "user_id": 77}}, A, True),          # another creator's
-    ({"post_published": {"id": 1, "user_id": int(A)}}, None, True),   # no account: noise
+    ({"post_published": {"id": 1, "user_id": 77}}, A, True),
+    ({"post_published": {"id": 1, "user_id": int(A)}}, None, True),
     ({"post_expire": {"id": 1}}, A, True),
     ({"post_updated": {"id": 1}, "__account_id": A}, A, True),
     ({"post_fundraising_updated": {"id": 1}}, A, True),
@@ -394,7 +356,7 @@ def test_is_feed_noise(event, account_id, noise):
     ({"user_id": 502}, 502),
     ({"fromUser": {"id": 503}}, 503),
     ({"user": {"id": 504}}, 504),
-    ({"id": "x", "user_id": 505}, 505),        # first int-able wins
+    ({"id": "x", "user_id": 505}, 505),
     ({"id": 1, "user_id": 2}, 1),
     ({"fromUser": "x", "user": {"id": 506}}, 506),
     ({}, None),
@@ -406,10 +368,10 @@ def test_typing_fan_id(payload, fan):
 
 
 @table("last_at, now, due", [
-    (None, 0.0, True),                          # never sent
+    (None, 0.0, True),
     (10.0, 10.0, False),
     (10.0, 12.999, False),
-    (10.0, 13.0, True),                         # the 3.0 s edge is due
+    (10.0, 13.0, True),
     (10.0, 20.0, True),
 ])
 def test_typing_due(last_at, now, due):
@@ -426,7 +388,6 @@ def test_sse_types():
 
 
 def _ended_rings(*frames, evicted=None):
-    """Ring "" holding `frames` at seqs 1..n; `evicted` its highest dropped seq."""
     return ed.Rings(E, len(frames), {"": tuple((i + 1, f) for i, f in enumerate(frames))},
                     {"": evicted} if evicted is not None else {})
 
@@ -436,18 +397,16 @@ _OTHER = {"chat_responded": {"fan_id": 1}}
 
 
 def test_ended_since(frames, since, evicted, wants, expected):
-    """A stream opening after a grant read at `since` ends at once only for a stream-ending frame it wants
-    after `since`, or when ring "" evicted past `since` (W30-mu #55)."""
     assert ed.ended_since(_ended_rings(*frames, evicted=evicted), since, lambda f: wants) is expected
 
 
 test_ended_since.rows = [
-    ((_END,), 1, None, True, False),            # ending frame AT since: the grant read saw it
-    ((_OTHER, _END), 1, None, True, True),      # ending frame after since, wanted
-    ((_OTHER, _END), 1, None, False, False),    # ending frame after since, not wanted
-    ((_END, _OTHER), 1, None, True, False),     # only a non-ending frame after since
-    ((), 5, 5, True, False),                    # evicted exactly up to since: nothing missed
-    ((), 5, 6, True, True),                     # evicted past since: fail closed
+    ((_END,), 1, None, True, False),
+    ((_OTHER, _END), 1, None, True, True),
+    ((_OTHER, _END), 1, None, False, False),
+    ((_END, _OTHER), 1, None, True, False),
+    ((), 5, 5, True, False),
+    ((), 5, 6, True, True),
 ]
 
 

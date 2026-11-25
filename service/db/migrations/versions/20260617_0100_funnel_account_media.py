@@ -1,29 +1,3 @@
-"""funnel_account_media — per-(funnel, account) media binding
-
-Revision ID: 0035_funnel_account_media
-Revises: 0034_ppv_catalog
-Create Date: 2026-06-17
-
-A funnel's TEXT (opener + step copy/prompts/price) stays GLOBAL on
-`mass_message_funnels` (shared across all of an owner's models). Its MEDIA does
-NOT belong there: an OnlyFans vault id is per-account, so a media id picked on
-model A is meaningless in model B's vault. This adds a NEW per-account table so
-each model maps its OWN vault media to a shared funnel's opener + steps;
-reply_mass_funnel / send_mass_message resolve it by (funnel_id, account_id) at
-SEND time.
-
-  funnel_account_media — NEW. Composite PK (funnel_id, account_id).
-      opening_media_ids TEXT  — JSON int array (the opener's vault media).
-      steps_media_json  TEXT  — JSON object keyed by step number →
-                                {"media_files": [...], "previews": [...]}.
-
-DATA-SAFE rollout: the old global media columns on `mass_message_funnels`
-(vault_folder / media_indices / opening_*) are LEFT in place (nullable) as the
-runtime fallback for any (funnel, account) pair not yet seeded here — remove
-them in a later migration once every funnel has per-account media.
-
-Additive + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -38,6 +12,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+# Old global media columns on mass_message_funnels stay in place as the runtime fallback for pairs not yet seeded here.
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)

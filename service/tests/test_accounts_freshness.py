@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""First paint of each Creator's `Freshness` (phase-01 Contract 4, seam 3): with SHARED_REFRESHER=1 (module reloaded)
-every Creator row of `GET /admin/accounts` and `GET /chatter/me/accounts` carries `freshness`, the Shared refresher's
-snapshot (`shared_refresher.snapshot`, Contract 1: `now`, `boot`, `seq` included, `cycle_s` null when not tracked),
-read from Relay memory with 0 OF calls. Watchers carry none (never tracked). Knob off: no row carries the field.
-
-Run: ./venv/bin/python service/tests/test_accounts_freshness.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402  (first: temp DB)
 

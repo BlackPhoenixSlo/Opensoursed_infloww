@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""Guard: no Background read in service/ (tests excluded) marks a chat read on OF.
-
-  case_every_service_reader_peeks  every `get_messages` call that can be a first page (no
-                                   `offset=`, no `before_id=` that is never None) passes the
-                                   literal `peek=True`; the one exception is the Relay thread
-                                   route (server.py `get_messages`), which forwards its
-                                   request's `peek` (it serves Click reads). `offset=` calls
-                                   are the asc backfill: it cannot peek, the scrape defers it
-                                   on an unread chat instead.
-  case_every_thread_url_is_allowed an OF `/chats/{id}/messages` URL built anywhere but the
-                                   allowlisted functions below fails, with its reason.
-  case_scan_catches_offenders      planted calls and URLs fail with file:line; the to_thread,
-                                   lambda, partial and bare-reference forms are all seen.
-A new reader that forgets either fails here with file:line.
-
-Run: ./venv/bin/python service/tests/test_background_reads_peek.py
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401 — MUST be first (binds temp DB)
@@ -25,9 +8,7 @@ import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 _SERVICE = Path(__file__).resolve().parents[1]
-# (file, enclosing top-level function) that may pass its own `peek` Name through.
 _ROUTES = {("server.py", "get_messages")}
-# (file, function) that may build an OF thread URL, and why it never marks a chat read.
 _URL_ALLOWED = {
     ("of_reads.py", "get_messages"): "takes `peek`; its callers are checked above",
     ("of_reads.py", "get_pinned_messages"): "always sends PEEK_CURSOR (test_of_reads_peek)",
@@ -68,7 +49,6 @@ def _is_to_thread(func: ast.AST) -> bool:
 
 
 def scan(source: str, rel: str) -> tuple[list[str], int]:
-    """(offending `rel:line`s, readers checked) for one module's source."""
     bad: list[str] = []
     checked = 0
     seen: set[int] = set()
@@ -101,7 +81,6 @@ def scan(source: str, rel: str) -> tuple[list[str], int]:
 
 
 def _of_url_text(n: ast.AST) -> str | None:
-    """An OF URL's text: an f-string on `API_BASE`, or a literal naming /api2/v2/."""
     if isinstance(n, ast.JoinedStr):
         if not any(isinstance(v, ast.FormattedValue) and isinstance(v.value, ast.Name)
                    and v.value.id == "API_BASE" for v in n.values):
@@ -113,7 +92,6 @@ def _of_url_text(n: ast.AST) -> str | None:
 
 
 def scan_urls(source: str, rel: str) -> list[str]:
-    """`rel:line (function)` of each OF thread URL built outside `_URL_ALLOWED`."""
     bad: list[str] = []
     docstrings = set()
 
@@ -170,11 +148,11 @@ def case_scan_catches_offenders():
         ("client.get_messages(1, peek=flag)", 1),
         ("client.get_messages(1, **kw)", 1),
         ("client.get_messages(1, peek=True)", 0),
-        ("client.get_messages(1, before_id=cursor)", 1),          # None on page 1
+        ("client.get_messages(1, before_id=cursor)", 1),
         ("client.get_messages(1, before_id=cursor, peek=True)", 0),
-        ("client.get_messages(1, before_id=int(m) + 1)", 0),      # never None
+        ("client.get_messages(1, before_id=int(m) + 1)", 0),
         ("client.get_messages(1, before_id=None)", 1),
-        ("client.get_messages(1, order='asc', offset=0)", 0),     # the asc backfill
+        ("client.get_messages(1, order='asc', offset=0)", 0),
         ("asyncio.to_thread(client.get_messages, 1, limit=5)", 1),
         ("asyncio.to_thread(client.get_messages, 1, peek=True)", 0),
         ("asyncio.to_thread(client.get_messages, 1, order='asc', offset=o)", 0),
@@ -199,9 +177,9 @@ def case_scan_catches_offenders():
          "of_reads.py", 0),
         ('def get_pinned_messages(self, c):\n    return self.get_json(f"{API_BASE}/chats/{c}/messages")',
          "x.py", 1),
-        ('def f(self, c):\n    """GET /api2/v2/chats/{c}/messages"""\n    return 1', "x.py", 0),   # docstring
+        ('def f(self, c):\n    """GET /api2/v2/chats/{c}/messages"""\n    return 1', "x.py", 0),
         ('def f(self, c):\n    return self.get_json(f"{API_BASE}/chats/{c}/media")', "x.py", 0),
-        ('ROUTE = "/api/of/v2/chats/{chat_id}/messages"', "x.py", 0),                  # a Relay route
+        ('ROUTE = "/api/of/v2/chats/{chat_id}/messages"', "x.py", 0),
     ]
     for src, rel, want in url_cases:
         got = len(scan_urls(src, rel))

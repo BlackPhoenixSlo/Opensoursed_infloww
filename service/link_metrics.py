@@ -1,90 +1,3 @@
-"""service/link_metrics.py — Free trial links' and Profile promotions' per-link
-figures (Infloww's Earnings, Fans who spent, Spend/Claim, AEPS; a promotion's
-"Revenue from N fans"), the Details fan table's "Since claim / Lifetime" spend,
-and the operator's Promo cost, Source and Tag on Free trial links and Tracking
-links (Infloww's Edit dialog; stored here, never written to OnlyFans), and their List:
-the OnlyFans fan list the link's claimers go into through OF's own add-to-list.
-
-The same machinery as of_tracking_api's tracking-link earnings: OF's claimers
-list per link x our `transactions` ledger, in TRACKED_STATUSES, by the same
-kind buckets, one walk at a time per account (the same per-account walk lock,
-of_tracking_api.walk_lock, so the tracking-link and trial/promo walks never hit OF
-at once; the Growth routes never take it). What differs:
-
-  * The claimers are OF's /subscriptions/subscribers?filter[trial_id|promoId]
-    (OFClient.offer_claims). Each fan carries subscribedOnData: subscribeAt
-    (the fan's current subscription start, OF's only date per fan) and the
-    lifetime *Summ in dollars (net: matched to our net_cents to the cent, see
-    .scratch/tracking-links-earnings/live-verification.md). Promotion
-    claimers carry the same subscribedOnData as trial ones (confirmed live
-    2026-10-18, .scratch/growth-todo/capture.md). They are kept in
-    `link_claimers`, so subscribeAt is the one first seen and is never moved
-    later, and the walk survives a restart.
-  * A walk re-runs only when OF's claim count for the link (the list call's
-    claimCounts / claimsCount) differs from the count at the last walk.
-  * Spend through the link = the fan's ledger rows at or after subscribeAt. A
-    fan claimed by several trial links or promotions has each row attributed
-    to the claim with the latest subscribeAt at or before it (Infloww: "each
-    fan's spending is always attributed to the last free trial link, tracking
-    link or promotion campaign"; tracking links keep their own time slices).
-  * A fan OF sends without subscribedOnData has no subscribeAt: first-seen
-    time is shown, and the fan's spend is "—" rather than a guess.
-  * Lazy refresh: the list routes return what is cached with the time it was
-    last checked; past _STALE_S they start a background refresh, which reuses
-    the counts the list call already read from OF (no second list read).
-  * Pre-warm: link_prewarm.prewarm_all (hourly, server.py) walks, by
-    default, only Creators and links with a List (LINK_PREWARM_SCOPE there).
-  * Lifetime sums (Details only) are re-read with the walk. A link whose
-    count did not move is re-walked in the background when its Details are
-    opened past _STALE_S after the last walk; the list figures come from the
-    ledger and never need it.
-  * List: OF's "Add to list" adds every current claimer in one call and adds
-    nobody twice (live 2026-10-18 on a tracking link, 2026-10-19 on a trial
-    link and a promotion: {"count": n}, then {"count": 0}). It runs
-    once when a List is first saved, then again only when the link's claim
-    count grows past the count at the last add (`refresh()` for trial links,
-    of_tracking_api's earnings read for tracking links), under the account's
-    lock, paced; an OF error backs the account's adds off. Those reads run
-    when a page is open and on the hourly pre-warm, so later claimers wait
-    for the next one. Changing the List moves future adds only; clearing it stops them.
-    A pass reads its rows once and re-reads each link's List before its add:
-    one changed or cleared meanwhile is skipped (an add already sent to OF
-    still lands in the old list), and the save's own add covers a new one.
-  * Profile promotions' List is one account-level setting (Infloww's "Add
-    fans to list" switch and list, promo_list_settings), not per promotion.
-    While it is on, each promotions pass first points every promotion with
-    claims at the setting's list (a promotion newly pointed there counts as
-    not added yet), then applies the same count rule; off, nothing is added.
-    Turning it on or changing it queues one pass at once, on the counts last
-    read (a low one costs one more idempotent add later).
-  * A re-armed promotion (automations/promo_reactivate re-points of_promo_id)
-    keeps its earlier OF promos in link_meta under our campaign id, so the
-    campaign's figures add up across re-arms.
-
-The walk: pages of 20, the most OF reads per call on /subscriptions/subscribers
-(live 2026-10-18 on 96 fans: limit 10, 15 and 20 return every fan in the same
-order; limit 21 lost 4 and limit 50 lost 52, silently, gaps but no dups).
-Neither a short page nor hasMore ends it: OF answered offset 0 with 9 fans and
-offset 10 with 10 more, both hasMore:true, pages run short mid-list, and
-hasMore can be true on an empty page. So the offset moves by the page size, and
-the walk ends on an empty page, an explicit hasMore:false, or a short page once
-the offset is past the link's claim count. A link whose claim count OF reports
-but whose list is empty (an old promotion: 2 claims, 0 rows at every limit)
-ends on the first, empty, page and is stored with no fans; it is re-walked only
-when the count moves, like any other.
-
-Routes (owner-gated, under /admin/*):
-  GET /admin/link-metrics/fans?account_id=&kind=trial|promo&of_id=[&campaign_id=][&count=]
-      the Details rows: since-claim spend by kind (gross and net) and OF's
-      lifetime sums; walks a never-walked link on demand.
-  PUT /admin/link-meta   {account_id, kind: trial|campaign, of_id, promo_cost,
-      source, tags, list_id, list_name}   the Edit dialog's save.
-  PUT /admin/link-meta/batch   {account_id, kind, of_ids, [promo_cost], [source], [tags]}
-      batch edit: the fields sent are set on every link, the rest left alone.
-  GET /admin/promo-list?account_id=   Profile promotion's "Add fans to list":
-      {enabled, list_id, list_name}
-  PUT /admin/promo-list   {account_id, enabled, list_id, list_name}
-"""
 from __future__ import annotations
 
 import asyncio
@@ -112,15 +25,16 @@ log = logging.getLogger("of-relay.link_metrics")
 
 router = APIRouter()
 
-WALKED = ("trial", "promo")       # kinds whose claimers we walk
-EDITABLE = ("trial", "campaign")  # kinds with Infloww's Edit dialog (promo cost, source, tag)
+WALKED = ("trial", "promo")
+EDITABLE = ("trial", "campaign")
 
-_STALE_S = 3600.0                 # cached figures up to an hour old are fine
-_FAIL_BACKOFF_S = 300.0           # after an OF failure, no new refresh for this long
-_PAGE = 20                        # the most OF reads per call here; above 20 it skips fans (module note)
-_PAGE_SLEEP_S = 0.4               # between pages, as transaction_ingest paces OF
-_MAX_EXTRA_PAGES = 5              # past the claim count before giving up on an offset OF ignores
-_UNKNOWN_MAX_PAGES = 200          # an on-demand walk with no count to go by
+_STALE_S = 3600.0
+_FAIL_BACKOFF_S = 300.0
+# The most OF reads per call on /subscriptions/subscribers: limit 21 silently lost 4 fans and 50 lost 52 (gaps, no dups).
+_PAGE = 20
+_PAGE_SLEEP_S = 0.4
+_MAX_EXTRA_PAGES = 5
+_UNKNOWN_MAX_PAGES = 200
 
 _LIFETIME = ("total", "subs", "posts", "messages", "streams", "tips")
 _SUMM = {"total": "totalSumm", "subs": "subscribesSumm", "posts": "postsSumm",
@@ -128,17 +42,16 @@ _SUMM = {"total": "totalSumm", "subs": "subscribesSumm", "posts": "postsSumm",
 
 _REFRESHING: set[tuple[str, str]] = set()
 _FAILED_AT: dict[tuple[str, str], float] = {}
-_TASKS: set[asyncio.Task] = set()   # strong refs, so a running refresh is not collected
-_REWALKING: set[tuple[str, str, int]] = set()   # Details' stale re-walks queued or running
-_LIST_QUEUED: set[tuple[str, str, int]] = set()  # a save's first add-to-list, queued or running
-_LIST_FAILED_AT: dict[str, float] = {}           # account -> the last failed add-to-list (back-off)
+_TASKS: set[asyncio.Task] = set()  # strong refs, so a running refresh is not collected
+_REWALKING: set[tuple[str, str, int]] = set()
+_LIST_QUEUED: set[tuple[str, str, int]] = set()
+_LIST_FAILED_AT: dict[str, float] = {}
 
 
 def _now() -> datetime:
     return datetime.utcnow()
 
 
-# ── The walk ──────────────────────────────────────────────────────────
 
 def _parse_claimer(u: dict) -> dict | None:
     fid = safe_int(u.get("id"))
@@ -155,10 +68,9 @@ def _parse_claimer(u: dict) -> dict | None:
     }
 
 
+# Neither a short page nor hasMore ends the walk (OF returned 9 fans at offset 0, 10 at offset 10, hasMore true; hasMore can be true on an empty page).
+# So the offset moves by the page size and the walk ends on an empty page, hasMore false, or a short page past the claim count.
 def walk(client, kind: str, of_id: int, expected: int | None) -> list[dict]:
-    """Every fan OF lists under the trial link / promotion. `expected` is OF's
-    claim count from the list call (None: not known). Raises on an OF error or
-    an unusable payload (the caller keeps the cache it had)."""
     fans: list[dict] = []
     seen: set[int] = set()
     offset = 0
@@ -185,8 +97,7 @@ def walk(client, kind: str, of_id: int, expected: int | None) -> list[dict]:
 
 async def _store_walk(account_id: str, kind: str, of_id: int, fans: list[dict],
                       count: int | None, campaign_id: int | None) -> None:
-    """Upsert the walked fans and the link's walk state. subscribe_at is kept
-    from first sight: an existing value is never moved later."""
+    # subscribe_at is kept from first sight and never moved later (OF's current subscribeAt is its only date per fan).
     now = _now()
     async with get_session() as s:
         have = {c.fan_id: c for c in (await s.execute(
@@ -223,15 +134,12 @@ async def meta_row(s, account_id: str, kind: str, of_id: int) -> LinkMeta:
     return row
 
 
-# ── Refresh ───────────────────────────────────────────────────────────
 
-Link = tuple[int, int, "int | None"]   # (of_id, OF's claim count, our promo campaign id)
+Link = tuple[int, int, "int | None"]
 
 
+# One walk at a time under the account's walk lock, shared with of_tracking_api, so tracking-link and trial/promo walks never hit OF at once.
 async def refresh(account_id: str, kind: str, links: list[Link]) -> dict[str, int]:
-    """Re-walk the links whose OF claim count moved since their last walk, one
-    at a time under the account's walk lock; mark the rest checked. An OF failure
-    stops the pass (most likely a 429) and backs off; what was walked stays."""
     walked = checked = 0
     async with walk_lock(account_id):
         async with get_session() as s:
@@ -269,7 +177,8 @@ async def refresh(account_id: str, kind: str, links: list[Link]) -> dict[str, in
 
 
 async def _refresh_task(account_id: str, kind: str, links: list[Link]) -> None:
-    try:   # a background walk (of_pacing): paced per Creator, OF's 429 retried once
+    try:
+        # Background walk: paced per Creator, OF's 429 retried once.
         await of_pacing.walk(account_id, "link_refresh", lambda: refresh(account_id, kind, links))
     finally:
         _REFRESHING.discard((account_id, kind))
@@ -287,9 +196,6 @@ def _backed_off(account_id: str, kind: str) -> bool:
 
 
 def maybe_refresh(account_id: str, kind: str, links: list[Link], updated_at: datetime | None) -> bool:
-    """Start a background refresh when the cache is over an hour old (or was
-    never read), none is running for the account and kind, and OF did not just
-    fail. True when one is running after the call."""
     key = (account_id, kind)
     if key in _REFRESHING:
         return True
@@ -304,26 +210,21 @@ def maybe_refresh(account_id: str, kind: str, links: list[Link], updated_at: dat
     return True
 
 
-# ── OF's list rows as a refresh walks them ────────────────────────────
 
 def links_of_trials(fetched: list[dict]) -> list[Link]:
-    """OF's /trials rows (of_promos.fetch_of_trials) as a refresh walks them."""
     return [(t["of_trial_id"], safe_int(t.get("claim_counts")), None) for t in fetched if t.get("of_trial_id")]
 
 
+# A re-armed promotion keeps its earlier OF promos in link_meta under our campaign id, so the campaign's figures add up across re-arms.
 def links_of_promos(fetched: list[dict], mirrors: Iterable[PromoCampaign],
                     past: dict[int, list[int]]) -> list[Link]:
-    """OF's /promotions rows as a refresh walks them, each with our campaign id:
-    the campaign's current OF promo and its earlier re-arms (past_promo_ids)."""
     campaign_of = {o: m.id for m in mirrors for o in [m.of_promo_id, *past.get(m.id, [])] if o}
     return [(p["of_promo_id"], safe_int(p.get("subscriber_count")), campaign_of.get(p["of_promo_id"]))
             for p in fetched if p.get("of_promo_id")]
 
 
-# ── Figures: claimers x ledger ────────────────────────────────────────
 
 class _Book:
-    """The account's walked claimers and their attributed ledger spend."""
 
     def __init__(self, claimers, spend, ledger_since):
         self.claimers: dict[tuple[str, int], list[LinkClaimer]] = claimers
@@ -331,11 +232,9 @@ class _Book:
         self.ledger_since: datetime | None = ledger_since
 
 
+# Each ledger row goes to the claim with the latest subscribe_at at or before it (Infloww: spend belongs to the last link/promotion claimed).
+# TRACKED_STATUSES only (pending counted): refunds, chargebacks and failed rows are not revenue.
 async def _book(account_id: str) -> _Book:
-    """Every trial / promo claimer of the account, and each ledger row of
-    theirs attributed to the claim with the latest subscribe_at at or before it
-    (ties to the later-seen claim). TRACKED_STATUSES only: refunds, chargebacks
-    and failed rows are not revenue."""
     async with get_session() as s:
         rows = (await s.execute(select(LinkClaimer).where(
             LinkClaimer.account_id == account_id, LinkClaimer.kind.in_(WALKED)))).scalars().all()
@@ -379,8 +278,6 @@ async def _book(account_id: str) -> _Book:
 
 
 def _group_fans(book: _Book, kind: str, of_ids: Iterable[int]) -> dict[int, dict]:
-    """fan_id -> {claimer: the earliest claim's row, spend: summed buckets or
-    None when no claim of the fan's carries subscribe_at} over the group's links."""
     out: dict[int, dict] = {}
     for of_id in of_ids:
         for c in book.claimers.get((kind, of_id), []):
@@ -402,9 +299,7 @@ _UNWALKED = {"earnings_cents": None, "earnings_net_cents": None, "fans_who_spent
 
 
 def _figures(book: _Book, kind: str, of_ids: list[int]) -> dict[str, Any]:
-    """One row's figures over its walked claimers. Earnings None when no
-    claimer has a subscribe_at (OF sent no subscribedOnData). fans_counted is
-    the Spend/Claim and AEPS denominator: the claimers whose spend is known."""
+    # A fan OF sent without subscribedOnData has no subscribeAt: his spend is "—", never a guess.
     fans = _group_fans(book, kind, of_ids)
     known = [f["spend"] for f in fans.values() if f["spend"] is not None]
     if fans and not known:
@@ -412,7 +307,6 @@ def _figures(book: _Book, kind: str, of_ids: list[int]) -> dict[str, Any]:
     return {
         "earnings_cents": sum(r["total_cents"] for r in known),
         "earnings_net_cents": sum(r["total_net_cents"] for r in known),
-        # Spend/Claim's "purchased subscriptions, spent on content, or gave tips": any spend.
         "fans_who_spent": sum(1 for r in known if r["total_cents"] > 0),
         "fans_counted": len(known),
         "claimers": len(fans),
@@ -429,8 +323,6 @@ async def _walked_ids(account_id: str, kind: str) -> set[int]:
 
 
 async def past_promo_ids(account_id: str) -> dict[int, list[int]]:
-    """Our campaign id -> the OF promo ids recorded under it in link_meta: its
-    earlier re-arms, and the current one once a refresh has seen it."""
     async with get_session() as s:
         rows = (await s.execute(select(LinkMeta.campaign_id, LinkMeta.of_id).where(
             LinkMeta.account_id == account_id, LinkMeta.kind == "promo",
@@ -443,13 +335,6 @@ async def past_promo_ids(account_id: str) -> dict[int, list[int]]:
 
 async def for_list(account_id: str, kind: str, groups: dict[Any, list[int]],
                    links: list[Link] | None) -> dict[str, Any]:
-    """The list route's figures: {by: {group key: figures}, updated_at, refreshing}.
-
-    groups: row key -> the row's OF ids (a promotion campaign's every re-arm).
-    links:  what a refresh walks, with OF's counts from the list call; None
-            when OF was not reachable (no refresh is started on stale counts).
-    updated_at is when every one of `links` was last checked (None: some never
-    was); past an hour a background refresh starts."""
     walked = await _walked_ids(account_id, kind)
     book = await _book(account_id)
     # A row none of whose links was walked yet is "—", not 0.
@@ -468,7 +353,6 @@ async def for_list(account_id: str, kind: str, groups: dict[Any, list[int]],
     return {"by": by, "updated_at": iso_z(updated_at), "refreshing": refreshing}
 
 
-# ── Details: the link's fans ─────────────────────────────────────────
 
 def _lifetime(c: LinkClaimer) -> dict[str, int] | None:
     if c.lifetime_total_cents is None:
@@ -495,7 +379,7 @@ async def link_fans(account_id: str = Query(...), kind: str = Query(..., pattern
     moved = count is not None and walked and meta.claim_count != count
     if count != 0 and (not walked or moved):
         if walk_lock(account_id).locked():
-            refreshing = True        # a refresh is walking OF for this account; show what is cached
+            refreshing = True
         else:
             try:
                 await _walk_one(account_id, kind, of_id, count, campaign_id)
@@ -537,9 +421,6 @@ async def _walk_one(account_id: str, kind: str, of_id: int, count: int | None,
 
 
 def _rewalk_later(account_id: str, kind: str, of_id: int, count: int | None, campaign_id: int | None) -> bool:
-    """Queue one background re-walk of the link (Details' stale Lifetime). Not
-    while the account's walk lock is held (a walk is on OF already) or inside an OF
-    failure's back-off; once per link at a time. True while one is queued."""
     key = (account_id, kind, of_id)
     if key in _REWALKING:
         return True
@@ -553,7 +434,7 @@ def _rewalk_later(account_id: str, kind: str, of_id: int, count: int | None, cam
 
 
 async def _rewalk_task(account_id: str, kind: str, of_id: int, count: int | None, campaign_id: int | None) -> None:
-    try:   # a background walk (of_pacing), as _refresh_task
+    try:
         await of_pacing.walk(account_id, "link_rewalk", lambda: _walk_one(account_id, kind, of_id, count, campaign_id))
     except Exception:
         _FAILED_AT[(account_id, kind)] = time.monotonic()
@@ -562,7 +443,6 @@ async def _rewalk_task(account_id: str, kind: str, of_id: int, count: int | None
         _REWALKING.discard((account_id, kind, of_id))
 
 
-# ── List: OF's add-to-list on a link's claimers ──────────────────────
 
 def _list_backoff(account_id: str) -> bool:
     failed = _LIST_FAILED_AT.get(account_id)
@@ -570,9 +450,6 @@ def _list_backoff(account_id: str) -> bool:
 
 
 async def _add_one(account_id: str, client, kind: str, of_id: int, list_id: str, count: int) -> None:
-    """One OF add-to-list for the link; on success the count it covered is
-    recorded (if the link still feeds that list). An OF error backs the
-    account's adds off and re-raises."""
     try:
         r = await asyncio.to_thread(client.add_link_claimers_to_list, list_id, kind, of_id)
     except Exception:
@@ -587,9 +464,6 @@ async def _add_one(account_id: str, client, kind: str, of_id: int, list_id: str,
 
 
 async def _point_promos_at_setting(account_id: str, counts: dict[int, int]) -> bool:
-    """Profile promotions' account-level List: False when it is off. On, every
-    promotion with claims in `counts` feeds the setting's list; one that fed
-    another list (or none) is marked not added yet, so its claimers go in once."""
     async with get_session() as s:
         st = await s.get(PromoListSetting, account_id)
         if st is None or not st.enabled or not st.list_id:
@@ -606,26 +480,19 @@ async def _point_promos_at_setting(account_id: str, counts: dict[int, int]) -> b
 
 
 async def _current_list(account_id: str, kind: str, of_id: int) -> str | None:
-    """The link's List as stored now."""
     async with get_session() as s:
         return (await s.execute(select(LinkMeta.list_id).where(
             LinkMeta.account_id == account_id, LinkMeta.kind == kind, LinkMeta.of_id == of_id))).scalar_one_or_none()
 
 
 async def _promo_list_is(account_id: str, list_id: str) -> bool:
-    """The account's promotion List is on and is still `list_id`."""
     async with get_session() as s:
         st = await s.get(PromoListSetting, account_id)
         return st is not None and bool(st.enabled) and st.list_id == list_id
 
 
+# OF's add-to-list adds every current claimer and nobody twice, so two overlapping sync paths (walks here, of_tracking_api earnings read) are harmless.
 async def sync_lists(account_id: str, kind: str, client, counts: dict[int, int]) -> int:
-    """Under the account's walk lock (the walks here, of_tracking_api.prewarm) or
-    of_tracking_api._LOCKS (its earnings read, _compute): the two paths may both sync
-    at once, harmless as an add is idempotent (a fan already on the List stays). OF's add-to-list for each of the kind's links with a List whose
-    claim count (`counts`, from OF's list read) grew past the last add. Paced; the first OF error stops the pass (raised).
-    `client` None: one is made only if an add is due. Promotions follow the
-    account's one setting (off: nothing)."""
     if _list_backoff(account_id):
         return 0
     if kind == "promo" and not await _point_promos_at_setting(account_id, counts):
@@ -638,9 +505,7 @@ async def sync_lists(account_id: str, kind: str, client, counts: dict[int, int])
         n = counts.get(m.of_id)
         if not n or n <= 0 or (m.list_added_count is not None and n <= m.list_added_count):
             continue
-        # The rows were read once: a save since (List changed or cleared; for promotions, the setting off or on
-        # another list) skips this one, so later adds in the pass skip the old list. An add already sent to
-        # OnlyFans still lands there. The save's own add, queued behind this lock, covers a new list.
+        # Rows were read once: a save since (List changed/cleared, promo setting off) skips this link; an add already sent to OF still lands in the old list.
         if await _current_list(account_id, kind, m.of_id) != m.list_id or (
                 kind == "promo" and not await _promo_list_is(account_id, m.list_id)):
             continue
@@ -654,8 +519,6 @@ async def sync_lists(account_id: str, kind: str, client, counts: dict[int, int])
 
 
 def _known_count(account_id: str, kind: str, m: LinkMeta) -> int:
-    """The link's claim count as last read from OF (0 if never): what a save's
-    first add covers. A low guess costs one more idempotent add later."""
     if kind == "campaign":
         from of_tracking_api import _CLAIMERS_CACHE
         hit = _CLAIMERS_CACHE.get((account_id, m.of_id))
@@ -664,11 +527,6 @@ def _known_count(account_id: str, kind: str, m: LinkMeta) -> int:
 
 
 async def _list_add_task(account_id: str, kind: str, of_id: int) -> None:
-    """A save's first add-to-list, in the background under the account's walk lock
-    (a walk may hold it). Skipped if the List was cleared or added meanwhile;
-    a failure leaves it due, so the next refresh / earnings read retries after
-    the back-off. The queue mark covers only the wait for the lock: a save
-    after that queues its own add, whose mark this task leaves alone."""
     released = False
     try:
         async with walk_lock(account_id):
@@ -689,9 +547,8 @@ async def _list_add_task(account_id: str, kind: str, of_id: int) -> None:
             _LIST_QUEUED.discard((account_id, kind, of_id))
 
 
-# ── Promo cost, Source, Tag (the Edit dialog) ────────────────────────
 
-_TAG_MAX = 100       # Infloww's "Tag name" input
+_TAG_MAX = 100  # Infloww's "Tag name" input limit
 
 
 def _tags(row: LinkMeta | None) -> list[str]:
@@ -711,14 +568,10 @@ def meta_fields(row: LinkMeta | None) -> dict[str, Any]:
 
 
 async def meta_for(account_id: str, kind: str) -> tuple[dict[int, dict], list[str], list[str]]:
-    """(of_id -> {promo_cost_cents, link_source, tags, list_id, list_name}) for the kind, and the
-    account's Sources and Tags in use on any link (the dialog's suggestions and
-    the list's filter options; Infloww shares them between its link kinds)."""
     async with get_session() as s:
         rows = (await s.execute(select(LinkMeta).where(
             LinkMeta.account_id == account_id, LinkMeta.kind.in_(EDITABLE)))).scalars().all()
     by = {r.of_id: meta_fields(r) for r in rows if r.kind == kind}
-    # One spelling per value, case-insensitively (the save dedupes the same way).
     sources = sorted({r.source.lower(): r.source for r in rows if r.source}.values(), key=str.lower)
     tags = sorted({t.lower(): t for r in rows for t in _tags(r)}.values(), key=str.lower)
     return by, sources, tags
@@ -731,9 +584,6 @@ class _MetaBody(_MetaFields):
 
 
 def clean_meta(body: _MetaFields) -> dict[str, Any]:
-    """The fields as stored: cost in cents (None unset), a trimmed Source,
-    tags trimmed and deduped case-insensitively, the List (its name only with
-    an id). 422 on a tag over Infloww's 100 characters."""
     tags: list[str] = []
     for t in body.tags:
         t = (t or "").strip()
@@ -751,10 +601,6 @@ def clean_meta(body: _MetaFields) -> dict[str, Any]:
 
 async def store_meta(account_id: str, kind: str, of_id: int, meta: dict[str, Any],
                      claim_count: int | None = None) -> dict[str, Any]:
-    """Write clean_meta()'s fields to the link's row (the Edit dialog's save and
-    the Create dialog's). A List set or changed is not added to yet; with
-    `claim_count` (a new link: 0) that count counts as added. Then, if the
-    List is due its first add, one is queued in the background."""
     async with get_session() as s:
         row = await meta_row(s, account_id, kind, of_id)
         row.promo_cost_cents = meta["promo_cost_cents"]
@@ -828,12 +674,11 @@ async def save_link_meta_batch(body: _BatchBody = Body(...)) -> dict[str, Any]:
     return {"kind": body.kind, "of_ids": ids, "fields": fields}
 
 
-# ── Profile promotion: "Add fans to list" (account-level) ─────────────
 
 class _PromoListBody(BaseModel):
     account_id: str
     enabled: bool = False
-    list_id: str | None = Field(None, pattern=r"^\d{1,20}$")   # OF's custom list (a number)
+    list_id: str | None = Field(None, pattern=r"^\d{1,20}$")
     list_name: str | None = Field(None, max_length=64)
 
 
@@ -852,10 +697,6 @@ async def get_promo_list(account_id: str = Query(...)) -> dict[str, Any]:
 
 
 async def _promo_list_task(account_id: str) -> None:
-    """A save that turned the promotion List on or changed it: one pass now,
-    under the account's walk lock, on each promotion's last-read claim count. The
-    queue mark covers only the wait for the lock: a save after that queues one
-    more pass, whose mark this task leaves alone."""
     released = False
     try:
         async with walk_lock(account_id):

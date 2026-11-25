@@ -1,11 +1,3 @@
-"""service/toolbox_sends.py — the Toolbox send tools' args and echo checks, pure (ultra step 4).
-
-Send tools run only from an owner-approved Ultra plan (`toolbox.call(..., plan_step=...)`, that step `started` in the DB); never in
-MCP tools/list nor on the token allowlist. Each schema is narrower than its route's body: only the fields the
-plan card shows (Creator, audience, price, media, text). The text arg is `model_text`: `propose_plan` runs it
-through send_chain before the plan is stored, and the executor sends it byte-for-byte. auto_mass / auto_story
-make a switched-on automation rule instead (mass_premade / auto_stories from a vault folder).
-"""
 from __future__ import annotations
 
 import math
@@ -23,7 +15,6 @@ MAX_MEDIA = 50
 
 
 def _whole_cents(v: float) -> float:
-    """The card shows cents; a price with finer decimals would OK one figure and send another."""
     if not math.isfinite(v) or abs(v * 100 - round(v * 100)) > 1e-6:
         raise ValueError("price must be whole cents (e.g. 9.99)")
     return v
@@ -43,7 +34,7 @@ class _Paid(Args):
 
     @field_validator("price")
     @classmethod
-    def _price_band(cls, v: float) -> float:  # OnlyFans' own band; the same one the composer holds
+    def _price_band(cls, v: float) -> float:
         if v and not 3 <= v <= 200:
             raise ValueError("a price is 0 (free) or between $3 and $200")
         return v
@@ -86,8 +77,6 @@ class PostCreateArgs(_Paid):
     expire_days: int | None = Field(None, ge=1, description="Delete the post after this many days.")
 
 
-# Automation-rule sends: an ON rule from a vault folder, over POST /admin/automation-rules (`rule_body`); the
-# rule fires on the next executor tick, then every `every_hours`, until switched off.
 _FOLDER = "Vault folder id to pull random photos from (of_folders_list)."
 _EVERY = "Hours between runs; the first runs within a minute of this step starting. Runs until switched off."
 
@@ -117,12 +106,11 @@ class AutoStoryArgs(_Rule):
 
 
 RULE_KIND = {"auto_mass": "mass_premade", "auto_story": "auto_stories"}
-FOLDER_ARG = {"auto_mass": "media_folder_id", "auto_story": "folder_id"}  # an OF vault folder (of_folder_create)
+FOLDER_ARG = {"auto_mass": "media_folder_id", "auto_story": "folder_id"}
 
 
 def rule_body(kind: str, args: Mapping[str, Any]) -> dict[str, Any]:
-    """The validated args → create_rule's body: one ON rule of `RULE_KIND[kind]` on an interval."""
-    knobs = {k: v for k, v in args.items()  # an unset knob (None / [] / False) is left out; 0 is a value
+    knobs = {k: v for k, v in args.items()
              if k not in ("account_id", "every_hours") and v is not None and v is not False and v != []}
     payload = {"messages": [knobs]} if kind == "auto_mass" else knobs
     return {"account_id": args["account_id"], "kind": RULE_KIND[kind], "every_seconds": args["every_hours"] * 3600,
@@ -140,7 +128,6 @@ def _no_id(what: str) -> str:
 
 
 def check_mass_send(args: Mapping[str, Any], body: Any) -> str | None:
-    """OF's queue item carries its id; without one nothing proves the mass was queued (or that it was not)."""
     return None if isinstance(body, Mapping) and body.get("id") is not None else _no_id("mass message")
 
 
@@ -149,8 +136,6 @@ def check_post_create(args: Mapping[str, Any], body: Any) -> str | None:
 
 
 def kept_note(body: Any) -> str | None:
-    """The mass route's `_user_ids_kept` ({asked, kept}: the plan's fan ids left after its opt-out / queued-send
-    guards) → a plain note when fewer went out than were approved; None otherwise (a post never has one)."""
     k = body.get("_user_ids_kept") if isinstance(body, Mapping) else None
     asked, kept = (k.get("asked"), k.get("kept")) if isinstance(k, Mapping) else (None, None)
     if not (isinstance(asked, int) and isinstance(kept, int)) or kept >= asked:
@@ -158,7 +143,6 @@ def kept_note(body: Any) -> str | None:
     return f"sent to {kept} of {asked} fans by id: {asked - kept} skipped (opted out or already queued)"
 
 
-# ── the plan card's send rows (ultra_card.card) ───────────────────────────
 
 def _money(v: Any) -> str:
     if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -167,8 +151,6 @@ def _money(v: Any) -> str:
 
 
 def _ids(xs: list[Any]) -> str:
-    """Every literal id a send uses, for the card: the owner's OK covers exactly these (bounded by the args'
-    max_length: ≤1000 fan ids, ≤MAX_MEDIA media)."""
     return ", ".join(map(str, xs))
 
 
@@ -198,10 +180,6 @@ def _rule_rows(kind: str, args: Mapping[str, Any], shown: Mapping[str, Any]) -> 
 
 
 def card_rows(kind: str, args: Mapping[str, Any], shown: Mapping[str, Any] | None = None) -> list[list[str]]:
-    """A send step's card rows after its Creator (`kind`: the tool's text_kind): audience with the fan ids,
-    price, media ids, schedule, free previews, expiry; a rule's folder, interval and unsend / delete. Literal
-    args; `shown`: arg name → what the card shows for a reference in it (ultra_card): media_files → rows in place
-    of the Media row (a judge's picks), a rule's FOLDER_ARG → its words (a folder an earlier step makes)."""
     shown = shown or {}
     return _rule_rows(kind, args, shown) if kind in RULE_KIND else _send_rows(kind, args, shown)
 

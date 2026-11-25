@@ -1,15 +1,3 @@
-"""tx_scan_full_walk_failures — a failing ledger full walk stays visible through recent successes
-
-One nullable integer on transaction_scan_history: full walks failed or cut short since the last
-completed one. Before, a recent walk's success reset status/last_error to ok, so a full walk that
-failed every period read green (disputes poll, >24 h status flips, gap check never ran). > 0: /health
-is not green (status full_walk_failed between ticks); only a completed full walk resets it. NULL reads 0.
-Inspector-guarded + idempotent; init_db's additive-column catch-up adds it on boot too.
-
-Revision ID: 0111_tx_scan_full_walk_failures
-Revises: 0110_assistant_turn_thread
-Create Date: 2026-11-10
-"""
 from __future__ import annotations
 
 from typing import Sequence

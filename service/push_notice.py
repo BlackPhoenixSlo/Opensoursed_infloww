@@ -1,17 +1,3 @@
-"""
-One relay frame -> the OS notices the app would show for it (pure; push_send's input).
-
-Ports the app's three arrival lanes (app/components/toastStore.ts `dmArrival` with the
-tip fix, `purchaseArrival`, `toastArrival`) and what `pingNotification` pings with:
-title = name || username || BRAND_NAME, body = text || rawType || "New activity",
-href = app/lib/notificationLink.ts `notificationHref`. Helpers mirror
-app/lib/notifSettings.ts `mapOfTypeToKey`, app/lib/notifText.ts `renderText`,
-app/lib/format.ts `fmtPrice`. Shared cases: tests/fixtures/notice_cases.json (B3).
-
-Differences from the page, on purpose: no `["of-user"]` cache (a purchase's title is
-its payload name or the brand), no username -> id lookup, body capped at BODY_MAX (payload():
-title, body and href capped too).
-"""
 from __future__ import annotations
 
 import math
@@ -30,24 +16,22 @@ TYPES = frozenset({"api2_chat_message", "purchase_notified", "toasts"})
 
 @dataclass(frozen=True, slots=True)
 class Notice:
-    id: str                     # the lane's claimUnseen id ("m<msg id>" for a DM)
+    id: str
     account_id: str
-    type_key: str | None        # NotifTypeKey; None = an OF toast type the app can't name
+    type_key: str | None
     title: str
     body: str
     href: str | None
-    raw_type: str = ""          # Arrival.rawType: the payload's `type` (the app maps it with mapOfTypeToKey)
-    fan_id: Any = None          # the Fan it names (push_send's Split Inbox filter); never in the payload
+    raw_type: str = ""
+    fan_id: Any = None
 
     @property
     def tag(self) -> str:
         return f"{self.account_id}:{self.id}" if self.account_id else self.id
 
 
-# ── app helpers, ported ──
 
 def type_key_of(raw: Any) -> str | None:
-    """notifSettings.mapOfTypeToKey."""
     if not raw or not isinstance(raw, str):
         return None
     t = raw.lower()
@@ -73,7 +57,6 @@ _WS = re.compile(r"\s+")
 
 
 def render_text(raw: Any, replace_pairs: Any = None) -> str:
-    """notifText.renderText with tagSep " "."""
     s = raw if isinstance(raw, str) else ""
     if isinstance(replace_pairs, Mapping):
         for k, v in replace_pairs.items():
@@ -82,12 +65,10 @@ def render_text(raw: Any, replace_pairs: Any = None) -> str:
 
 
 def _round_half_up(x: float) -> int:
-    """JS Math.round."""
     return math.floor(x + 0.5)
 
 
 def fmt_price(cents: Any) -> str:
-    """format.fmtPrice: "$7", "$7.50", "$1,234.56"; None / NaN -> "—"."""
     n = _js_number(cents)
     if n is None:
         return "—"
@@ -97,7 +78,7 @@ def fmt_price(cents: Any) -> str:
     return f"{'-' if c < 0 else ''}${s}"
 
 
-_COMPONENT_SAFE = "!~*'()"    # encodeURIComponent's unescaped marks (plus alnum -_.)
+_COMPONENT_SAFE = "!~*'()"
 
 
 def _enc_component(s: str) -> str:
@@ -106,7 +87,6 @@ def _enc_component(s: str) -> str:
 
 
 def _form_enc(s: str) -> str:
-    """URLSearchParams' application/x-www-form-urlencoded byte serializer."""
     out = []
     for b in s.encode("utf-8"):
         c = chr(b)
@@ -120,7 +100,6 @@ def _form_enc(s: str) -> str:
 
 
 def notification_href(account_id: str, user: Mapping[str, Any], *, refresh: bool = False) -> str | None:
-    """notificationLink.notificationHref: the Fan's Deep link + `?refresh=media` (money) + `fanTab`."""
     acc = _enc_component(account_id)
     uid, name, username = user.get("id"), user.get("name"), user.get("username")
     if uid:
@@ -134,7 +113,6 @@ def notification_href(account_id: str, user: Mapping[str, Any], *, refresh: bool
     return path + "?" + "&".join(f"{_form_enc(k)}={_form_enc(v)}" for k, v in q)
 
 
-# ── JS value semantics the parsers lean on ──
 
 def _js_str(v: Any) -> str:
     if isinstance(v, bool):
@@ -145,7 +123,6 @@ def _js_str(v: Any) -> str:
 
 
 def _js_number(v: Any) -> float | None:
-    """`Number(v)` when finite, else None (Number(undefined) is NaN; null and "" are 0)."""
     if v is None:
         return None
     if isinstance(v, bool):
@@ -165,7 +142,6 @@ def _js_number(v: Any) -> float | None:
 
 
 def _first(*vals: Any) -> Any:
-    """JS `a || b || ...`: the first truthy value, else the last."""
     for v in vals:
         if v:
             return v
@@ -173,7 +149,6 @@ def _first(*vals: Any) -> Any:
 
 
 def is_fan_id(v: Any) -> bool:
-    """fanId.isValidFanId: a positive integer, as a number or a digit string."""
     if isinstance(v, bool) or not isinstance(v, (int, float, str)):
         return False
     if isinstance(v, float):
@@ -197,10 +172,8 @@ def _notice(aid: str, nid: str, type_key: str | None, raw_type: str, user: Mappi
     return Notice(nid, aid, type_key, title, _cap(body), href, raw_type, user.get("id"))
 
 
-# ── the three lanes ──
 
 def _dm(aid: str, frame: Mapping[str, Any]) -> list[Notice]:
-    """toastStore.dmArrival (+ resolveChatTarget's inbound gate), with the tip fix."""
     msg = frame.get("api2_chat_message")
     if not isinstance(msg, Mapping) or msg.get("id") is None:
         return []
@@ -209,7 +182,7 @@ def _dm(aid: str, frame: Mapping[str, Any]) -> list[Notice]:
         return []
     from_id = fu.get("id")
     if _js_str(from_id) == aid:
-        return []                                   # our own send never pings
+        return []
     user = {"id": from_id, "name": _first(fu.get("name"), fu.get("username")), "username": fu.get("username")}
     if msg.get("isTip"):
         amt = next((n for n in (_js_number(msg.get("tipAmount")), _js_number(msg.get("price")))
@@ -227,7 +200,6 @@ def _dm(aid: str, frame: Mapping[str, Any]) -> list[Notice]:
 
 
 def _purchase(aid: str, frame: Mapping[str, Any]) -> list[Notice]:
-    """toastStore.purchaseArrival with no cached user."""
     p = frame.get("purchase_notified")
     if not isinstance(p, Mapping) or not p.get("notif_id") or not is_fan_id(p.get("fan_id")):
         return []
@@ -242,7 +214,6 @@ _HTML_AVATAR_USER = re.compile(r"""href=["']https?://(?:www\.)?onlyfans\.com/([A
 
 
 def _toast(aid: str, t: Any) -> Notice | None:
-    """toastStore.toastArrival."""
     if not isinstance(t, Mapping) or t.get("id") is None:
         return None
     raw_type = t.get("type") if isinstance(t.get("type"), str) else ""
@@ -278,8 +249,6 @@ def _toast(aid: str, t: Any) -> Notice | None:
 
 
 def notices_for(frame: Mapping[str, Any]) -> list[Notice]:
-    """The notices one SSE frame earns (any type; [] for the rest, an Agency-wide one,
-    or one with no account)."""
     if not isinstance(frame, Mapping) or frame.get("__agency") is not None:
         return []
     aid = frame.get("__account_id")
@@ -297,10 +266,6 @@ def notices_for(frame: Mapping[str, Any]) -> list[Notice]:
 
 
 def payload(n: Notice) -> dict[str, Any]:
-    """The push body (JSON, encrypted by push_send) the service worker shows. No `account_id`
-    for a notice without a Creator (the test): the worker always shows that one. Capped so it
-    always fits the push service's 4 KB (UTF-8, push_send.wire): title TITLE_MAX, body BODY_MAX
-    chars; an href over HREF_MAX is dropped (the worker opens "/"), never cut mid-escape."""
     href = n.href if n.href is None or len(n.href) <= HREF_MAX else None
     out = {"v": 1, "tag": n.tag, "title": _cap(n.title, TITLE_MAX), "body": _cap(n.body), "href": href,
            "type": n.raw_type, "account_id": n.account_id, "icon": ICON}

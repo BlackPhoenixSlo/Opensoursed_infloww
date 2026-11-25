@@ -1,25 +1,3 @@
-"""Custom domains of bio pages: the owner's checks behind admin.py's `/{pid}/domain` routes.
-
-The checks, problem sentences and records are ofl.ink v2's (~/oflinkv2/app/src/domain-check.js), so a domain verified
-there verifies here with the same TXT record name and format:
-  (a) the name is not one of this service's hosts and not under one (checked when it is saved, admin.py);
-  (b) TXT `_oflink.{domain}` holds `oflink-verify={token}`;
-  (c) there is at least one A record, and every A is BIO_SERVER_IP;
-  (d) every AAAA is BIO_SERVER_IPV6, none at all being fine;
-  (e) there is no CAA record, or the set that applies (the name, then each parent: RFC 8659's tree climb, `issue`
-      entries only) allows letsencrypt.org.
-Each failed check is one sentence the editor shows as it is; `records` are the exact records to set, names relative to
-the zone (`@` for a two-label domain, else the labels before the last two) with each full name beside them (`fqdn`).
-
-On top of v2 (which went live on DNS alone): DNS passing moves a row to `pending_cert`, which the bio app serves and the
-box's sync timer (deploy/bio/sync-custom-domains.py) gives a Traefik router and certificate; `live` only once
-`https://<domain>/internal/healthz` answers 200 over a valid certificate.
-Contested (another page's row already serves the domain, so the challenger's row is `pending`): current DNS wins. The
-proof must be the TXT's only `oflink-verify=` value (two published tokens are ambiguous: nobody takes over until DNS
-is decisive); admin.py then moves the domain in one write.
-
-DNS is read over DNS-over-HTTPS (Cloudflare's JSON API, httpx; no resolver library), so the answer is the public one.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +16,7 @@ RESERVED_SUFFIXES = ("ofl.ink", "inflowwww.com")
 DOH_URL = "https://cloudflare-dns.com/dns-query"
 DNS_TIMEOUT_S = 4.0
 PROBE_TIMEOUT_S = 5.0
-_CHECKS = asyncio.Semaphore(4)  # at most four checks' DNS + probe calls at once, process-wide
+_CHECKS = asyncio.Semaphore(4)
 
 OFF_MSG = "Custom Domains are not set up on this server yet. Try again later."
 CERT_MSG = "DNS is set. Getting the certificate: check again in a minute or two."
@@ -53,29 +31,24 @@ def _ip(env: str, kind) -> str | None:
 
 
 def server_ip() -> str | None:
-    """BIO_SERVER_IP when it is an IPv4 address, else None (custom domains off)."""
     return _ip("BIO_SERVER_IP", ipaddress.IPv4Address)
 
 
 def server_ipv6() -> str | None:
-    """BIO_SERVER_IPV6 when it is an IPv6 address (v2's ORIGIN_IPV6), else None (no AAAA wanted)."""
     return _ip("BIO_SERVER_IPV6", ipaddress.IPv6Address)
 
 
 def normalize(raw: str) -> str:
-    """v2's form: trimmed and lower-cased; anything else (a scheme, a slash, a trailing dot) fails `valid`."""
     return raw.strip().lower()
 
 
 def host_of(url: str | None) -> str | None:
-    """The host of `https://host[:port]/path` (env bases), lowercase; None when absent."""
     rest = (url or "").strip().lower().split("://", 1)[-1]
     host = rest.split("/", 1)[0].split(":", 1)[0]
     return host or None
 
 
 def own_host(domain: str, reserved_hosts: set[str]) -> bool:
-    """(a): the name or a parent is one of this service's hosts."""
     return any(domain == h or domain.endswith("." + h) for h in (*RESERVED_SUFFIXES, *reserved_hosts))
 
 
@@ -84,15 +57,12 @@ def valid(domain: str) -> bool:
 
 
 def relative_name(domain: str, prefix: str = "") -> str:
-    """The record name relative to its zone, `prefix` in front (v2's relativeName): the zone is taken to be the last two
-    labels, wrong for a multi-label public suffix (x.co.uk), and there is no public-suffix list here to guess better."""
+    # Wrong for a multi-label public suffix (x.co.uk); no suffix list here.
     in_zone = ".".join(domain.split(".")[:-2])
     return ".".join(p for p in (prefix, in_zone) if p) or "@"
 
 
 def records_for(domain: str, token: str, ip: str | None, ipv6: str | None) -> list[dict[str, str]]:
-    """v2's recordsFor: `name` relative to the zone (what most registrars' Host field wants), plus `fqdn`, the full
-    name, for a DNS host that wants that or a zone `relative_name` guesses wrong (x.co.uk)."""
     def rec(kind: str, prefix: str, value: str) -> dict[str, str]:
         fqdn = f"{prefix}.{domain}" if prefix else domain
         return {"type": kind, "name": relative_name(domain, prefix), "fqdn": fqdn, "value": value}
@@ -110,7 +80,7 @@ class Dns:
     a: tuple[str, ...] = ()
     aaaa: tuple[str, ...] = ()
     txt: tuple[str, ...] = ()
-    caa: tuple[tuple[str, str], ...] = field(default=())  # (tag, value) of the set that applies
+    caa: tuple[tuple[str, str], ...] = field(default=())
 
 
 def _same_ipv6(a: str, b: str) -> bool:
@@ -126,8 +96,6 @@ def allows_letsencrypt(caa: tuple[tuple[str, str], ...]) -> bool:
 
 
 def problems(domain: str, token: str, ip: str, ipv6: str | None, dns: Dns, sole: bool = False) -> list[str]:
-    """v2's checks (b)-(e) over one DNS read, its sentences in its order; [] = DNS proves the domain. `sole`: the proof
-    must also be the TXT's only `oflink-verify=` value (a contested domain)."""
     out = []
     proof = PROOF_PREFIX + token
     if not dns.txt:
@@ -153,13 +121,11 @@ class DnsUnavailable(Exception):
 
 
 def _txt_value(data: str) -> str:
-    """A DoH TXT `data` (`"ab" "cd"`) as its joined text."""
     parts = [p for i, p in enumerate(data.split('"')) if i % 2 == 1]
     return "".join(parts) if parts else data
 
 
 def _caa_entry(data: str) -> tuple[str, str] | None:
-    """`0 issue "letsencrypt.org"` → ("issue", "letsencrypt.org")."""
     bits = data.split(None, 2)
     if len(bits) != 3:
         return None
@@ -167,7 +133,6 @@ def _caa_entry(data: str) -> tuple[str, str] | None:
 
 
 async def _doh(client: httpx.AsyncClient, name: str, rtype: str, want: int) -> list[str]:
-    """The `data` of the answers of type `want` (a CNAME chain is followed by the resolver); NXDOMAIN = none."""
     r = await client.get(DOH_URL, params={"name": name, "type": rtype}, headers={"accept": "application/dns-json"})
     if r.status_code != 200:
         raise DnsUnavailable
@@ -200,7 +165,6 @@ async def lookup(domain: str) -> Dns:
 
 
 async def probe(domain: str) -> bool:
-    """`https://<domain>/internal/healthz` answers 200 over a certificate that verifies."""
     try:
         async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_S, trust_env=False, follow_redirects=False) as cl:
             return (await cl.get(f"https://{domain}/internal/healthz")).status_code == 200
@@ -210,8 +174,6 @@ async def probe(domain: str) -> bool:
 
 async def check(domain: str, token: str, status: str, ip: str, ipv6: str | None,
                 sole: bool = False) -> tuple[str, list[str]]:
-    """(next status, problems shown to the owner) of a `pending` / `pending_cert` row; `live` stays as it is.
-    `sole` goes to `problems` (a contested row: always `pending`, so a failed lookup leaves it `pending`)."""
     if status == "live":
         return "live", []
     async with _CHECKS:

@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""
-Chatter Access — Step 7 tests (owner-set per-chatter visibility limits).
-
-Plain-assert standalone script (no pytest), run via:
-
-    ./venv/bin/python service/tests/test_chatter_access.py
-
-Boots a temp SQLite DB and seeds a fixture shaped like the real
-`velvetvoice1` chatter so the cases mirror what you verify by hand:
-
-    owner A (≈ "velvetvoice")  →  accAva, accCelest   (2 accounts)
-    owner B (≈ "founder")      →  accFounder              (1 account)
-    chatter "sensui"             →  linked to BOTH owners
-
-Covers: the account gate (subtractive, per-owner, empty = full),
-multi-owner isolation, the folder gate on /api/of/v2/vault/{lists,media}
-(soft-deny + filter, evaluated before the cache, DA-1 dual-cookie owner
-NOT restricted), the owner endpoints (cross-owner reject, chatter-cookie
-reject, not-linked 404), /chatter/me/folder-access (order + 403), and the
-BigInteger folder_id guarantee.
-
-Exit 0 = all pass; non-zero lists the first-seen failures. Cases are
-independent and self-clean their access rows so order can't bleed.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -33,9 +9,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-# ── 1. Hard-bind the DB BEFORE importing any service module (same incident
-# guard as test_chatter_auth.py: unset env can fall back to PROD).
 _TMP_DB = Path(tempfile.gettempdir()) / f"chatterly_caccess_{uuid.uuid4().hex}.db"
+# hard-bind the DB before importing any service module: unset env can fall back to PROD
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB}"
 os.environ["CHATTERLY_DB_URL"] = f"sqlite:///{_TMP_DB}"
 os.environ["SHARE_TOKEN"] = ""
@@ -70,11 +45,6 @@ import accounts as account_registry  # noqa: E402
 from db.engine import get_session  # noqa: E402
 
 
-# The vault relay's `_resolve_account_id` validates the account id against
-# the FILESYSTEM account registry (accounts/<id>/meta.json), not the DB.
-# Rather than write meta dirs under the real SESSIONS_DIR, make the
-# registry recognise our DB-seeded test ids in-process. `assert_account_owned`
-# (the per-principal gate the tests actually exercise) is untouched.
 _TEST_ACCOUNTS = {"accAva", "accCelest", "accFounder", "accForeign"}
 _orig_get_account = account_registry.get_account
 
@@ -88,7 +58,6 @@ def _patched_get_account(account_id: str):
 account_registry.get_account = _patched_get_account
 
 
-# ── 2. Seeders ───────────────────────────────────────────────────────
 
 async def _seed_user(username: str, password: str = "secretpw") -> str:
     uid = uuid.uuid4().hex
@@ -153,7 +122,6 @@ async def _clear_access(chatter_id: str) -> None:
             ChatterFolderAccess.chatter_id == chatter_id))
 
 
-# ── 3. Harness ───────────────────────────────────────────────────────
 
 FAILURES: list[str] = []
 
@@ -184,8 +152,6 @@ def _login_chatter(username: str, password: str = "secretpw") -> TestClient:
 
 
 def _login_both(user: str, chatter: str) -> TestClient:
-    """One TestClient carrying BOTH a user and a chatter cookie (the
-    dual-cookie founder-testing case the DA-1 gate must treat as owner)."""
     c = _fresh_client()
     ru = c.post("/auth/login", json={"username": user, "password": "secretpw"})
     rc = c.post("/chatter/login", json={"username": chatter, "password": "secretpw"})
@@ -193,22 +159,19 @@ def _login_both(user: str, chatter: str) -> TestClient:
     return c
 
 
-# Derived from the server's own key builders — a cache-key format change can
-# never strand a stale literal here again (the drift that once turned this
-# suite red: the `query=` part vault search added).
 LISTS_KEY = vault_cache.vault_lists_cache_key()
 
 
+# derived from the server's own key builders so a cache-key format change cannot strand a stale literal
 def _media_key(list_id: int) -> str:
     return vault_cache.vault_media_cache_key(list_id=list_id)
 
 
-# ── 4. Fixture: mirrors the real velvetvoice1 shape ────────────────
 
 async def _setup() -> dict[str, str]:
-    owner_a = await _seed_user("velvetvoice")   # 2 accounts
-    owner_b = await _seed_user("founder")       # 1 account
-    foreign = await _seed_user("stranger")        # NOT linked to the chatter
+    owner_a = await _seed_user("velvetvoice")
+    owner_b = await _seed_user("founder")
+    foreign = await _seed_user("stranger")
     await _seed_account("accAva", owner_a, "Ava")
     await _seed_account("accCelest", owner_a, "Celest2")
     await _seed_account("accFounder", owner_b, "Test Race")
@@ -218,10 +181,8 @@ async def _setup() -> dict[str, str]:
     await _link_chatter(sensui, owner_a)
     await _link_chatter(sensui, owner_b)
 
-    # A second chatter linked ONLY to owner_b, for the not-linked 404 path.
     solo_b = await _seed_chatter("solob")
     await _link_chatter(solo_b, owner_b)
-    # An install from before role enforcement was on by default: its logins hold Admin.
     await seed_pre_enforcement_install()
 
     return {
@@ -230,7 +191,6 @@ async def _setup() -> dict[str, str]:
     }
 
 
-# ── 5. Cases ─────────────────────────────────────────────────────────
 
 async def case_account_gate_and_isolation(ids: dict[str, str]) -> None:
     await _clear_access(ids["sensui"])
@@ -240,8 +200,6 @@ async def case_account_gate_and_isolation(ids: dict[str, str]) -> None:
     _expect("baseline union = all 3 accounts",
             base == {"accAva", "accCelest", "accFounder"}, detail=f"got {base!r}")
 
-    # Owner A restricts the chatter to Ava only. Celest2 must vanish;
-    # owner B's account (accFounder) must be UNTOUCHED (multi-owner isolation).
     await _set_account_access(ids["sensui"], ids["owner_a"], ["accAva"])
     after = {a["account_id"] for a in c.get("/chatter/me/accounts").json()}
     _expect("owner A restriction hides accCelest, keeps accAva",
@@ -249,7 +207,6 @@ async def case_account_gate_and_isolation(ids: dict[str, str]) -> None:
     _expect("owner B's account survives owner A's restriction (isolation)",
             "accFounder" in after)
 
-    # Empty allowlist = full access again (subtractive, backwards-compatible).
     await _set_account_access(ids["sensui"], ids["owner_a"], [])
     restored = {a["account_id"] for a in c.get("/chatter/me/accounts").json()}
     _expect("clearing the allowlist restores full access",
@@ -258,8 +215,6 @@ async def case_account_gate_and_isolation(ids: dict[str, str]) -> None:
 
 
 async def case_account_gate_blocks_resolve(ids: dict[str, str]) -> None:
-    # The restriction is a real security boundary, not just a list filter:
-    # a per-account /admin/* call for a now-hidden account must 403.
     await _clear_access(ids["sensui"])
     await _set_account_access(ids["sensui"], ids["owner_a"], ["accAva"])
     c = _login_chatter("sensui")
@@ -277,7 +232,6 @@ async def case_vault_lists_filtered(ids: dict[str, str]) -> None:
     await vault_cache.put("accAva", LISTS_KEY, {
         "list": [{"id": 1, "name": "Best"}, {"id": 2, "name": "Teasers"}],
         "hasMore": False,
-        # OF's whole-vault "All" tile: counts + signed cover urls.
         "all": {"videosCount": 40, "photosCount": 900, "medias": [{"id": 9, "url": "https://x/9"}]},
     }, started_at=datetime.utcnow())
     await _set_folder_access(ids["sensui"], "accAva", [(1, "Best")])
@@ -302,8 +256,6 @@ async def case_vault_lists_filtered(ids: dict[str, str]) -> None:
 async def case_vault_media_softdeny_and_allow(ids: dict[str, str]) -> None:
     await _clear_access(ids["sensui"])
     await _set_folder_access(ids["sensui"], "accAva", [(1, "Best")])
-    # Seed the cache for an ALLOWED folder so the pass-through path doesn't
-    # need a live OF session.
     await vault_cache.put("accAva", _media_key(1), {"list": [{"id": 111}], "hasMore": False}, started_at=datetime.utcnow())
 
     c = _login_chatter("sensui")
@@ -334,8 +286,6 @@ async def case_da1_dual_cookie_owner_not_restricted(ids: dict[str, str]) -> None
     await vault_cache.put("accAva", _media_key(2), {"list": [{"id": 222}], "hasMore": False}, started_at=datetime.utcnow())
     await _set_folder_access(ids["sensui"], "accAva", [(1, "Best")])
 
-    # Same browser carries BOTH cookies. User cookie wins → owner view → NO
-    # folder restriction, even though a chatter_folder_access row exists.
     c = _login_both("velvetvoice", "sensui")
     r = c.get("/api/of/v2/vault/lists", headers={"X-Account-Id": "accAva"})
     seen = [f["id"] for f in r.json().get("list", [])]
@@ -352,7 +302,6 @@ async def case_owner_endpoints_guards(ids: dict[str, str]) -> None:
     await _clear_access(ids["sensui"])
     owner_a = _login_user("velvetvoice")
 
-    # Cross-owner: owner A cannot grant access to accFounder (owner B's account).
     cross = owner_a.put(
         f"/admin/chatters/{ids['sensui']}/account-access",
         json={"account_ids": ["accFounder"]},
@@ -371,7 +320,6 @@ async def case_owner_endpoints_guards(ids: dict[str, str]) -> None:
     _expect("GET access reflects this owner's allowlist",
             acc.get("account_ids") == ["accAva"], detail=f"got {acc!r}")
 
-    # Cross-owner folder grant is rejected too.
     cross_f = owner_a.put(
         f"/admin/chatters/{ids['sensui']}/folder-access",
         json={"account_id": "accFounder", "folders": [{"folder_id": 1, "folder_name": "x"}]},
@@ -379,13 +327,10 @@ async def case_owner_endpoints_guards(ids: dict[str, str]) -> None:
     _expect("owner cannot put folder-access for an account they don't own",
             cross_f.status_code == 403, detail=f"got {cross_f.status_code}")
 
-    # Not-linked: owner A manages a chatter linked only to owner B → 404.
     nl = owner_a.get(f"/admin/chatters/{ids['solo_b']}/access")
     _expect("owner gets 404 reading access for a chatter not linked to them",
             nl.status_code == 404, detail=f"got {nl.status_code}")
 
-    # A chatter cookie cannot reach the owner-only management surface at all
-    # (/admin/chatters is a blocked prefix for chatter sessions).
     chatter = _login_chatter("sensui")
     cput = chatter.put(
         f"/admin/chatters/{ids['sensui']}/account-access",
@@ -400,18 +345,15 @@ async def case_me_folder_access_shape(ids: dict[str, str]) -> None:
     await _clear_access(ids["sensui"])
     c = _login_chatter("sensui")
 
-    # No rows → restricted=False (picker shows OF's full list).
     none = c.get("/chatter/me/folder-access?account_id=accAva").json()
     _expect("me/folder-access restricted=False when no rows",
             none["restricted"] is False and none["folders"] == [],
             detail=f"got {none!r}")
 
-    # Foreign account (not in the chatter's union) → 403.
     foreign = c.get("/chatter/me/folder-access?account_id=accForeign")
     _expect("me/folder-access 403s for an account outside the union",
             foreign.status_code == 403, detail=f"got {foreign.status_code}")
 
-    # Deterministic order: insert out of order + a >int32 id (BigInteger).
     big = 5_000_000_000
     await _set_folder_access(ids["sensui"], "accAva", [
         (2, "Zebra"), (big, "Alpha"), (1, "Middle"),
@@ -428,7 +370,6 @@ async def case_me_folder_access_shape(ids: dict[str, str]) -> None:
     await _clear_access(ids["sensui"])
 
 
-# ── 6. Driver ────────────────────────────────────────────────────────
 
 async def _main() -> int:
     print(f"Using DB: {_TMP_DB}")

@@ -1,18 +1,3 @@
-"""service/audience_include.py — the include-only automation audience.
-
-"Run automations ONLY on fans in this folder": a three-state per-account mode
-(off | shadow | enforce) resolved from account_ai_config, gated against a LOCAL
-mirror of one operator-picked OF folder (lists/list_members; the `audience_sync`
-automation that reconciled it is retired, so the snapshot no longer refreshes),
-with the AUTOFENCE subtractive exclude list for
-mass broadcasts and a send-purpose transport assert backing the sender
-classification manifest at the bottom of this file.
-
-Split out of audiences.py on purpose: that module is the shared audience
-UTILITY layer (contact guards, Auto_Exclude, mass resolution) and this is one
-FEATURE's policy engine. This module imports from audiences, never the other
-way around.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -35,21 +20,16 @@ log = logging.getLogger("of-relay.audience_include")
 AUDIENCE_INCLUDE_KIND = "automation_include"
 AUTOFENCE_KIND = "autofence"
 AUTOFENCE_LIST_NAME = "AUTOFENCE"
-# Grace applies to sync HEALTH only, and asymmetrically: a stale snapshot keeps
-# AUTHORIZING sends during grace (admissions may lag) — it never un-removes a
-# fan, because removals land on the mirror itself and take effect immediately.
+# Grace covers sync health only: a stale snapshot still authorizes sends, never un-removes a fan
 AUDIENCE_GRACE_HOURS_DEFAULT = 24.0
-# Fence scale bound: the sync crawl's of_paging backstop is 20k rows, so a
-# fence (or include list) at/above that bound cannot be verified complete.
+# of_paging backstop is 20k rows: a list at/above cannot be verified complete
 AUDIENCE_MAX_LIST_ROWS = 20_000
 
 AUDIENCE_MODES = ("off", "shadow", "enforce")
 
 
+# Enforce halt: send NOTHING, never degrade to an unfenced/unscoped send
 class AudienceHalt(RuntimeError):
-    """An enforce-mode audience-governed send must HALT (mirror/fence unhealthy,
-    kill switch, scale bound). Loud by design: callers report the reason and
-    send NOTHING — never degrade to an unfenced/unscoped send."""
 
     def __init__(self, reason: str, detail: str = ""):
         super().__init__(f"audience_halt:{reason}" + (f" {detail}" if detail else ""))
@@ -57,15 +37,15 @@ class AudienceHalt(RuntimeError):
 
 
 class AudiencePolicy(NamedTuple):
-    mode: str                      # EFFECTIVE mode: off | shadow | enforce
-    configured_mode: str           # what the operator set (mode may downgrade)
-    list_id: int | None            # local lists.id of the include mirror
+    mode: str
+    configured_mode: str
+    list_id: int | None
     of_list_id: int | None
-    member_ids: frozenset          # gate-time snapshot (local mirror)
+    member_ids: frozenset
     synced_at: datetime | None
-    healthy: bool                  # snapshot complete + fresh within grace
-    paused: bool                   # kill switch: pause, never unscope
-    reason: str | None             # why downgraded / unhealthy, for logs + UI
+    healthy: bool
+    paused: bool
+    reason: str | None
 
 
 _AUDIENCE_OFF = AudiencePolicy(
@@ -75,9 +55,8 @@ _AUDIENCE_OFF = AudiencePolicy(
 )
 
 
+# Corrupt value degrades to off: never raises on a send path, never enforces
 def norm_audience_mode(v) -> str:
-    """NULL/absent/unknown ≡ 'off' — a corrupt value must degrade to the shipped
-    behavior (everything runs), never raise on a send path and never enforce."""
     s = str(v or "").strip().lower()
     return s if s in AUDIENCE_MODES else "off"
 
@@ -91,8 +70,6 @@ def _parse_sync_meta(raw) -> dict:
 
 
 async def automation_audience(account_id: str) -> AudiencePolicy:
-    """Resolve the account's audience policy + frozen member snapshot — the ONE
-    read every gated engine calls at its candidate seam (before LLM spend)."""
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
         mode = norm_audience_mode(getattr(cfg, "audience_mode", None))
@@ -102,8 +79,7 @@ async def automation_audience(account_id: str) -> AudiencePolicy:
         row = await s.get(ListModel, int(list_id)) if list_id is not None else None
         if (row is None or row.account_id != str(account_id)
                 or row.kind != AUDIENCE_INCLUDE_KIND):
-            # Config points at nothing usable. Fail CLOSED for enforce (halt,
-            # loudly — never silently unscope to the full roster), log for shadow.
+            # Config points at nothing usable: enforce fails closed, never unscopes to the full roster
             log.error("audience: account=%s mode=%s but include list %r is missing/foreign",
                       account_id, mode, list_id)
             return AudiencePolicy(
@@ -122,9 +98,7 @@ async def automation_audience(account_id: str) -> AudiencePolicy:
     reason = None
     healthy = True
     if synced_at is None:
-        # Just enabled, first sync not landed: enforce SITS IN SHADOW until the
-        # mirror exists (plan §5.4) — enforcing an empty snapshot would darken
-        # the whole roster on a click; shadow prices it instead.
+        # Enforcing an empty snapshot would darken the whole roster: sit in shadow until the mirror exists
         if mode == "enforce":
             effective, reason = "shadow", "pending_first_sync"
         healthy = False if mode == "enforce" else True
@@ -143,19 +117,17 @@ async def automation_audience(account_id: str) -> AudiencePolicy:
 
 
 class IncludeDecision(NamedTuple):
-    kept: list[int]          # the ids the engine may act on
-    stats: dict              # keys to merge into the caller's stats ({} when off)
-    dropped: list[int]       # skipped (enforce) / would-be skipped (shadow); all on a halt
-    halted: str | None       # enforce halt reason (kill_switch / unhealthy reason)
-    with_intent: int         # of `dropped`, the fans who showed intent
+    kept: list[int]
+    stats: dict
+    dropped: list[int]
+    halted: str | None
+    with_intent: int
 
 
 def include_decide(
     pol: AudiencePolicy, candidates: list[int], universe: set[int] | frozenset[int],
     intent: set[int] | frozenset[int],
 ) -> IncludeDecision:
-    """`filter_candidates`' pure half: `candidates` against the allowed `universe`
-    (include members ∪ caller-forced ids) under the policy mode. See there."""
     ids = list(candidates)
     if pol.mode == "off":
         return IncludeDecision(ids, {}, [], None, 0)
@@ -165,7 +137,6 @@ def include_decide(
     if pol.mode == "shadow":
         stats.update(audience_skipped=len(dropped), audience_skipped_with_intent=with_intent)
         return IncludeDecision(ids, stats, dropped, None, with_intent)
-    # enforce
     if pol.paused or not pol.healthy:
         why = "kill_switch" if pol.paused else (pol.reason or "unhealthy")
         held_intent = len([f for f in ids if f in intent])
@@ -186,32 +157,17 @@ async def filter_candidates(
     intent_ids: Iterable[int] | None = None,
     extra_allowed_ids: Iterable[int] | None = None,
 ) -> list[int]:
-    """Intersect an engine's candidate fan ids with the audience policy — ONE
-    call at each gated engine's candidate seam, BEFORE any LLM spend.
-
-    off     → input unchanged (byte-identical behavior, the default).
-    shadow  → input unchanged; would-be skips logged + counted WITH their
-              denominator (audience_skipped / audience_before).
-    enforce → members ∩ input. Unhealthy mirror or kill switch → EMPTY, loudly
-              (fail closed; pause is never an unscope). `extra_allowed_ids`
-              admits fans the caller forces (welcome_chatter_for_info's
-              explicit fan ids).
-
-    Every number travels with its denominator: stats gains audience_mode,
-    audience_before, audience_skipped, audience_skipped_with_intent (and
-    audience_halted when enforcement halted the run).
-    """
     ids = [int(f) for f in (fan_ids or [])]
     pol = policy if policy is not None else await automation_audience(account_id)
     allowed = pol.member_ids | {int(x) for x in (extra_allowed_ids or [])}
     d = include_decide(pol, ids, allowed, {int(x) for x in (intent_ids or [])})
     if stats is not None:
-        stats.update(d.stats)   # off → {}: no stats keys, byte-identical run output
+        stats.update(d.stats)
     if d.halted:
         log.error("audience_halt account=%s kind=%s reason=%s — %d candidate(s) "
                   "held, nothing sent (pause never unscopes)",
                   account_id, kind, d.halted, len(ids))
-    elif d.dropped and len(d.kept) == len(ids):     # shadow: would-skip, all kept
+    elif d.dropped and len(d.kept) == len(ids):
         log.info("audience_shadow account=%s kind=%s would_skip=%d of=%d "
                  "(with_intent=%d, snapshot=%s)",
                  account_id, kind, len(d.dropped), len(ids), d.with_intent, pol.synced_at)
@@ -228,8 +184,6 @@ async def audience_allows_fan(
     kind: str,
     policy: AudiencePolicy | None = None,
 ) -> tuple[bool, str | None]:
-    """Scalar gate for the per-fan senders (reply_mass_funnel's wire point) and the
-    at-fire recheck. Returns (allowed, reason). Shadow logs and allows."""
     pol = policy if policy is not None else await automation_audience(account_id)
     if pol.mode == "off":
         return True, None
@@ -253,38 +207,16 @@ async def check_at_fire(
     kind: str,
     payload: dict | None = None,
 ) -> tuple[bool, str | None]:
-    """The at-fire audience recheck for work fired from OUR queue (pre-resolved
-    recipients, dead-session backlogs, mode flips between enqueue and fire).
-    An operator-explicit send carries the typed `send_purpose: "manual"` payload
-    stamp and BYPASSES the audience — human sends are exempt by design.
-
-    Scope is honest: this covers our scheduled_jobs queue only. Work handed to
-    OF's native scheduler is fired by OF and is beyond any app-side recheck."""
+    # Operator-explicit sends bypass the audience by design; covers our queue only, not OF's native scheduler
     if isinstance(payload, dict) and str(payload.get("send_purpose") or "") == "manual":
         return True, "manual"
     return await audience_allows_fan(account_id, fan_id, kind=kind)
 
 
-# ── AUTOFENCE: subtractive mass enforcement (Track A) ────────────────────────
-# Every enforce-mode broadcast keeps its ORIGINAL userLists/filters audience and
-# attaches ONE stable per-account AUTOFENCE exclude list (sendable universe −
-# include members) via excludedLists — the exact wire shape Auto_Exclude uses in
-# production today, so day-1 mechanics rest on zero unverified wire behavior.
-# OF resolves excludedLists AT FIRE TIME, so the stable id reaches even
-# OF-scheduled sends. Track B (swapping userLists to the custom list id) is a
-# probe-gated optimization — NOT implemented; see plan §5 probe 0a.
-#
-# Rebuild protocol (pre-mortem amendment): shadow-compute → verify-complete
-# crawl → ordered delta (adds BEFORE removals) → re-crawl, symmetric difference
-# must be 0. Unhealthy fence ⇒ the blast HALTS loudly (AudienceHalt) — never an
-# unfenced send. Callers hold broadcast_lock; this must NOT re-take it.
 
 
+# Over-broad is the safe direction for an exclude fence
 async def _audience_universe_ids(account_id: str) -> set[int]:
-    """The local sendable universe — every fan id we know for the account (the
-    same source ppv_send's house broadcast subtracts today). Over-broad is the
-    SAFE direction for an exclude fence: a stale/extra id excludes someone the
-    include list never admitted, which is what enforce mode means."""
     async with get_session() as s:
         rows = (await s.execute(
             select(Fan.fan_id).where(Fan.account_id == str(account_id))
@@ -292,35 +224,22 @@ async def _audience_universe_ids(account_id: str) -> set[int]:
     return {int(r) for r in rows if r is not None}
 
 
-# (member ids, incomplete) for an OF custom list. Blocking. The old name stays
-# importable (automations/smart_list_sync, autoreply); calls here go through
-# `of_paging.` so a patch of `of_paging.page_all_checked` reaches them.
 _crawl_list_ids_blocking = of_paging.list_member_ids
 
 
 def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
-    """Reconcile the stable AUTOFENCE list to exactly `target`, verified.
-    Blocking (sync OF client) — call via asyncio.to_thread. Raises AudienceHalt
-    on any state that cannot be verified complete.
-
-    Per-user add refusals OF gives for good (`of_paging.unlistable`: the odd
-    deleted/blocked/self id — the same permanent stragglers that fail-closed
-    47/116 Auto_Exclude broadcasts) are tolerated: an un-addable id is almost
-    always also undeliverable. They are REMOVED from the verification target and
-    counted loudly, so the zero-diff invariant stays exact against the
-    achievable fence instead of wedging forever on one deleted account. Any
-    other add failure (timeout, 429, 5xx) halts (`fence_add_failed`): that fan
-    is not fenced. Returns size and unaddable."""
     current, truncated = of_paging.list_member_ids(client, of_list_id)
     if truncated:
         raise AudienceHalt("fence_crawl_truncated",
                            f"list {of_list_id} member crawl incomplete (backstop or repeated page)")
     unaddable: set[int] = set()
     to_add = sorted(target - current)
-    for uid in to_add:                       # adds BEFORE removals
+    # adds BEFORE removals
+    for uid in to_add:
         try:
             client.add_user_to_list(of_list_id, uid)
         except Exception as e:  # noqa: BLE001 — per-user tolerance, see docstring
+            # Permanent OF add refusals (deleted/blocked/self id) are tolerated and dropped from the verify target; other failures halt
             if not of_paging.unlistable(e):
                 raise AudienceHalt("fence_add_failed",
                                    f"list {of_list_id} add uid={uid} failed: "
@@ -350,13 +269,8 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     return {"size": len(effective), "unaddable": len(unaddable)}
 
 
+# Stored id is authoritative after first build; a short lists read halts, never mints a second AUTOFENCE
 def _find_or_create_fence_blocking(client) -> int:
-    """The OF-side AUTOFENCE list id — find by name, create if absent. Only ever
-    called when no local autofence row pins an id yet; after that the STORED id
-    is authoritative for the account's lifetime (already-scheduled OF sends keep
-    a valid excludedLists reference across rebuilds). A lists read OF cut
-    short without the name halts (`fence_lookup_incomplete`), never creating
-    a second AUTOFENCE."""
     try:
         lid = of_paging.find_list_id(client, AUTOFENCE_LIST_NAME)
     except of_paging.ListLookupIncomplete as e:
@@ -401,10 +315,6 @@ async def ensure_autofence(
     client=None,
     policy: AudiencePolicy | None = None,
 ) -> int | None:
-    """Build/verify the stable AUTOFENCE list and return its OF id, or None when
-    the mode doesn't fence (off/shadow). Raises AudienceHalt when an enforce-mode
-    fence cannot be verified healthy — the caller's broadcast must then HALT
-    loudly, never send unfenced. ⚠️ Caller holds broadcast_lock (this doesn't)."""
     pol = policy if policy is not None else await automation_audience(account_id)
     if pol.mode != "enforce":
         return None
@@ -413,6 +323,7 @@ async def ensure_autofence(
     if not pol.healthy:
         raise AudienceHalt(pol.reason or "mirror_unhealthy",
                            "include mirror is not a trustworthy snapshot")
+    # Caller holds broadcast_lock; this must NOT re-take it
     universe = await _audience_universe_ids(account_id)
     target = universe - pol.member_ids
     if len(target) > AUDIENCE_MAX_LIST_ROWS:
@@ -425,7 +336,6 @@ async def ensure_autofence(
     if c is None:
         import automation_executor as ax
         c = await asyncio.to_thread(ax._make_client, account_id)
-    # Stable id: the stored autofence row wins; OF lookup only on first build.
     async with get_session() as s:
         row = (await s.execute(
             select(ListModel).where(
@@ -460,10 +370,6 @@ async def audience_fence_for_broadcast(
     policy: AudiencePolicy | None = None,
     stats: dict | None = None,
 ) -> list[int]:
-    """The fence-health gate every mass sender calls before an audience-governed
-    submission, INSIDE its broadcast_lock. Returns the OF list id(s) to append to
-    excluded_user_lists. off → []; shadow → [] (would-be fence size logged with
-    its denominator); enforce → the verified stable fence id, or AudienceHalt."""
     pol = policy if policy is not None else await automation_audience(account_id)
     if stats is not None and pol.mode != "off":
         stats["audience_mode"] = pol.mode
@@ -484,12 +390,6 @@ async def audience_fence_for_broadcast(
     return [int(fence_id)] if fence_id is not None else []
 
 
-# ── Send-purpose assert at the shared outbound seams ────────────────────────
-# Defense-in-depth behind the classification manifest: every automation send
-# routed through of_write_paced / send_dropping_bad_media declares WHY it is
-# allowed to reach a fan. An untagged send raises under the test harness and
-# logs loudly in prod, so a future sender that dodges the manifest still trips
-# the wire. Tags: gated / fenced / manual / not_fan_dm / exempt:<reason>.
 
 AUDIENCE_SEND_PURPOSE_BASES = ("gated", "fenced", "manual", "exempt", "not_fan_dm")
 
@@ -502,39 +402,31 @@ def audit_send_purpose(purpose, *, where: str = "send") -> None:
     msg = (f"send_purpose missing/unknown ({purpose!r}) at {where} — every "
            f"automation-originated fan DM must declare one of "
            f"{AUDIENCE_SEND_PURPOSE_BASES}")
-    from automations._knobs import test_mode  # kept local as before; _knobs is dependency-free
+    from automations._knobs import test_mode
     if test_mode():
         raise AssertionError(msg)
     log.error("send_purpose_untagged where=%s purpose=%r", where, purpose)
 
 
-# ── Sender classification (enforced by tests/test_audience_coverage.py) ─────
-# Every send-capable file in service/automations/ MUST appear here; the coverage
-# test rebuilds the send-capable inventory from registered kinds + the send
-# primitives and FAILS on any unclassified sender. Enforcement is an audited
-# invariant, not a promise — the UI prints the exemption register beside the
-# mode control ("ONLY" never appears without it).
+# Every send-capable file in automations/ must appear; tests/test_audience_coverage.py fails on any unclassified sender
 AUDIENCE_SENDER_CLASSIFICATION: dict[str, str] = {
-    # gated at the candidate seam (per-fan automations, before LLM spend)
     "welcome_chatter_for_info": "gated",
-    "autoreply": "gated",           # operator decision O1: gate (3/3)
+    "autoreply": "gated",
     "send_followup": "gated",
-    "cat_stickers": "gated",        # library; gif rides the engines' gated reply
+    "cat_stickers": "gated",
     "reply_mass_funnel": "gated",
     "send_welcome": "gated",
-    "scheduled_send": "gated",      # at-fire check; typed `manual` stamp bypasses
-    "nudge_online_fire": "gated",   # send-capable at HEAD; producer gated too
-    "purchase_followup": "gated",   # Smart Messages "Purchased"; filter_candidates at its sweep
-    # Smart Messages lifecycle Triggers (automations/lifecycle_messages), same seam
+    "scheduled_send": "gated",
+    "nudge_online_fire": "gated",
+    "purchase_followup": "gated",
     "lifecycle_messages": "gated",
     "expiry_message": "gated",
     "expired_message": "gated",
     "resubscribe_message": "gated",
     "birthday_message": "gated",
-    "priority_mass": "gated",       # Smart Messages' Priority mass message: per-fan DMs, filter_candidates per leg
-    "full_ai_ppv": "gated",         # Full AI live priced bubble; the live sender's last-look gates it
-    "full_ai_live": "gated",        # Full AI Chat Mode live (04a): the Turn's bubbles to one Fan
-    # mass senders — original audience kept, AUTOFENCE subtracted
+    "priority_mass": "gated",
+    "full_ai_ppv": "gated",
+    "full_ai_live": "gated",
     "send_mass_message": "fenced",
     "mass_premade": "fenced",       # pure delegation (test asserts no bypass)
     # exempt, named reason (printed in the Brain UI exemption register)
@@ -544,21 +436,16 @@ AUDIENCE_SENDER_CLASSIFICATION: dict[str, str] = {
     "_common": "exempt:re-export shim — no send code; the scan matches the re-exported name",
     "full_ai_look": "exempt:the last look — no send code; it gates full_ai_live / full_ai_ppv's sends "
                     "(the scan matches its before_write hook's name)",
-    # not a fan DM
     "auto_posts": "not_fan_dm",
     "auto_stories": "not_fan_dm",
-    "s4s_post": "not_fan_dm",       # uploads the partner's S4S media for a wall post
-    "smart_list_sync": "not_fan_dm",  # OF list membership, never a message
+    "s4s_post": "not_fan_dm",
+    "smart_list_sync": "not_fan_dm",
 }
 
 
 async def established_fan_ids(
     account_id: str, fan_ids, *, max_outbound: int, max_inbound: int
 ) -> set[int]:
-    """Subset of `fan_ids` with an EXISTING message relationship — more than
-    `max_outbound` outbound OR `max_inbound` inbound rows. Hoisted from
-    send_welcome (which keeps a thin delegate): a fan who "appears new" on the
-    roster but already carries real history is a returning churner."""
     if not fan_ids:
         return set()
     ids = [int(f) for f in fan_ids]

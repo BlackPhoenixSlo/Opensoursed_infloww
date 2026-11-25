@@ -45,7 +45,6 @@ CHUNK_URL_TPL = (f"{OF_API_ORIGIN}/static/prod/f/{{rev}}/2313.js" if OF_API_ORIG
                  else "https://static2.onlyfans.com/static/prod/f/{rev}/2313.js")
 
 
-# ─── C: paste-curl ───────────────────────────────────────────────────────
 
 class CurlParseError(ValueError):
     pass
@@ -63,11 +62,8 @@ def parse_curl(curl_text: str) -> dict:
         "data":     str | None,
       }
     """
-    # Normalise line continuations + dollar-quoted strings DevTools sometimes adds
     text = curl_text.strip()
-    # Bash line continuations
     text = text.replace("\\\n", " ")
-    # `$'…'` quoting → strip the $
     text = re.sub(r"\$('[^']*')", r"\1", text)
 
     try:
@@ -113,7 +109,6 @@ def parse_curl(curl_text: str) -> dict:
             i += 1
             headers["referer"] = tokens[i]
         elif t.startswith("-"):
-            # Skip unknown flags + their possible arg. Best-effort.
             if i + 1 < len(tokens) and not tokens[i + 1].startswith("-") and not tokens[i + 1].startswith("http"):
                 i += 1
         elif url is None:
@@ -189,23 +184,16 @@ def from_request(parsed: dict, *,
     sign = h["sign"]
     time_ms = h["time"]
 
-    # Runtime fields the loginExtension may inject as custom -H headers.
-    # The wire never carries these — they're only knowable from a hooked
-    # webpack module on the live page. Their presence is what lets a
-    # brand-new x-of-rev succeed without a static_param seeded by an
-    # earlier capture at the same rev.
+    # Not on the wire: only knowable from a hooked webpack module on the live page; lets a new x-of-rev succeed without a seeded static_param.
     curl_static_param = h.get("x-relay-static-param")
     curl_sign_start   = h.get("x-relay-sign-start")
     curl_sign_end     = h.get("x-relay-sign-end")
 
-    # Parse Sign: "start:sha1:hexchecksum:end"
     parts = sign.split(":")
     if len(parts) != 4:
         raise CurlParseError(f"Sign header malformed (need 4 colon-separated parts): {sign!r}")
     start, sha1Hex, hexchecksum, end = parts
-    # The extension-supplied start/end act as cross-checks — if they
-    # disagree with what's on the wire, the page state is inconsistent
-    # and we'd rather fail loudly here than write a broken session.
+    # Start/end from the extension are cross-checks: on disagreement fail loudly rather than write a broken session.
     if curl_sign_start and curl_sign_start != start:
         raise CurlParseError(
             f"x-relay-sign-start ({curl_sign_start!r}) does not match the "
@@ -224,13 +212,6 @@ def from_request(parsed: dict, *,
     sample = {"sha1Hex": sha1Hex, "checksumValue": checksum_value,
               "url": parsed["url"], "time": time_ms, "user_id": user_id}
 
-    # ── Get static_param ─────────────────────────────────────
-    # Priority:
-    #   1. Body-level static_param_override (the "advanced" textbox in the UI)
-    #   2. Per-curl x-relay-static-param header from the loginExtension
-    #      (the normal path — extension hooks js-sha1 on the live page)
-    #   3. Cross-session lookup by x-of-rev (works once any account has
-    #      already been captured at the current rev)
     static_param = static_param_override or curl_static_param
     static_param_source = "override" if static_param_override else "curl"
     if not static_param:
@@ -247,7 +228,6 @@ def from_request(parsed: dict, *,
             f"override box.)"
         )
 
-    # ── Fetch 2313.js + derive checksum indexes/constant ─────
     chunk_url = CHUNK_URL_TPL.format(rev=x_of_rev)
     print(f"[bootstrap] Fetching {chunk_url}")
     with urllib.request.urlopen(chunk_url, timeout=20) as r:
@@ -268,7 +248,6 @@ def from_request(parsed: dict, *,
         "checksum_indexes": derived["checksum_indexes"],
         "checksum_constant": derived["checksum_constant"],
     }
-    # Sanity: verify rules against the very sample we built
     ok, _ = verify_rules(rules, [sample])
     if not ok:
         raise RuntimeError(
@@ -277,7 +256,6 @@ def from_request(parsed: dict, *,
         )
     print("[bootstrap] Rules verified against the captured sample.")
 
-    # ── Persist session into the right account dir ───────────
     session_path = persist_session(
         user_id,
         profile_id="paste-curl",
@@ -296,9 +274,7 @@ def from_request(parsed: dict, *,
         nickname=nickname,
         make_active=make_active,
     )
-    # account_id arg is treated as a hint only — the real binding is by user_id
-    # (OF's identity), so pasting a different user's curl never silently
-    # clobbers another account.
+    # account_id is a hint only: binding is by OF's user_id, so a pasted foreign curl never clobbers another account.
     if account_id and account_id != user_id:
         print(f"[bootstrap] Note: requested account_id={account_id!r} but "
               f"the pasted curl belongs to user_id={user_id!r} — routed to "
@@ -366,15 +342,13 @@ def persist_session(user_id: str, *,
     session_path.write_text(json.dumps(dump, indent=2))
     account_registry.record_session(user_id, session_path)
     account_registry.upsert_account(user_id, nickname=nickname)
-    # Re-linking a watcher (a fan account) never makes it the default account:
-    # the registry refuses it.
+    # Re-linking a watcher (a fan account) never makes it the default account: the registry refuses it.
     if make_active:
         account_registry.set_active_account_id(user_id)
     print(f"[bootstrap] Saved {session_path.relative_to(SESSIONS_DIR.parent)}")
     return session_path
 
 
-# ─── helpers ─────────────────────────────────────────────────────────────
 
 def _lookup_static_param_for_rev(x_of_rev: str) -> str | None:
     """Scan existing session files (across every account dir); return the
@@ -385,13 +359,11 @@ def _lookup_static_param_for_rev(x_of_rev: str) -> str | None:
     if not SESSIONS_DIR.is_dir():
         return None
     candidates: list[Path] = []
-    # Per-account dirs
     accounts_dir = SESSIONS_DIR / "accounts"
     if accounts_dir.is_dir():
         for adir in accounts_dir.iterdir():
             if adir.is_dir():
                 candidates.extend(adir.glob("session_*.json"))
-    # Legacy flat dir (pre-migration, in case)
     candidates.extend(SESSIONS_DIR.glob("session_*.json"))
     for f in candidates:
         try:
@@ -406,7 +378,6 @@ def _lookup_static_param_for_rev(x_of_rev: str) -> str | None:
     return None
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
@@ -414,7 +385,6 @@ def main(argv: list[str]) -> int:
         return 1
     mode = argv[1]
     if mode == "paste-curl":
-        # Read curl from stdin
         curl = sys.stdin.read()
         from_curl(curl)
         return 0

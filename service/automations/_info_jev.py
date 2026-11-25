@@ -133,6 +133,8 @@ class Info(NamedTuple):
 
 
 def missing(config: dict, fan_info: dict) -> list[str]:
+    """The config's `info_fields` with no value in `fan_info`, in config order, by wcfi's own
+    `nonempty` (so every missing field has a `question_line`). Pure."""
     return [k for k in config["info_fields"] if not nonempty(fan_info.get(k))]
 
 
@@ -211,6 +213,7 @@ _LINE_KEYS = {"real_name": ("name",), "his_age": ("age",),
 
 
 def _wcfi_needed(fan_info: dict, marks: set[str]) -> list[tuple[str, str]]:
+    """wcfi's `_questions_still_needed` over the fold (its other fan fields empty) and `marks`."""
     f = SimpleNamespace(custom_nickname=None, likes_boobs=False, likes_ass=False, recent_events=None,
                         **{k: fan_info.get(k) for k in _EXTRACT_FIELDS})
     return _questions_still_needed(f, marks)

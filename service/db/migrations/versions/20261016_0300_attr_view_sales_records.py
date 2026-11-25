@@ -1,56 +1,3 @@
-r"""attr_view_sales_records — the attribution view gains `tx_id` and `rule` for Sales records
-
-Revision ID: 0069_attr_view_sales_records
-Revises: 0068_s4s
-Create Date: 2026-10-16
-
-Sales records (`GET /admin/stats/sales-records`, service/stats.py;
-docs/spec/phase-05-remaining-parity-gaps.md, item 3, Schema "Migration B")
-lists one row per sale with the Rule that credited it. One definition of
-attribution is the reason this view exists, so the rows come from it rather
-than from a second copy of its logic: this revision appends two columns to
-EVERY UNION branch of `per_employee_revenue_with_attribution`:
-
-  tx_id  `transactions.id` of the sale the row is.
-  rule   how the row's `sent_by_employee_id` was chosen:
-           manual        `transactions.attributed_employee_id` is set (the
-                         override wins in every branch);
-           message       branch 1, credited by the linked message's sender;
-           tip_lookback  branch 2, a standalone tip credited by the 7-day
-                         lookback's outbound message;
-           unassigned    the employee is NULL (a linked message no Employee
-                         sent, a lookback that found nothing, an orphan sale
-                         with no override).
-
-The six existing columns, their order and every branch's rows are untouched
-(the new columns are appended last), and stored rows are never rewritten:
-a pure view rebuild (DROP + CREATE), no table, column or index change.
-`downgrade()` restores revision 0042's definition
-(20260710_0200_attr_view_orphan_rows.py), byte for byte.
-
-Positional readers, checked before writing (ticket 33): no reader selects
-the view with `SELECT *` or reads its rows by position, so appending two
-columns cannot shift anyone's columns. The command, run from the repo root,
-and its result on 2026-10-16:
-
-  grep -rlE "per_employee_revenue_with_attribution|_attr_view\b" service app/lib \
-      app/components app/app scripts --include='*.py' --include='*.ts' \
-      --include='*.tsx' --include='*.sql' --include='*.sh' \
-    | grep -v "migrations/versions" \
-    | xargs grep -nEi "select +\*|select\(\s*_attr_view\s*\)|fetchone\(\)\[[0-9]|row\[[0-9]+\]"
-
-  -> no output, exit 1 (no match). The readers it searched: stats.py (the
-  `_attr_view` table() proxy, named columns only), attribution_backfill.py,
-  transactions.py and sales_attribution.py (docstrings only), and the tests
-  that read the view by named columns or COUNT(*)/SUM(...)
-  (test_ppv_link_attribution, test_automation_attribution, test_stats_revenue,
-  test_attribution_backfill, test_role_enforcement, test_timesheet_api,
-  test_sales_attribution_rules).
-
-Deploys run `init_db()`, not `alembic upgrade` (Phase 2 spec, Schema), and
-`init_db()` builds no views; like its predecessors this revision reaches a
-database only through alembic.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -161,8 +108,6 @@ SELECT sent_by_employee_id, automation_kind, account_id, kind, amount_cents, occ
 """
 
 
-# Revision 0042's view (20260710_0200_attr_view_orphan_rows.py), restored on
-# downgrade: the same rows without `tx_id` and `rule`.
 _OLD_VIEW_SQL = """
 CREATE VIEW per_employee_revenue_with_attribution AS
 WITH message_linked AS (

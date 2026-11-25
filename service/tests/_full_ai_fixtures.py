@@ -1,9 +1,3 @@
-"""_full_ai_fixtures — the Jev fake, the Writer HTTP fake, seeding and one-run
-helpers that the Full AI Chat suites share (test_full_ai_shadow.py,
-test_full_ai_routes.py, test_full_ai_test_chat.py).
-
-Import it after `_harness` (which binds the temp DB) and `_harness.bootstrap()`.
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401 — binds the temp DB before any db import
@@ -25,32 +19,22 @@ from automation_executor import run_once
 from automations import _router_jev as rj
 from automations import full_ai_config
 
-# The sext scene (config `sext_scene`, default on) changes test-Mode Turns. The suites written
-# before it pin the flag-off behaviour (= the old one) through this one switch; the scene suites
-# turn it on in the config they pass or store (test_full_ai_scene*.py).
 full_ai_config.DEFAULTS["sext_scene"] = False
 from db.engine import get_session
 from db.models import Account, AccountAiConfig, AiDecision, AutomationRule, AutomationRun, Message
 
 os.environ["TYPESAFE_API_KEY"] = "test-key-not-real"
 KIND = "full_ai_chat"
-# The Router's one request (spec story 20): 11 Nouls + the `intensity` Score.
 NOULS = {"promo", "says_under_18", "complains_now", "asks_if_ai", "stop", "price",
          "wants_content", "declines_buying", "says_yes_to_offer", "sexual_now", "gif_fits"}
 QUIET = dict.fromkeys(NOULS, 0.05)
-GIF_FITS = {**QUIET, "gif_fits": 0.9}      # a GIF suits the reply: the sticker block's gate
-# A quiet test-Mode `answers` (03b), sext scene off; `QUIET_SCENE` with config `sext_scene` on.
+GIF_FITS = {**QUIET, "gif_fits": 0.9}
 QUIET_TEST = {**QUIET, **dict.fromkeys((q for q in rj.TEST_NOULS if q not in rj.SCENE), 0.05)}
 QUIET_SCENE = {**QUIET, **dict.fromkeys(rj.TEST_NOULS, 0.05)}
 T0 = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)
 
 
 class FakeJev:
-    """The TypeSafe client: each `system_one` pops the next verdict
-    ((answers, intensity), (answers, intensity, choices) or an exception) and records what it was
-    asked. A test-Mode request (03b) also gets its `TEST_NOULS` (from `answers`, else 0.05) and its
-    `TEST_CHOICES`: `choices` maps a Choice id to a label (P 0.9) or a label -> P map; an unnamed
-    Choice answers its `CHOICE_DEFAULT` (anything / any). Shadow's request gets neither."""
 
     def __init__(self, *verdicts):
         self.verdicts = list(verdicts)
@@ -58,11 +42,11 @@ class FakeJev:
 
     async def system_one(self, state, questions, model=None):
         self.calls.append({"state": state, "questions": questions, "model": model})
-        await asyncio.sleep(0.02)          # a measurable wall time
+        await asyncio.sleep(0.02)
         v = self.verdicts.pop(0)
         if isinstance(v, Exception):
             raise v
-        if isinstance(v, SimpleNamespace):      # a raw response, as Jev sent it
+        if isinstance(v, SimpleNamespace):
             return v
         answers, score, *rest = v
         answers = {**{q: 0.05 for q in rj.TEST_NOULS if q in questions}, **answers}
@@ -83,10 +67,6 @@ class FakeJev:
 
 
 class FakeInfoJev:
-    """The info Jev's TypeSafe client (`_info_jev._client`): each `system_one` pops the next
-    verdict ((stated, pick): `stated` field -> P(yes), the rest 0.05; `pick` the Choice's label,
-    "none" for none; or an exception) and records what it was asked. With no verdict left it
-    answers quiet: nothing stated, `none`."""
 
     def __init__(self, *verdicts):
         self.verdicts = list(verdicts)
@@ -106,8 +86,6 @@ class FakeInfoJev:
 
 @contextlib.contextmanager
 def _fake_jev(fake: FakeJev, info: FakeInfoJev | None = None):
-    """The Jev seams faked: the Router's (`fake`), the info Jev's (`info`, quiet by default) and
-    the Heat check's (`QuietHeatJev`: level 0, never over), so no Turn reaches TypeSafe."""
     from automations import _heat_jev as hj
     from automations import _info_jev as ij
     saved = rj._client, ij._client, hj._client
@@ -122,19 +100,12 @@ def _fake_jev(fake: FakeJev, info: FakeInfoJev | None = None):
 
 
 class QuietHeatJev:
-    """`_heat_jev._client` for suites that do not test the Heat check: her level 0, never over."""
 
     async def system_one(self, state, questions, model=None):
         return SimpleNamespace(scores={"reply_level": SimpleNamespace(score=0.0, probabilities={0: 1.0})})
 
 
 class FakeWriterHTTP:
-    """The Writers' wire (`llm_client.httpx.AsyncClient`): each request answers by its host
-    (`script`: host -> `ok:<text> | <HTTP status> | timeout | empty | park[:<how>]`, or a list of
-    those taken one per request), recorded as {host, model, body, timeout}. `park[:<how>]` waits
-    for `.go` (set on `on()`'s exit), then answers `<how>` (default `ok:ok`); `.parked` is set and
-    `.parking` counts the posts waiting now. `on_post(record)` runs at each post; `.clients` counts
-    clients made. No `llm_client.chat` patch, so its real error mapping runs."""
 
     def __init__(self, script: dict[str, str | list[str]], on_post=None):
         self.script = dict(script)
@@ -209,10 +180,8 @@ class _WriterConn:
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
 
 
-# ── Seeding ───────────────────────────────────────────────────────────
 
 async def _seed(aid: str, *, rule: bool, gate: bool) -> int | None:
-    """An account; its `full_ai_chat` rule (on/off) and W7's gate."""
     async with get_session() as s:
         s.add(Account(id=aid))
         for kind in ("welcome_chatter_for_info", "reply_mass_funnel"):
@@ -237,7 +206,6 @@ async def _msg(aid: str, fan: int, mid: int, direction: str, body: str, at: date
 
 
 async def _dm(aid: str, fan: int, mid: int, body: str, at: datetime) -> None:
-    """His DM lands and reaches the hook."""
     await _msg(aid, fan, mid, "in", body, at)
     await wd.on_inbound_message(aid, fan, mid)
 
@@ -254,7 +222,6 @@ async def _run_row(run_id: int) -> AutomationRun:
 
 
 async def _run(aid: str, fake: FakeJev) -> tuple[dict, dict]:
-    """One run_once with Jev faked; the result and its persisted summary."""
     with _fake_jev(fake):
         res = await run_once(aid, KIND)
     run = await _run_row(res["run_id"]) if res.get("run_id") else None
@@ -262,8 +229,6 @@ async def _run(aid: str, fake: FakeJev) -> tuple[dict, dict]:
 
 
 async def _one_turn(aid: str, fan: int, verdict, *, offer: bool = False) -> tuple[dict, AiDecision]:
-    """His one DM (after her priced unbought message when `offer`), one run
-    with Jev giving `verdict`: the run result and its one row."""
     await _seed(aid, rule=True, gate=False)
     if offer:
         await _msg(aid, fan, 7000, "out", "for you", T0 - timedelta(minutes=5), price_cents=1500,
@@ -281,7 +246,6 @@ def _raw(nouls: dict, scores: dict) -> SimpleNamespace:
 
 @contextlib.contextmanager
 def _shape_drop(reason: str = "banned"):
-    """`shape_parts` drops every draft with `reason` (the reply chain's drop, e.g. a banned word)."""
     from automations import _reply_shape
     real = _reply_shape.shape_parts
     _reply_shape.shape_parts = lambda raw, ctx: _reply_shape.Shaped(parts=[], dropped_reason=reason, banned_hits=[])
@@ -291,16 +255,12 @@ def _shape_drop(reason: str = "banned"):
         _reply_shape.shape_parts = real
 
 
-# ── Mode live (04a): the shared world of the live_* suites ─────────────────────────────────────
 LIVE_LINE = "ok:haha stop it. what are u doing later tonight"
 LIVE_HOSTS = ("nano-gpt.com", "openrouter.ai", "api.z.ai", "api.deepseek.com")
 
 
 @contextlib.contextmanager
 def live_world(jev=None, n: int = 4):
-    """`_of_fixtures.FakeOF` behind `ax._make_client`, unspaced OF writes, Jev (`jev`, default QUIET
-    intensity 1, `n` answers) and the Writers' wire faked. Yields `w`: `w.of` (`.sent` dicts),
-    `w.made` (clients built), `w.purposes` (send purposes), `w.jev` (FakeJev)."""
     import automation_executor as ax
     from _of_fixtures import FakeOF
     w = SimpleNamespace(of=FakeOF(), made=[], purposes=[], jev=FakeJev(*([jev or (QUIET, 1.0)] * n)))
@@ -324,7 +284,6 @@ def live_world(jev=None, n: int = 4):
 
 
 async def seed_live(aid: str, *, gate: bool = False, every_s: int = 300) -> int:
-    """`_seed` with the rule in Mode live (`trigger_json.mode`); the rule id."""
     from sqlalchemy import update
     rid = await _seed(aid, rule=True, gate=gate)
     async with get_session() as s:
@@ -334,7 +293,6 @@ async def seed_live(aid: str, *, gate: bool = False, every_s: int = 300) -> int:
 
 
 async def clear_pause(aid: str, fan: int) -> None:
-    """The Fan's `automation_paused_until` gone (his cooldown ends)."""
     from sqlalchemy import update
     from db.models import Fan
     async with get_session() as s:

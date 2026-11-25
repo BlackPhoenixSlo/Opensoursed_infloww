@@ -1,44 +1,3 @@
-"""service/vault_topic_folders.py — the pure half of the opt-in "Topic folders (Jev)" in Build AI folders.
-
-`vault_scripts.plan_ai_folders(topics=[...])` adds one folder per (ticked topic, price split) on top of the
-scripts and lanes; an item may sit in a lane AND a topic folder. Everything is read from the Jev v8 blob
-(`ai_fields_json["_jev"]`, `vault_jev_rules.blob`) of photos AND clips whose `_jev` is current
-(`vault_jev_rules.current`; a clip's is `video_blob`: the max frame's photo-shaped blob, so its tags are that
-frame's), plus, for the act topics, the describe fields beside it (`acts`, `penetration`, `primary_folder`).
-Items without a current `_jev` (Jev off, not run yet, failed, older version) are in no topic folder; the plan
-counts the coverage so the modal says "N of M items have Jev data".
-
-What the rules read (`Topic.rule(jev, fields)`; no new Jev question):
-  `tags[q]` for Choice questions = the argmax (people_count, added_text, toy, outfit, setting, pose, framing,
-            face_visible, facing).
-  `tags[q]` for Noul questions = "y" / "n" at the bench-calibrated per-tag cut (`vault_jev_rules.CUTS`, D23;
-            .5 where uncalibrated) — the same y/n the vault search chips use. `_yes` falls back to `P[q]` at
-            that cut when a tag is missing. `butt_bare` is max(butt_state_a bare, butt_cheeks_bare) at .35.
-  `lane5` "free" | "$10" | "$50" | "$100" | "review" and `breasts_bare` / `crotch_bare` / `penetration`
-            y / n / unsure for the price split, the free guard and the body topics.
-  describe `acts` (menu spellings, `ACT_ALIASES` normalised), `penetration`, `primary_folder`.
-
-Price split (`split`): every topic folder is ONE price, named `AI-<name> <price>`:
-  "split"    topics → free / $10 / $50 / $100 by the lane ($100 kept apart rather than folded into $50: it is
-             the penetration tier, and pricing it as $50 undersells it). Empty splits are not made.
-  "explicit" topics (toy play, masturbation, blowjob, sex) → $50 / $100 / $150: lane $10 → $50, $50 → $100,
-             $100 → $150; never free (owner: explicit content starts at 50).
-  "free"     topics (good morning, clean for promo, clothed tease) → free only.
-The lane is a photo's `lane5`; a clip's is `vault_jev_rules.read_lane` (a review clip's `read_lane5`). `lane5`
-"review" on a photo, or anything unknown → in NO topic folder. A review CLIP (`lane5` "review": its frames may
-miss its most explicit moment) never goes to a free folder, only to its paid read lane. FREE GUARD (`free_ok`): a
-free split never holds an item whose `breasts_bare`, `crotch_bare` or `penetration` is "y" or "unsure", whatever
-`lane5` says (settle nn.10 can call a coin-flip nipple free when NudeNet saw nothing; a topic folder must not), nor
-one the describe fields veto (`vault_ai_brief.free_vetoed`: disputed, or a region bare, an operator lock included).
-
-Unsplit (`assign(..., by_price=False)`, the modal's "Split topics by price" off): one folder per topic, `AI-<name>`,
-holding the union of what the split folders would.
-
-No feet topic (owner 2026-11-13): feet live in the vault's Feet pack only (`vault_pack_picker`, every feet setting
-there); `feet` is an unknown slug here.
-
-Not offered (no signal in Jev or the describe menu): girl/girl, butt plug.
-"""
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, NamedTuple
@@ -47,7 +6,6 @@ import vault_ai_brief
 import vault_jev_rules
 
 PRICES = ("free", "$10", "$50", "$100")
-# The "explicit" ladder: the lane an item reads → its explicit folder (free → none).
 EXPLICIT = ("$50", "$100", "$150")
 _EXPLICIT_OF = {"$10": "$50", "$50": "$100", "$100": "$150"}
 
@@ -56,17 +14,15 @@ class Topic(NamedTuple):
     slug: str
     name: str
     description: str
-    price: str                       # "split" | "explicit" | "free"
-    rule: Callable[[dict[str, Any], dict[str, Any]], bool]   # (jev, describe fields)
+    price: str
+    rule: Callable[[dict[str, Any], dict[str, Any]], bool]
 
 
 def jev_tag(jev: dict[str, Any], q: str) -> Any:
-    """Jev's stored answer to question `q` (a Noul y/n tag or a choice), else None."""
     return (jev.get("tags") or {}).get(q)
 
 
 def _yes(jev: dict[str, Any], q: str) -> bool:
-    """A Noul question answered yes at its calibrated cut (the stored y/n tag; `P` at the same cut if absent)."""
     t = jev_tag(jev, q)
     if t in ("y", "n"):
         return t == "y"
@@ -82,12 +38,9 @@ def _butt_shown(j: dict[str, Any]) -> bool:
 def _norm(v: Any) -> str:
     return str(v or "").strip().lower()
 
+# Unknown acts are ignored, so these are spellings the model actually returned.
 
-# The model does not always return the menu spelling. Observed on a real graded
-# batches: `stripping` for strip, `rubbing_breasts` for groping_own_breasts.
-# Unknown acts are ignored rather than guessed at, so drift silently costs
-# signal — these are the spellings actually seen, not speculative synonyms.
-# (`vault_scripts` reads it from here: one definition, no import cycle.)
+# Spellings the model actually returned (`stripping` for strip, `rubbing_breasts`); unknown acts are ignored, not guessed.
 ACT_ALIASES: dict[str, str] = {
     "stripping": "strip",
     "undressing": "undress",
@@ -103,7 +56,6 @@ ACT_ALIASES: dict[str, str] = {
 
 
 def acts(fields: dict[str, Any]) -> set[str]:
-    """The describe's `acts`, in menu spelling (`ACT_ALIASES`: the drift actually seen)."""
     raw = fields.get("acts")
     return {ACT_ALIASES.get(_norm(a), _norm(a)) for a in raw} if isinstance(raw, (list, tuple)) else set()
 
@@ -113,7 +65,6 @@ _DANCE_STRIP = frozenset({"twerk", "ass_shaking", "strip", "undress"})
 
 
 def _masturbation(j: dict[str, Any], f: dict[str, Any]) -> bool:
-    """Solo only: a partner in shot (or a sex act) is the sex folder's, never this one."""
     if jev_tag(j, "people_count") == "two_or_more" or _sex(j, f):
         return False
     return (bool(acts(f) & _MASTURBATION)
@@ -127,9 +78,6 @@ def _sex(j: dict[str, Any], f: dict[str, Any]) -> bool:
 
 
 def _explicit(j: dict[str, Any], f: dict[str, Any]) -> bool:
-    """An explicit act (describe or Jev): never free, whatever the bare answers say. Covers every explicit
-    topic's rule (masturbation's Jev self_touch read too), so the sell price climbs the same ladder the folder
-    name does (`full_ai_sell.list_price_cents`)."""
     return (bool(acts(f) & (_MASTURBATION | {"blowjob", "handjob"})) or _sex(j, f) or _masturbation(j, f)
             or _norm(f.get("primary_folder")) == "blowjob" or jev_tag(j, "toy") == "toy_touching_or_inserted")
 
@@ -189,8 +137,6 @@ SLUGS: tuple[str, ...] = tuple(BY_SLUG)
 
 
 def parse_topics(raw: str | Iterable[Any] | None) -> list[str]:
-    """Requested topic slugs, de-duplicated, in catalogue order (so preview and apply agree however the client
-    ordered them). A comma string (the GET) or a list (the apply body). Raises ValueError(unknown slugs)."""
     if raw is None:
         return []
     items = raw.split(",") if isinstance(raw, str) else list(raw)
@@ -202,36 +148,28 @@ def parse_topics(raw: str | Iterable[Any] | None) -> list[str]:
 
 
 def jev_of(fields: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The item's current, successful `_jev` (this VERSION, status ok; a clip's also its VIDEO_VERSION + frames),
-    else None."""
     return fields["_jev"] if vault_jev_rules.current(fields) else None
 
 
 def free_ok(jev: dict[str, Any]) -> bool:
-    """FREE GUARD: nothing Jev saw or half-saw bare. Every one of the three must be a plain "n"."""
-    return vault_jev_rules.body_free(jev)   # a clip's: worst over its frames
+    return vault_jev_rules.body_free(jev)
 
 
 def splits(topic: Topic) -> tuple[str, ...]:
-    """The folders a topic can make, in send order: the explicit ladder, else PRICES."""
     return EXPLICIT if topic.price == "explicit" else PRICES
 
 
 def lane_of(jev: dict[str, Any]) -> Any:
-    """The price lane a topic reads: a photo's `lane5`, a clip's `vault_jev_rules.read_lane`."""
     return vault_jev_rules.read_lane(jev) if jev.get("kind") == "video" else jev.get("lane5")
 
 
 def split(topic: Topic, jev: dict[str, Any], fields: dict[str, Any] | None = None) -> str | None:
-    """The price folder this item goes to for `topic`, or None (not in the topic, review, guarded, wrong price).
-    `fields`: the describe fields the act topics read."""
     video = jev.get("kind") == "video"
     lane = lane_of(jev)
     if lane not in PRICES or not topic.rule(jev, fields or {}):
         return None
+    # A review clip's free read may be too low: never free; the describe/flags side vetoes too.
     if lane == "free":
-        # A review clip's free read may be too low: never free. Explicit topics are never free.
-        # The describe/flags side vetoes too: disputed, or a region bare (an operator lock included).
         ok = (topic.price in ("split", "free") and free_ok(jev) and not (video and jev.get("lane5") == "review")
               and not _explicit(jev, fields or {}) and not vault_ai_brief.free_vetoed(fields))
         return "free" if ok else None
@@ -241,7 +179,6 @@ def split(topic: Topic, jev: dict[str, Any], fields: dict[str, Any] | None = Non
 
 
 def folder_name(topic: Topic, price: str | None) -> str:
-    """`<name> <price>` (`<name>` unsplit: `price` None), before the `AI-` prefix (`vault_scripts.ai_folder_name`)."""
     return topic.name if price is None else f"{topic.name} {price}"
 
 
@@ -251,8 +188,6 @@ def _jev_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def assign(rows: Iterable[dict[str, Any]], slugs: Iterable[str], *, by_price: bool = True,
            ) -> dict[tuple[str, str | None], list[dict[str, Any]]]:
-    """{(slug, price): rows} for the requested topics over photo and clip rows with a current `_jev`. Insertion order: catalogue order, then `splits`; empty splits absent. `by_price` False: one
-    {(slug, None): rows} per topic, the union of its splits (each item is in at most one split of a topic)."""
     jevs = [(r, jev_of(r.get("fields"))) for r in _jev_rows(rows)]
     jevs = [(r, j) for r, j in jevs if j is not None]
     out: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
@@ -275,8 +210,6 @@ def assign(rows: Iterable[dict[str, Any]], slugs: Iterable[str], *, by_price: bo
 
 
 def catalogue(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every topic with how many items it would hold (all splits) — shown beside each checkbox, so it is
-    counted for ticked and unticked topics alike."""
     placed = assign(rows, SLUGS)
     out = []
     for t in TOPICS:
@@ -287,6 +220,5 @@ def catalogue(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def coverage(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
-    """{items, with_jev}: how many of the planned photos and clips carry a current `_jev`."""
     items = _jev_rows(rows)
     return {"items": len(items), "with_jev": sum(1 for r in items if jev_of(r.get("fields")) is not None)}

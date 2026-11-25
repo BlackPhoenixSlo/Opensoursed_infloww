@@ -1,31 +1,5 @@
 #!/usr/bin/env python3
-"""The MCP sign-in builtins `register_account` / `login` (mcp_api; ultra-mode ticket 05 owner amendment):
-called with no bearer, they run /auth/register or /auth/sign-in (+ /auth/2fa/login) in-process, then mint an
-owner token with that fresh session. Two-Agency bench, real app, no network.
-
-Cases:
-  case_anonymous_list        — no credential: tools/list = sign_in, connect_account, register_account, login; a
-                               token caller lists none of them (register_account is Unknown tool for it).
-  case_register              — a new owner + agency_name → a working token, the name saved, open_url on the
-                               Access tokens card; a taken username 409; a bad username / short password 400.
-  case_register_closed_shard — MCP_SIGNUP_URL set and OI_ORIGIN unset / another origin → 403 + the open
-                               shard's register_url, whatever X-Forwarded-Host says (forged → still
-                               closed); no user made. OI_ORIGIN equal to it: allowed.
-  case_register_name_unsaved — the Agency-name save refused: the account and token stand, agency_name_saved
-                               false, next_step names the Account settings page.
-  case_login                 — an owner → a token; a wrong password 401; an employee → refused, no token row.
-  case_login_throttled       — the app's sign-in throttle holds through MCP: NAME_CAPACITY wrong passwords for
-                               one username from one address → the next call 429, even with the right password.
-  case_register_throttled    — the sign-up throttle holds through MCP and the raw route: REGISTER_CAPACITY
-                               registers (409s count) from one address → the next 429, no user made; a 400
-                               spends none.
-  case_login_2fa             — 2FA on: no code → asks for it; a bad code → refused; the right code → a token.
-  case_secret_never_echoed   — passwords and codes appear in no result, no log record and no audit row;
-                               a 422 names fields only.
-
-Run: ./venv/bin/python service/tests/test_mcp_auth.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -49,7 +23,7 @@ IDS = fx.seed_two_agencies()
 ANON = _harness.make_client()
 FWD = {"X-Forwarded-Host": "app.example.com", "X-Forwarded-Proto": "https"}
 _ids = iter(range(1, 10_000))
-SECRETS: list[str] = []  # every password / code sent: never seen again anywhere
+SECRETS: list[str] = []
 
 
 def _rpc(method, params=None, headers=None):
@@ -123,16 +97,16 @@ def case_register_closed_shard() -> None:
     os.environ["MCP_SIGNUP_URL"] = "https://open.example.net/"
     forged = {"X-Forwarded-Host": "open.example.net", "X-Forwarded-Proto": "https"}
     try:
-        for origin in (None, "https://app.example.com"):  # this shard's origin unknown; another origin
+        for origin in (None, "https://app.example.com"):
             if origin:
                 os.environ["OI_ORIGIN"] = origin
-            for headers in (FWD, {}, forged):  # a forged X-Forwarded-Host naming the open shard opens nothing
+            for headers in (FWD, {}, forged):
                 err, out = _tool("register_account", {"username": "mcp_closed", "password": "pw-closed-1"}, headers)
                 assert err is True and out["error"]["status"] == 403, (origin, headers, out)
                 assert out["register_url"].startswith("https://open.example.net/login?mode=register"), out
                 assert out["open_url"] == out["register_url"] and "token" not in out, out
         assert asyncio.run(_user_id("mcp_closed")) is None
-        os.environ["OI_ORIGIN"] = "https://OPEN.example.net"  # the open shard itself (config, not the header)
+        os.environ["OI_ORIGIN"] = "https://OPEN.example.net"
         err, out = _tool("register_account", {"username": "mcp_open", "password": "pw-open-1"})
         assert err is False and out["token"].startswith("ifw_"), out
     finally:
@@ -176,11 +150,11 @@ def case_login_throttled() -> None:
 def case_register_throttled() -> None:
     login_throttle.reset()
     try:
-        for _ in range(login_throttle.REGISTER_CAPACITY):  # probing a taken name spends the address's tokens
+        for _ in range(login_throttle.REGISTER_CAPACITY):
             err, out = _tool("register_account", {"username": "agency_a_owner", "password": "pw-probe-1"})
             assert err is True and out["error"]["status"] == 409, out
         err, out = _tool("register_account", {"username": "a@b.example", "password": "pw-probe-2"})
-        assert err is True and out["error"]["status"] == 400, out  # validation answers first, spends none
+        assert err is True and out["error"]["status"] == 400, out
         err, out = _tool("register_account", {"username": "mcp_throttled", "password": "pw-probe-3"})
         assert err is True and out["error"]["status"] == 429 and "token" not in out, out
         r = ANON.post("/auth/register", json={"username": "mcp_throttled", "password": "pw-probe-3"})
@@ -194,7 +168,7 @@ def case_login() -> None:
     uid = IDS["agency_b_owner"]
     before = asyncio.run(_count(OwnerToken, OwnerToken.user_id == uid))
     err, out = _tool("login", {"username": "agency_b_owner", "password": fx.PASSWORD})
-    SECRETS.remove(fx.PASSWORD)  # the fixtures' shared password: other clients' cookies carry nothing of it
+    SECRETS.remove(fx.PASSWORD)
     assert err is False and out["token"].startswith("ifw_") and out["username"] == "agency_b_owner", out
     _works(out["token"])
     assert asyncio.run(_count(OwnerToken, OwnerToken.user_id == uid)) == before + 1
@@ -221,7 +195,7 @@ def case_login_2fa() -> None:
     bad = "000000" if sec.totp(secret, sec.current_step()) != "000000" else "111111"
     err, out = _tool("login", {"username": "mcp_2fa", "password": "pw-2fa-1", "code": bad})
     assert err is True and out["error"]["status"] == 400 and "not right" in out["error"]["detail"], out
-    SECRETS.remove(bad)  # a digit string that may well appear in an id: checked by the case above
+    SECRETS.remove(bad)
     code = sec.totp(secret, sec.current_step())
     err, out = _tool("login", {"username": "mcp_2fa", "password": "pw-2fa-1", "code": code})
     SECRETS.remove(code)
@@ -234,8 +208,7 @@ class _Grab(logging.Handler):
         self.lines: list[str] = []
 
     def emit(self, record):
-        # The DB driver's own DEBUG trace prints the users INSERT (the password column is plaintext by the owner's
-        # decision, as for the browser's register); it is off outside a debug run. Every other logger counts.
+                # The driver DEBUG trace prints the users INSERT (plaintext password, owner decision); skip it.
         if not record.name.startswith(("aiosqlite", "sqlalchemy")):
             self.lines.append(record.getMessage() + repr(record.args))
 
@@ -254,7 +227,7 @@ def case_secret_never_echoed() -> None:
         _tool("register_account", {"username": "mcp_logs", "password": "pw-logged-7"})
         _tool("login", {"username": "mcp_logs", "password": "pw-logged-7"})
         _tool("login", {"username": "mcp_logs", "password": "pw-wrong-7"})
-        err, out = _tool("login", {"username": "mcp_logs", "password": "pw-422-77" * 40})  # over max_length
+        err, out = _tool("login", {"username": "mcp_logs", "password": "pw-422-77" * 40})
         assert err is True and out["error"]["status"] == 422, out
     finally:
         root.removeHandler(grab)

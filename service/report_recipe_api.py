@@ -1,20 +1,3 @@
-"""service/report_recipe_api.py — the report recipe's routes (owners only, v1):
-
-  POST /admin/reports/run        → {recipe, format csv|xlsx|json}: the report
-                                   (`report_recipe.run` / `build_file`); 400 {errors} per field
-                                   when refused, 413 past 20 MB (both file
-                                   routes), 429 while another run of the
-                                   Agency is in flight. The "export" Function
-                                   permission's route (permissions.ACTIONS).
-  GET  /admin/reports/catalogue  → the datasets a recipe may name: the help
-                                   bot's closed book (`report_recipe_decide`).
-  POST /admin/reports/files      → {recipe, format csv|xlsx}: the same file, held
-                                   15 min in memory (`report_files`); answers
-                                   {id, download_url, filename, bytes, expires_in_s}
-                                   (MCP `report_file`: the client saves it).
-  GET  /admin/reports/files/{id} → that file, for the user who built it only;
-                                   anyone else, unknown or expired: 404.
-"""
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -35,7 +18,6 @@ OWNERS_ONLY = "reports are for Agency owners"
 
 
 async def refused(_request: Request, e: report_recipe.RecipeError) -> JSONResponse:
-    """report_recipe.RecipeError's answer (server.py registers it): 400/413/429 {detail, errors}."""
     return JSONResponse({"detail": str(e), "errors": e.errors}, status_code=e.status)
 
 

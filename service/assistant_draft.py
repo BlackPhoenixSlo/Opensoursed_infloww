@@ -1,87 +1,3 @@
-"""service/assistant_draft.py — the help bot's "Do it for me" draft (pilot: Auto mass).
-
-Spec + decision log: docs/spec/assistant-do-mode.md. The widget sends what the
-asker wants in plain words; this turns it into the SLOTS of one form (today only
-`mass_premade`, the Auto Mass editor), which the browser then types into the
-real editor and saves through its own Save (switched off). Nothing here writes a
-rule.
-
-  POST /admin/assistant/draft  {request, account_id?, thread_id?, previous?}
-       → 200 {id, flow, account_id, summary, slots, assumptions, unresolved, answer, error}
-  GET  /admin/assistant/do-caps?account_id=  → {account_id, can_do}
-  POST /admin/assistant/edit/apply  {account_id, rules:[{id, version}], changes}
-       → 200 {results:[{id, ok, reason?, diffs?}], changed}
-
-`mass_edit` (spec D11, owner 2026-11-12) is the one flow that WRITES, and only
-through the apply route: the draft lists the existing Auto mass rules a change
-would touch (here, or every model the session owns with scope "all") with their
-before→after; the apply route re-applies the change spec to each FRESH row the
-session owns (version-checked), never a client payload, and never turns a rule
-on. Pure + DB pieces in assistant_edit.py.
-
-`report_export` (ultra-mode ticket 02, docs/plans/ultra-mode/issues/02-do-mode-export.md):
-a report file of the Agency's numbers, owners only; resolved in
-assistant_report.py (`report_ctx`, `resolve_export`). The browser downloads it
-from POST /admin/reports/run. With no `account_id` (General focus) only this
-flow may come back.
-
-`auto_story` (spec D13): a NEW Auto Story rule (`auto_stories`, one per
-account) the browser fills on /growth/auto-story and saves switched off, like
-`mass_premade`. An account that already has one gets an answer pointing at it,
-never a draft; the Auto Story opt-in gates it after the call (`_story_gate`).
-
-ONE LLM call (`help_assistant_do`, DeepSeek flash by default —
-`_model_pick.PURPOSE_DEFAULT_MODELS`; an operator may pin another model, Claude
-Sonnet/Opus included). JSON mode (`response_format: json_object`) goes only to a
-model that takes it (`json_object_ok`); for the rest (Claude) nothing is sent
-and the system prompt's "ONE JSON object" is the contract — `parse_json_object`
-takes the first balanced {...} out of fences/prose, then the same validation
-applies, and unparseable is `bad_draft` like any bad JSON. The model returns
-INTENTS only (names, counts, wants); the SERVER validates and resolves every id:
-  • fan lists by name against the account's OF lists (the same `/lists` read the
-    UI's picker makes; OF ids, never local list keys — fanLists.tsx);
-  • the folder from the mirror's per-photo `explicitness_tier` rows
-    (`rank_sfw` / `match_named`, pure). Never triggers paid flagging.
-  • MASSdmEXCLUDE never lands in `excludes`: every broadcast already skips it
-    (send_mass_message → resolve_mass_audience), so the card states that instead.
-
-THE SYSTEM PROMPT IS BYTE-STABLE (schema + few-shots, no account data) for the
-provider's prefix cache, like assistant_api's. The request, the account's list
-and folder names, existing Auto mass names and the previous draft ride the USER
-message, the request fenced as data.
-
-WHO PAYS (owner 2026-11-11, reverses spec D8): the agency's own key, else the
-deployment's help-bot DeepSeek key (`llm_providers._FALLBACK_KEY_ENVS`, the
-row Q&A uses), bounded like Q&A by the account's daily cost cap
-(`llm_client._reserve`; a used-up cap is `error: "cap"`). do-caps says
-`no_key` only when neither resolves.
-
-200-ALWAYS like /ask: a cap, key, provider or parse failure returns `error` set
-and a friendly `answer`. The account gate (`assert_account_owned`) is /ask's.
-A caller who may not create an Auto Mass rule on the account (the same
-`opt_in_refusal` check `create_rule` applies through `require_opt_in_kind`)
-gets `flow: null` and a sentence — never an LLM call.
-
-HISTORY: one `assistant_turns` row per non-blank draft (question = request,
-answer = summary), so it shows in the widget's history and the owner's audit.
-No new column: the row is a turn like any other on the asker's thread.
-
-EVAL SEAM — `draft_for_eval(request, ctx, model, previous=None)` →
-`(response, usage)`, for scripts/ (draft accuracy per model). The REAL system
-prompt + user block, ONE REAL `llm_client.chat` on `model` with
-`account_id=None` (so the key is the house env key: DEEPSEEK_API_KEY /
-ANTHROPIC_API_KEY), the REAL parse + validation + resolution against an
-in-memory `EvalContext` (lists, folders with tiers, existing rule names). No
-account reads, no route, no turn row. `response` is the route's shape (`id`
-and `account_id` None); `usage` = {model, tokens_in (whole prompt),
-tokens_cached (cache read), tokens_cache_write, tokens_out (incl. thinking),
-cost_cents (float), cost_millicents} straight from the provider's usage block
-priced by llm_models in `llm_client._finalize_ok` — never an estimate; zeros
-when no call completed. ⚠️ `llm_client.chat` still reserves the house cap row
-and writes `grok_calls`: point DATABASE_URL / CHATTERLY_DB_URL at a temp DB
-(init_db) first — never service/chatterly.db. The house cap there is
-`llm_client._DEFAULT_CAP_CENTS` per day.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -121,36 +37,34 @@ log = logging.getLogger("of-relay.assistant_draft")
 
 router = APIRouter()
 
-PURPOSE = "help_assistant_do"       # grok_calls tag + model_by_purpose key
-# The draft's output cap, sent and reserved against (rwl W30 F11): a draft is one JSON object (captions included) far
-# under it; the native Claude lane's own cap (llm_anthropic.MAX_TOKENS), so a thinking model keeps its room.
+PURPOSE = "help_assistant_do"
+# Output cap is sent and reserved against: equals llm_anthropic.MAX_TOKENS so a thinking model keeps room.
 DRAFT_MAX_TOKENS = 4096
 FLOW = "mass_premade"
-EDIT_FLOW = assistant_edit.EDIT_FLOW   # bulk edit of existing Auto mass rules (spec D11)
-STORY_FLOW = "auto_story"             # a new Auto Story rule (spec D13)
-STORY_KIND = "auto_stories"           # its automation_rules kind (one per account)
-REPORT_FLOW = "report_export"         # a report file of the Agency's numbers (ultra-mode ticket 02)
-CONFIG_FLOW = "full_ai_config"        # a patch of the Creator's Full AI draft (phase 03c, D63)
-CONFIG_KIND = "full_ai_chat"          # its opt-in kind (owner-only, like the config routes)
+EDIT_FLOW = assistant_edit.EDIT_FLOW
+STORY_FLOW = "auto_story"
+STORY_KIND = "auto_stories"
+REPORT_FLOW = "report_export"
+CONFIG_FLOW = "full_ai_config"
+CONFIG_KIND = "full_ai_chat"
 CONFIG_WORD = assistant_full_ai.CONFIG_WORD
 FLOWS = (FLOW, EDIT_FLOW, STORY_FLOW, REPORT_FLOW, CONFIG_FLOW)
 MAX_REQUEST_CHARS = assistant_api.MAX_QUESTION_CHARS
-MAX_PREVIOUS_CHARS = 8000            # a prior draft's slots, serialized
+MAX_PREVIOUS_CHARS = 8000
 MIN_INTERVAL_MIN, MAX_INTERVAL_MIN = 5, 168 * 60
-# Unsend window: the mass payload takes any positive hours (mass_premade
-# `_pos_float`); the draft holds it to the interval's own 5 min..168 h.
+# Unsend window: mass payload takes any positive hours; the draft holds it to the interval's own 5 min..168 h.
 MIN_UNSEND_H, MAX_UNSEND_H = round(MIN_INTERVAL_MIN / 60, 2), 168.0
 MAX_CAPTIONS = 20
-CAPTION_MAX = PLAIN_MAX              # OF's text limit, as the mass payload enforces it
+CAPTION_MAX = PLAIN_MAX
 NAME_MAX = 80
-NOTE_MAX = 200                       # one model-written assumption / unresolved line
+NOTE_MAX = 200
 MAX_NOTES = 6
 LISTS_TIMEOUT_S = 8.0
 DEFAULT_NAME = "Auto mass"
 
-SYSTEM_IDS = ("fans", "following")  # fanLists.tsx SYSTEM_AUDIENCES / DEFAULT_BROADCAST_LISTS
+SYSTEM_IDS = ("fans", "following")
 DEFAULT_INCLUDES = list(SYSTEM_IDS)
-TIERS = ("sfw", "suggestive", "explicit", "hardcore")   # vault_ai_brief.EXPLICITNESS_LADDER
+TIERS = ("sfw", "suggestive", "explicit", "hardcore")
 
 MASS_EXCLUDE_NOTE = "Your mass-exclude list (MASSdmEXCLUDE) is always skipped."
 NO_FLAGS_NOTE = "No folder has AI flags yet — pick one in the form."
@@ -158,17 +72,11 @@ NO_SFW_NOTE = "No folder looks SFW from its AI flags — pick one in the form."
 UNSUPPORTED_ANSWER = ("I can only set up a new Auto mass or Auto Story, change settings on your Auto masses, "
                       "or export a report of your numbers, so far. "
                       "Ask me how to do this instead and I'll show you where it lives.")
-# flow null on a request that names a mass (one-time, or an existing rule): say what would work, so the user can
-# re-ask here instead of bouncing through Q&A, whose answer links Auto mass and offers "Do it for me" again.
 ONE_OFF_MASS_ANSWER = ("I can set up a new Auto mass (sends on a timer — say how often, e.g. \"every 3 hours\"), or "
                        "change unsend, schedule, online-only, skip-recent-chats or turn off on your existing Auto "
                        "masses, here or on every model. I can't send a one-time mass, turn rules on, delete them "
                        "or edit their captions, folder or audience.")
 _MASS_WORD = re.compile(r"\b(mass|masses|broadcast|blast)\b", re.I)
-# Deterministic veto on a "mass_premade" draft (eval 2026-11-12: the no-timing rule cost 7 false creates; these
-# two shapes are 6 of them, and no Auto mass case in the 1000 matches either):
-#   another feature named and no mass word in any language we see ("set up auto posting from the beach folder");
-#   an edit of an existing rule ("update my auto mass interval to 30 min") — never a refine, which edits the draft.
 _ANY_MASS = re.compile(r"\b(auto[ -]?)?(mass(es|en|e|a)?|mass[ -]?\w*messag\w*|masa|masiv\w*|masov\w*|broadcast\w*|blast\w*)\b", re.I)
 _OTHER_FEATURE = re.compile(r"\b(auto ?post\w*|posts?|posting|stor(y|ies)|welcome|hello message|thank you|"
                             r"repl(y|ies))\b", re.I)
@@ -180,25 +88,18 @@ def _names_other_feature(request: str) -> bool:
 _EDIT_VERB = re.compile(r"^\s*(update|change|edit|delete|remove|rename|pause|stop|disable|enable|"
                         r"turn (on|off)|switch (on|off))\b", re.I)
 _EXISTING = re.compile(r"\b(my|existing|made|the [\w ]{0,20}mass)\b", re.I)
-_PER_SEND = re.compile(r"\b(each|after|every)\b", re.I)    # "delete the previous one each time" = a new rule's unsend
-# auto_story (D13): a story word in the languages we see; "my/the (auto) story" after an edit verb is the existing rule.
+_PER_SEND = re.compile(r"\b(each|after|every)\b", re.I)
 _STORY_WORD = re.compile(r"\b(auto ?)?(stor(y|ies|ie|ia|ias)|histori\w*|histoire|zgodb\w*)\b", re.I)
 _STORY_EXISTING = re.compile(r"\b(my|existing|current|the)\s+(auto[ -]?)?stor(y|ies)\b", re.I)
 
 
 def vetoed(request: str, *, refine: bool, flow: str = FLOW) -> bool:
-    """A `mass_edit` draft is only vetoed for another feature named with no
-    mass word; editing an existing rule is what it is for (spec D11). An
-    `auto_story` draft needs a story word and no mass word, is never an edit
-    of the existing rule, and never a refine (a refine is of an Auto mass plan).
-    A `report_export` draft needs a report word and is never a refine; a
-    `full_ai_config` draft needs a config word (`CONFIG_WORD`), never a refine."""
     if flow == CONFIG_FLOW:
         return refine or not CONFIG_WORD.search(request)
     if flow == STORY_FLOW:
         return (refine or not _STORY_WORD.search(request) or bool(_ANY_MASS.search(request))
                 or (bool(_EDIT_VERB.search(request)) and bool(_STORY_EXISTING.search(request))))
-    if flow == REPORT_FLOW:     # never a refine (a refine is of an Auto mass plan); needs a report word
+    if flow == REPORT_FLOW:
         return refine or not REPORT_WORD.search(request)
     if refine:
         return False
@@ -216,15 +117,13 @@ FULL_AI_NOT_ALLOWED_ANSWER = ("Your role can't change Full AI Chat settings on t
 CONFIG_READ_FAILED_ANSWER = "Couldn't read the Full AI settings — try again."
 STORY_NOT_ALLOWED_ANSWER = ("Your role can't create Auto Story rules on this account — ask "
                             "an owner or admin to set it up.")
-# One Auto Story per account: the agent never makes a second one, nor edits the one there (D13).
 STORY_EXISTS_ANSWER = ("Auto Story is already set up for {model} — open it to edit: My Automations → Auto Story. "
                        "I only set up a new one.")
-# report_export (ultra-mode ticket 02): with no Creator in focus only a report.
 PICK_CREATOR_ANSWER = ("Pick a Creator above first — without one I can only export a report of your numbers.")
 
 
-# ── The prompt's fixed head (byte-stable) ─────────────────────────────
 
+# System prompt is byte-stable (no account data) for the provider prefix cache; per-request data rides the user message.
 _INSTRUCTIONS = """\
 You turn a request into the fields of ONE form in this product. Reply with ONE
 JSON object and nothing else.
@@ -374,7 +273,7 @@ Rules:
   slower", "stop GIFs", "use Euryale then Hermes"). Saving, rolling back or
   switching Full AI Chat on or off = flow null.
 - Never invent a list, a folder or a time the request did not ask for.""".replace(
-    "<<DATASETS>>", rd.catalogue_text())     # once, at import: sorted, no account data
+    "<<DATASETS>>", rd.catalogue_text())
 
 _FEWSHOTS = """\
 Examples:
@@ -430,11 +329,9 @@ JSON: {"flow": "report_export", "report": {"dataset": "fan_spend", "window": {"p
 
 
 def system_prompt() -> str:
-    """Pure and constant: instructions + few-shots. No account data, ever."""
     return _INSTRUCTIONS + "\n\n---\n\n" + _FEWSHOTS
 
 
-# ── Intents (what the LLM may say) ────────────────────────────────────
 
 class _Every(BaseModel):
     value: float | None = Field(None, allow_inf_nan=False)
@@ -468,7 +365,6 @@ class Intent(BaseModel):
     folder: _FolderWant = Field(default_factory=_FolderWant)
     captions: _Captions = Field(default_factory=_Captions)
     keep_skip_recent: bool = True
-    # Optional create knobs (Part B): absent = the form's default.
     price: float | None = Field(None, allow_inf_nan=False)
     media_count: float | None = Field(None, allow_inf_nan=False)
     exclude_replied_hours: float | None = Field(None, allow_inf_nan=False)
@@ -476,21 +372,19 @@ class Intent(BaseModel):
     unread_limit: float | None = Field(None, allow_inf_nan=False)
     recent_chat_hours: float | None = Field(None, allow_inf_nan=False)
     recent_chat_limit: float | None = Field(None, allow_inf_nan=False)
-    edit: assistant_edit.Edit | None = None        # flow "mass_edit" only
-    # flow "auto_story" only (`folder` and `every` are shared).
-    times: list[Any] = Field(default_factory=list)   # "HH:MM"; checked in resolve_story
+    edit: assistant_edit.Edit | None = None
+    times: list[Any] = Field(default_factory=list)
     per_run: float | None = Field(None, allow_inf_nan=False)
     hours_to_live: float | None = Field(None, allow_inf_nan=False)
     max_runs: float | None = Field(None, allow_inf_nan=False)
-    report: dict[str, Any] | None = None           # flow "report_export" only; assistant_report.resolve_export
-    config: assistant_full_ai.ConfigPatch | None = None   # flow "full_ai_config" only; propose in `_with_config`
+    report: dict[str, Any] | None = None
+    config: assistant_full_ai.ConfigPatch | None = None
     assumptions: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
     def _nulls_are_defaults(cls, v):
-        """A JSON null for a sub-object or list is that field's default."""
         if isinstance(v, dict):
             v = {k: x for k, x in v.items()
                  if not (x is None and k in ("audience", "folder", "captions", "assumptions",
@@ -498,9 +392,8 @@ class Intent(BaseModel):
         return v
 
 
-# ── Folders: the mirror's photos × their explicitness tier (pure) ─────
 
-_BUILTIN_FOLDER_NAMES = frozenset({   # vault_ai_api._BUILTIN_FOLDER_NAMES
+_BUILTIN_FOLDER_NAMES = frozenset({
     "posts", "stories", "streams", "messages", "uploads", "tips", "archived", "purchased",
 })
 
@@ -531,10 +424,6 @@ def _tier(raw: str | None) -> str:
 
 def folder_stats(rows: Iterable[tuple[str | None, str, str | None]],
                  allowed: frozenset[int] | None = None) -> list[FolderStat]:
-    """Every OF folder the mirror's items name (listStates, as GET
-    /admin/vault-ai/of-folders derives them), with its PHOTO count per tier —
-    only photos join an Auto mass from a folder. `rows`: (raw_json, kind,
-    explicitness_tier). `allowed`: a restricted chatter's folder ids."""
     out: dict[str, FolderStat] = {}
     for raw, kind, tier in rows:
         m = load_json(raw, {}) or {}
@@ -556,16 +445,12 @@ def folder_stats(rows: Iterable[tuple[str | None, str, str | None]],
 
 
 def rank_sfw(folders: list[FolderStat]) -> list[FolderStat]:
-    """SFW candidates, best first: custom folders with photos and no explicit
-    or hardcore photo, by SFW share (suggestive is not SFW), then SFW count,
-    then name."""
     cands = [f for f in folders if f.photos > 0 and not f.builtin
              and f.tiers["explicit"] + f.tiers["hardcore"] == 0]
     return sorted(cands, key=lambda f: (-(f.tiers["sfw"] / f.photos), -f.tiers["sfw"], f.name.lower()))
 
 
 def pick_sfw(folders: list[FolderStat]) -> tuple[FolderStat | None, str | None]:
-    """(the folder, None) or (None, the unresolved sentence)."""
     if not any(f.flagged for f in folders):
         return None, NO_FLAGS_NOTE
     ranked = [f for f in rank_sfw(folders) if f.tiers["sfw"] > 0]
@@ -577,8 +462,6 @@ def _norm(s: str) -> str:
 
 
 def match_named(folders: list[FolderStat], name: str) -> FolderStat | None:
-    """Fuzzy folder match: exact (normalized), then containment, then close
-    spelling. Ties go to the folder with more photos."""
     want = _norm(name)
     if not want:
         return None
@@ -595,7 +478,6 @@ def match_named(folders: list[FolderStat], name: str) -> FolderStat | None:
     return names[close[0]] if close else None
 
 
-# ── Resolution: intents → slots (pure) ────────────────────────────────
 
 _EVERYONE = {"everyone", "all", "allfansandfollowing", "fansandfollowing", "everybody"}
 _FANS = {"fans", "allfans", "fan", "subscribers", "subs", "allsubscribers"}
@@ -609,12 +491,11 @@ def _is_mass_exclude(name: str) -> bool:
 
 
 def _custom_lists(lists: list[dict]) -> dict[str, tuple[str, str]]:
-    """{normalized name: (OF id as str, name)} of the account's custom lists."""
     out: dict[str, tuple[str, str]] = {}
     for lst in lists:
         lid, name = lst.get("id"), str(lst.get("name") or "")
         if lid is None or str(lid) in SYSTEM_IDS or not str(lid).isdigit():
-            continue        # OF's built-ins are the system chips, never a custom id
+            continue
         out.setdefault(_norm(name), (str(lid), name))
     return out
 
@@ -624,7 +505,7 @@ class Draft:
     slots: dict[str, Any]
     assumptions: list[str]
     unresolved: list[str]
-    names: dict[str, str]        # list id → display name, for the summary
+    names: dict[str, str]
 
 
 def _clean_notes(notes: list[str]) -> list[str]:
@@ -696,15 +577,13 @@ def _captions(c: _Captions, assumptions: list[str], unresolved: list[str]) -> tu
 
 PRICE_MIN, PRICE_MAX = assistant_edit.PRICE_MIN, assistant_edit.PRICE_MAX
 MEDIA_MAX = assistant_edit.MEDIA_MAX
-COUNT_MAX = 1000                       # unread / recent-chat caps
+COUNT_MAX = 1000
 EXTRA_KEYS = ("price", "media_count", "exclude_replied_hours", "exclude_inbound_hours", "unread_limit",
               "recent_chat_hours", "recent_chat_limit")
 
 
 def _extras(intent: Intent, folder: dict | None, assumptions: list[str],
             unresolved: list[str]) -> dict[str, Any]:
-    """The optional create knobs, clamped to what the form takes. Absent / not
-    positive = the form's default (None); the two guards keep an explicit 0 (= off)."""
     out: dict[str, Any] = {k: None for k in EXTRA_KEYS}
     clamped = False
 
@@ -744,8 +623,6 @@ def _unknown_list(name: str, *, lists_read: bool) -> str:
 
 def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
             folders: list[FolderStat], existing_names: list[str], refine: bool = False) -> Draft:
-    """Validate + resolve one mass_premade intent into the form's slots.
-    Pure: every account read happened before (lists None = the read failed)."""
     assumptions: list[str] = []
     unresolved: list[str] = []
     names: dict[str, str] = {}
@@ -753,7 +630,6 @@ def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
 
     interval = _interval(intent.every, assumptions)
 
-    # Audience. "everyone" = both system audiences, online or not.
     online_only = True if intent.online_only is None else bool(intent.online_only)
     includes: list[str] = []
     asked_lists = bool(intent.audience.include)
@@ -776,8 +652,6 @@ def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
             ids = []
         includes += [i for i in ids if i not in includes]
     if not asked_lists:
-        # Nothing said → the form's default. A named list that did not resolve
-        # stays EMPTY (unresolved says why) — never widened to everyone.
         includes = list(DEFAULT_INCLUDES)
 
     excludes: list[str] = []
@@ -785,7 +659,7 @@ def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
     for raw in intent.audience.exclude:
         n = _norm(raw)
         if _is_mass_exclude(raw):
-            continue        # every broadcast skips it already — never stored twice
+            continue
         if n in _EVERYONE | _FANS | _FOLLOWING:
             unresolved.append(f'"{raw}" can\'t be excluded — OnlyFans ignores built-in audiences there.')
         elif n in custom:
@@ -802,7 +676,6 @@ def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
     if not online_only:
         assumptions.append("Sends to fans whether they're online or not.")
 
-    # Folder.
     folder = None
     want = (intent.folder.want or "none").lower()
     if want == "sfw":
@@ -828,7 +701,6 @@ def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
 
     captions, captions_ai = _captions(intent.captions, assumptions, unresolved)
 
-    # Delete: hours given wins; "delete" alone = when the next one is due.
     unsend = intent.unsend_after_hours if (intent.unsend_after_hours or 0) > 0 else None
     if unsend is not None and not MIN_UNSEND_H <= unsend <= MAX_UNSEND_H:
         unsend = min(max(unsend, MIN_UNSEND_H), MAX_UNSEND_H)
@@ -860,11 +732,6 @@ def resolve(intent: Intent, *, request: str, lists: list[dict] | None,
     return Draft(slots, _dedupe(assumptions), _dedupe(unresolved), names)
 
 
-# ── Cross-checks: the draft's silent misses, flagged on the plan card ─
-# Eval 2026-11-11 (Fable round 3): the misses that hurt are silent ones — an
-# audience widened past "online fans", a number read as the wrong thing. Cheap
-# deterministic checks of the request against the slots; they only ADD a
-# CHECK_PREFIX line to assumptions, never change a slot.
 CHECK_PREFIX = "Check:"
 _ONLINE = re.compile(r"\bonline\b|en l[ií]nea|en ligne|in linea|em linha", re.I)
 _NOT_ONLY_ONLINE = re.compile(r"offline|or not|matter|whether|regardless|o no\b|ou não|oder nicht|ali ne\b|not (just|only) online"
@@ -878,9 +745,6 @@ def _nums(text: str) -> set[float]:
 
 def cross_checks(request: str, slots: dict[str, Any], intent: Intent, names: dict[str, str],
                  *, clamped: bool = False, refine: bool = False) -> list[str]:
-    """`clamped`: a range note already explains the out-of-range numbers, so
-    the number check stays quiet. "1" is never flagged (once / 1 caption / a
-    default). Eval 2026-11-11 tuned these on 1000 cases (false flags vs caught)."""
     out: list[str] = []
     online = bool(_ONLINE.search(request)) and not _NOT_ONLY_ONLINE.search(request)
     if online and not slots["online_only"]:
@@ -911,7 +775,7 @@ def cross_checks(request: str, slots: dict[str, Any], intent: Intent, names: dic
                      *intent.audience.exclude, intent.folder.name or ""])
     used |= _nums(text)
     if len(slots["captions"]) >= MAX_CAPTIONS or (intent.captions.count or 0) >= MAX_CAPTIONS:
-        used |= {n for n in _nums(request) if n > MAX_CAPTIONS}   # "30 captions" → 20 is the prompt's rule
+        used |= {n for n in _nums(request) if n > MAX_CAPTIONS}
     missed = sorted(n for n in _nums(request) - {0.0}
                     if not any(abs(n - u) <= max(0.02, 0.03 * n) for u in used))
     if missed:
@@ -929,7 +793,6 @@ def _fmt_num(x: float) -> str:
 
 
 def summary(slots: dict[str, Any], names: dict[str, str]) -> str:
-    """The plain-words line the asker reads (and the turn row stores)."""
     label = {"fans": "all fans", "following": "following", **names}
     iv = slots["interval"]
     unit = iv["unit"] if iv["value"] != 1 else iv["unit"].rstrip("s")
@@ -951,11 +814,9 @@ def summary(slots: dict[str, Any], names: dict[str, str]) -> str:
     return "; ".join(parts) + ". It's saved switched off — you turn it on."
 
 
-# ── auto_story: a new Auto Story rule (pure, spec D13) ────────────────
-# The form's blank defaults (AutoStoriesTab DEFAULT_FORM): the client makes no step for a slot left at one.
 STORY_TIMES_DEFAULT = ["09:00"]
 STORY_EVERY_DEFAULT_H = 6
-STORY_PER_RUN_MAX = 10            # stories per run; the form has no cap, a burst of more reads as spam
+STORY_PER_RUN_MAX = 10  # the form has no cap; a burst of more reads as spam
 STORY_TTL_DEFAULT_H = 6
 STORY_TTL_MAX_H = 168
 STORY_EVERY_MAX_H = 168
@@ -967,7 +828,6 @@ _CLOCK = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?\s*$", re.I)
 
 
 def _clock(raw: Any) -> str | None:
-    """'9:00' / '09:00' / '21' / '6pm' / '12am' → 'HH:MM'; anything else None."""
     m = _CLOCK.match(str(raw)) if isinstance(raw, (str, int)) and not isinstance(raw, bool) else None
     if not m:
         return None
@@ -980,9 +840,6 @@ def _clock(raw: Any) -> str | None:
 
 
 def resolve_story(intent: Intent, *, folders: list[FolderStat]) -> Draft:
-    """Validate + resolve one auto_story intent into the Auto Story form's
-    slots. Pure. Every key is always there; a slot at the form's default
-    leaves that field untouched on screen. Never an enabled/run-now key."""
     assumptions: list[str] = []
     unresolved: list[str] = []
 
@@ -999,7 +856,7 @@ def resolve_story(intent: Intent, *, folders: list[FolderStat]) -> Draft:
         f = match_named(folders, intent.folder.name)
         if f is None:
             unresolved.append(f'No vault folder called "{intent.folder.name}" — pick one in the form.')
-        elif f.photos == 0:          # the form only lists folders with photos
+        elif f.photos == 0:
             unresolved.append(f'Folder "{f.name}" has no photos — Auto Story only posts photos.')
         else:
             folder = f.slot()
@@ -1035,7 +892,7 @@ def resolve_story(intent: Intent, *, folders: list[FolderStat]) -> Draft:
 
     ttl = intent.hours_to_live
     if ttl is None and (intent.unsend_after_hours or 0) > 0:
-        ttl = intent.unsend_after_hours            # "delete after 12h" said the mass way
+        ttl = intent.unsend_after_hours
     if ttl is None or ttl < 0:
         hours_to_live = STORY_TTL_DEFAULT_H
         assumptions.append(f"Each story is deleted after {STORY_TTL_DEFAULT_H} h — you didn't say.")
@@ -1073,13 +930,11 @@ def story_summary(slots: dict[str, Any]) -> str:
     return "; ".join(parts) + ". It's saved switched off — you turn it on."
 
 
-# ── The model's reply → a draft (pure) ────────────────────────────────
 
 _FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.S | re.I)
 
 
 def _balanced_objects(text: str) -> Iterable[str]:
-    """Every top-level balanced {...} in `text`, in order, string-aware."""
     start = text.find("{")
     while start != -1:
         depth, in_str, esc = 0, False, False
@@ -1100,23 +955,19 @@ def _balanced_objects(text: str) -> Iterable[str]:
 
 
 def parse_json_object(text: str) -> Any:
-    """The model's JSON: the whole reply, else a ```json fence's body, else the
-    first balanced {...} that parses (Claude, with no JSON mode, may wrap it in
-    a fence or a sentence). ValueError when there is none."""
     s = (text or "").strip()
     try:
         return json.loads(s)
     except ValueError:
         pass
-    # DeepSeek JSON mode sometimes drops the last "}" (eval 2026-11-12: 4 of 193 long replies); the first balanced
-    # object is then a nested one ({"value": 1.5, ...}) and the draft silently became flow null. Close it instead.
+    # DeepSeek JSON mode sometimes drops the final "}": the first balanced object is then a nested one; close it instead.
     if s.startswith("{"):
         for k in (1, 2):
             try:
                 return json.loads(s + "}" * k)
             except ValueError:
                 pass
-    inner = None                                    # a balanced object without "flow" only if nothing better
+    inner = None
     for chunk in [m.group(1) for m in _FENCED.finditer(s)] + [s]:
         try:
             return json.loads(chunk.strip())
@@ -1136,30 +987,25 @@ def parse_json_object(text: str) -> Any:
 
 
 def response_format_for(model: str) -> dict | None:
-    """JSON mode only where the provider takes it (Claude 400s on it). An
-    unknown id keeps it: llm_client refuses that model before any call."""
     mdl = MODELS.get(model)
     return None if mdl is not None and not mdl.json_object_ok else {"type": "json_object"}
 
 
 @dataclass
 class Outcome:
-    """One reply, interpreted: what the asker reads, and the draft if any."""
     answer: str
     error: str | None = None
     flow: str | None = None
     draft: Draft | None = None
-    asked: str | None = None        # the flow the model drafted, after the veto (`no_creator`)
+    asked: str | None = None
 
 
 def interpret(text: str, *, request: str, lists: list[dict] | None,
               folders: list[FolderStat], existing: list[str], refine: bool = False,
               report: ReportCtx | None = None) -> Outcome:
-    """Parse → validate → resolve. Pure; the route and the eval seam share it.
-    `report`: the owner's export context (None = may not export)."""
     try:
         intent = Intent.model_validate(parse_json_object(text))
-    except (ValueError, ValidationError):          # JSONDecodeError is a ValueError
+    except (ValueError, ValidationError):
         return Outcome(BAD_DRAFT_ANSWER, error="bad_draft")
     if intent.flow in FLOWS and vetoed(request, refine=refine, flow=intent.flow):
         log.info("assistant_draft: %s draft vetoed (another feature / an existing rule)", intent.flow)
@@ -1170,8 +1016,6 @@ def interpret(text: str, *, request: str, lists: list[dict] | None,
 
 
 def no_creator(o: Outcome) -> Outcome:
-    """No Creator in focus (General): only an export, its refusal, or an error
-    comes back; another flow asks for a Creator, anything else is UNSUPPORTED."""
     if o.error is not None or o.asked == REPORT_FLOW:
         return o
     return Outcome(PICK_CREATOR_ANSWER if o.asked in FLOWS else UNSUPPORTED_ANSWER)
@@ -1193,7 +1037,7 @@ def _resolved(intent: Intent, *, request: str, lists: list[dict] | None, folders
         if d is not None:
             return Outcome(edit_summary(d.slots), flow=EDIT_FLOW, draft=d)
         intent = intent.model_copy(update={"flow": None})
-    if intent.flow == CONFIG_FLOW:      # the patch only; `_with_config` reads the draft and proposes
+    if intent.flow == CONFIG_FLOW:
         if intent.config is not None and intent.config.set:
             return Outcome("", flow=CONFIG_FLOW, draft=Draft({"set": intent.config.set},
                                                              _clean_notes(intent.assumptions),
@@ -1209,18 +1053,14 @@ def _resolved(intent: Intent, *, request: str, lists: list[dict] | None, folders
     return Outcome(summary(d.slots, d.names), flow=FLOW, draft=d)
 
 
-# ── mass_edit: the change spec (pure); the rules come from the route ──
 
-# Scope "all" only when the request names several models (eval 2026-11-12: "pause all auto masses" came back "all").
+# Scope "all" only when several models are named: "pause all auto masses" came back "all".
 _ALL_MODELS = re.compile(r"\b(models?|creators?|accounts?|pages?|girls|profiles?|modell?[eio]s?|modela|creadoras?|"
                          r"cuentas?|kont[ao]?|everyone'?s|everywhere|across)\b", re.I)
 ONLY_THIS_NOTE = 'Only this model — say "every model" to change them all.'
 
 
 def resolve_edit(intent: Intent, *, request: str = "", refine: bool = False) -> Draft | None:
-    """The edit's slots before any DB read: scope, match, the clean change
-    spec; `rules` empty (the route fills them via assistant_edit.resolve_rules).
-    None when nothing usable changes."""
     e = intent.edit
     if e is None:
         return None
@@ -1243,7 +1083,7 @@ def resolve_edit(intent: Intent, *, request: str = "", refine: bool = False) -> 
         return None
     match = " ".join((e.match or "").split())[:NAME_MAX] or None
     if match and assistant_edit.name_matches(match, ""):
-        match = None                                   # "auto masses" = every rule
+        match = None
     if scope == "all":
         assumptions.append("Every model you manage that has Auto mass rules.")
     assumptions += _clean_notes(intent.assumptions)
@@ -1265,8 +1105,6 @@ def edit_summary(slots: dict[str, Any]) -> str:
 
 
 def edit_nothing_answer(slots: dict[str, Any]) -> str:
-    """No rule needs the change: say why — already set and skipped both counted, the skips with
-    their reasons (rwl W30 M15: an "already" used to hide every skip)."""
     what = "; ".join(assistant_edit.change_lines(slots["changes"]))
     where = "on any model" if slots["scope"] == "all" else "on this model"
     named = f' called "{slots["match"]}"' if slots.get("match") else ""
@@ -1286,11 +1124,8 @@ def edit_nothing_answer(slots: dict[str, Any]) -> str:
     return f"No Auto mass rule{named} {where} to change."
 
 
-# ── Account reads (before the call) ───────────────────────────────────
 
 async def _read_lists(account_id: str) -> list[dict] | None:
-    """The account's OF fan lists — the read behind the UI's picker
-    (`/api/of/v2/lists`, paged). None when it fails or is slow."""
     def _blocking() -> list[dict]:
         import client_pool
         import of_paging
@@ -1329,24 +1164,15 @@ async def _existing_names(account_id: str) -> list[str]:
         return []
 
 
-# The keys the refine few-shot shows; `captions_ai` & co. only confused the
-# model into padding captions (eval 2026-11-11: refine 49% exact, all count).
 PREVIOUS_KEYS = ("name", "interval", "captions", "folder", "online_only", "includes", "excludes",
                  "unsend_after_hours", "exclude_last_chat_hours")
 
 
 def refinable(previous: dict | None) -> dict | None:
-    """`previous` when it is an Auto mass plan's slots (any PREVIOUS_KEYS key), else None: a mass_edit,
-    full_ai_config, story or report plan is never refined (rwl W30 M19: was guessed from a "changes" /
-    "after" key, so any other shape counted as a refine)."""
     return previous if previous and any(k in previous for k in PREVIOUS_KEYS) else None
 
 
 def previous_for_prompt(previous: dict, lists: list[dict] | None) -> dict:
-    """A prior response's slots as the MODEL reads them: list ids → names
-    (the names ACCOUNT LISTS shows and the request resolves against; "fans" /
-    "following" stay), folder → {"name"}, as the few-shot shows. An id with no
-    list keeps its id, so resolution reports it as unresolved, never drops it."""
     by_id = {str(lst.get("id")): str(lst.get("name") or "") for lst in (lists or [])
              if lst.get("id") is not None}
     out = {k: previous[k] for k in PREVIOUS_KEYS if k in previous}
@@ -1366,10 +1192,6 @@ def previous_for_prompt(previous: dict, lists: list[dict] | None) -> dict:
 def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderStat],
                existing: list[str], previous: dict | None, report: ReportCtx | None = None,
                account: bool = True, full_ai: dict | None = None) -> str:
-    """Everything per-request — the cached system prompt never sees it. No
-    Creator in focus (`account` False): no account lines. An owner (`report`):
-    the Agency's Creators, Employees and today, for an export. `full_ai`: the
-    stored Full AI config, its draft line only on a `CONFIG_WORD` request."""
     parts = []
     if account:
         custom = sorted({nm for _, nm in _custom_lists(lists or []).values()}, key=str.lower)
@@ -1389,12 +1211,8 @@ def user_block(request: str, *, lists: list[dict] | None, folders: list[FolderSt
     return "\n\n".join(parts)
 
 
-# ── Gate ──────────────────────────────────────────────────────────────
 
 async def _may_create(kind: str, account_id: str) -> bool:
-    """May this session create a `kind` rule on `account_id`? The check
-    `create_rule` adds via `require_opt_in_kind` (the route-level account gate
-    is the caller's). An Agency-context refusal is a no."""
     try:
         return await opt_in_refusal((kind,), account_id) is None
     except HTTPException:
@@ -1402,25 +1220,16 @@ async def _may_create(kind: str, account_id: str) -> bool:
 
 
 async def may_mass(account_id: str) -> bool:
-    """The Auto Mass opt-in on `account_id`: the gate for a mass create AND for
-    every rule a mass_edit plans or applies (never `can_do`'s any-flow yes)."""
     return await _may_create(OPT_IN_KINDS[FLOW], account_id)
 
 
 async def can_do(account_id: str) -> bool:
-    """Any account do-mode flow for this session: Auto mass, Auto Story or a
-    Full AI config change — only whether "Do it for me" shows. Each flow is
-    re-checked after the draft (`_gate`); an edit's rules by `may_mass`.
-    An owner's export is not gated here (`assistant_report.report_ctx`)."""
     return (await _may_create(OPT_IN_KINDS[FLOW], account_id)
             or await _may_create(OPT_IN_KINDS[STORY_KIND], account_id)
             or await _may_create(OPT_IN_KINDS[CONFIG_KIND], account_id))
 
 
 async def has_key(account_id: str) -> bool:
-    """Would the draft's model find a key for this account? The model the
-    draft would resolve, its provider, and `llm_key_available` (the policy
-    `_tenant_api_key` applies) — no LLM call."""
     model, _ = await resolve_model_and_fallback(account_id, PURPOSE)
     try:
         return await llm_client.llm_key_available(account_id, MODELS[model].provider, PURPOSE)
@@ -1429,13 +1238,12 @@ async def has_key(account_id: str) -> bool:
         return False
 
 
-# ── Routes ────────────────────────────────────────────────────────────
 
 class DraftBody(BaseModel):
     request: str = Field(..., max_length=MAX_REQUEST_CHARS)
-    account_id: str | None = Field(None, min_length=1)   # none = no Creator in focus: a report only
+    account_id: str | None = Field(None, min_length=1)
     thread_id: str | None = Field(None, min_length=1, max_length=64)
-    previous: dict[str, Any] | None = None   # a prior response's `slots` (refine)
+    previous: dict[str, Any] | None = None
 
     @field_validator("previous")
     @classmethod
@@ -1464,17 +1272,16 @@ def _out_of(account_id: str | None, row_id: int | None, o: Outcome) -> dict[str,
 async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
     started = time.monotonic()
     aid = body.account_id
-    if aid is None:                                # no Creator in focus: a report only
+    if aid is None:
         if get_request_user() is None and get_request_chatter() is None:
             raise HTTPException(status_code=401, detail="sign in required")
     else:
-        assert_account_owned(aid)                  # /ask's gate (401 / 403)
+        assert_account_owned(aid)
     request = body.request.strip()
-    if not request:                                # no model call, no turn row
+    if not request:
         return _out(aid, row_id=None, answer="Tell me what to set up.", error="empty_request")
     role = assistant_api._asker_role()
     thread_id = body.thread_id or assistant_api._new_thread_id()
-    # Only an Auto mass plan is refined (the widget sends no other); a stray one is ignored.
     previous = refinable(body.previous)
 
     async def record(reply: assistant_api.Reply) -> int | None:
@@ -1482,26 +1289,20 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
             question=request, reply=reply, role=role, account_id=aid,
             thread_id=thread_id, started=started)
 
-    # The owner's export context only when an export can come back (General focus, or a report word —
-    # `vetoed` drops an export draft without one): 3–4 reads and the name lines stay off other drafts.
     report = await report_ctx() if aid is None or REPORT_WORD.search(request) else None
     allowed = aid is not None and await can_do(aid)
-    if report is None and not allowed:              # nothing this caller may draft here: no model call
+    if report is None and not allowed:
         refusal = EXPORT_NOT_ALLOWED_ANSWER if aid is None else NOT_ALLOWED_ANSWER
         reply = assistant_api.Reply(refusal, model="", provider="", error="not_allowed")
         return _out(aid, row_id=await record(reply), answer=reply.answer, error=reply.error)
     if aid is None:
         lists, folders, existing = [], [], []
-        # Manual-only like /ask with no account: the purpose default, billed to the asking Agency.
         model, fallback = await resolve_model_and_fallback("", PURPOSE)
         user_id = assistant_api._asker_ids()[0]
     else:
         lists, folders, existing = await asyncio.gather(_read_lists(aid), _read_folders(aid), _existing_names(aid))
         model, fallback = await resolve_model_and_fallback(aid, PURPOSE)
         user_id = None
-    # A config ask (the only one `vetoed` keeps a full_ai_config draft for): the opt-in and the stored
-    # config are read once, here — the draft line and `_gate`'s proposal use the same read (the PUT's
-    # rev check covers the model call's seconds). An unreadable config only drops the draft line.
     may_config = (allowed and aid is not None and bool(CONFIG_WORD.search(request))
                   and await _may_create(OPT_IN_KINDS[CONFIG_KIND], aid))
     full_ai = None
@@ -1526,7 +1327,7 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
     if reply.error is not None:
         return _out(aid, row_id=await record(reply), answer=reply.answer, error=reply.error)
     o = read(reply)
-    if o.error == "bad_draft":   # one retry on the same model (Fable round 3: never a bigger model on null)
+    if o.error == "bad_draft":  # one retry on the same model, never a bigger one on null
         log.warning("assistant_draft: unparseable draft from %s: %.300s", reply.model, reply.answer)
         again = await complete()
         if again.error is None:
@@ -1539,11 +1340,6 @@ async def draft(body: DraftBody = Body(...)) -> dict[str, Any]:
 
 async def _gate(aid: str | None, o: Outcome, allowed: bool, may_config: bool,
                 full_ai: dict | None) -> Outcome:
-    """The checks after the draft (an export's are `report_ctx` and
-    `/admin/reports/run`): no Creator in focus = `no_creator`; no do-mode flow
-    here (`can_do`) = NOT_ALLOWED whatever came back; then each flow's own
-    opt-in (`may_config`: the caller's full_ai_chat answer; `full_ai`: the stored config read with
-    it, None when unreadable), an edit's rules, a story's one-per-account."""
     if o.flow == REPORT_FLOW:
         return o
     if aid is None:
@@ -1566,8 +1362,6 @@ async def _gate(aid: str | None, o: Outcome, allowed: bool, may_config: bool,
 
 
 async def _with_config(account_id: str, o: Outcome, cur: dict) -> Outcome:
-    """A config patch + the stored config (`cur`, merged) → the proposal (`assistant_full_ai.propose`):
-    slots {rev, before, after, diffs, account_name}, or the refusal sentence (no slots)."""
     patch = assistant_full_ai.ConfigPatch(set=o.draft.slots["set"])
     try:
         async with get_session() as s:
@@ -1586,8 +1380,6 @@ async def _with_config(account_id: str, o: Outcome, cur: dict) -> Outcome:
 
 
 async def _story_gate(account_id: str, o: Outcome) -> Outcome:
-    """A story draft only for a caller who may create `auto_stories` here, on
-    an account with none yet (one per account; the agent never edits it)."""
     if not await _may_create(OPT_IN_KINDS[STORY_KIND], account_id):
         return Outcome(STORY_NOT_ALLOWED_ANSWER, error="not_allowed")
     try:
@@ -1606,8 +1398,6 @@ async def _story_gate(account_id: str, o: Outcome) -> Outcome:
 
 
 async def _with_rules(account_id: str, o: Outcome) -> Outcome:
-    """An edit draft + the rules it would change (DB). None to change → flow
-    null and the sentence why."""
     sl = o.draft.slots
     try:
         plan = await assistant_edit.resolve_rules(sl["scope"], account_id, sl["changes"], sl["match"],
@@ -1661,12 +1451,6 @@ async def edit_apply(body: EditApplyBody = Body(...)) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class EvalContext:
-    """The account reads `draft` makes, held in memory for `draft_for_eval`.
-    `lists`: OF lists as `/lists` returns them ([{"id": 501, "name": "VIP"}],
-    None = the read failed); `folders`: FolderStat with per-tier photo counts;
-    `existing_names`: the account's Auto mass rule names. `report`: an
-    owner's export context (None = a chatter: no export); `account` False =
-    no Creator in focus (a report only)."""
     lists: list[dict] | None = None
     folders: tuple[FolderStat, ...] | list[FolderStat] = ()
     existing_names: tuple[str, ...] | list[str] = ()
@@ -1675,22 +1459,18 @@ class EvalContext:
 
 
 def _usage(model: str, result: Any | None) -> dict[str, Any]:
-    mc = int(getattr(result, "cost_cents", 0) or 0)      # LLMResult.cost_cents is MILLICENTS
+    mc = int(getattr(result, "cost_cents", 0) or 0)  # LLMResult.cost_cents is MILLICENTS
     return {"model": getattr(result, "model", None) or model,
             "tokens_in": int(getattr(result, "tokens_in", 0) or 0),
             "tokens_cached": int(getattr(result, "cache_hit_tokens", 0) or 0),
             "tokens_cache_write": int(getattr(result, "cache_write_tokens", 0) or 0),
             "tokens_out": int(getattr(result, "tokens_out", 0) or 0),
             "cost_cents": mc / 100, "cost_millicents": mc,
-            "raw": (getattr(result, "content", None) or "")[:4000]}   # the reply, for eval misses
+            "raw": (getattr(result, "content", None) or "")[:4000]}
 
 
 async def draft_for_eval(request: str, ctx: EvalContext, model: str,
                          previous: dict | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The draft on `model` against an in-memory account — see the module
-    header's EVAL SEAM. One real completion (paid), no DB reads besides
-    llm_client's own cap/audit rows. Errors come back as the route's: `error`
-    "cap" | "config" | "provider" | "empty_answer" | "bad_draft"."""
     request = request.strip()
     previous = refinable(previous)
     lists, folders, existing = ctx.lists, list(ctx.folders), list(ctx.existing_names)
@@ -1706,7 +1486,7 @@ async def draft_for_eval(request: str, ctx: EvalContext, model: str,
             **({"response_format": rf} if rf else {}))
     except LLMCapExceeded as e:
         o = Outcome(str(e), error="cap")
-    except LLMConfigError as e:                     # LLMKeyError (also an HTTP error) included
+    except LLMConfigError as e:
         o = Outcome(str(e), error="config")
     except LLMHTTPError as e:
         o = Outcome(str(e), error="provider")
@@ -1716,7 +1496,7 @@ async def draft_for_eval(request: str, ctx: EvalContext, model: str,
         else:
             o = interpret(result.content, request=request, lists=lists, folders=folders,
                           existing=existing, refine=bool(previous), report=ctx.report)
-            o = o if ctx.account else no_creator(o)     # the route's `_gate` with no account_id
+            o = o if ctx.account else no_creator(o)
     return _out_of(None, None, o), _usage(model, result)
 
 

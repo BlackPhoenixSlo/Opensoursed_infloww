@@ -1,5 +1,3 @@
-"""A current clip `_jev` (Jev v8, D53/D54) from a golden bench record, for suites that pin the qwen describe a clip
-still runs (the V2 describe fed the clip's Jev facts) without running Jev itself (test_vault_jev does that)."""
 from __future__ import annotations
 
 import gzip
@@ -20,7 +18,6 @@ def _golden() -> list[dict]:
 
 
 def video_jev(lane5: str = "free", *, review: str | None = None) -> dict:
-    """A current, describe-feedable clip `_jev`: one golden pass-1-only frame of final lane `lane5`."""
     for g in _golden():
         d = rules.derive8({"resp": g["rec"]["resp"]})
         if (g["nn"] is not None and set(g["rec"]) == {"resp"} and g["expect"]["lane5"] == lane5
@@ -37,8 +34,6 @@ def video_jev(lane5: str = "free", *, review: str | None = None) -> dict:
 
 
 def photo_jev(lane5: str = "free") -> dict:
-    """A current, describe-feedable photo `_jev` from a golden pass-1-only record of final lane `lane5`
-    (the photo twin of `video_jev`)."""
     for g in _golden():
         if g["nn"] is not None and set(g["rec"]) == {"resp"} and g["expect"]["lane5"] == lane5:
             d = rules.final(g["rec"], g["nn"])
@@ -49,6 +44,5 @@ def photo_jev(lane5: str = "free") -> dict:
 
 
 def mapped(fields: dict) -> dict:
-    """`fields` (carrying a `_jev`) with the flags as the mapper writes them: a paid lane is never stored sfw (W30 D1)."""
     import vault_jev_flags
     return vault_jev_flags.apply(fields, fields.get(rules.JEV_KEY))

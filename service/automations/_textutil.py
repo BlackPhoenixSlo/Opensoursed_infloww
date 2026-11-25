@@ -29,6 +29,16 @@ def has_emoji(s: str) -> bool:
     return bool(_EMOJI_STRIP_RE.search(s or ""))
 
 
+# Inverted Spanish punctuation ("¿", "¡") — correct ORTHOGRAPHY, wrong REGISTER.
+# Casual native texters drop the openers and just close with ?/! ("y cuando vas
+# a grabar...?"), so a model "¿Y cuándo...?" reads edited/proper — a bot tell in
+# a DM. The model always emits them (trained on edited prose) and ignores a
+# prompt not to, so — like emojis — remove IN CODE. Unconditional, no toggle:
+# deleting the opener can never change meaning (the closing ?/! carries it), and
+# the chars never occur in en/sl output, so outside the es lane the fast path
+# below makes this a byte-for-byte no-op. Rides inside apply_word_restriction
+# (both variants) — the one last-mile pass every sender already runs — so no
+# per-sender wiring and future senders inherit it.
 
 # Dropping the opener never changes meaning (the closing ?/! carries it); the model always emits them and ignores a prompt not to.
 def strip_inverted_punct(s: str) -> str:

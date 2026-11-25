@@ -1,25 +1,3 @@
-"""service/copilot_api.py — Infloww's AI Copilot: reply suggestions in Messages Pro.
-
-    POST /admin/copilot/{account_id}/{fan_id}/suggest
-         body {mode, avoid?: [str]}  →  {mode, suggestions: [str, str, str]}
-
-Infloww's flow (help.infloww.com articles 262036 and 262040, read 2026-10-19):
-the chatter clicks "AI" in a fan's chat, picks Casual, Re-engage, Tip request
-or Sexting, gets three suggestions for that thread, picks one, edits it and
-presses Send. "Regenerate" asks again. Nothing is ever sent from here: this
-route touches no OnlyFans call and no queue; the employee sends from the
-Composer.
-
-The prompt is Auto Convo's (automations/autoreply.py): the same persona, voice
-blocks, fan facts, transcript, clock, guardrails and output language, with the
-picked mode as the message directive. One LLM call per click returns all three
-options as JSON, so a Regenerate is one more call and nothing is generated and
-then thrown away. `avoid` carries the set on screen so a Regenerate differs.
-
-Infloww bills one credit per generation. We bill the agency's own AI key and
-its daily soft cap (llm_client): a missing or rejected key is the app-wide 424
-(server.py's LLMKeyError handler), the cap is a 429.
-"""
 from __future__ import annotations
 
 import logging
@@ -59,7 +37,6 @@ _SHAPE = '{"suggestions": [' + ", ".join(['"..."'] * N_SUGGESTIONS) + ']}'
 
 Mode = Literal["casual", "reengage", "tip_request", "sexting"]
 
-# Infloww's four modes, in its order. Each is the "THIS MESSAGE" directive.
 MODES: dict[str, str] = {
     "casual": (
         "CASUAL — keep the conversation going. Answer what he said, light and "
@@ -84,7 +61,6 @@ MODES: dict[str, str] = {
 
 class SuggestBody(BaseModel):
     mode: Mode
-    # The set on screen when the chatter presses Regenerate.
     avoid: list[str] = Field(default_factory=list, max_length=10)
 
 
@@ -162,25 +138,22 @@ async def suggest(account_id: str, fan_id: int,
         clock=clock_line(await load_clock_tz(account_id)), v=v)
     model = await resolve_model(account_id, PURPOSE)
     try:
-        # A missing or rejected key raises LLMKeyError → server.py's 424.
         res = await llm_client.chat(model=model, messages=msgs, purpose=PURPOSE,
                                     account_id=account_id, fan_id=int(fan_id),
                                     response_format={"type": "json_object"},
                                     temperature=_TEMPERATURE)
     except llm_client.LLMKeyError:
-        raise  # before LLMHTTPError, which it also subclasses
+        raise
     except LLMCapExceeded:
         raise HTTPException(status_code=429, detail="Today's AI limit for this "
                             "creator is reached.")
+    # LLMKeyError above comes first: it subclasses LLMHTTPError.
     except LLMHTTPError:
         log.warning("copilot: provider error account=%s fan=%s", account_id, fan_id,
                     exc_info=True)
         raise HTTPException(status_code=502, detail="The AI provider failed. "
                             "Try again.")
 
-    # The same floor every sender runs, per option: narration strip and
-    # off-platform guard, the account's emoji strip, OF's word restrictions,
-    # then the agency's banned words (a blocked option is dropped).
     strip_emoji = await load_strip_emojis(account_id)
     banned, banned_mode = await load_banned_words(account_id)
     out: list[str] = []

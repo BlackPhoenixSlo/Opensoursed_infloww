@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""
-transaction_ingest — feed-post sale classification (regression for the
-"post revenue always 0" bug).
-
-OF's ledger records feed-post unlocks with the description prefix
-"Post purchase by <name>", but KIND_CATALOG only carried "Post from " — so
-every real post sale fell through to kind='unknown' and never reached
-posts_cents (fans.py sums kind='ppv_post', FanDrawer renders it). In the
-prod DB all 86 "Post purchase by …" rows sat as 'unknown'. These cases pin
-the added prefix and prove the neighbours still classify.
-
-Run: ./venv/bin/python service/tests/test_post_purchase_kind.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -26,12 +13,10 @@ def case_post_purchase_by_is_ppv_post():
     assert got == "ppv_post", got
     assert _classify_kind("Post purchase by @VIP PAGE") == "ppv_post"
     assert _classify_kind("Post purchase by u224590315") == "ppv_post"
-    # HTML-wrapped variant still classifies (catalog strips tags first).
     assert _classify_kind("<a href='x'>Post purchase by John</a>") == "ppv_post"
 
 
 def case_legacy_post_from_still_ppv_post():
-    # Keep the older "Post from " prefix working alongside the new one.
     assert _classify_kind("Post from Zack") == "ppv_post"
 
 

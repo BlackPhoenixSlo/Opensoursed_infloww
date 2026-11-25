@@ -1,14 +1,3 @@
-"""The send chain for one tool-written mass or post body (ultra ticket 13; docs/prompts/post-processing.md,
-"Mass/post text from a plan").
-
-One body, one Creator, no fan: the per-fan stages (bubble split, echo, lead dedupe, typos, pacing) do not
-apply. Every stage reuses the chat chain's own function; nothing is re-implemented. What differs from the chat
-chain is the verdict: a chat reply swaps a leak for a deflection, a plan's text is REFUSED instead, because the
-owner approves the exact text and a silent rewrite would send words nobody saw.
-
-`chain` is pure (the caller passes the Agency's words and the Creator's emoji flag); `run` loads both.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,7 +12,6 @@ from of_rich_text import of_plain
 
 @dataclass(frozen=True)
 class Verdict:
-    """`text` is what may be sent (None when refused); `stage` + `detail` name the refusal."""
     text: str | None
     stage: str = ""
     detail: str = ""
@@ -33,12 +21,8 @@ def _refuse(stage: str, detail: str) -> Verdict:
     return Verdict(None, stage, detail)
 
 
+# A plan's text is REFUSED, not rewritten: the owner approved the exact text and a silent rewrite would send words nobody saw.
 def chain(raw: str, words: list[str], strip_emoji: bool) -> Verdict:
-    """Transform (word restriction, emoji strip), then refuse (empty, narration, off-platform, banned word).
-
-    Every refusal scan reads the raw text, the FINAL text and the final text as the fan reads it (`of_plain`,
-    what the mass / post boundary's `of_text` leaves of markup), so neither a transform (`tele📱gram` with the
-    emoji strip) nor markup (`tele<b>gram</b>`, `<b></b>`) can carry anything past a scan."""
     text = (raw or "").strip()
     if not text:
         return _refuse("empty", "the text is empty")

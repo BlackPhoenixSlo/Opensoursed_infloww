@@ -1,49 +1,5 @@
 #!/usr/bin/env python3
-"""The MCP client's browser sign-in (mcp_oauth): OAuth authorization code + PKCE whose access token is an
-ordinary owner access token. Two-Agency bench, real app, no network.
-
-Cases:
-  case_metadata              — RFC 9728 / RFC 8414 JSON on this host's public address; no address → 503;
-                               open behind SHARE_TOKEN, a neighbouring /.well-known path is not.
-  case_register              — a public client: client_id signed, name cleaned and capped; javascript:, custom
-                               schemes, plain http off loopback, a fragment, userinfo, a code / state / error /
-                               iss query key, too many or too long addresses → invalid_redirect_uri; a non-object body → invalid_client_metadata.
-  case_register_throttled    — REGISTER_CAPACITY registrations from one address, then 429.
-  case_bad_client_or_redirect — a tampered or foreign client_id, an unregistered or non-exact redirect_uri →
-                               an error page, never a redirect.
-  case_loopback_any_port     — a registered loopback http redirect_uri matches on any port (RFC 8252), [::1]
-                               too; path, query, host and https:// stay exact; token's redirect_uri exact.
-  case_pkce_required         — no code_challenge, `plain`, a malformed challenge, a wrong response_type, a too
-                               long state → an error page, never a redirect to the client.
-  case_no_redirect_before_consent — every answer before a signed-in owner's Allow / Cancel (bad request, signed
-                               out, employee, impersonating, bearer token) has no Location to redirect_uri.
-  case_non_ascii             — non-ASCII client_id / csrf / token-endpoint values → an error, never a 500.
-  case_signed_out            — no session → /login?next=<this exact authorize URL>; no code.
-  case_employee_refused      — an employee session → the refusal page; an impersonating owner too.
-  case_consent_page          — the owner's page: client, Agency, username, redirect host, escaped; what the token
-                               can change (existing folders and bio pages too); no-store,
-                               no framing; Cancel → access_denied with state; loopback → no warning, an https://
-                               destination → its host named in a warning above the buttons.
-  case_csrf                  — Allow with no / a wrong / another session's CSRF value, or an Origin naming another
-                               host → refused, no code; a GET carrying decision=allow approves nothing; an Origin
-                               on a second hostname the app answers on is fine.
-  case_bearer_mints_nothing  — an access token (no cookie, or beside one) on the authorize GET / Allow POST → no
-                               consent page, no code.
-  case_code_caps             — one owner flooding Allow keeps at most MAX_GRANTS_PER_OWNER codes (oldest go) and
-                               never stops another owner; a full store drops its oldest instead of refusing.
-  case_full_flow             — Allow → code → token; it works on tools/call, shows on GET /admin/owner-tokens as
-                               `MCP <client> <time>`, expires_in = its lifetime; revoking it cuts access.
-  case_token_name            — `MCP <client> <time>`; a client named "MCP …" (mcp-remote) gets no second MCP.
-  case_code_rules            — single use (replay → invalid_grant), expires, bound to client_id and
-                               redirect_uri; a wrong verifier → invalid_grant and the code is burned.
-  case_announced_oversize_unread — a Content-Length over MAX_FORM on register / Allow / token → refused unread.
-  case_expired_codes_purged  — an expired code is dropped by the next authorize GET or token request too.
-  case_secrets_never_logged  — password, code, verifier, CSRF value and token appear in no log record and no
-                               audit row.
-
-Run: ./venv/bin/python service/tests/test_mcp_oauth.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -88,7 +44,7 @@ def _register(uris=(REDIRECT,), name="Claude Code", raw=None):
 
 
 def _client(name="Claude Code", uris=(REDIRECT,)) -> str:
-    login_throttle.reset()  # every case registers from the one test address
+    login_throttle.reset()
     r = _register(uris, name)
     assert r.status_code == 201, r.text
     return r.json()["client_id"]
@@ -159,7 +115,6 @@ def _error_page(r, status=400):
     assert r.headers["content-type"].startswith("text/html") and "Can&#x27;t connect" in r.text, r.text
 
 
-# ── metadata ───────────────────────────────────────────────────────────────────
 
 def case_metadata() -> None:
     for path in (mo.PRM_PATH, mo.PRM_PATH + mcp_api.PATH):
@@ -172,11 +127,11 @@ def case_metadata() -> None:
                  "token_endpoint": BASE + "/auth/oauth/token", "registration_endpoint": BASE + "/auth/oauth/register",
                  "response_types_supported": ["code"], "grant_types_supported": ["authorization_code"],
                  "code_challenge_methods_supported": ["S256"], "token_endpoint_auth_methods_supported": ["none"]}, j
-    assert ANON.get(mo.AS_PATH).status_code == 503  # no public address: nothing to name
+    assert ANON.get(mo.AS_PATH).status_code == 503
     saved = server.SHARE_TOKEN
     server.SHARE_TOKEN = "share-secret"
     try:
-        assert ANON.get("/admin/accounts").status_code == 401  # the gate is on
+        assert ANON.get("/admin/accounts").status_code == 401
         for path in mo.PUBLIC_PATHS:
             assert ANON.get(path, headers=FWD).status_code == 200, path
         assert ANON.get("/.well-known/oauth-authorization-server/x", headers=FWD).status_code == 401
@@ -185,7 +140,6 @@ def case_metadata() -> None:
         server.SHARE_TOKEN = saved
 
 
-# ── registration ───────────────────────────────────────────────────────────────
 
 def case_register() -> None:
     login_throttle.reset()
@@ -200,7 +154,6 @@ def case_register() -> None:
     for bad in ("javascript:alert(1)", "myapp://cb", "http://example.com/cb", "https://x.example/cb#f",
                 "https://user@x.example/cb", "http://127.0.0.1:99999/cb", "https://x.example/c b",
                 "https://x.example/" + "a" * mo.MAX_URI, "/relative", "", 7,
-                # W30 F9: the callback's own keys would arrive twice
                 "https://x.example/cb?state=x", "http://127.0.0.1:5/cb?a=1&code=", "https://x.example/cb?error",
                 "https://x.example/cb?iss=https://evil.example"):
         login_throttle.reset()
@@ -224,12 +177,11 @@ def case_register_throttled() -> None:
         r = _register()
         assert r.status_code == 429 and r.headers["retry-after"], (r.status_code, r.text)
         assert _harness.make_client().post("/auth/register", json={"username": "oauth_ok", "password": "pw-oauth-1"}).status_code \
-            == 200  # its own bucket: owner sign-up is untouched
+            == 200
     finally:
         login_throttle.reset()
 
 
-# ── authorize ──────────────────────────────────────────────────────────────────
 
 def case_bad_client_or_redirect() -> None:
     cid = _client()
@@ -244,31 +196,28 @@ def case_bad_client_or_redirect() -> None:
     for bad in ("https://evil.example/cb", REDIRECT + "/", REDIRECT + "?x=1", "http://127.0.0.1:33419/callback/",
                 "http://localhost:33418/callback", "http://127.0.0.1:99999/callback", "", None):
         _error_page(_authorize(A, _params(cid, ch, bad)))
-        _error_page(_authorize(ANON, _params(cid, ch, bad)))  # before any login redirect
+        _error_page(_authorize(ANON, _params(cid, ch, bad)))
 
 
 def case_loopback_any_port() -> None:
-    """W30 F11: a loopback redirect_uri matches on any port (RFC 8252 §7.3); [::1] registers."""
     cid = _client("Native", (REDIRECT, "http://[::1]/cb", "https://app.example.net/cb"))
     verifier, ch = _pkce()
     for other in ("http://127.0.0.1:40001/callback", "http://127.0.0.1/callback", "http://[::1]:5123/cb"):
         r = _token(_code(A, cid, ch, other), verifier, cid, other)
         assert r.status_code == 200, (other, r.text)
     page = _authorize(A, _params(cid, ch, "http://[::1]:5123/cb"))
-    assert 'class="warn"' not in page.text, page.text  # loopback: no "sends access to" warning
+    assert 'class="warn"' not in page.text, page.text
     for bad in ("https://app.example.net:8443/cb", "http://127.0.0.1:40001/other", "http://[::1]:5123/cb?x=1",
                 "http://localhost:40001/callback", "https://127.0.0.1:40001/callback"):
         _error_page(_authorize(A, _params(cid, ch, bad)))
     _grant_error(_token(_code(A, cid, ch, "http://127.0.0.1:40001/callback"), verifier, cid,
-                        "http://127.0.0.1:40002/callback"))  # token's redirect_uri = the authorize one, exactly
+                        "http://127.0.0.1:40002/callback"))
 
 
 def case_legacy_client_reserved_redirect() -> None:
-    """W30 C5: a client_id signed before F9 holding a redirect_uri with a callback key (code/state/error/iss):
-    its exact match is refused too (the check runs on the asked address before either match)."""
     _, ch = _pkce()
     for uri in ("https://app.example.net/cb?code=x", "http://127.0.0.1:33418/cb?state=s"):
-        cid = mo.client_id(mo.Client("Legacy", (uri,)))  # what registration signed before F9
+        cid = mo.client_id(mo.Client("Legacy", (uri,)))
         _error_page(_authorize(A, _params(cid, ch, uri)))
         _error_page(_authorize(ANON, _params(cid, ch, uri)))
 
@@ -284,7 +233,7 @@ def case_pkce_required() -> None:
     verifier, ch = _pkce()
     for over in (*_BAD_REQUESTS, {"code_challenge_method": "plain", "code_challenge": verifier},
                  {"code_challenge": ch[:-1]}, {"code_challenge": ch + "!"}):
-        for client in (A, ANON):  # signed in or not: the page, no redirect, no login detour
+        for client in (A, ANON):
             r = _authorize(client, _params(cid, ch, **over))
             _error_page(r)
             assert "incomplete or not supported" in r.text, (over, r.text)
@@ -292,7 +241,6 @@ def case_pkce_required() -> None:
 
 
 def _no_redirect_to(r) -> None:
-    """No Location, or only the app's own login page (whose next= names the authorize URL)."""
     loc = r.headers.get("location")
     assert loc is None or loc.startswith("/login?next=%2Fauth%2Foauth%2Fauthorize%3F"), (r.status_code, loc)
 
@@ -312,8 +260,8 @@ def case_no_redirect_before_consent() -> None:
         form = _form(_authorize(A, _params(cid, ch, redirect)).text)
         for client in (ANON, emp, bearer):
             _no_redirect_to(_decide(client, form))
-        _no_redirect_to(_decide(A, {**form, "csrf": "x"}))  # a bad CSRF value
-        _no_redirect_to(_decide(A, form, "maybe"))  # neither button
+        _no_redirect_to(_decide(A, {**form, "csrf": "x"}))
+        _no_redirect_to(_decide(A, form, "maybe"))
     assert not mo._grants, mo._grants
 
 
@@ -360,11 +308,10 @@ def case_consent_page() -> None:
     assert "Allow &lt;b&gt;Tool&lt;/b&gt; to connect to Agency &lt;A&gt;?" in t and "<b>Tool" not in t, t
     assert "agency_a_owner" in t and "127.0.0.1:33418" in t and str(90) in t, t
     assert 'name="viewport"' in t, t
-    # W30 F15: the consent names edits to existing folders and bio pages, not only new ones
     assert "add media to any of them" in t and "change any of them (add links, set avatar and background" in t, t
     form = _form(t)
     assert set(form) == {"client_id", "redirect_uri", "code_challenge", "state", "csrf"}, form
-    assert 'class="warn"' not in t, t  # loopback: the app on this computer, no warning
+    assert 'class="warn"' not in t, t
     r = _decide(A, form, "deny")
     assert r.status_code == 303, r.text
     assert _query(r.headers["location"]) == {"error": "access_denied", "state": "st-1"}
@@ -372,7 +319,7 @@ def case_consent_page() -> None:
     t = _authorize(A, _params(_client("Tool", (https,)), ch, https)).text
     warn = re.search(r'<p class="warn">(.*?)</p>', t)
     assert warn and "tools.example.net" in warn.group(1) and "started this yourself" in warn.group(1), t
-    assert t.index('class="warn"') < t.index("<form"), t  # above the buttons
+    assert t.index('class="warn"') < t.index("<form"), t
 
 
 def case_csrf() -> None:
@@ -382,9 +329,9 @@ def case_csrf() -> None:
     other = _form(_authorize(B, _params(cid, ch)).text)
     for f, headers, client in (({k: v for k, v in form.items() if k != "csrf"}, SAME, A),
                                ({**form, "csrf": "x" + form["csrf"][1:]}, SAME, A),
-                               ({**form, "csrf": other["csrf"]}, SAME, A),  # B's value on A's session
-                               (form, SAME, B),  # A's value on B's session
-                               ({**form, "state": "other"}, SAME, A),  # a parameter changed after signing
+                               ({**form, "csrf": other["csrf"]}, SAME, A),
+                               (form, SAME, B),
+                               ({**form, "state": "other"}, SAME, A),
                                ({**form, "code_challenge": _pkce()[1]}, SAME, A),
                                (form, {**FWD, "Origin": "https://evil.example"}, A),
                                (form, {**FWD, "Origin": "https://app.example.com.evil.example"}, A),
@@ -393,15 +340,15 @@ def case_csrf() -> None:
         assert r.status_code == 403 and "location" not in r.headers, (f, headers, r.status_code, r.headers)
     r = A.get(f"{mo.AUTHORIZE_PATH}?{urlencode({**_params(cid, ch), 'decision': 'allow', 'csrf': form['csrf']})}",
               headers=FWD, follow_redirects=False)
-    assert r.status_code == 200 and "location" not in r.headers, r.status_code  # the page again, no code
+    assert r.status_code == 200 and "location" not in r.headers, r.status_code
     assert not mo._grants, mo._grants
-    r = _decide(A, form, headers=FWD)  # no Origin header (an older browser): the CSRF value alone decides
+    r = _decide(A, form, headers=FWD)
     assert r.status_code == 303 and "code" in _query(r.headers["location"]), r.headers
     second = {"X-Forwarded-Host": "app2.example.org", "X-Forwarded-Proto": "https", "Origin": "https://app2.example.org"}
     saved = os.environ.get("APP_PUBLIC_URL")
-    os.environ["APP_PUBLIC_URL"] = BASE  # the configured address names the other hostname
+    os.environ["APP_PUBLIC_URL"] = BASE
     try:
-        r = _decide(A, form, headers=second)  # a second hostname the app answers on
+        r = _decide(A, form, headers=second)
     finally:
         os.environ.pop("APP_PUBLIC_URL") if saved is None else os.environ.update(APP_PUBLIC_URL=saved)
     assert r.status_code == 303 and "code" in _query(r.headers["location"]), (r.status_code, r.text)
@@ -421,7 +368,7 @@ def case_bearer_mints_nothing() -> None:
     tok = _owner_token()
     bare = _harness.make_client()
     bare.headers["Authorization"] = f"Bearer {tok}"
-    beside = fx.login_owner("agency_a_owner")  # a valid owner cookie too: the token wins, never the cookie
+    beside = fx.login_owner("agency_a_owner")
     beside.headers["Authorization"] = f"Bearer {tok}"
     for client in (bare, beside):
         r = _authorize(client, _params(cid, ch))
@@ -437,17 +384,17 @@ def case_code_caps() -> None:
     cid = _client()
     _, ch = _pkce()
     form_a = _form(_authorize(A, _params(cid, ch)).text)
-    codes = [_query(_decide(A, form_a).headers["location"])["code"] for _ in range(50)]  # owner A floods Allow
+    codes = [_query(_decide(A, form_a).headers["location"])["code"] for _ in range(50)]
     a_codes = [g for g in mo._grants.values() if g.owner == IDS["agency_a_owner"]]
     assert len(a_codes) == mo.MAX_GRANTS_PER_OWNER == len(mo._grants), len(mo._grants)
-    assert set(mo._grants) == {mo._digest(c) for c in codes[-mo.MAX_GRANTS_PER_OWNER:]}  # the newest kept
+    assert set(mo._grants) == {mo._digest(c) for c in codes[-mo.MAX_GRANTS_PER_OWNER:]}
     verifier, ch_b = _pkce()
-    assert _token(_code(B, cid, ch_b), verifier, cid).status_code == 200  # owner B unaffected
+    assert _token(_code(B, cid, ch_b), verifier, cid).status_code == 200
     saved = mo.MAX_GRANTS
-    mo.MAX_GRANTS = mo.MAX_GRANTS_PER_OWNER  # the store full of A's codes
+    mo.MAX_GRANTS = mo.MAX_GRANTS_PER_OWNER
     try:
         oldest = next(iter(mo._grants))
-        code_b = _code(B, cid, ch_b)  # not refused: the oldest code goes
+        code_b = _code(B, cid, ch_b)
         assert len(mo._grants) == mo.MAX_GRANTS and oldest not in mo._grants, mo._grants
         assert _token(code_b, verifier, cid).status_code == 200
     finally:
@@ -466,13 +413,12 @@ def case_non_ascii() -> None:
     r = _decide(A, {**form, "csrf": "é" * len(form["csrf"])})
     assert r.status_code == 403 and "location" not in r.headers, (r.status_code, r.text)
     code = _code(A, cid, ch)
-    _grant_error(_token(code, "é" * 50, cid))  # verifier
-    _grant_error(_token("é", verifier, cid))  # code
-    _grant_error(_token(_code(A, cid, ch), verifier, "é.é"))  # client_id
+    _grant_error(_token(code, "é" * 50, cid))
+    _grant_error(_token("é", verifier, cid))
+    _grant_error(_token(_code(A, cid, ch), verifier, "é.é"))
     assert not mo._grants, mo._grants
 
 
-# ── token ──────────────────────────────────────────────────────────────────────
 
 def case_full_flow() -> None:
     cid = _client("Claude Code")
@@ -501,7 +447,7 @@ def case_token_name() -> None:
                          ("Claude Code", "MCP Claude Code"), ("MCPHub", "MCP MCPHub"), ("", "MCP")):
         name = mcp_api.token_name(client)
         assert re.fullmatch(re.escape(want) + t, name), (client, name)
-    cid = _client("MCP CLI Proxy")  # the real path: registered name → the token row's name
+    cid = _client("MCP CLI Proxy")
     verifier, ch = _pkce()
     assert _token(_code(B, cid, ch), verifier, cid).status_code == 200
     row = B.get("/admin/owner-tokens").json()["tokens"][0]
@@ -513,14 +459,14 @@ def case_code_rules() -> None:
     verifier, ch = _pkce()
     code = _code(A, cid, ch)
     assert _token(code, verifier, cid).status_code == 200
-    _grant_error(_token(code, verifier, cid))  # replay
+    _grant_error(_token(code, verifier, cid))
     code = _code(A, cid, ch)
-    _grant_error(_token(code, _pkce()[0], cid))  # wrong verifier
-    _grant_error(_token(code, verifier, cid))  # …and the code is gone
+    _grant_error(_token(code, _pkce()[0], cid))
+    _grant_error(_token(code, verifier, cid))
     code = _code(A, cid, ch)
-    _grant_error(_token(code, verifier, cid2))  # another client
+    _grant_error(_token(code, verifier, cid2))
     code = _code(A, cid2, ch)
-    _grant_error(_token(code, verifier, cid2, "http://localhost:5555/cb"))  # another of its redirect URIs
+    _grant_error(_token(code, verifier, cid2, "http://localhost:5555/cb"))
     _grant_error(_token(_code(A, cid, ch), verifier, cid, REDIRECT + "/"))
     _grant_error(_token("nope", verifier, cid))
     _grant_error(_token(_code(A, cid, ch), "short", cid))
@@ -528,7 +474,7 @@ def case_code_rules() -> None:
     real = mo._clock
     mo._clock = lambda: real() + mo.CODE_TTL_S + 1
     try:
-        _grant_error(_token(code, verifier, cid))  # expired
+        _grant_error(_token(code, verifier, cid))
     finally:
         mo._clock = real
     r = ANON.post(mo.TOKEN_PATH, content=urlencode({"grant_type": "refresh_token", "refresh_token": "x"}),
@@ -541,8 +487,6 @@ def case_code_rules() -> None:
 
 
 def case_expired_codes_purged() -> None:
-    """W30 F12: an expired code (it holds the owner's session cookie) goes on the next authorize GET or
-    token request, not only on the next Allow."""
     for nudge in (lambda cid, ch: _authorize(ANON, _params(cid, ch)),
                   lambda cid, ch: _token("nope", _pkce()[0], cid)):
         mo.reset()
@@ -560,7 +504,6 @@ def case_expired_codes_purged() -> None:
 
 
 def case_announced_oversize_unread() -> None:
-    """W30 F19: a body announced over MAX_FORM is refused before a byte of it is read (the shared reader)."""
     from starlette.requests import Request
     for handler in (mo.register, mo.authorize_decision, mo.token):
         reads: list[int] = []
@@ -577,7 +520,6 @@ def case_announced_oversize_unread() -> None:
     login_throttle.reset()
 
 
-# ── secrets ────────────────────────────────────────────────────────────────────
 
 class _Grab(logging.Handler):
     def __init__(self):
@@ -585,7 +527,6 @@ class _Grab(logging.Handler):
         self.lines: list[str] = []
 
     def emit(self, record):
-        # The DB driver's own DEBUG trace prints the users INSERT (test_mcp_auth's note); every other logger counts.
         if not record.name.startswith(("aiosqlite", "sqlalchemy")):
             self.lines.append(record.getMessage() + repr(record.args))
 

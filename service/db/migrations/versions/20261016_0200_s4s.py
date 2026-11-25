@@ -1,29 +1,3 @@
-"""s4s — S4S profiles, S4S posts, S4S requests and S4S slots
-
-Backs the `/admin/s4s` router (service/s4s_api.py,
-docs/spec/phase-03-share-for-share.md, Schema):
-
-  s4s_profiles   — one Creator's S4S Setting: opt-in, Discovery Page
-                   Visibility, Daily limit (1..3) and the display fields.
-  s4s_posts      — a Creator's S4S posts (captions ≤ 5000 characters); the
-                   partial unique index keeps at most one Primary post.
-  s4s_requests   — S4S requests between two Creators, with caption and
-                   projection snapshots; the partial unique index keeps at
-                   most one open (pending or skipped) request per direction.
-  s4s_schedule   — S4S slots, one per side of an accepted request.
-
-Every foreign key to `accounts` is ON DELETE CASCADE. The ORM models in
-db/models.py declare the same tables and indexes, so `init_db()`'s create_all
-brings them to a booting box; this revision keeps the alembic chain canonical.
-Idempotent (inspector-guarded, house convention).
-
-Downgrade drops the four tables in reverse order; that is the documented
-recovery path, and it loses only S4S data.
-
-Revision ID: 0068_s4s
-Revises: 0067_shifts
-Create Date: 2026-10-16
-"""
 from __future__ import annotations
 
 from typing import Sequence

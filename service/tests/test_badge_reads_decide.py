@@ -1,49 +1,4 @@
 #!/usr/bin/env python3
-"""badge_reads_decide (creator-badges phase 0C), as tables. Pure: no clock, no I/O; times are passed (epoch ms).
-
-  case_explained:       a same-value frame (counter unchanged) with no DM, echo or intent is unexplained; a DM at
-                        ±0.5 s explains, 0.51 s not; an echo (`Echo` or `Outbound`) at ±1.5 s explains, 1.51 s not;
-                        a live intent explains, an expired or retired one not; a single-fan intent is spent by one
-                        frame, a mark-all intent explains two; a DM-explained frame spends no intent.
-  case_gate:            idle -> Start; in flight -> pending, then exactly one follow-up; inside the gap ->
-                        Wait(last_start + gap), full 5 s and lean 15 s; no hourly cap: the 121st start inside 3600 s
-                        -> Start once the gap has passed; an exit hold -> Wait; page 1 sent 1.3 s after the admit
-                        (pacer) -> the gap counts from the send, an earlier or no send time -> from the admit.
-  case_complete:        no further page and `of_counts` rows equal the counter -> complete; no further page, counter
-                        unknown -> complete; no further page, 0 rows, counter 1 -> incomplete + mismatch; 20 rows with
-                        `hasMore`, counter 35 -> incomplete; partial (page-2 429, duplicate-only page) -> incomplete;
-                        rows equal the counter but a frame since the ask -> incomplete; only a one-page mismatch
-                        waits for the next frame (`settles`), two pages or a match never; that frame completes it
-                        only matching and newer than the ask (`settled`), no frame -> never.
-  case_diff:            window unread + absent from a complete list -> (fan, 0); incomplete -> none; muted (True or
-                        missing) -> none; last message after the ask -> none; window read + in any list -> (fan, 1);
-                        off-window fan in the previous set and absent from a complete list -> (fan, 0), incomplete ->
-                        none; off-window fan new in the list -> (fan, 1); no previous set -> no off-window flip.
-                        An off-window fan whose set entry is newer than the ask -> none.
-  case_mute_changes:    a listed row's mute flag replaces a held window row's or the mute map's that differs (missing
-                        held flag too); a list row without one, a fan held nowhere -> none; our mute landed after the
-                        ask stands, at or before it yields; a window asked after the ask keeps its fans' flags;
-                        first row per fan.
-  case_unread_set_and_restricted: R = set fans OF counts and `excluded_from_badges` removes: 3 restricted rows -> 3;
-                        a DM from a registry fan not in the set -> 4; his echo or read -> 3; mark all read -> 0; an
-                        event at or before the set's ask -> unchanged; a DM after the ask survives a complete replace
-                        without him; an incomplete replace keeps a held fan it missed; a muted DM -> unchanged; the
-                        predicate patched False for one fan -> R - 1; counter 11, R 3 -> red 8; owner amendment #3: 7
-                        sendable + 4 `only_friends` + 2 `chat_unavailable`, counter 11 -> complete, R 4, red 7.
-  case_unread_set_and_restricted (refresh_rows): a window newer than a fan's entry replaces its row (restricted on OF
-                        -> R counts it, unrestricted -> not); an entry newer than the window, or a window at the
-                        ask, keeps its row; fans outside the set are not added.
-  case_complete (one frame): one page, no more pages, not partial, counter known and exactly one frame since the ask
-                        -> judged by counts; 2+ frames, two pages, more pages, partial or no counter -> incomplete.
-  case_newer_than_ask:  equal -> false, after -> true; `diff` and `replace_set` decide only through it.
-  case_hover:           no bust read yet -> read; one in flight -> join (even past 30 s); landed inside 30 s ->
-                        held, at 30 s -> read; `BADGE_READS=off` -> held always; UNREAD_TOTAL off -> direct (every
-                        bust reads, as before the cooldown).
-  case_intent_lifetime: response at t -> live until t + 1.5 s; no response -> dies at creation + 5 s (a late response
-                        too); retired -> dead at once; one frame spent; pruned once no undecided frame can need it;
-                        two intents on the same fan and ms stamped apart (by id); `only_if_unread` with the held row read -> not recorded, unread or unknown -> recorded.
-Run: ./venv/bin/python service/tests/test_badge_reads_decide.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402
 
@@ -338,7 +293,7 @@ def case_mute_changes():
         assert got == want, (why, got)
 
 
-REG =frozenset({701, 702, 703, 704})     # our registry
+REG =frozenset({701, 702, 703, 704})
 
 
 def _send(fan, **kw):

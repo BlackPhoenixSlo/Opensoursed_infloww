@@ -1,35 +1,6 @@
-"""
-server._proxy when client_pool evicts the OFClient a call is on (service/server.py
-+ client_pool.evict). Slop 2026-10-25-session-health-otp, red since 0b87e9621: a
-Creator flips to 2FA, the first inbox read's 101 evicts its client, the old
-client's signed sessions retire, and the other reads still on it answered 502
-with upstream 500 "signed session retired" instead of OF's 400.
-
-  case_retired_read_reruns_on_the_current_client: a GET whose client retired
-      mid-call runs once more on the pool's fresh client; OF's real answer (400,
-      101) is what the caller gets.
-  case_retired_read_twice_answers_503: once only; then 503 + Retry-After.
-  case_pool_busy_read_answers_503_without_a_rerun: every handle of a live
-      client busy is not an evict: no re-run, 503 signed_pool_busy, Retry-After 5.
-  case_retired_write_is_not_rerun: a non-GET is never re-run (a multi-request
-      write could repeat what it sent): 503 + Retry-After, one call.
-  Every 503 logs one `signed_pool_503 account= reason= method=` line
-  (watch:signed_pool_503 counts them).
-  case_dead_session_on_a_replaced_client_keeps_the_fresh_one: a 101 met on a
-      client the pool already replaced evicts nothing; the fresh one stays live.
-      Nor does it mark the Creator session-dead (the fresh client re-marks if truly dead);
-  case_dead_session_on_the_pooled_client_marks_it: a 101 on the pooled client does.
-  case_preloaded_client_late_101_keeps_the_fresh_one: the same for a client
-      loaded before _proxy (mass send's bound method) and named by `client=`.
-  case_evict_only: client_pool.evict(aid, only=c) drops c only while pooled.
-
-OFClient.from_account is stubbed; no network.
-
-Run: ./venv/bin/python service/tests/test_proxy_retired_retry.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -44,7 +15,7 @@ import client_pool  # noqa: E402
 import relay_host  # noqa: E402
 from of_client import OFAPIError, OFSessionRetired, OFSignedPoolBusy  # noqa: E402
 
-_harness.make_client()  # neutralises the startup spawns
+_harness.make_client()
 import server  # noqa: E402
 
 AID = "acc_retired_retry"
@@ -67,7 +38,6 @@ def _otp() -> OFAPIError:
 
 
 class _Fake:
-    """An OFClient as the pool sees it; `answer(client)` is what its read does."""
     user_id, x_of_rev = 1, "rev"
 
     def __init__(self, answer) -> None:
@@ -82,7 +52,6 @@ class _Fake:
 
 
 def _with_pool(answers):
-    """Pool builds one _Fake per answer, in order; returns the built list."""
     built: list[_Fake] = []
     it = iter(answers)
     client_pool.OFClient.from_account = staticmethod(lambda aid: built.append(_Fake(next(it))) or built[-1])
@@ -100,7 +69,6 @@ def _proxy(method: str):
 
 
 def _evicted_under_it(c):
-    """A concurrent read's 101 evicted this client before its request left."""
     client_pool.evict(AID)
     raise OFSessionRetired()
 
@@ -127,7 +95,6 @@ class _Lines(logging.Handler):
 
 
 def _status_logged(method: str) -> tuple[HTTPException, list[str]]:
-    """_status plus the signed_pool_503 lines the call logged."""
     h = _Lines()
     server.log.addHandler(h)
     try:
@@ -137,7 +104,7 @@ def _status_logged(method: str) -> tuple[HTTPException, list[str]]:
 
 
 MARKED: list[str] = []
-server._kick_mark_session_dead = lambda aid, *a, **k: MARKED.append(aid)  # the flag's own tests: test_agency_notifications
+server._kick_mark_session_dead = lambda aid, *a, **k: MARKED.append(aid)
 
 
 def case_retired_read_reruns_on_the_current_client():
@@ -182,16 +149,16 @@ def case_retired_write_is_not_rerun():
 
 def case_dead_session_on_a_replaced_client_keeps_the_fresh_one():
     def replaced_then_101(c):
-        client_pool.evict(AID)         # another read's 101 evicted this one...
-        client_pool.get(AID)           # ...and a later read built the fresh one
-        raise _otp()                   # this read's own 101 comes back after both
+        client_pool.evict(AID)
+        client_pool.get(AID)
+        raise _otp()
     built = _with_pool([replaced_then_101, lambda c: {"ok": True}])
     MARKED.clear()
     e = _status("GET")
     assert e.status_code == 502 and e.detail["upstream_status"] == 400, (e.status_code, e.detail)
     assert len(built) == 2 and client_pool._POOL.get(AID) is built[1], "fresh client evicted"
     assert not built[1].retired, "fresh client's signed sessions retired"
-    assert MARKED == [], f"late 101 from a retired client paused the Creator: {MARKED}"  # W30 #9
+    assert MARKED == [], f"late 101 from a retired client paused the Creator: {MARKED}"
     assert _proxy("GET") == {"ok": True}
 
 
@@ -212,7 +179,7 @@ def case_preloaded_client_late_101_keeps_the_fresh_one():
     req = types.SimpleNamespace(method="POST", headers={"x-account-id": AID}, query_params={})
     token = server._request_ctx.set(req)
     try:
-        stale = server._get_client()       # loaded outside _proxy, as mass_queue_api's send
+        stale = server._get_client()
         post = stale.read
         try:
             relay_host.proxy(lambda: post(), client=stale)

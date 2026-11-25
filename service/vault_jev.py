@@ -1,31 +1,3 @@
-"""vault_jev.py — the Jev v8 vault flags pass for one stored still (`run`) or one video's frames (`run_video`):
-questions, calls, NudeNet, spend.
-
-Every vault photo and video (no opt-in), the only flags either gets. The owner-accepted
-bench config (D48, `.scratch/jev-vault-bench/`: jev_flags8.py + jev_crop8.py MODE "lower", frozen with
-score8 `--veto --promote` and settle.py `nn.10`) ported as-is:
-
-  pass 1   every question (`Q`) on the still shrunk to EDGE 1024 (`shrink`)
-  pass 2   the lane-critical twelve (`Q2`) at EDGE2 1568, when `vault_jev_rules.derive8` says `need2`
-  pass L   the full still + its lower part at 1568 (`crops`, `enc`), the vulva twins (`crop_questions`),
-           when derive8 says `needL`
-  NudeNet  640m.onnx on the SAME still at native resolution, max score per class (bench nn_detect.py)
-  rules    `vault_jev_rules.final`: derive8 → NN_D34 veto/promote → settle nn.10
-
-Question wording, criteria and their order, the `rev` twins, FEET, `state_opts`, crop geometry, edges,
-JPEG q88 LANCZOS RGB and the shrink k rule are byte-identical to the bench; the golden test
-(`tests/test_vault_jev.py`) checks the exported spec against one generated from the bench files.
-
-NudeNet is a HARD dependency: without it (package, weights, md5) the pass refuses before any TypeSafe
-call and stamps `_jev.status = "no_nudenet"` — never a Jev-only answer. The key is the account's agency's own
-TypeSafe key, else the deployment's `TYPESAFE_API_KEY` (`tenant_keys.typesafe_key_for`); spend is reserved and
-recorded against the account's daily cap on the `typesafe` provider row (`llm_client.reserve_external`), like every
-other provider's.
-
-Storage contract (`ai_fields_json["_jev"]`, read by the vault lanes): see `vault_jev_rules.blob`.
-A failure keeps the last good answer's fields and sets `status` (`no_nudenet` | `no_key` |
-`error`) + `error` + `failed_at`; `status == "ok"` is the only state with a trustworthy `lane5`.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -44,24 +16,21 @@ import vault_jev_rules as rules
 log = logging.getLogger("of-relay.vault_jev")
 
 MODEL = "jev-1.14.0"
-EDGE = 1024     # pass 1
-EDGE2 = 1568    # pass 2
-EDGE_L = 1568   # pass L (jev_crop8 EDGE)
+EDGE = 1024
+EDGE2 = 1568
+EDGE_L = 1568
 JPEG_QUALITY = 88
 HEADERS = {"TypeSafe-Danger-Zone-Images": "true"}
 PROVIDER = "typesafe"
 PURPOSE = "vault_jev_flags"
-# Jev 1.14: $0.042 per million input tokens, output free (docs.typesafe.ai/models, read 11-11).
-# In llm_client's cap unit: $ → cents ×100 → millicents ×100.
+# Jev 1.14: $0.042 per million input tokens, output free; in llm_client's cap unit ($ -> cents -> millicents).
 MILLICENTS_PER_INPUT_TOKEN = 0.042 / 1e6 * 100 * 100
-# Reserved up front for one image (pass 1 + 2 + L; bench max ~14k input tokens), settled to the real count.
+# Reserved up front for one image (bench max ~14k input tokens), settled to the real count.
 RESERVE_TOKENS = 20000
 # Per call, retries included (the SDK's RetryPolicy.timeout); the bench retried twice.
 TIMEOUT_S = 90.0
 MAX_RETRIES = 2
 
-# ── Questions (jev_flags8.py, verbatim) ─────────────────────────────
-# Kept as plain data so the spec can be exported and diffed; `_sdk_questions` builds the SDK objects.
 
 REG = {"breasts": "breasts", "crotch": "crotch", "butt": "butt"}
 BARE = {"breasts": "a nipple or areola is visible", "crotch": "the labia / vulva are visible",
@@ -103,7 +72,6 @@ Q = {
     "person_present": N("Is there a real person (not a screenshot, text or interface) in `photo`?"),
     "people_count": Choice(instructions="How many people are in `photo`?", criteria={
         "one": "Exactly one person.", "two_or_more": "Two or more people.", "none": "No person (screenshot, text, object)."}),
-    # direct evidence, twins
     "nipple_visible_a": N("Can you see a bare nipple or areola in `photo`, even a small slip at the edge of her top? A nipple under a bra, lace or fabric does not count."),
     "nipple_visible_b": N("Is any part of a nipple or areola uncovered (no fabric over it) and visible in `photo`, including in a mirror reflection?"),
     "nipple_through_fabric": N("Can you see a nipple or areola through sheer, lace, mesh or wet fabric in `photo`?"),
@@ -146,7 +114,6 @@ Q.update({
     "self_touch": N("Is she touching her own breasts, crotch or butt in a sexy way in `photo`?"),
     "legs_spread": N("Are her legs spread open toward the camera in `photo`?"),
     "mouth_tease": N("Is she teasing with her mouth in `photo` (tongue out, biting lip, finger at mouth)?"),
-    # --- v7 adds: owner-approved v4 keeps
     "topless": N("Is the woman in `photo` wearing nothing on her upper body (no bra, no top), even if her hands or hair cover her breasts?"),
     "see_through": N("Is she wearing sheer, lace, mesh, fishnet or wet fabric that clearly shows her skin underneath in `photo`?"),
     "pulling_clothes": N("In `photo`, is she pulling, lifting or moving a garment (strap, waistband, top, panties) to reveal more skin?"),
@@ -163,7 +130,6 @@ Q.update({
         "most_of_body": "Head to thighs or knees.", "full_body": "Head to feet.",
         "body_part_close_up": "A close-up of one body part, face out of shot.",
         "body_no_face": "Torso and/or legs with the face cropped out, wider than one body part."}),
-    # face (from extras6)
     "face_visible": Choice(instructions="How much of the woman's face can you see in `photo`?", criteria={
         "full_face": "Her face is clearly visible: both eyes and her mouth.",
         "partial_face": "Only part of her face: cropped, side profile edge, or covered by a phone, hair or hand.",
@@ -172,18 +138,15 @@ Q.update({
         "toward_camera": "The front of her body faces the camera.", "side": "Her body is side-on to the camera.",
         "away": "Her back is to the camera."}),
     "looking_at_camera": N("Is she looking straight into the camera in `photo`?"),
-    # body focus: one Noul each (several may be yes)
     "breasts_focus": N("Are her breasts a main subject of `photo`?"),
     "butt_focus": N("Is her butt a main subject of `photo`?"),
     "crotch_focus": N("Is her crotch / pussy area a main subject of `photo`?"),
-    # footwear as separate yes/no (fixes heels vs other_shoes confusion, stockings under heels)
     "wears_heels": N("Is she wearing high heels in `photo`?"),
     "wears_stockings_or_fishnets": N("Is she wearing stockings, thigh-highs, fishnets, nylons or pantyhose on her legs in `photo`?"),
     "wears_socks": N("Is she wearing ankle or knee socks in `photo`?"),
     "bare_toes_visible": N("Can you see her bare toes in `photo`?"),
     "soles_visible": N("Are the soles of her feet (bare or in socks) turned toward the camera in `photo`?"),
     "feet_in_water": N("Are her feet in water (bath, pool, sea) in `photo`?"),
-    # untested asks
     "multi_panel": N("Is `photo` a collage: several photos combined into one image or a split screen?"),
 })
 
@@ -192,7 +155,6 @@ LANE_Q = ["nipple_visible_a", "nipple_visible_b", "vulva_visible_a", "vulva_visi
 Q2 = {k: Q[k] for k in LANE_Q}
 
 
-# ── Pass L (jev_crop8.py, MODE "lower") ─────────────────────────────
 
 def names(st): return ", ".join(f"`{k}`" for k in st)
 
@@ -212,8 +174,6 @@ def _open_rgb(data: bytes):
 
 
 def shrink(data: bytes, edge: int = EDGE) -> bytes:
-    """jev_flags8.shrink on bytes: long edge to `edge`, short edge ≥ 280, never past 1568, no upscale
-    once the short edge is ≥ 280."""
     from PIL import Image as PImage
     im = _open_rgb(data); w, h = im.size
     k = max(edge / max(w, h), 280 / min(w, h)); k = min(k, 1568 / max(w, h), 1.0 if min(w, h) >= 280 else 9)
@@ -221,14 +181,12 @@ def shrink(data: bytes, edge: int = EDGE) -> bytes:
 
 
 def enc(im, edge: int = EDGE_L) -> bytes:
-    """jev_crop8.enc (no UPSCALE): long edge to at most `edge`."""
     from PIL import Image as PImage
     w, h = im.size; k = min(edge / max(w, h), 1.0)
     b = io.BytesIO(); im.resize((max(1, round(w * k)), max(1, round(h * k))), PImage.LANCZOS).save(b, "JPEG", quality=JPEG_QUALITY); return b.getvalue()
 
 
 def crops(data: bytes, mode: str = "lower"):
-    """jev_crop8.crops, MODE "lower": portrait → full + bottom 60%; landscape → full + both 60% halves."""
     im = _open_rgb(data); w, h = im.size; port = h >= w; L = h if port else w
     def cut(a, b): return im.crop((0, round(a * L), w, round(b * L))) if port else im.crop((round(a * L), 0, round(b * L), h))
     if mode != "lower":
@@ -238,7 +196,6 @@ def crops(data: bytes, mode: str = "lower"):
 
 
 def spec() -> dict[str, Any]:
-    """The exported question spec (golden-tested against the bench)."""
     def one(q):
         c = q.get("criteria")
         return {"type": q["type"], "instructions": q["instructions"],
@@ -252,30 +209,25 @@ def spec() -> dict[str, Any]:
             "L_landscape": [[k, one(v)] for k, v in crop_questions(land).items()]}
 
 
-# ── NudeNet (bench nn/nn_detect.py: 640m, full image, native res) ───
 
 NUDENET_PATH_ENV = "NUDENET_640M_PATH"
-NUDENET_MD5 = "d04bbbd55428dc307b379ae1dfa55314"   # 640m.onnx the bench measured (NudeNet 3.4.2)
+NUDENET_MD5 = "d04bbbd55428dc307b379ae1dfa55314"
 NUDENET_RES = 640
 
-_nn_load_lock = threading.Lock()   # the one-time load only; never taken once loaded (or failed)
-# One inference at a time (CPU-bound, 1 thread). Waiters queue HERE, on the event loop, not inside
-# `to_thread`: a sweep of 8 photos blocked on a thread lock would park 8 default-pool threads and
-# starve every other `to_thread` user in the relay.
+_nn_load_lock = threading.Lock()
+# CPU-bound, one inference at a time; waiters queue on the event loop, not in to_thread (8 blocked photos would park 8 default-pool threads and starve other users).
 _nn_gate: "asyncio.Semaphore | None" = None
 _nn_det: Any = None
 _nn_err: str | None = None
 
 
 class NudeNetUnavailable(Exception):
-    """NudeNet cannot run here (package, weights or checksum). The Jev pass refuses."""
+    pass
 
 
 def _load_detector() -> Any:
-    """The process's one NudeDetector (lazy, single onnxruntime session, 1 intra-op thread). A load
-    failure is remembered: weights do not appear without a restart."""
     global _nn_det, _nn_err
-    if _nn_det is not None:   # fast path, no lock: both are written once, under the load lock
+    if _nn_det is not None:
         return _nn_det
     if _nn_err is not None:
         raise NudeNetUnavailable(_nn_err)
@@ -301,7 +253,7 @@ def _load_detector() -> Any:
             so = onnxruntime.SessionOptions()
             so.intra_op_num_threads = 1
             so.inter_op_num_threads = 1
-            det = NudeDetector.__new__(NudeDetector)   # its __init__ takes no session options
+            det = NudeDetector.__new__(NudeDetector)
             det.onnx_session = onnxruntime.InferenceSession(path, sess_options=so,
                                                             providers=["CPUExecutionProvider"])
             det.input_width = det.input_height = NUDENET_RES
@@ -317,7 +269,6 @@ def _load_detector() -> Any:
 
 
 def nudenet_status() -> tuple[bool, str]:
-    """(ready, reason) — loads the detector if it is not loaded yet."""
     try:
         _load_detector()
         return True, ""
@@ -326,8 +277,6 @@ def nudenet_status() -> tuple[bool, str]:
 
 
 async def nudenet_ready() -> tuple[bool, str]:
-    """`nudenet_status` for the event loop: answers loaded / failed without a thread; only the
-    first (loading) call goes to `to_thread`."""
     if _nn_det is not None:
         return True, ""
     if _nn_err is not None:
@@ -339,33 +288,28 @@ def _detect_sync(data: bytes) -> dict[str, float]:
     import cv2
     import numpy as np
     det = _load_detector()
-    im = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)   # = cv2.imread (BGR, 3 channels)
+    im = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if im is None:
         raise ValueError("NudeNet could not decode the still")
     acc: dict[str, float] = {}
-    for d in det.detect(im):   # serialized by `_nn_gate` (the only caller)
+    for d in det.detect(im):
         acc[d["class"]] = max(acc.get(d["class"], 0), round(float(d["score"]), 3))
     return acc
 
 
 async def nudenet_scores(data: bytes) -> dict[str, float]:
-    """NudeNet {class: max score} for one still at native resolution (off the event loop, ≤1 core)."""
     global _nn_gate
-    if _nn_gate is None:   # lazy: binds to the running loop; check→set has no await in between
+    if _nn_gate is None:
         _nn_gate = asyncio.Semaphore(1)
     async with _nn_gate:
         return await asyncio.to_thread(_detect_sync, data)
 
 
-# ── TypeSafe ────────────────────────────────────────────────────────
 
 _clients: dict[tuple[int, str], Any] = {}
 
 
 def _client(key: str) -> Any:
-    """One async client per event loop and key (as the FM off-script gate's `_client`). Past 8, only other loops'
-    clients are dropped (their loop is gone: nothing to close on it); a live loop's are kept, never orphaned
-    unclosed mid-call — one per distinct TypeSafe key (W30 F19)."""
     from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
     loop = asyncio.get_running_loop()
     k = (id(loop), key)
@@ -389,7 +333,6 @@ def _sdk_questions(qs: dict[str, dict]) -> dict[str, Any]:
 
 
 async def _ask(key: str, state: dict[str, bytes], qs: dict[str, dict]) -> dict[str, Any]:
-    """One System One call; the response as the bench stored it (`model_dump(mode="json")`)."""
     from typesafe_sdk import Image
     r = await _client(key).system_one(state={k: Image(v) for k, v in state.items()},
                                       questions=_sdk_questions(qs), model=MODEL, extra_headers=HEADERS)
@@ -405,32 +348,26 @@ def _tokens(resp: dict[str, Any]) -> int:
 
 
 def cost_millicents(tokens_in: int) -> int:
-    """Rounded UP: the rollup columns are whole millicents and one image is only ~2 mc."""
     return math.ceil(tokens_in * MILLICENTS_PER_INPUT_TOKEN - 1e-9) if tokens_in > 0 else 0
 
 
 class JevResult(TypedDict, total=False):
     ok: bool
-    status: str        # ok | no_nudenet | no_key | key_invalid | key_no_credit | capped | error
-    call_failed: bool  # an `error` from the model / NudeNet call itself (not the item's image): outage evidence
+    status: str
+    call_failed: bool
     blob: dict[str, Any]
     detail: str
     cost_millicents: int
     tok: int
 
 
-# TypeSafe answers about the KEY, not the photo (401/403 rejected, 402 out of credit): no retry fixes them.
+# TypeSafe answers about the KEY, not the photo (402 out of credit): no retry fixes them.
 _KEY_HTTP = {401: "key_invalid", 403: "key_invalid", 402: "key_no_credit"}
-# A Jev status that means the key (none, refused, out of credit) → its LLMKeyError kind. A sweep stops on it
-# (`key_error`, vault_sweep) and the drawer says which key to fix; before, every photo was skipped as "no Jev
-# reading" and the sweep ended in silence (11-14: a LangSmith key pasted as the TypeSafe key, 5336/5336 failed).
-# Raised by `vault_jev_pass.fatal`.
+# A sweep stops on a key status so the drawer says which key to fix, instead of skipping every photo as "no Jev reading".
 KEY_ERROR_KIND = {"no_key": "missing", "key_invalid": "invalid", "key_no_credit": "no_credit"}
 
 
 def _failed(e: BaseException) -> str:
-    """The status of a failed TypeSafe/NudeNet call: a key status when TypeSafe refused the key, REJECTED when it
-    refused the image itself, else `error` (SDK missing included: the row is still stamped)."""
     try:
         from typesafe_sdk import TypeSafeAPIError
     except ImportError:
@@ -443,7 +380,6 @@ def _failed(e: BaseException) -> str:
 
 
 async def key_error(account_id: str, status: str) -> Exception:
-    """The `LLMKeyError` for a `KEY_ERROR_KIND` status on `account_id` (`house`: no agency owns it)."""
     from llm_client import LLMKeyError
     from tenant_keys import owners_of
     return LLMKeyError(KEY_ERROR_KIND[status], PROVIDER, "describe_media", house=not await owners_of(account_id),
@@ -451,8 +387,6 @@ async def key_error(account_id: str, status: str) -> Exception:
 
 
 async def preflight(account_id: str | None = None) -> JevResult | None:
-    """None when the pass can run here for `account_id`, else its refusal (`no_nudenet` / `no_key`).
-    Cheap: no thread once NudeNet is loaded, no network — callers check it BEFORE fetching the still."""
     from tenant_keys import typesafe_key_for
 
     ready, why = await nudenet_ready()
@@ -475,7 +409,7 @@ async def run(account_id: str, data: bytes) -> JevResult:
         return refusal
     key = await typesafe_key_for(account_id)
     try:
-        px = list(PImage.open(io.BytesIO(data)).size)   # header only: no decode on the event loop
+        px = list(PImage.open(io.BytesIO(data)).size)
     except Exception as e:  # noqa: BLE001
         return JevResult(ok=False, status="error", detail=f"unreadable still: {type(e).__name__}: {e}"[:300],
                          cost_millicents=0, tok=0)
@@ -493,7 +427,7 @@ async def run(account_id: str, data: bytes) -> JevResult:
     tok = 0
     t0 = time.monotonic()
     try:
-        async def p1() -> None:   # counted inside: a NudeNet failure must not drop a paid answer (W30 F8)
+        async def p1() -> None:
             nonlocal tok
             r = await _ask(key, {"photo": await asyncio.to_thread(shrink, data, EDGE)}, Q)
             rec["resp"] = r; passes.append("1"); tok += _tokens(r)
@@ -539,14 +473,9 @@ async def run(account_id: str, data: bytes) -> JevResult:
     return JevResult(ok=True, status="ok", blob=b, cost_millicents=actual, tok=tok)
 
 
-# ── Videos (D53 hr12 maxF, D54) ─────────────────────────────────────
-# Pass 1 + NudeNet on every frame (`vault_frames.collect_jev_video`: 12 frames @720p), pass 2 / L only on the top-3
-# frames derive8 asks for (`vault_jev_rules.video_targets`, bench jv-jev.py), lane = max over frames.
 
-# TypeSafe calls in flight for one video (the bench ran 6).
 FRAME_CONCURRENCY = 6
-# Pass L guard: Jev answers 400 "Invalid image dimensions" on a 400x202 crop (D53). A frame whose encoded crops
-# are not all ≥ this on their short edge (shrink's own floor) skips pass L, recorded as `"Ls": "small"`.
+# Jev answers 400 "Invalid image dimensions" on a 400x202 crop: a frame with any crop under this on its short edge skips pass L.
 MIN_L_EDGE = 280
 
 
@@ -557,7 +486,6 @@ def _crops_big_enough(st: dict[str, bytes]) -> bool:
 
 
 async def _gather_all(coros: list[Any]) -> list[Any]:
-    """Let every call finish so its tokens are counted before the hold settles."""
     return await asyncio.gather(*coros, return_exceptions=True)
 
 
@@ -575,8 +503,6 @@ async def _settled(coros: list[Any]) -> list[Any]:
 
 async def run_video(account_id: str, frames: list[bytes], *, src: str, review: str | None,
                     nbytes: int) -> JevResult:
-    """The whole pass over one video's frames (native stills, clip order). `run`'s contract: never raises for a
-    model / NudeNet failure. An invalid image skips its frame or follow-up pass."""
     import llm_client
     from tenant_keys import typesafe_key_for
     from PIL import Image as PImage
@@ -604,7 +530,7 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
     packs: list[dict[str, Any]] = [{"px": p} for p in px]
     recs: list[dict[str, Any]] = [{} for _ in frames]
 
-    refused: list[BaseException] = []   # TypeSafe refused the KEY: no frame after it is sent (W30 F11)
+    refused: list[BaseException] = []
 
     async def ask(i: int, p: str, state: dict[str, bytes], qs: dict[str, dict]) -> None:
         nonlocal tok
@@ -622,7 +548,7 @@ async def run_video(account_id: str, frames: list[bytes], *, src: str, review: s
                     refused.append(e)
                 raise
         tok += _tokens(r)
-        # derive from the stored (packed) answers, so a later re-derive (`rules.frame_recs`) gives the same lane
+        # Derive from the stored (packed) answers so a later re-derive gives the same lane.
         packs[i][p] = rules.pack(r["answers"], rules.ORDER[p])
         recs[i][rules.RESP[p]] = {"answers": rules.unpack(packs[i][p], rules.ORDER[p])}
 
@@ -684,8 +610,6 @@ def _failure(e: Exception, actual: int, tok: int) -> JevResult:
 
 
 def merge(prev: dict[str, Any], res: JevResult, now: datetime) -> dict[str, Any]:
-    """`prev`'s `ai_fields_json` with `res` written as `_jev`. A failure keeps the last answer's
-    fields and stamps `status`/`error`/`failed_at` on them; `capped` writes nothing (retry later)."""
     out = dict(prev)
     if res.get("ok"):
         out[rules.JEV_KEY] = res["blob"]

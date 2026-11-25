@@ -1,38 +1,7 @@
 #!/usr/bin/env python3
-"""
-Orphan sales: credited by Converters' rule, never by a written override.
-
-A sale whose linked message carries no sender, or a tip with no message, used
-to be filled by `attribution_backfill.attribute_orphans` (run after each
-ingest scan): a manual `transactions.attributed_employee_id` for the fan's
-sole 1:1 sender of 7 days, the Automation Employee included. Converters now
-credits such a sale by rule (the last human chatter who messaged the fan
-within the window, 1 h by default; `tx_rollup.converter_lookback`), and an
-override would beat the rule, so the sweep is gone. These cases prove, on the
-stored credit (`transactions.credit_*`, written by the triggers) and on the
-attribution view, that what the sweep used to fill is now the rule's answer:
-
-  case_orphan_ppv_credited_to_the_last_chatter_in_the_hour:
-      a PPV whose message has no sender goes to the human chatter who wrote
-      20 min before; the override stays NULL.
-  case_several_chatters_the_last_one_wins:
-      two humans in the hour: the later one (the sweep left this ambiguous).
-  case_the_automation_employee_and_a_mass_blast_are_no_touch:
-      the Automation Employee's 1:1 send and a mass blast after the human's
-      chat leave the human credited; with only them, nobody.
-  case_a_stale_touch_credits_nobody:
-      a tip whose only touch is 2 h old stays Unattributed (the sweep
-      credited 7 days back).
-  case_an_override_still_wins:
-      a sale reassigned by hand keeps its Employee.
-  case_ingest_writes_no_override:
-      transaction_ingest no longer imports or runs a sweep.
-
-Run: ./venv/bin/python service/tests/test_attribution_backfill.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 _harness.bootstrap()
 
@@ -46,8 +15,8 @@ from db.engine import get_session  # noqa: E402
 from db.models import Account, Employee, MassRun, Message, Transaction  # noqa: E402
 
 AID = "acc1"
-AUTOMATION = 2   # the system "Automation" sentinel employee (inactive, as employees creates it)
-HUMAN = 10       # a human chatter mirror employee
+AUTOMATION = 2
+HUMAN = 10
 HUMAN_2 = 11
 SALE = datetime(2026, 6, 20, 12, 0, 0)
 
@@ -86,7 +55,6 @@ def _sale(fan_id: int, cents: int, message_id: int | None = None, kind: str = "p
 
 
 async def _credit(fan_id: int) -> tuple:
-    """(override, credited Employee, rule) of the fan's sale, and the view's Employee and rule for it."""
     async with get_session() as s:
         t = (await s.execute(
             select(Transaction.id, Transaction.attributed_employee_id, Transaction.credit_employee_id,
@@ -103,7 +71,7 @@ async def case_orphan_ppv_credited_to_the_last_chatter_in_the_hour() -> None:
     await _seed_base()
     fan = 101
     async with get_session() as s:
-        s.add(_msg(fan, 5001, SALE - timedelta(days=2), None, price_cents=20000))  # the PPV: no sender
+        s.add(_msg(fan, 5001, SALE - timedelta(days=2), None, price_cents=20000))
         s.add(_msg(fan, 4001, SALE - timedelta(minutes=20), HUMAN))
         s.add(_sale(fan, 20000, 5001))
     assert await _credit(fan) == (None, HUMAN, "converters")

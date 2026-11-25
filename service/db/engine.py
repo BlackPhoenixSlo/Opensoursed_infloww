@@ -1,20 +1,3 @@
-"""
-Async SQLAlchemy engine + session factory.
-
-DATABASE_URL comes from service/.env (loaded via python-dotenv). Defaults
-to SQLite for the single-machine deployment described in the plan.
-
-Two ergonomics knobs on the SQLite path:
-  • `check_same_thread=False` — required because we hand sessions to
-    background tasks (the WS pump applies events from one task while
-    HTTP handlers serve another).
-  • PRAGMA journal_mode=WAL — readers don't block writers. Critical for
-    "one tab reads while another tab + the WS pump writes."
-
-For Postgres, none of these knobs apply — drop in the asyncpg URL and the
-engine constructs the right pool with sane defaults.
-"""
-
 from __future__ import annotations
 
 import os
@@ -36,7 +19,6 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool
 from sqlalchemy.util import queue as sqla_queue
 
 HERE = Path(__file__).resolve().parent
-# Load service/.env (gitignored). Falls back to env-vars already in process.
 load_dotenv(HERE.parent / ".env", override=False)
 
 DATABASE_URL = os.environ.get(
@@ -46,70 +28,26 @@ DATABASE_URL = os.environ.get(
 
 
 def sync_database_url(url: str | None = None) -> str:
-    """SQLAlchemy's sync driver URL for an async engine URL (default: the module's DATABASE_URL, read at call time)."""
     return (DATABASE_URL if url is None else url).replace("+aiosqlite", "").replace("+asyncpg", "")
 
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 
-# A file SQLite keeps its connections in a pool. aiosqlite's own default for a
-# file is NullPool: every session opens a connection (a thread plus the PRAGMAs
-# below) and closes it, ~3-6x the cost of a pooled session.
-#
-# The pool is BOUNDED (_SpillQueuePool): POOL_SIZE connections serve
-# sessions; a session that finds none free waits for one (in no guaranteed
-# order: any waiter may get a returned connection). Unbounded overflow (what this was until 2026-10-24) turned any pile-up
-# of requests — a 1-2 s stall of the process, then every request in flight at
-# once — into one new connection per session: a new aiosqlite thread, the whole
-# schema (270 objects) parsed again under SQLite's global malloc mutex, 200+
-# threads fighting for the GIL and SQLite's write lock in busy_timeout sleeps.
-# Measured in slop (`2026-10-24-big-model-dm-flood`): 200+ connections and 3-11
-# cores for seconds, p95 1-6 s, sometimes self-sustaining for a minute
-# (.scratch/fleet-sharding/03-write-storm.md). SQLite runs one writer at a time
-# anyway, so more connections never wrote faster; they only queued in C.
-#
-# A wait that lasts SPILL_AFTER_S opens an extra (spill) connection instead of
-# failing (closed on return), so a task that nests a second session while
-# holding one, or any wait-on-itself pattern, costs at most that delay, never a
-# deadlock. Spills are capped at MAX_SPILL: uncapped (until 2026-11-09), a flood
-# whose every checkout waited 2 s spilled each one — 2,856 spill connections,
-# one aiosqlite thread each, 466 -> 3,477 relay threads in 16 s, no plateau
-# (slop relay-admission medium/200, 20261109T084847Z-...-b634). At the cap a
-# checkout waits again, up to WAIT_MAX_S more, then raises SQLAlchemy's
-# TimeoutError, which server.py answers 503 + Retry-After. That second wait is
-# a new one: a checkout keeps no place in line from its first, and a waiter
-# arriving later may be served first. The one exception is a checkout made
-# with UNCAPPED set (the OF-cache writer task, db/of_writer): it spills past the
-# cap instead, since a timeout there drops inbound OF frames whose SSE already
-# went out. It is one serial task, so the cap is exceeded by one at most. 24 from medium/200
-# runs at 24 / 56 / 120: relay threads max 417 / 449 / 512, ramp CPU 1.4 / 2.0 /
-# 3.9 cores, background reads failed 77 / 85 / 85 % (the overload there is the
-# per-request role reads, not the cap); small never spills. Memory bound: each kept
-# connection's page cache grows to cache_size (64 MiB) at most; the mmap is the
-# OS page cache, shared. The in-memory DB keeps aiosqlite's StaticPool.
-# CHATTERLY_DB_NULLPOOL=1 (set by tests/_harness.py, which runs a fresh event
-# loop per case) keeps NullPool, so a connection never outlives the loop that
-# opened it there.
+# Bounded pool: unbounded overflow under a request pile-up opened a thread + schema parse per session (measured 200+ connections, p95 1-6 s); SQLite has one writer anyway.
 POOL_SIZE = int(os.environ.get("CHATTERLY_DB_POOL_SIZE", "8"))
 SPILL_AFTER_S = float(os.environ.get("CHATTERLY_DB_SPILL_AFTER_S", "2.0"))
+# Spills are capped: uncapped, a flood spilled 2,856 connections/threads with no plateau.
 MAX_SPILL = int(os.environ.get("CHATTERLY_DB_MAX_SPILL", "24"))
 WAIT_MAX_S = float(os.environ.get("CHATTERLY_DB_WAIT_MAX_S", "30"))
 
 
-# Set inside the OF-cache writer task only (db/of_writer._loop). SQLAlchemy's
-# greenlet_spawn runs the pool's checkout in the awaiting task's context, so it
-# is read in _do_get (tests/test_pool_cap_writer.py proves it).
+# Set only in the OF-cache writer task: it spills past the cap, since a timeout there drops inbound OF frames whose SSE already went out.
 UNCAPPED: ContextVar[bool] = ContextVar("db_checkout_uncapped", default=False)
 
 
 class _SpillQueuePool(AsyncAdaptedQueuePool):
-    """`pool_size` connections, handed out in no guaranteed order; a checkout
-    still waiting after `timeout` seconds opens a spill connection (overflow,
-    closed on return) while fewer than `max_overflow` are open, else waits on
-    up to WAIT_MAX_S more and raises TimeoutError. With UNCAPPED set it spills
-    past `max_overflow` instead of waiting."""
 
     def _do_get(self):
-        if self._overflow >= 0:  # all pool_size connections exist: wait for a free one
+        if self._overflow >= 0:
             try:
                 return self._pool.get(True, self._timeout)
             except sqla_queue.Empty:
@@ -117,12 +55,10 @@ class _SpillQueuePool(AsyncAdaptedQueuePool):
             if self._inc_overflow():
                 self.spills += 1
             elif UNCAPPED.get():
-                # The writer never fails on the cap: one spill past it, returned
-                # through _dec_overflow like any other.
                 with self._overflow_lock:
                     self._overflow += 1
                 self.uncapped += 1
-            else:  # spills at the cap: wait for any connection back
+            else:
                 self.capped += 1
                 try:
                     return self._pool.get(True, WAIT_MAX_S)
@@ -131,21 +67,21 @@ class _SpillQueuePool(AsyncAdaptedQueuePool):
                 raise sqla_exc.TimeoutError(
                     f"DB pool busy: {self.size()} + {self._max_overflow} spill connections out, "
                     f"waited {self._timeout + WAIT_MAX_S:.0f} s", code="3o7r")
-        else:  # still opening the first pool_size: an idle one, else a new one
+        else:
             try:
                 return self._pool.get(False)
             except sqla_queue.Empty:
                 pass
-            self._inc_overflow()  # _overflow < 0 <= max_overflow: always counts
+            self._inc_overflow()
         try:
             return self._create_connection()
         except BaseException:
             self._dec_overflow()
             raise
 
-    spills = 0  # checkouts that waited SPILL_AFTER_S and opened an extra connection
-    capped = 0  # checkouts that waited SPILL_AFTER_S with MAX_SPILL spills already open
-    uncapped = 0  # writer checkouts that spilled past MAX_SPILL (UNCAPPED)
+    spills = 0
+    capped = 0
+    uncapped = 0
 
 
 _POOL_ARGS = {"poolclass": _SpillQueuePool, "pool_size": POOL_SIZE, "max_overflow": MAX_SPILL,
@@ -159,33 +95,22 @@ _pooled = (
 
 
 def _set_sqlite_pragmas(dbapi_conn, _connection_record) -> None:
-    """Per-connection PRAGMAs, set as each connection opens, so a pooled one
-    carries them for its whole life."""
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA synchronous=NORMAL")
     cur.execute("PRAGMA foreign_keys=ON")
-    cur.execute("PRAGMA cache_size=-64000")   # 64 MiB
-    cur.execute("PRAGMA busy_timeout=30000")  # 30 s — concurrent writers
-    # Reads straight from the OS page cache instead of copying each
-    # page through read(); 256 MiB covers the hot tables.
+    cur.execute("PRAGMA cache_size=-64000")
+    cur.execute("PRAGMA busy_timeout=30000")
     cur.execute("PRAGMA mmap_size=268435456")
-    # Sorts and temp b-trees (GROUP BY, DISTINCT, ORDER BY without an
-    # index — every stats aggregate) stay in RAM, not a temp file.
     cur.execute("PRAGMA temp_store=MEMORY")
     cur.close()
 
 
 def _make_engine(url: str, pooled: bool) -> AsyncEngine:
-    """The relay's engine for `url`; a SQLite one sets its PRAGMAs on every
-    connect from the first, before any connection exists."""
-    # `echo=False` because the relay logs are noisy enough already. Flip to
-    # True via env var when debugging a slow query.
     made = create_async_engine(
         url,
         echo=os.environ.get("DB_ECHO") == "1",
-        # A failed statement's text otherwise carries its bound values ("[parameters: ...]"), and the
-        # 500 handler (server.py) stores str(exc) in /admin/errors: a 2FA seed, a key (W30 F9).
+        # A failed statement's text carries bound values and the 500 handler stores str(exc): a 2FA seed or key would leak.
         hide_parameters=True,
         connect_args={"check_same_thread": False} if url.startswith("sqlite") else {},
         future=True,
@@ -197,27 +122,18 @@ def _make_engine(url: str, pooled: bool) -> AsyncEngine:
 
 
 engine: AsyncEngine = _make_engine(DATABASE_URL, _pooled)
-# Write-path telemetry (one JSON log line a minute; read-only listeners, see
-# write_telemetry.py). CHATTERLY_WRITE_TELEMETRY_S=0 leaves the engine bare.
 from . import write_telemetry as _write_telemetry  # noqa: E402
 _write_telemetry.instrument(engine)
 
 async_session_factory = async_sessionmaker(
     engine,
-    expire_on_commit=False,   # rows stay usable after .commit() — fewer .refresh() calls
+    expire_on_commit=False,
     class_=AsyncSession,
 )
 
 
 @asynccontextmanager
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """Context-managed AsyncSession. Auto-commits on success, rolls back on
-    exception. Use this from FastAPI route handlers + background tasks.
-
-    Example:
-        async with get_session() as s:
-            s.add(Account(id="...", nickname="..."))
-    """
     async with async_session_factory() as session:
         try:
             yield session
@@ -227,17 +143,14 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-# Indexes a model no longer declares because a wider one replaced them under a
-# new name: {retired: (table, replacement)}. init_db drops each only once its
-# replacement exists, so a failed CREATE never leaves the table without both.
+# Drop each only once its replacement exists, so a failed CREATE never leaves the table without both.
 _RETIRED_INDEXES = {
-    "ix_messages_account_fan_time": ("messages", "ix_messages_chat_seq"),  # W5 5.1
-    "ix_tracking_clicks_link_time": ("tracking_clicks", "ix_tracking_clicks_stats"),  # 0111 covering stats
+    "ix_messages_account_fan_time": ("messages", "ix_messages_chat_seq"),
+    "ix_tracking_clicks_link_time": ("tracking_clicks", "ix_tracking_clicks_stats"),
 }
 
 
 def _drop_retired_indexes(sync_engine) -> None:
-    """Drop each `_RETIRED_INDEXES` entry whose replacement is live."""
     import logging
     from sqlalchemy import inspect, text
 
@@ -261,13 +174,6 @@ def _drop_retired_indexes(sync_engine) -> None:
 
 
 def merge_ppv_exclude_into_dm(sync_engine) -> list[dict]:
-    """Fold each account's local MASSppvEXCLUDE list into its MASSdmEXCLUDE list
-    (merged 2026-10-21: one list now excludes a fan from every mass send). Copies
-    the PPV members onto the DM list (INSERT OR IGNORE, minting the DM row if the
-    account has none), then deletes the PPV members and the PPV row, in one
-    transaction per account. Local only: the OnlyFans-side MASSppvEXCLUDE lists
-    are left alone. Idempotent — a no-op once no PPV row remains. SQLite SQL.
-    Returns one {account_id, ppv_members, copied} per merged account."""
     import logging
     from sqlalchemy import text
 
@@ -302,18 +208,11 @@ def merge_ppv_exclude_into_dm(sync_engine) -> list[dict]:
     return out
 
 
-# Rows ANALYZE samples per index. Without a limit, the first ANALYZE of a
-# table scans all of it — seconds on the big ones (messages, event_inbox) while
-# holding a read transaction; 400 is SQLite's own suggested value for optimize.
+# Without a limit the first ANALYZE of a big table scans all of it under a read transaction; 400 is SQLite's suggested value.
 _ANALYSIS_LIMIT = 400
 
 
 async def optimize() -> None:
-    """Refresh planner statistics for tables whose row counts moved. SQLite's
-    advice for long-lived connections: run `PRAGMA optimize` periodically, not
-    only on open — the pool's connections stay open between sessions (see
-    `_POOL_ARGS`), and this runs on whichever one is checked out. Cheap when
-    nothing changed. No-op off SQLite."""
     if not _is_sqlite:
         return
     from sqlalchemy import text
@@ -323,43 +222,11 @@ async def optimize() -> None:
 
 
 async def init_db() -> None:
-    """Apply migrations + set SQLite pragmas. Called from the FastAPI
-    startup hook. Idempotent.
-
-    Strategy:
-      1. SQLite PRAGMAs are wired at engine creation (`_set_sqlite_pragmas`).
-      2. If `alembic_version` table doesn't exist yet (fresh box), call
-         `Base.metadata.create_all()` directly and stamp Alembic to the
-         initial revision. We skip `alembic upgrade head` here because
-         Alembic+SQLAlchemy 2.0.35+Python 3.13 hits a recursion bug on
-         this schema's first run. The diffs in subsequent migrations are
-         small enough that the bug doesn't trip.
-      3. If `alembic_version` already exists, do the ADDITIVE catch-up below
-         (create_all for new tables + ALTER TABLE ADD COLUMN for new nullable
-         columns). ⚠️ We do NOT run `alembic upgrade head` — there is no
-         `command.upgrade(...)` call anywhere in this service. Any schema
-         change that is not additive-and-nullable simply never lands.
-
-    On Postgres the same flow works; the recursion bug is Python-version
-    sensitive and we keep the same code path for symmetry.
-    """
-    # Detect whether the DB has ever been initialized + create-if-missing.
-    # We intentionally do NOT run `alembic upgrade head` here — Alembic in
-    # 1.13.3 has a behavioral quirk with our env.py on Python 3.13 where
-    # re-entering the upgrade flow on an already-current DB loops in the
-    # migration-context logger. Since phase A has exactly one migration
-    # (the initial schema), there's nothing to upgrade once the DB exists.
-    # When we add a second migration in phase D, this function gets a
-    # version-comparison branch that calls `command.upgrade(...)` only
-    # when the on-disk revision != head.
     from sqlalchemy import create_engine, inspect, text
 
     sync_url = sync_database_url()
     sync_engine = create_engine(sync_url, connect_args={"timeout": 30} if _is_sqlite else {})
     try:
-        # PRAGMAs the async engine sets per-connection (above) need to also
-        # land on the sync_engine we use here for create_all() / stamp, so
-        # the DB file gets WAL mode set at creation time (persistent on disk).
         if _is_sqlite:
             with sync_engine.connect() as conn:
                 conn.exec_driver_sql("PRAGMA journal_mode=WAL")
@@ -369,7 +236,7 @@ async def init_db() -> None:
 
         inspector = inspect(sync_engine)
         has_alembic = "alembic_version" in inspector.get_table_names()
-        added: set[tuple[str, str]] = set()   # (table, column) the catch-up below added this boot
+        added: set[tuple[str, str]] = set()
 
         if not has_alembic:
             from .models import Base
@@ -384,20 +251,10 @@ async def init_db() -> None:
                     "INSERT INTO alembic_version (version_num) VALUES ('0001_initial')"
                 ))
         else:
-            # Cheap idempotent catch-up for additive schema changes: any new
-            # tables defined in models.py that aren't in the DB yet get
-            # created. Full Alembic upgrade lands in phase D — until then
-            # this covers the saved_replies / future additive cases without
-            # making the user wipe their DB.
             from .models import Base
             Base.metadata.create_all(bind=sync_engine)
-            # Additive-column catch-up. `create_all()` doesn't ALTER existing
-            # tables, so columns added to a model after the table existed
-            # would cause SELECTs to 500 ("no such column"). Walk the model
-            # metadata against the live DB and ALTER TABLE for missing cols.
-            # Only safe for ADDITIVE changes with a default / nullable spec
-            # — destructive ALTERs still need Alembic.
             inspector = inspect(sync_engine)
+            # alembic upgrade is never run: only additive nullable (or defaulted) columns and indexes land here; create_all skips existing tables.
             for table_name, table_obj in Base.metadata.tables.items():
                 if table_name not in inspector.get_table_names():
                     continue
@@ -406,10 +263,7 @@ async def init_db() -> None:
                     for col in table_obj.columns:
                         if col.name in live_cols:
                             continue
-                        # Build a minimal ADD COLUMN clause. Only NULLABLE
-                        # columns or columns with a server_default are safe
-                        # to add online without a default value; skip
-                        # anything that would require a non-null backfill.
+                        # A NOT NULL column with no default would need a backfill: skipped.
                         if not col.nullable and col.server_default is None:
                             continue
                         col_type = col.type.compile(dialect=sync_engine.dialect)
@@ -426,23 +280,11 @@ async def init_db() -> None:
                         ))
                         added.add((table_name, col.name))
 
-            # Additive-INDEX catch-up. `create_all()` adds indexes for
-            # newly-created tables but does NOT retroactively add new
-            # indexes declared in `__table_args__` on tables that
-            # already existed (verified behavior on SQLAlchemy 2.0.x —
-            # `create_all` skips the table entirely when present). So
-            # we walk every model-side Index and CREATE IF NOT EXISTS
-            # via raw SQL using the dialect compiler. Without this, the
-            # chatter→employee resolver's race-safety (which depends on
-            # the partial unique index uq_employees_chatter_owner)
-            # silently degrades on boxes that came up via init_db()
-            # before the index was declared.
             from sqlalchemy.schema import CreateIndex
             import logging as _logging
             _log = _logging.getLogger("of-relay.engine")
             inspector = inspect(sync_engine)
-            # One Kept campaign per Creator (uq_promo_keep_one, migration 0126): a legacy
-            # Creator with several keeps its last ticked one, or the index cannot build.
+            # A legacy Creator with several Kept campaigns keeps its last ticked one, or the unique index cannot build.
             if "promo_campaigns" in inspector.get_table_names() and "uq_promo_keep_one" not in {
                     ix["name"] for ix in inspector.get_indexes("promo_campaigns")}:
                 try:
@@ -461,9 +303,6 @@ async def init_db() -> None:
                         continue
                     try:
                         with sync_engine.begin() as conn:
-                            # CreateIndex emits the dialect-correct DDL
-                            # including partial-index WHERE clauses (we
-                            # use these for uq_employees_chatter_owner).
                             conn.execute(CreateIndex(ix, if_not_exists=True))
                         _log.info("created missing index %s on %s", ix.name, table_name)
                     except Exception:
@@ -471,20 +310,10 @@ async def init_db() -> None:
                             "failed to create missing index %s on %s",
                             ix.name, table_name,
                         )
-            # An index widened under a new name leaves its old one behind
-            # (the catch-up above adds by name only): drop the old.
             _drop_retired_indexes(sync_engine)
 
-            # One-way DATA catch-up (help-bot threads, revision 0110): a turn
-            # from before `assistant_turns.thread_id` gets `legacy-<first id>`
-            # of its run (db/assistant_threads.py). Idempotent: a no-op once no
-            # NULL row is left; asks never write one. The only copy (0110 adds
-            # the column alone). DELETE once every box has booted it, exactly
-            # three items: this init_db block, service/db/assistant_threads.py,
-            # and the boot test `case_init_db_backfills_legacy_threads_at_boot`
-            # in service/tests/test_assistant_api.py (plus the grouping test
-            # beside it that imports the module). Nothing else.
             try:
+                # One-way idempotent DATA catch-up: turns from before assistant_turns.thread_id get a legacy thread.
                 from .assistant_threads import backfill_thread_ids
                 with sync_engine.begin() as conn:
                     n = backfill_thread_ids(conn)
@@ -493,10 +322,9 @@ async def init_db() -> None:
             except Exception:
                 _log.exception("assistant thread backfill failed")
 
-            # One-way DATA catch-up (10-21 exclude merge): MASSppvEXCLUDE folded
-            # into MASSdmEXCLUDE. Idempotent; a no-op once no PPV row is left.
             if _is_sqlite:
                 try:
+                    # One-way idempotent DATA catch-up: MASSppvEXCLUDE folded into MASSdmEXCLUDE.
                     merge_ppv_exclude_into_dm(sync_engine)
                 except Exception:
                     _log.exception("MASSppvEXCLUDE → MASSdmEXCLUDE merge failed")
@@ -508,16 +336,15 @@ async def init_db() -> None:
         # alembic stamp still compacts (W30 F15/F24).
         if _is_sqlite:
             try:
+                # One-way DATA catch-up: OF listStates blobs OOM-killed the relay when a large vault opened.
                 compact_vault_list_states_once(sync_engine)
             except Exception:
                 import logging as _logging
                 _logging.getLogger("of-relay.engine").exception("vault listStates compact failed")
 
-        # Both branches: create_all builds no views, and nothing here runs
-        # alembic, so the attribution view would otherwise exist only on a box
-        # someone upgraded by hand.
         if _is_sqlite:
             try:
+                # create_all builds no views and nothing here runs alembic.
                 ensure_attribution_view(sync_engine)
             except Exception:
                 import logging as _logging
@@ -531,7 +358,6 @@ async def init_db() -> None:
             import logging as _logging
             _logging.getLogger("of-relay.engine").exception("settings versions move failed")
 
-        # Fresh box too: it stamps the marker, so the backfill never runs later.
         try:
             backfill_w7_rules_once(sync_engine)
         except Exception:
@@ -556,26 +382,18 @@ async def init_db() -> None:
             import logging as _logging
             _logging.getLogger("of-relay.engine").exception("audit credential scrub failed")
 
-        # Planner statistics, once per boot after the schema catch-up. Without
-        # them (no sqlite_stat1 existed on any DB we checked) the planner guesses
-        # between our 160+ indexes. 0x10002 = analyze every table whose stats are
-        # missing or stale; the analysis_limit keeps a first run on a big table
-        # to a sample. The periodic pass is db_retention._db_optimize_loop (optimize()).
         if _is_sqlite:
             try:
                 with sync_engine.connect() as conn:
                     conn.exec_driver_sql(f"PRAGMA analysis_limit={_ANALYSIS_LIMIT}")
+                    # 0x10002 = analyze every table whose stats are missing or stale.
                     conn.exec_driver_sql("PRAGMA optimize=0x10002")
                     conn.commit()
             except Exception:
                 import logging as _logging
                 _logging.getLogger("of-relay.engine").exception("PRAGMA optimize at boot failed")
 
-        # Last, so its failure skips no step above: the credit columns and the
-        # rollups are kept by triggers, which create_all does not build either
-        # (both branches, like the view). A failure does not stop the boot
-        # (chat and SSE matter more than the stats); it is retried in the
-        # background until it succeeds (`_tx_rollup_retry`).
+        # Last, so its failure skips no step above; a failure does not stop the boot (chat and SSE matter more than stats) and is retried in the background.
         if _is_sqlite and not _tx_rollup_catch_up(sync_engine):
             import asyncio
             task = asyncio.get_running_loop().create_task(_tx_rollup_retry(sync_url), name="tx-rollup-retry")
@@ -585,14 +403,11 @@ async def init_db() -> None:
         sync_engine.dispose()
 
 
-_retry_tasks: set = set()  # a reference held, so the retry task is not collected
-TX_ROLLUP_RETRY_S = (60, 900)  # first delay, cap (doubling between)
+_retry_tasks: set = set()
+TX_ROLLUP_RETRY_S = (60, 900)
 
 
 def _tx_rollup_catch_up(sync_engine) -> bool:
-    """`tx_rollup.ensure` (triggers, then the once-per-box backfill); False,
-    logged critical, when it fails. Until it succeeds the stats read
-    whatever the rollups held, so they can read low."""
     import logging as _logging
 
     import tx_rollup
@@ -607,9 +422,6 @@ def _tx_rollup_catch_up(sync_engine) -> bool:
 
 
 async def _tx_rollup_retry(sync_url: str) -> None:
-    """`_tx_rollup_catch_up` on its own engine, off the event loop, every
-    TX_ROLLUP_RETRY_S[0] seconds doubling to TX_ROLLUP_RETRY_S[1], until it
-    succeeds."""
     import asyncio
 
     from sqlalchemy import create_engine
@@ -627,19 +439,11 @@ async def _tx_rollup_retry(sync_url: str) -> None:
 
 
 _ATTR_VIEW = "per_employee_revenue_with_attribution"
-# The view's current revision; its SQL is read from the migration so there is
-# one definition, not a second copy here.
 _ATTR_VIEW_MIGRATION = "20261027_0100_converters_window.py"
-# Columns only the current revision has: a view without them is an older one.
 _ATTR_VIEW_HEAD_COLS = {"tx_id", "rule", "converter_id", "converter_at"}
 
 
 def ensure_attribution_view(sync_engine) -> str:
-    """Create `per_employee_revenue_with_attribution` when it is missing, or
-    rebuild it when it predates revision 0099 (no `converter_id`/`converter_at`). Stats and
-    Sales records read it, and without it they 500 with "no such table". A pure
-    view rebuild: no stored row changes. Returns "present" | "created" |
-    "rebuilt"."""
     import importlib.util
 
     from sqlalchemy import inspect, text
@@ -663,14 +467,12 @@ def ensure_attribution_view(sync_engine) -> str:
     return action
 
 
-# One-shot data steps, by name. A row here = that step already ran on this box
-# (so it never re-runs — e.g. never re-creates a rule an operator later deleted).
+# A row here means that step already ran on this box: it never re-runs (e.g. never re-creates a rule an operator later deleted).
 _DATA_MIGRATIONS_DDL = (
     "CREATE TABLE IF NOT EXISTS data_migrations "
     "(name VARCHAR(64) PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
 )
 _W7_RULE_BACKFILL = "20261018_w7_rule_switch"
-# kind → rule name for the backfilled switch.
 _W7_RULE_KINDS = {
     "welcome_chatter_for_info": "Get to know fans (Reply Instant)",
     "reply_mass_funnel": "Walk mass-funnel replies (Reply Instant)",
@@ -678,13 +480,6 @@ _W7_RULE_KINDS = {
 
 
 def ensure_w7_rule_switches(conn, account_id: str) -> int:
-    """For each W7-gated kind (welcome_chatter_for_info, reply_mass_funnel) the
-    account has NO rule row of (any state, any legacy name), create an enabled
-    cadence-less one (trigger `{}`: the materializer skips it, so it is purely
-    the Reply Instant switch — no periodic sweep). Existing rows are never
-    touched: a disabled one stays off. `conn` is a sync Connection in the
-    caller's transaction. Used by the one-time backfill below (the
-    webhook-config PUT that also called it is retired). Returns rules created."""
     from datetime import datetime
     from sqlalchemy import text
     from automation_registry import kind_family
@@ -709,17 +504,8 @@ def ensure_w7_rule_switches(conn, account_id: str) -> int:
     return created
 
 
+# A blob written later by older code (after a rollback) lands as a version from its own updated_at, never rewriting earlier history.
 def move_versioned_settings(conn) -> int:
-    """Move every `user_settings` blob of a versioned tab (`sales`,
-    `time-tracking`; roadmap W6 6.4) into `settings_versions`: as the first
-    version, effective from SETTINGS_EPOCH, when that user and tab have none
-    yet, so every past sale and shift reads the settings it read before;
-    else as a version from its own `updated_at`, so a blob some older code
-    wrote there later (after a rollback) lands as the save it was and never
-    rewrites the history before it. Runs on every boot, in the caller's
-    transaction (`conn`, a sync connection): once moved, no row is left to
-    move, so it needs no marker. Migration 0078 runs the same SQL. Returns
-    the rows moved."""
     from sqlalchemy import bindparam, text
 
     from .models import SETTINGS_EPOCH, VERSIONED_SETTINGS_TABS
@@ -731,7 +517,6 @@ def move_versioned_settings(conn) -> int:
         "  WHERE v.user_id = u.user_id AND v.tab = u.tab) THEN u.updated_at ELSE :epoch END, "
         "u.config_json, u.updated_at FROM user_settings u WHERE u.tab IN :tabs ORDER BY u.user_id, u.tab"
     ).bindparams(bindparam("tabs", expanding=True)),
-        # SQLAlchemy's SQLite DateTime text, as the ORM writes the column.
         {**tabs, "epoch": SETTINGS_EPOCH.strftime("%Y-%m-%d %H:%M:%S.%f")})
     moved = conn.execute(text("DELETE FROM user_settings WHERE tab IN :tabs")
                          .bindparams(bindparam("tabs", expanding=True)), tabs).rowcount
@@ -739,18 +524,6 @@ def move_versioned_settings(conn) -> int:
 
 
 def backfill_w7_rules_once(sync_engine) -> int:
-    """ONE-TIME (2026-10-18): Reply Instant (webhook_dispatch) now wakes
-    welcome_chatter_for_info / reply_mass_funnel only while the account has an
-    ENABLED rule of that kind. Accounts that had Reply Instant ON with NO rule
-    row of the kind at all (any state) were being answered without one — give
-    each such (account, kind) an enabled rule so they keep being answered. An
-    existing row, even a disabled one, is left alone (that account stays off).
-
-    Same rule as `ensure_w7_rule_switches` (cadence-less: exactly the replies
-    the account was already getting, no new periodic sweep).
-
-    Guarded by a `data_migrations` marker, written in the same transaction.
-    Returns the number of rules created."""
     import json
     import logging
     from sqlalchemy import text
@@ -772,7 +545,7 @@ def backfill_w7_rules_once(sync_engine) -> int:
             except Exception:
                 continue
             if not (isinstance(cfg, dict) and cfg.get("enabled")):
-                continue  # the same truthiness webhook_dispatch._load_config reads
+                continue
             created += ensure_w7_rule_switches(conn, account_id)
         conn.execute(text("INSERT INTO data_migrations (name) VALUES (:n)"),
                      {"n": _W7_RULE_BACKFILL})
@@ -782,14 +555,10 @@ def backfill_w7_rules_once(sync_engine) -> int:
 
 
 _KEEP_RULES_HEAL = "20261121_keep_running_rules_heal"
-# Its SQL lives in the migration (one definition), loaded like the attribution view.
 _KEEP_RULES_HEAL_MIGRATION = "20261121_0100_keep_running_rules_heal.py"
 
 
 def _data_step_once(sync_engine, marker: str, migration: str, step: str, done: str, run: bool = True) -> int:
-    """A ONE-TIME data step: migration file `migration`'s `step(conn)` (its SQL has one definition), guarded
-    by the `data_migrations` marker `marker`, written in the same transaction (a fresh box stamps it too).
-    `run` False stamps the marker only. Logs `done` % the step's count; returns it."""
     import importlib.util
     import logging
     from sqlalchemy import text
@@ -811,10 +580,6 @@ def _data_step_once(sync_engine, marker: str, migration: str, step: str, done: s
 
 
 def heal_keep_running_rules_once(sync_engine) -> int:
-    """ONE-TIME (2026-11-21, owner: Keep running is indefinite by default): each account
-    with a Kept campaign gets exactly one enabled, live `promo_reactivate` rule (migration
-    0129's `heal`: Kept campaigns ticked before PR #850 had none, or a disabled / dry-run
-    one). `_data_step_once`. Returns rules created or changed."""
     return _data_step_once(sync_engine, _KEEP_RULES_HEAL, _KEEP_RULES_HEAL_MIGRATION, "heal",
                            "keep running rules heal: %d rule(s) created or fixed")
 
@@ -823,13 +588,8 @@ _OFFER_ATTEMPT_BACKFILL = "20261122_full_ai_offer_attempt"
 _OFFER_ATTEMPT_MIGRATION = "20261122_0100_ai_decisions_offer_attempt.py"
 
 
+# Only the boot whose column catch-up added the column stamps rows: a DB that already had it holds no legacy row.
 def backfill_offer_attempt_once(sync_engine, column_added: bool) -> int:
-    """ONE-TIME (2026-11-22, W30): legacy Full AI live priced rows that may have POSTed get
-    `offer_attempt_at = created_at` (migration 0130's `backfill`), so reap keeps them and settle
-    may still link them. Only on the boot whose column catch-up added the column (`column_added`):
-    a DB that already had it (fresh, upgraded, or a dev DB new code wrote) holds no legacy row, and
-    its new-code `sending` rows are not stamped; the marker is written either way
-    (`_data_step_once`). Returns rows stamped."""
     return _data_step_once(sync_engine, _OFFER_ATTEMPT_BACKFILL, _OFFER_ATTEMPT_MIGRATION, "backfill",
                            "full ai offer attempt backfill: %d row(s) stamped", run=column_added)
 
@@ -839,9 +599,6 @@ _AUDIT_CREDENTIAL_SCRUB_MIGRATION = "20261122_0400_audit_credential_scrub.py"
 
 
 def scrub_audit_credentials_once(sync_engine) -> int:
-    """ONE-TIME (2026-11-22, W30 F1): key values the audit snapshot stored before
-    `audit_log.credential_write` come out of `actions.payload_json` (migration 0134's
-    `scrub`). `_data_step_once`. Returns rows scrubbed."""
     return _data_step_once(sync_engine, _AUDIT_CREDENTIAL_SCRUB, _AUDIT_CREDENTIAL_SCRUB_MIGRATION, "scrub",
                            "audit credential scrub: %d row(s) scrubbed")
 
@@ -850,20 +607,8 @@ _VAULT_LIST_STATES_COMPACT = "20261117_vault_list_states_compact"
 _VAULT_COMPACT_BATCH = 200  # measured peak RSS (~111 KB rows): +160 MB at 100, +235 at 200, +290 at 500
 
 
+# Batched per transaction (a kill mid-way keeps finished batches); writes raw_json only, so no derived column or updated_at moves.
 def compact_vault_list_states_once(sync_engine, batch: int = _VAULT_COMPACT_BATCH) -> int:
-    """ONE-TIME (2026-11-17): cut each `vault_items.raw_json`'s `listStates` to
-    its `hasMedia` entries (`vault_mirror.compact_list_states`, the rule every
-    write now applies). OF sent every list on every media: 2 GB over 21k rows
-    on one box, OOM-killing the relay when the vault opened. First empties
-    `vault_response_cache` (1.2 GB there, same cause): a TTL cache of OF pages
-    that refills from OF, so it is wiped, not compacted. Streams by rowid,
-    `batch` rows per transaction (a kill mid-way keeps the batches done; the
-    rerun skips them as already compact). Writes `raw_json` only, and only where
-    the list shrank: no derived column (of_folder_ids, …) or updated_at moves.
-    No VACUUM: SQLite reuses the freed pages. SQLite only (rowid). Guarded by
-    a `data_migrations` marker, written once the walk finishes. Returns rows
-    rewritten. DELETE once every box has booted it: this function, its init_db
-    block, and the boot case in service/tests/test_vault_list_states_compact.py."""
     import json
     import logging
     from sqlalchemy import inspect, text
@@ -910,8 +655,6 @@ def compact_vault_list_states_once(sync_engine, batch: int = _VAULT_COMPACT_BATC
     return changed
 
 
-# A Creator's Kept campaigns but the one ticked (else created) last: unticked with
-# keep_warning 'kept_duplicate' (migration 0126 runs the same statement).
 PROMO_KEPT_DEDUPE = (
     "UPDATE promo_campaigns SET auto_reactivate = 0, keep_warning = 'kept_duplicate', "
     "keep_warning_at = CURRENT_TIMESTAMP WHERE auto_reactivate = 1 AND id <> ("

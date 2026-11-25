@@ -1,48 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager's Messages tab (app/lib/ofMirrorChat.ts): the relay calls it makes.
-
-The mirror sends only bodies the relay already accepts; these cases pin the
-exact OF request each one becomes, with the OF client faked (no network, no
-signing): a chat send and a PPV, a scheduled chat send, the mass message to
-user lists, mute / unmute and hide, and the chat list's Clear messages (the
-row "x") and Mark all as read.
-
-  case_routes_are_registered
-  case_send_is_one_post_to_the_chat
-  case_composer_gif_tags_and_release_forms_ride_ofs_fields
-  case_send_route_passes_the_release_form_fields
-  case_ppv_send_carries_price_and_vault_ids
-  case_scheduled_send_goes_to_the_queue_for_one_fan
-  case_mass_to_lists_is_one_queue_post
-  case_mute_unmute_hide_paths
-  case_mute_and_hide_routes_call_the_client
-  case_clear_messages_and_mark_all_read_paths
-  case_clear_messages_route_calls_the_client_and_busts_the_list
-  case_chat_media_type_tabs_are_a_path_segment
-  case_chat_media_kind_route_calls_the_client
-  case_chat_media_kind_route_rejects_other_kinds
-  case_chat_header_menu_paths
-  case_chat_header_menu_routes_call_the_client
-  case_message_menu_paths
-  case_message_menu_routes_call_the_client
-  case_unrestrict_unhides_only_when_asked
-  case_pins_two_reads_inside_the_ttl_cost_one_of_call
-  case_pin_unpin_and_unpin_all_clear_the_chats_pins
-  case_every_message_write_clears_the_accounts_pins
-  case_a_failed_message_write_still_clears_the_pins
-  case_pins_ttl_zero_reads_of_every_time
-  case_head_read_on_a_deferred_chat_enqueues_its_backfill_once
-  case_head_read_never_waits_on_the_backfill
-  case_peek_head_read_fires_the_thread_head_hook
-  case_peek_head_read_peeks_uncached_and_buys_no_backfill
-  case_peek_and_plain_reads_never_share_one_of_request
-  case_click_read_buys_the_backfill_whatever_the_marker
-  case_mark_read_is_the_click_read_of_a_warm_open
-  case_failed_mark_read_buys_no_backfill
-  case_head_read_and_mark_read_make_one_backfill
-
-Run: ./venv/bin/python service/tests/test_of_mirror_messages.py
-"""
 import asyncio
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
@@ -58,7 +14,6 @@ API = of_client.API_BASE
 
 
 def _client():
-    """An OFClient that skips __init__ and records (method, path, json_body) instead of calling OF."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.sent = []
     c.request_json = lambda method, path, **kw: c.sent.append((method, path, kw.get("json_body"))) or {"id": 1}
@@ -93,7 +48,6 @@ def case_routes_are_registered():
 
 def case_send_is_one_post_to_the_chat():
     c = _client()
-    # The relay's send route passes exactly these (auto_tag off: a human composed it).
     c.send_message(FAN, text="Synthetic hello", locked_text=False, price=0, media_files=[], previews=[],
                    is_forward=False, reply_to_message_id=None, tagged_users=[], giphy_id=None, auto_tag=False)
     assert c.sent == [("POST", f"{API}/chats/{FAN}/messages", {
@@ -111,7 +65,6 @@ def case_send_is_one_post_to_the_chat():
 
 def case_composer_gif_tags_and_release_forms_ride_ofs_fields():
     c = _client()
-    # The chat composer's GIF (text "" with a GIF), a tagged creator, a guest and a release-form document.
     c.send_message(FAN, text="", price=0, media_files=[], previews=[], tagged_users=[501], giphy_id="gif123",
                    rf_guest=[77], rf_partner=[88], auto_tag=False)
     method, path, body = c.sent[-1]
@@ -119,14 +72,11 @@ def case_composer_gif_tags_and_release_forms_ride_ofs_fields():
     assert body["text"] == "" and body["giphyId"] == "gif123", body
     assert body["rfTag"] == [501] and body["userTags"] == [501], body
     assert body["rfGuest"] == [77] and body["rfPartner"] == [88], body
-    # Formatted text (OF's editor markup) goes as it is, not wrapped again.
     c.send_message(FAN, text='<p><strong>Hi</strong> <span class="m-editor-fc__blue-1">there</span></p>', auto_tag=False)
     assert c.sent[-1][2]["text"] == '<p><strong>Hi</strong> <span class="m-editor-fc__blue-1">there</span></p>', c.sent[-1]
 
 
 def case_send_route_passes_the_release_form_fields():
-    """The send ROUTE (not just the client) carries the composer's guest and release-form tags to OF's
-    rfGuest / rfPartner: the route runs with a recording OF client and no DB or network."""
     assert server.SendMessageBody(text="x").rf_guest == [] and server.SendMessageBody(text="x").rf_partner == []
     import employees
     import relay_cache as rc
@@ -158,7 +108,6 @@ def case_send_route_passes_the_release_form_fields():
     (m1, p1, tagged), (m2, p2, untagged) = c.sent
     assert (m1, p1) == (m2, p2) == ("POST", f"{API}/chats/{FAN}/messages"), c.sent
     assert tagged["rfTag"] == [501] and tagged["rfGuest"] == [77] and tagged["rfPartner"] == [88, 89], tagged
-    # A plain text send carries OF's empty release-form arrays, exactly as before these fields existed.
     assert untagged["text"] == "<p>plain</p>" and untagged["rfTag"] == untagged["rfGuest"] == untagged["rfPartner"] == [], untagged
 
 
@@ -188,7 +137,6 @@ def case_scheduled_send_goes_to_the_queue_for_one_fan():
 
 def case_mass_to_lists_is_one_queue_post():
     c = _client()
-    # {text, user_lists} from the mirror; the relay's other knobs at their defaults.
     c.send_mass_message(text="Synthetic blast", user_lists=["fans", "42"], included_users=[], excluded_users=[],
                         excluded_user_lists=[], price=0, locked_text=False, media_files=[], previews=[],
                         tagged_users=[], giphy_id=None, filters=None, online_only=False)
@@ -237,7 +185,6 @@ async def case_mute_and_hide_routes_call_the_client():
 
 
 def case_clear_messages_and_mark_all_read_paths():
-    # OF web: the row "x" is DELETE /chats/{id} (its chats store's deleteChat), Mark all as read POST /chats/mark-as-read, no body.
     c = _client()
     c.delete_chat(FAN)
     c.mark_all_chats_read()
@@ -248,9 +195,6 @@ def case_clear_messages_and_mark_all_read_paths():
 
 
 def _with_paced_writes(c, run):
-    """Run `run()` with `c` as the OF client and the write pacer recording each
-    (account, send_purpose) before running the write unspaced; returns
-    (paced calls, relay_cache invalidations)."""
     import automation_executor
     paced, busted = [], []
 
@@ -283,7 +227,6 @@ def case_clear_messages_route_is_paced_and_busts_the_list():
 
 
 def case_mark_read_is_unpaced():
-    """A read flip reaches no fan, so it never takes the account's write slot."""
     async def _no_local(*_a, **_k):
         return None
 
@@ -300,7 +243,6 @@ def case_mark_read_is_unpaced():
 
 
 def _get_client_recorder():
-    """An OFClient whose get_json records (path, params) instead of calling OF."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.got = []
     c.get_json = lambda path, **kw: c.got.append((path, kw.get("params"))) or {"list": [], "hasMore": False}
@@ -308,7 +250,6 @@ def _get_client_recorder():
 
 
 def case_chat_media_type_tabs_are_a_path_segment():
-    """OF web's gallery Photos / Videos / Audio tabs: /chats/{id}/media/<kind>, the rest of the query as /media's."""
     c = _get_client_recorder()
     for kind in ("photos", "videos", "audios"):
         c.chat_media(FAN, limit=20, last_id="77", skip_users="all", kind=kind)
@@ -336,7 +277,6 @@ def case_chat_media_kind_route_calls_the_client():
 
 
 def case_chat_media_kind_route_rejects_other_kinds():
-    """FastAPI answers 422 for any kind outside OF's three tabs: the route's `kind` is that Literal."""
     import typing
     kind = typing.get_type_hints(server.of_chat_media_kind)["kind"]
     assert typing.get_origin(kind) is typing.Literal, kind
@@ -347,7 +287,6 @@ def case_chat_media_kind_route_rejects_other_kinds():
 
 
 def case_chat_header_menu_paths():
-    """OF web's chat menu: Give user a discount (616150 `S`), its Clear, View user's comments."""
     c = _client()
     c.set_subscription_discount(FAN, 15, 3)
     c.set_subscription_discount(FAN, 0, 1)
@@ -370,7 +309,7 @@ def case_chat_header_menu_routes_call_the_client():
     server._get_client = lambda: c
     try:
         server.of_set_subscription_discount(FAN, server._DiscountBody(discount=20, period=2))
-        server._DiscountBody(discount=0, period=1)  # OF's Clear
+        server._DiscountBody(discount=0, period=1)
         server._DiscountBody(discount=60, period=12)
     finally:
         server._get_client = orig
@@ -378,7 +317,6 @@ def case_chat_header_menu_routes_call_the_client():
         ("PUT", f"{API}/subscriptions/{FAN}/discount", {"discount": 20, "period": 2}),
     ], c.sent
     import pydantic
-    # OF's select: 5..60 by 5 (0 clears), 1..12 months.
     for bad in ({"discount": 65, "period": 1}, {"discount": 3, "period": 1}, {"discount": 12, "period": 1}, {"discount": 10, "period": 13}, {"discount": 10, "period": 0}):
         try:
             server._DiscountBody(**bad)
@@ -388,7 +326,6 @@ def case_chat_header_menu_routes_call_the_client():
 
 
 def case_message_menu_paths():
-    """OF web's per-message menu (13560) and pinned page: hide (204607 `M`), bookmark (458723 `P`/`w`), unpin all (`k`), its search."""
     c = _client()
     c.hide_message(77, FAN)
     c.bookmark_message(77, 5, True)
@@ -428,7 +365,6 @@ def case_message_menu_routes_call_the_client():
 
 
 def case_unrestrict_unhides_only_when_asked():
-    """OF's Unrestrict is one DELETE: the mirror's ?unhide=false leaves a chat the Creator hid hidden."""
     import asyncio
     import automations._common as common
     c = _client()
@@ -453,8 +389,6 @@ def case_unrestrict_unhides_only_when_asked():
     assert skips == [("acc", FAN, False), ("acc", FAN, False)], skips
 
 class _PinsClient:
-    """A fake OF client for the pinned route: counts `/pinned` reads, records
-    message writes; `fail_writes` makes every write raise OF's error."""
 
     def __init__(self):
         self.pinned_reads = 0
@@ -497,8 +431,6 @@ class _PinsClient:
 
 
 def _with_pins(ttl, run):
-    """Run `async run(c)` with a fake pins client on account `acct-pins` and
-    PINS_CACHE_TTL_S=`ttl` (None = unset, the default); returns the client."""
     import os
     c = _PinsClient()
     orig = (server._get_client, server._resolve_account_id, server._bust_chat_list_cache)
@@ -529,10 +461,8 @@ def case_pins_two_reads_inside_the_ttl_cost_one_of_call():
         second = await server.get_pinned(FAN)
         assert c.pinned_reads == 1, c.pinned_reads
         assert first == second == {"list": [{"id": 101, "chat": FAN}]}, (first, second)
-        # Another chat is its own entry.
         await server.get_pinned(FAN + 1)
         assert c.pinned_reads == 2, c.pinned_reads
-        # Concurrent opens of a cold chat share one OF read (the per-key lock).
         server.relay_cache.invalidate("chat_pinned", "acct-pins")
         await asyncio.gather(*(server.get_pinned(FAN) for _ in range(5)))
         assert c.pinned_reads == 3, c.pinned_reads
@@ -550,7 +480,6 @@ def case_pin_unpin_and_unpin_all_clear_the_chats_pins():
             assert write() == {"success": True}
             await server.get_pinned(FAN)
             assert c.pinned_reads == reads + 1, (c.writes[-1], c.pinned_reads)
-            # ...and the read after that is cached again.
             await server.get_pinned(FAN)
             assert c.pinned_reads == reads + 1, (c.writes[-1], c.pinned_reads)
         assert c.writes == [("pin", 77, FAN), ("unpin", 77, FAN), ("unpin_all", FAN)], c.writes
@@ -558,7 +487,6 @@ def case_pin_unpin_and_unpin_all_clear_the_chats_pins():
 
 
 class _UnsendReq:
-    """The unsend route reads its optional `{withUserId}` body off the request."""
 
     async def body(self):
         return b'{"withUserId": %d}' % FAN
@@ -568,7 +496,6 @@ async def _unsend():
     return await server.of_unsend_message(_UnsendReq(), 77)
 
 
-# Every message write route the pinned page offers, as the server handlers.
 _MESSAGE_WRITES = (
     lambda: server.of_pin_message(77, FAN),
     lambda: server.of_unpin_message(77, FAN),
@@ -583,8 +510,6 @@ _MESSAGE_WRITES = (
 
 
 def case_every_message_write_clears_the_accounts_pins():
-    """Unsend, hide, like/unlike and bookmark/unbookmark name no chat, and the
-    pinned page offers each: every one drops the account's pins (both chats)."""
     async def run(c):
         for write in _MESSAGE_WRITES[3:]:
             await server.get_pinned(FAN)
@@ -601,8 +526,6 @@ def case_every_message_write_clears_the_accounts_pins():
 
 
 def case_a_failed_message_write_still_clears_the_pins():
-    """OF may have applied a write it answered with an error (a timeout): every
-    message write route drops the pins anyway, so the next read asks OF."""
     from fastapi import HTTPException
 
     async def run(c):
@@ -624,8 +547,6 @@ def case_a_failed_message_write_still_clears_the_pins():
 
 
 def case_unsend_stamps_the_row_only_on_ofs_success_true():
-    """A 2xx refusal (`success: false`, `{}`, no body) leaves our row live (the app keeps the bubble); only
-    `success: true` marks it unsent."""
     import messages
     stamped = []
 
@@ -656,7 +577,6 @@ def case_pins_ttl_zero_reads_of_every_time():
 
 
 class _HeadClient:
-    """A fake OF client for the messages route: counts OF reads per (chat, before_id)."""
 
     def __init__(self, delay_s=0.0):
         self.reads = []
@@ -679,16 +599,12 @@ class _HeadClient:
 
 
 class _Req:
-    """What `_current_priority` reads off the request in flight."""
 
     def __init__(self, priority):
         self.headers = {"x-priority": priority} if priority else {}
 
 
 def _with_head(run, delay_s=0.0):
-    """Run `async run(c, read)` on account `acct-open` with a fake OF client; `read(chat, priority=None,
-    before_id=None, peek=None)` calls the route as that request would and lets its fired tasks finish
-    (peek None: the call names no peek, as a direct Python caller)."""
     import webhook_dispatch as wd
     c = _HeadClient(delay_s)
     orig = (server._get_client, server._resolve_account_id)
@@ -716,8 +632,6 @@ def _with_head(run, delay_s=0.0):
 
 
 async def _mark_read(chat):
-    """POST the chat's mark-as-read as a request would; let its fired tasks finish. The route's
-    HTTPException, if any, is returned, not raised."""
     from fastapi import HTTPException
     token = server._request_ctx.set(_Req(None))
     try:
@@ -731,7 +645,6 @@ async def _mark_read(chat):
 
 
 async def _seed_history(aid, fan, *, deferred, unread=0):
-    """A scrape_history row and the chat's local unread marker (0 = read)."""
     from datetime import datetime
     from db.engine import get_session
     from db.models import Account, Chat, ScrapeHistory
@@ -745,7 +658,6 @@ async def _seed_history(aid, fan, *, deferred, unread=0):
 
 
 async def _backfills(aid):
-    """{fan: deferred_history jobs} on `aid`."""
     import json
     from collections import Counter
     from sqlalchemy import select
@@ -763,9 +675,6 @@ async def _backfills(aid):
 
 
 def case_head_read_on_a_deferred_chat_enqueues_its_backfill_once():
-    """A head read of a deferred chat enqueues its backfill once, at user and at background
-    priority; a second read inside the window none; a not-deferred chat and an older page
-    none; every head read still reaches OF."""
     aid, user_fan, bg_fan, plain_fan, older_fan = "acct-open", 9101, 9102, 9103, 9104
 
     async def run(c, read):
@@ -788,7 +697,6 @@ def case_head_read_on_a_deferred_chat_enqueues_its_backfill_once():
 
 
 def case_head_read_never_waits_on_the_backfill():
-    """The trigger is fired and forgotten: a backfill that never finishes holds no head read."""
     import webhook_dispatch as wd
     aid, fan = "acct-open", 9105
     gate = {}
@@ -812,8 +720,6 @@ def case_head_read_never_waits_on_the_backfill():
 
 
 def case_peek_head_read_fires_the_thread_head_hook():
-    """Peek and plain head reads both fire the thread-head hook (a reply sent from OF web has no
-    event of its own)."""
     import relay_hooks
     fan = 9110
     heads = []
@@ -837,10 +743,6 @@ def case_peek_head_read_fires_the_thread_head_hook():
 
 
 def case_peek_head_read_peeks_uncached_and_buys_no_backfill():
-    """`peek=1`: the client gets peek=True, the head is never cached (two reads, two OF calls),
-    and a deferred chat gets no backfill (a Background read leaves it unread on OF, so the asc
-    pass would mark it read); a plain read of it then buys one. A call that names no peek
-    stays a plain read."""
     aid, fan, plain = "acct-open", 9201, 9202
 
     async def run(c, read):
@@ -872,7 +774,6 @@ def case_ascending_peek_rejected_before_of():
 
 
 def case_peek_and_plain_reads_never_share_one_of_request():
-    """In flight together, a peek and a plain head read make two OF calls (two plain ones, one)."""
     fan = 9211
 
     async def run(c, read):
@@ -884,9 +785,6 @@ def case_peek_and_plain_reads_never_share_one_of_request():
 
 
 def case_click_read_buys_the_backfill_whatever_the_marker():
-    """A plain head read of a deferred chat enqueues its backfill whether the local marker says
-    unread, read or has no chats row: the read marked it read on OF, and the scrape re-checks
-    the marker before any asc pass. Peeked reads of the same chats buy none."""
     from datetime import datetime
     from db.engine import get_session
     from db.models import ScrapeHistory
@@ -909,9 +807,6 @@ def case_click_read_buys_the_backfill_whatever_the_marker():
 
 
 def case_mark_read_is_the_click_read_of_a_warm_open():
-    """An open served from a peeked warm page sends no plain head read; its landed mark-as-read
-    enqueues the deferred chat's backfill once (a second POST none), after the local marker is
-    zeroed, so the scrape sees the chat read. A not-deferred chat gets none."""
     import webhook_dispatch as wd
     from automations.scrape_chats import local_unread_count
     aid, fan, plain_fan = "acct-open", 9241, 9242
@@ -941,8 +836,6 @@ def case_mark_read_is_the_click_read_of_a_warm_open():
 
 
 def case_failed_mark_read_buys_no_backfill():
-    """A mark-as-read the platform refused (200-style `success: False`, 502) or that raised fires
-    no Click read: the chat may still be unread on OF."""
     from fastapi import HTTPException
     aid, refused_fan, raised_fan = "acct-open", 9251, 9252
 
@@ -963,7 +856,6 @@ def case_failed_mark_read_buys_no_backfill():
 
 
 def case_head_read_and_mark_read_make_one_backfill():
-    """An open's plain head read then its mark-as-read inside the claim window: one job."""
     aid, fan = "acct-open", 9261
 
     async def run(c, read):
@@ -975,8 +867,6 @@ def case_head_read_and_mark_read_make_one_backfill():
 
 
 def case_every_read_thread_page_is_saved_by_id():
-    """A chat open (head) and a scroll-up (before_id) both land their rows in messages, in
-    the background, by message id, the direction from the client's own user id."""
     from sqlalchemy import select
     from db.engine import get_session
     from db.models import Message
@@ -1019,7 +909,6 @@ def case_peeked_head_dm_still_increments_unread_once():
 
 
 def case_messages_basic_grants_no_payment_route():
-    """The mirror's Tip is disabled, so Messages Basic must not open POST /tips (a payment) to a chatter."""
     import permissions
     assert "/of-manager/messages" not in (permissions.route_pages("/api/of/v2/tips", "GET") or ()), \
         permissions.route_pages("/api/of/v2/tips", "GET")

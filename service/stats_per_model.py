@@ -1,21 +1,3 @@
-"""
-stats_per_model.py — Per-model KPIs, split out of stats.py.
-
-  GET /admin/stats/per-model        → one row per Creator in the window:
-                                       revenue by kind, net, pending, refunds,
-                                       subs, messages, spenders, OF's Statistics
-
-`per_model` does the reads; `pivot_models` (pure: no DB, no awaits) turns
-their rows into the per-Creator rows, each started as `empty_model_row`;
-`pick_active_subs_source` (pure) picks the active-subs read.
-
-stats.py includes this router where the route stood (route order). The report
-zone and OF's top-ups are read as `stats._report_zone` / `stats._of_top_ups`
-at call time (imported in the route, no import-time cycle), so a patch on
-`stats` (slop fault of-zero-erases-db-sale) reaches this route as before the
-split.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -41,19 +23,9 @@ log = logging.getLogger("of-relay.stats")
 router = APIRouter(dependencies=[Depends(stats_guard)])
 
 
-# ── Per-model KPIs ───────────────────────────────────────────────
 
 
 def _kind_bucket(kind: str | None) -> str:
-    """Collapse Phase F's rich kind vocabulary to the chip buckets the
-    per-model card knows about. Without this, `ppv_message`/`ppv_post`/
-    `tip_post`/etc. silently fall into `custom` because the response dict
-    has no key for them — they go to `custom` in the chips and the PPV
-    chip shows $0 even when there is real PPV revenue.
-
-    Feed-post sales (`ppv_post`, `tip_post`) get their own `post` bucket so
-    the card can show post revenue separately — these MUST be checked before
-    the generic `ppv`/`tip` prefix rules below or they'd fold into those."""
     if not kind:
         return "custom"
     if kind in ("ppv_post", "tip_post"):
@@ -70,18 +42,11 @@ def _kind_bucket(kind: str | None) -> str:
 
 
 def _off_channel(kind: str | None) -> bool:
-    """Whether a kind's money in its `_kind_bucket` is outside Creator reports'
-    channels (app reportsMath `bucketOf` calls it `other`, Total earnings
-    only): stream sales and tips other than plain `tip` (in `tip`/`ppv`),
-    and null, unknown or `referral` kinds (in `custom`)."""
     b = _kind_bucket(kind)
     return (b == "tip" and kind != "tip") or (b == "ppv" and kind == "ppv_stream") or (b == "custom" and kind != "custom")
 
 
 def _safe_div(num: int, den: int) -> int | None:
-    """Integer division returning None when the denominator is 0 — the UI
-    distinguishes "no data" from a real zero (a model with no new subs has
-    no LTV, not LTV=0)."""
     if den <= 0:
         return None
     return int(num // den)
@@ -91,10 +56,6 @@ _BUCKETS = ("ppv", "post", "tip", "subscription", "rebill", "custom")
 
 
 def empty_model_row(aid: str, *, engagement: bool, active_subs_known: bool) -> dict[str, Any]:
-    """A Creator's per-model row before any read lands on it: every money and
-    count field zero, the derived ones null; `active_subs_count` null when no
-    active-subs source has a signal; the engagement fields only with
-    `engagement`."""
     row: dict[str, Any] = {
         "account_id": aid,
         "display_name": None,
@@ -114,8 +75,6 @@ def empty_model_row(aid: str, *, engagement: bool, active_subs_known: bool) -> d
             "rebill": 0,
             "custom": 0,
         },
-        # OF's net per bucket (same keys); with no net yet a row adds 0 here
-        # too, as in total_net_revenue_cents.
         "net_revenue_by_kind": {
             "ppv": 0,
             "post": 0,
@@ -124,16 +83,9 @@ def empty_model_row(aid: str, *, engagement: bool, active_subs_known: bool) -> d
             "rebill": 0,
             "custom": 0,
         },
-        # The part of each revenue_by_kind / net_revenue_by_kind bucket that
-        # Creator reports' channels leave out (`_off_channel`), so its Tips and
-        # Message columns match its Earnings summary; the buckets keep it.
         "other_by_kind": dict.fromkeys(_BUCKETS, 0),
         "net_other_by_kind": dict.fromkeys(_BUCKETS, 0),
         "total_revenue_cents": 0,
-        # OF's own post-fee figure, summed from transactions.net_cents.
-        # `net_missing_count` > 0 means some rows have no net yet (a
-        # WS-pumped sale the ledger has not backfilled) — the UI must
-        # disclose that rather than treat the sum as complete.
         "total_net_revenue_cents": 0,
         "net_missing_count": 0,
         "messages_sent": 0,
@@ -164,10 +116,6 @@ ActiveSubsSource = Literal["subscription_expires_at", "transactions_31d", "unava
 
 
 def pick_active_subs_source(r_act: list[Any], r_act_tx: list[Any]) -> ActiveSubsSource:
-    """The best active-subs source, pure: Fan.subscription_expires_at (a real
-    expiry) when any of its rows counts a subscriber, else the 31-day
-    transactions heuristic (Q3b) when any of its rows does, else "unavailable"
-    so the UI renders "—" instead of a misleading 0."""
     if any(int(r.active_subs or 0) > 0 for r in r_act):
         return "subscription_expires_at"
     if any(int(r.active_subs or 0) > 0 for r in r_act_tx):
@@ -179,12 +127,6 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
                  r_act: list[Any], r_msg: list[Any], r_reply: list[Any], r_pending: list[Any],
                  r_spend: list[Any], r_of: dict[str, dict[str, Any]], active_subs_source: str,
                  engagement: bool) -> list[dict[str, Any]]:
-    """per_model's rows from its reads, pure (no DB, no awaits): every Creator in
-    `acct_rows` (id, nickname) and every one a read names, sorted by total
-    revenue descending. `r_sums` the rollup by (account_id, kind, status), `top`
-    OF's top-ups by account_id (`_of_top_ups`), `r_act` the chosen active-subs
-    source's rows, `r_of` OF's Statistics per Creator; the others as
-    per_model reads them."""
     by_acct: dict[str, dict[str, Any]] = {}
 
     def _ensure(aid: str) -> dict[str, Any]:
@@ -195,7 +137,6 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
         by_acct[aid] = row
         return row
 
-    # Seed with every known account so models with zero traffic still show.
     nickname_by_id: dict[str, str | None] = {aid: nick for aid, nick in acct_rows}
     for aid in nickname_by_id:
         row = _ensure(aid)
@@ -214,11 +155,8 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
             if _off_channel(r.kind):
                 row["other_by_kind"][bucket] += amount
                 row["net_other_by_kind"][bucket] += int(r.net_cents or 0)
-            # PPV conversions: every tracked PPV sale in the window (a
-            # re-purchase is a separate sale), the attribution view's rows.
             if r.kind in PPV_KINDS:
                 row["ppv_conversions"] += int(r.sales or 0)
-        # Pending is a subset of the revenue above: a reversal never clears.
         if r.status == "pending":
             row["pending_revenue_cents"] += amount
             row["pending_by_kind"][bucket] += amount
@@ -226,9 +164,6 @@ def pivot_models(*, acct_rows: list[Any], r_sums: list[Any], top: list[dict[str,
             row["refunded_cents"] += amount
             row["refunded_net_cents"] += int(r.net_cents or 0)
 
-    # OnlyFans' own figure where it is over the ledger's (`_of_top_ups`, as
-    # /admin/stats/revenue reads it). Pending, refunds and PPV conversions stay
-    # the ledger's (OF charts none of them).
     for c in top:
         row = _ensure(c["account_id"])
         row["revenue_by_kind"][_kind_bucket(c["kind"])] += c["gross_cents"]
@@ -359,25 +294,11 @@ async def per_model(
     else:
         end = datetime.utcnow()
 
-    # ── Build the queries ──────────────────────────────────────────────
-    # Revenue, pending and PPV conversions by (account, kind, status), one
-    # read of the hourly rollup (tx_rollup.window_sums). Revenue reads every
-    # kind (the attribution view drops subscription/rebill/custom), counts
-    # both cleared and pending (TRACKED_STATUSES); pending is surfaced
-    # separately as pending_by_kind (subset, not additional) so the UI can
-    # flag what's not yet bank-cleared.
-    # `net_cents` rides along with gross so the creators table can reconcile
-    # against a Net-basis KPI card. Purely ADDITIVE: it adds top-level keys and
-    # moves no money between the existing `revenue_by_kind` buckets — that dict
-    # is a closed 6-key TypeScript interface (app/hooks/useStats.ts) consumed by
-    # PerModelKpiGrid / PerEmployeeTable / CompetitorReports, and adding a key to
-    # IT would silently reroute revenue into a bucket those surfaces never render.
     async def _sums() -> list[Any]:
         async with get_session() as ss:
             return await tx_rollup.window_sums(ss, ("account_id", "kind", "status"), account_ids=account_ids,
                                                start=start, end=end)
 
-    # New subs in window, each fan once (`stats_fans.new_subs_q`).
     new_fans = new_subs_q(account_ids, start, end).subquery()
     new_subs_by_acct = (select(new_fans.c.account_id, func.count().label("new_subs"))
                   .group_by(new_fans.c.account_id))
@@ -385,20 +306,11 @@ async def per_model(
     acct_in = "" if account_ids is None else " AND " + window.in_("account_id", account_ids)
     s_, e_ = window.bind(start.strftime(tx_rollup.TS_FORMAT)), window.bind(end.strftime(tx_rollup.TS_FORMAT))
 
-    # Pending revenue's latest projected clearance per account:
-    # max(occurred_at + payout_pending_days) over the pending rows.
     pending_q = text(
         "SELECT account_id, MAX(datetime(occurred_at, printf('%+d days', COALESCE(payout_pending_days, 0)))) "
         f"AS clears FROM transactions WHERE status = 'pending' AND occurred_at >= {s_} AND occurred_at <= {e_}{acct_in} "
         "GROUP BY account_id").bindparams(**window)
 
-    # Q3: active subs snapshot — best available signal.
-    # Per DA: `subscription_status` is never written. Use the fallback
-    # path on `subscription_expires_at` unconditionally; the response
-    # surfaces which source produced the count (or marks it
-    # unavailable if expires_at is also empty).
-    # Counted as of the window's end, not now, so a past window shows the
-    # subscribers it ended with (roadmap S5).
     active_subs_q = select(
         Fan.account_id.label("account_id"),
         func.count().label("active_subs"),
@@ -411,14 +323,6 @@ async def per_model(
         active_subs_q = active_subs_q.where(Fan.account_id.in_(account_ids))
     active_subs_q = active_subs_q.group_by(Fan.account_id)
 
-    # Q3b: transactions-based active-subs fallback. When
-    # fans.subscription_expires_at is empty for every fan (most installs
-    # today), derive "active" as DISTINCT fan_id with a cleared
-    # subscription / rebill within 31 days of `end` — the period a
-    # standard monthly OF sub covers. Multi-month subscribers leak out
-    # of this window, so the count slightly under-reports yearly
-    # subscribers. Acceptable until the WS pump populates expires_at
-    # directly.
     tx_active_subs_q = select(
         Transaction.account_id.label("account_id"),
         func.count(func.distinct(Transaction.fan_id)).label("active_subs"),
@@ -426,6 +330,7 @@ async def per_model(
         Transaction.kind.in_(("subscription", "rebill")),
         Transaction.status.in_(TRACKED_STATUSES),
         Transaction.fan_id.is_not(None),
+        # 31 days is the period a standard monthly OF sub covers; yearly subscribers under-report.
         Transaction.occurred_at >= end - timedelta(days=31),
         Transaction.occurred_at <= end,
     )
@@ -433,7 +338,6 @@ async def per_model(
         tx_active_subs_q = tx_active_subs_q.where(Transaction.account_id.in_(account_ids))
     tx_active_subs_q = tx_active_subs_q.group_by(Transaction.account_id)
 
-    # Q4: messages_sent per account: an Employee's own sends (`msg_stats.chatter_sends`).
     messages_q = select(
         Message.account_id.label("account_id"),
         func.count().label("messages_sent"),
@@ -446,10 +350,6 @@ async def per_model(
         messages_q = messages_q.where(Message.account_id.in_(account_ids))
     messages_q = messages_q.group_by(Message.account_id)
 
-    # Q4b, with `engagement` only (Creator reports, roadmap W5 5.3): the same
-    # sends' PPVs and fans chatted (each fan once per Creator,
-    # `msg_stats.creator_sends`, which counts the messages too), and the
-    # replies' count and summed seconds (`msg_stats.reply_stats`).
     async def _messages() -> list[Any]:
         if not engagement:
             return await _run(messages_q)
@@ -462,11 +362,6 @@ async def per_model(
         async with get_session() as ss:
             return await msg_stats.reply_stats(ss, account_ids=account_ids, start=start, end=end)
 
-    # Infloww's spender columns, from the ledger rows (a distinct fan count no
-    # rollup keeps): the fans who bought content or tipped (REVENUE_KINDS, so a
-    # subscription-only fan is no spender) and their spend on it, over them and
-    # over their sales ("Average amount spent by each fan that purchased
-    # content or gave tips", "... each time by fans on content or tips").
     spenders_q = select(
         Transaction.account_id.label("account_id"),
         func.count(func.distinct(Transaction.fan_id)).label("spenders"),
@@ -483,20 +378,15 @@ async def per_model(
         spenders_q = spenders_q.where(Transaction.account_id.in_(account_ids))
     spenders_q = spenders_q.group_by(Transaction.account_id)
 
-    # Run the heavy queries concurrently. AsyncSession is NOT safe to
-    # share across `await` points (sa.exc.IllegalStateChangeError), so
-    # each task opens its OWN session — the engine's connection pool
-    # hands out one connection per task. SQLite WAL handles the parallel
-    # readers fine and we keep the latency win.
     async def _run(stmt: Any) -> list[Any]:
         async with get_session() as ss:
             return (await ss.execute(stmt)).all()
 
-    # pending_q failing must NOT 500 the dashboard — fall back to empty.
     async def _run_pending(stmt: Any) -> list[Any]:
         try:
             return await _run(stmt)
         except Exception:
+            # A failing pending query must not 500 the dashboard.
             log.warning("per-model pending_q failed; reporting 0 pending", exc_info=True)
             return []
 
@@ -513,24 +403,16 @@ async def per_model(
         of_stats_daily.earnings_window(account_ids, start, end),
     )
 
-    # Account labels — single query, separate from the heavy aggregates.
-    # Clamp by `account_ids` (not the bare query-param `account_id`) so the
-    # seed loop below only materializes cards the principal is allowed to
-    # see. Without this, a chatter/owner with 15 accounts would still get
-    # a card for every account in the DB (most all-zeros).
     async with get_session() as s:
         acct_q = select(Account.id, Account.nickname)
         if account_ids is not None:
             acct_q = acct_q.where(Account.id.in_(account_ids))
         acct_rows = (await s.execute(acct_q)).all()
 
-    # The best active-subs source (`pick_active_subs_source`); the fallback reads its own rows.
     active_subs_source = pick_active_subs_source(r_act, r_act_tx)
     if active_subs_source == "transactions_31d":
         r_act = r_act_tx
 
-    # ── Pivot rows by account_id (`pivot_models`) ─────────────────────
-    # OnlyFans' top-ups read as `stats._of_top_ups` (the slop fault patches it there).
     top: list[dict[str, Any]] = []
     if of_cells:
         async with get_session() as ss:

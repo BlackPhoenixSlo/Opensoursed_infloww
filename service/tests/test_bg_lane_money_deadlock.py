@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Background lane: a request's parallel reads never queue on the lane for a second slot.
-
-Two background `GET /users/notifications/money` for one Creator, both lists cold: each request
-holds one of the lane's 2 slots (`_bg_admission`) and gathers tip + purchases. Before the fix one
-read borrowed the request's lease and the other queued on the lane for a third slot: both
-requests waited forever (relay restart). Real `_bg_admission`, money route, relay_cache,
-relay_coalesce, `_proxy` and BgLane/BgLease; only the OF client and account resolution are faked.
-A regression fails within TIMEOUT_S (the stuck requests are cancelled, which frees their slots).
-
-Run: venv/bin/python -m pytest service/tests/test_bg_lane_money_deadlock.py -q
-"""
-import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # pytest: tests/ is a package
+import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _harness  # noqa: E402  (first: temp DB)
 
 _harness.bootstrap()
@@ -31,7 +20,6 @@ OF_S = 0.1
 
 
 class _Client:
-    """OF: each notifications read takes OF_S; records calls and the most reads in flight at once."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -56,13 +44,12 @@ def _bg_request(aid: str) -> Request:
 
 
 async def _money(aid: str, name: str, gate: asyncio.Event):
-    """One background money request: admitted on the loop like `_bg_admission_route`, then the route."""
     req = _bg_request(aid)
     server._request_ctx.set(req)
     async with server._bg_admission(req):
-        await gate.wait()                      # both admitted (lane full) before either reads
+        await gate.wait()
         if name == "R2":
-            await asyncio.sleep(0.01)          # R1 leads both keys, R2 joins its flights
+            await asyncio.sleep(0.01)
         return await server.of_notifications_money(types="tip,purchases", limit=20, offset=0)
 
 
@@ -74,7 +61,7 @@ def _run_pair(aid: str, client: _Client):
         gate.set()
         done, pending = await asyncio.wait(tasks, timeout=TIMEOUT_S)
         for t in pending:
-            t.cancel()                         # closes their leases: the blocked read gets a slot and ends
+            t.cancel()
         await asyncio.wait(tasks, timeout=TIMEOUT_S)
         bg = server._lanes_for(aid)[1]
         return len(pending), [t.result() for t in done], bg.held, len(bg._waiters)
@@ -91,7 +78,7 @@ def _run_pair(aid: str, client: _Client):
 
 
 def test_two_cold_background_money_requests_do_not_deadlock_the_lane():
-    assert server._ACCOUNT_LANE_BACKGROUND == 2   # the cap the deadlock needs; a change here re-checks this test
+    assert server._ACCOUNT_LANE_BACKGROUND == 2
     client = _Client()
     pending, bodies, held, waiters = _run_pair("acct-money-deadlock", client)
     assert pending == 0, f"{pending} money request(s) hung on the background lane (deadlock)"
@@ -101,7 +88,6 @@ def test_two_cold_background_money_requests_do_not_deadlock_the_lane():
     assert held == 0 and waiters == 0, f"lane not whole after: held={held} waiters={waiters}"
 
 
-# ── BgLease.borrow(wait=True), the sharing rule itself ──────────────────────
 
 def _lease() -> tuple[BgLane, BgLease]:
     lane = BgLane(1)
@@ -129,7 +115,7 @@ def test_waiting_borrow_gives_up_when_the_request_left():
     t = threading.Thread(target=lambda: got.append(lease.borrow("a", wait=True)), daemon=True)
     t.start()
     t.join(0.1)
-    lease.close()                               # the slot stays with the running borrower
+    lease.close()
     t.join(TIMEOUT_S)
     assert got == [False] and lane.held == 1, (got, lane.held)
     lease.give_back()
@@ -139,24 +125,17 @@ def test_waiting_borrow_gives_up_when_the_request_left():
 def test_waiting_borrow_never_waits_on_itself_or_another_creator():
     _lane, lease = _lease()
     assert lease.borrow("a")
-    assert lease.borrow("a", wait=True) is False   # same thread, nested lane: no self-wait
+    assert lease.borrow("a", wait=True) is False
     assert lease.borrow("b", wait=True) is False
 
 
-# ── A requestless warm leader takes its slot before it leads a flight (W30 #2) ──
 
 def _view_lease_request() -> Request:
-    """The request the real warm is started from (`POST /admin/view-lease`, user priority, no account)."""
     return Request({"type": "http", "method": "POST", "path": "/admin/view-lease",
                     "query_string": b"", "headers": []})
 
 
 def test_warm_waiting_for_a_slot_leads_no_flight_a_slot_holder_could_join():
-    """Both slots held by background money requests; the App-open warm then starts its rail reads, queued
-    through its gate from the view-lease request (as the route does). Before the fix the warm led the tip
-    flight (relay_cache lock + coalesce) and only then waited for a third slot in its worker; R1 joined that
-    flight, R2 queued on R1's tip lock: nobody freed a slot (hang). W30 #2 r2: the warm inherited the
-    view-lease request's context, so its walk-level admission was skipped."""
     import accounts_admin_api
     import app_open_warm
     import shared_refresher
@@ -171,16 +150,16 @@ def test_warm_waiting_for_a_slot_leads_no_flight_a_slot_holder_could_join():
     async def main():
         gate = asyncio.Event()
         reqs = [asyncio.create_task(_money(aid, n, gate)) for n in ("R1", "R2")]
-        await asyncio.sleep(0.05)               # both admitted: lane full
+        await asyncio.sleep(0.05)
         async def view_lease():
             server._request_ctx.set(_view_lease_request())
-            app_open_warm._enqueue(aid, app_open_warm._Job(False, None))   # the warm, feed already read
+            app_open_warm._enqueue(aid, app_open_warm._Job(False, None))
         await asyncio.create_task(view_lease())
-        await asyncio.sleep(0.05)               # warm blocked on the slot
+        await asyncio.sleep(0.05)
         gate.set()
         done, pending = await asyncio.wait(reqs, timeout=TIMEOUT_S)
         for t in pending:
-            t.cancel()                          # frees their slots: the warm then ends too
+            t.cancel()
         await asyncio.wait(reqs, timeout=TIMEOUT_S)
         end = time.monotonic() + TIMEOUT_S
         while aid not in app_open_warm._warmed_at and aid not in app_open_warm._failed_at \
@@ -209,8 +188,6 @@ def test_warm_waiting_for_a_slot_leads_no_flight_a_slot_holder_could_join():
 
 
 def test_gate_jobs_run_without_the_callers_request():
-    """W30 #2 r2: the gate's worker (warm and Shared refresher jobs alike) runs in a fresh context, not the
-    request that happened to start it: a requestless walk, so `_background_reads` decides its lane."""
     import app_open_warm
 
     seen = []
@@ -232,10 +209,6 @@ def test_gate_jobs_run_without_the_callers_request():
 
 
 def test_detached_swr_refresh_waits_for_its_slot_before_the_key_lock():
-    """W30 #31: a background request serves a stale `/chats` window; its SWR refresh runs detached with the
-    request's lease, which closes when the request returns. Before the fix the refresh took the key's lock, then
-    waited for a fresh slot in its flight while H1 + H2 held both slots queued on that lock (hang). The refresh
-    now gets its own slot before it takes the lock."""
     aid = "acct-swr-deadlock"
     extras = (20, 0, "recent")
     reads = []
@@ -263,12 +236,12 @@ def test_detached_swr_refresh_waits_for_its_slot_before_the_key_lock():
         relay_cache._cache[("list_chats", aid, extras)] = ({"list": ["stale"]}, time.monotonic() - 1)
         go, a1 = asyncio.Event(), asyncio.Event()
         h1 = asyncio.create_task(read("H1", True, a1, go))
-        await a1.wait()                                # H1 holds slot 1
-        r0 = asyncio.create_task(read("R0", False))    # slot 2: serves stale, spawns the refresh, leaves
-        h2 = asyncio.create_task(read("H2", True, None, go))   # queued on the lane: gets R0's slot
+        await a1.wait()
+        r0 = asyncio.create_task(read("R0", False))
+        h2 = asyncio.create_task(read("H2", True, None, go))
         assert (await r0) == {"list": ["stale"]}
-        await asyncio.sleep(0.05)                      # the refresh runs, H2 admitted
-        go.set()                                       # H1 + H2 (both slots) now read the key
+        await asyncio.sleep(0.05)
+        go.set()
         done, pending = await asyncio.wait({h1, h2}, timeout=TIMEOUT_S)
         for t in pending:
             t.cancel()
@@ -291,6 +264,6 @@ def test_detached_swr_refresh_waits_for_its_slot_before_the_key_lock():
     assert held == 0 and waiters == 0, f"lane not whole after: held={held} waiters={waiters}"
 
 
-if __name__ == "__main__":   # scripts/run-tests.sh runs service tests as plain scripts
+if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

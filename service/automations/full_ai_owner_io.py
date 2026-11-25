@@ -92,6 +92,9 @@ async def _members(account_id: str, client, list_ids: list[int], *, whole: bool 
 
 
 async def _listed(account_id: str, fan_ids: set[int], cfg: dict | None, client=None) -> set[int]:
+    """The Fans of `fan_ids` on the Fans list (`in_fans`). Both lists empty: everyone, no OF client
+    built, no OF call. An unreadable config (`cfg` None), a malformed stored list, a client that will not
+    build, a failed read or a short read of the exclusion list: the Fans on it are not listed (never widen)."""
     fans = (cfg or {}).get("fans")
     if full_ai_config._fans_error(fans) is not None:
         log.warning("full_ai_owner bad fans config account=%s", account_id)
@@ -120,7 +123,9 @@ class FansRead(NamedTuple):
 
 
 def cached_listed(account_id: str, fan_id: int, cfg: dict) -> FansRead:
-    from automations import autoreply
+    """`_listed` for one Fan from Auto-reply's folder cache ONLY (`autoreply.peek_folder`): no client, no
+    OF call, ever. A failed newest read = not listed THEN, as `_listed` treated it; same `in_fans`."""
+    from automations import autoreply   # lazy: autoreply imports this module inside its run
     fans = cfg.get("fans")
     if full_ai_config._fans_error(fans) is not None:
         return FansRead(False, None, None, True)
@@ -230,6 +235,7 @@ async def load(account_id: str, fan_id: int, anchor_at: datetime, *, client=None
         listed = got is not None and got.fresh and got.listed is True
     else:
         listed = int(fan_id) in await _listed(account_id, {int(fan_id)}, cfg, client)
+    # The OF-app read only when nothing above it already stops the Turn (an off switch = 0 OF reads).
     human, human_at, his = await _human(account_id, int(fan_id), anchor_at, client,
                                         live_read and off is None and listed, ours)
     audience_ok, _why = await audience_allows_fan(account_id, fan_id, kind=AUDIENCE_KIND)

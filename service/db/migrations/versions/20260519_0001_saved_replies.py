@@ -1,14 +1,3 @@
-"""saved replies (local-only "templates" minus welcome slot)
-
-Revision ID: 0002_saved_replies
-Revises: 0001_initial
-Create Date: 2026-05-19
-
-OF's /messages/templates endpoint rejects creates for everything except
-the welcome slot (template=reply_on_subscribe). We keep saved replies in
-the local DB and the UI merges them with OF's welcome message at render
-time.
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,21 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_spacing — Spacing (phase 03d, ticket 59): the Sitting / Piece / Unasked fold and the
-test question list. Pure: hand-built test rows, no DB, no Jev.
-
-  case_spacing_fold          `full_ai_test.spacing_of(rows, now)` over the spec's table (spec ›
-                             Contracts › Sitting / Piece / Unasked)
-  case_spacing_questions     `_questions("test", scene, spacing)`: the Spacing variant replaces only
-                             `offer_moment` and `scene_offer`, `scene_offer` only with the scene,
-                             order unchanged; Shadow never changes
-  case_flag_off_request_sha  the flag-off test request (questions + state key list) equals the sha
-                             captured on origin/main 9718d06e3 before any 03d edit, both scenes
-  case_question_versions     `question_version("test")` left its pre-03d value; Shadow's did not
-
-Run: ./venv/bin/python service/tests/test_full_ai_spacing.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import hashlib  # noqa: E402
 import json  # noqa: E402
@@ -39,13 +25,11 @@ FLAG_OFF_TEST_REQUEST_SHA = {
     # or cannot pay": a decline sells now). Shadow's request is not in it (QUESTION_VERSION, golden).
     True: "2af18278a1dce34c3c5f149b0b234c9a5fd853b9cc40585cab02e9e2d3336048",
 }
-PRE_03D_TEST_VERSION = "d6d23cee85f2"     # `question_version("test")` on 9718d06e3
+PRE_03D_TEST_VERSION = "d6d23cee85f2"
 
 
 def _row(minute: float, route_row: str = "otherwise", *, price=None, kind=None, his=("hey",),
          photo: bool = False, status: str = "sent"):
-    """A session row as `send` leaves it, `minute` minutes after T0. `kind` sets the Offer columns
-    (`tease` keeps price NULL); a failed / dropped row (`status`) has none, as `send` never ran."""
     offer = dict(offer_item_ref=None, offer_price_cents=None, offer_media_json=None)
     if kind:
         offer = dict(offer_item_ref=json.dumps({"ref": 1, "kind": kind}), offer_price_cents=price,
@@ -69,7 +53,7 @@ def _want(lines, pieces: int, unasked: int) -> dict:
 
 def case_spacing_fold():
     m = timedelta(minutes=1)
-    rows = [   # (label, rows, now minutes after T0, expected)
+    rows = [
         ("empty session", [], 0, _want(NO, 0, 0)),
         ("chat only", [_row(0), _row(1)], 2, _want(NO, 0, 0)),
         ("piece then 0 rows", [_row(0), _piece(1)], 2, _want(1, 1, 1)),
@@ -113,7 +97,6 @@ def _wording(q) -> tuple:
 def case_spacing_questions():
     assert rj.SPACING_STATE_KEYS == KEYS
     assert set(rj.TEST_SPACING) == {"offer_moment", "scene_offer"}
-    # the spec's wording, spot-checked: both read the two counts
     for qid in rj.TEST_SPACING:
         crit = rj.TEST_SPACING[qid]["criteria"]
         assert "`his_lines_since_last_piece` is 3 or more or says no piece yet" in crit["true"], qid
@@ -123,7 +106,7 @@ def case_spacing_questions():
         off = rj._questions("test", scene)
         assert rj._questions("test", scene, False).keys() == off.keys()
         on = rj._questions("test", scene, spacing=True)
-        assert list(on) == list(off), (scene, list(on), list(off))      # order unchanged
+        assert list(on) == list(off), (scene, list(on), list(off))
         assert ("scene_offer" in on) is scene, scene
         for qid in on:
             if qid in rj.TEST_SPACING:
@@ -139,8 +122,6 @@ def case_spacing_questions():
 
 
 def _flag_off_request(scene: bool) -> str:
-    """The flag-off test request: every test question as the SDK serializes it, in request order,
-    plus the state's key list (`router.state` then, with the scene, `SCENE_STATE_KEYS`)."""
     d = {"questions": {q: v.model_dump(mode="json") for q, v in rj._questions("test", scene).items()},
          "state_keys": [*rj.state([], [], "", "", "").keys(), *(rj.SCENE_STATE_KEYS if scene else ())]}
     return hashlib.sha256(json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()

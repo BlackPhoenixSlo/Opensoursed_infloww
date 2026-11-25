@@ -1,10 +1,3 @@
-"""OnlyFans synchronous transport with leased native handles.
-
-Pinned private curl_cffi integration: review the stream option adapter on upgrade.
-Buffered requests keep upstream setup; the outer lease also covers setup failures.
-No global lock is held across perform. Eviction is NOT terminal close.
-"""
-
 import contextlib
 import inspect
 import threading
@@ -23,7 +16,7 @@ from of_session_registry import Registry, Slot, Life
 
 _SIGNATURE = inspect.signature(Session._request_once)
 
-# The copied request option setup must be reviewed on any upstream drift.
+# The copied request option setup must be reviewed on any upstream curl_cffi drift.
 import curl_cffi
 import hashlib
 
@@ -63,7 +56,6 @@ class ManagedResponse(Response):
 
 
 class HeaderView:
-    """Header-only supported fields; unavailable native fields marked None by caller."""
 
     get_reason_phrase = staticmethod(Curl.get_reason_phrase)
     pending = (
@@ -132,7 +124,6 @@ class HeaderView:
             CurlInfo.REDIRECT_URL: self.redirect_url,
             CurlInfo.REDIRECT_COUNT: self.redirects,
         }
-        # Only internal parser placeholders; public pending values are replaced with None.
         for k in (
             CurlInfo.PRIMARY_PORT,
             CurlInfo.LOCAL_PORT,
@@ -190,7 +181,7 @@ class StreamState:
         target.metadata_pending = False
 
     def abandon(self):
-        # Weak response finalizer owns state, never response. Do not wait in GC callback.
+        # Weak response finalizer owns state, never the response; never wait in the GC callback.
         if self.quit:
             self.quit.set()
         if self.future:
@@ -241,8 +232,7 @@ class ManagedSession(Session):
                 raise Unsupported("closed CurlMime")
             self._mime_in_use.add(form)
         try:
-            # Strong reference spans setup, perform, parsing and reset. Caller owns
-            # free/reuse after return (including of_upload's proxy retry).
+            # Strong reference spans setup, perform, parsing and reset; caller owns free/reuse after return (incl. of_upload's proxy retry).
             yield
         finally:
             with self._mime_guard:
@@ -269,7 +259,6 @@ class ManagedSession(Session):
             super().__init__(**kw)
             self.response_class = ManagedResponse
             self.registry.sessions.add(self)
-            # Stock eager Curl is registered, not orphaned or recreated by close().
             eager = self._local.curl
             self._local.curl = None
             s = Slot(self._life)
@@ -304,8 +293,7 @@ class ManagedSession(Session):
                 raise Unsupported("managed Session closed")
             if getattr(self._managed_local, "lease", None) is not None:
                 raise Unsupported("reentrant request")
-            # Reservation is Session-local, never worker-local. Mark active while
-            # holding the slot lock so the sweeper cannot detach a chosen handle.
+            # Reservation is Session-local; mark active while holding the slot lock so the sweeper cannot detach a chosen handle.
             s = None
             empty = None
             for candidate in self._slots:
@@ -320,8 +308,6 @@ class ManagedSession(Session):
                     if candidate.state == "EMPTY" and candidate.curl is None:
                         empty = candidate
             if s is None:
-                # Recycle an empty record after cleanup acknowledgement. A fresh
-                # Curl is still created immediately; no capacity wait or cap.
                 s = empty
                 if s is None:
                     s = Slot(self._life)
@@ -351,7 +337,7 @@ class ManagedSession(Session):
                     s.curl = c
             self._managed_local.lease = c
             self._managed_local.lease_slot = s
-            # Mandatory for native multi-threaded use; explicit same option in baseline fixture.
+            # Mandatory for native multi-threaded use.
             c.setopt(CurlOpt.NOSIGNAL, 1)
             s.clean = False
             yield s, c
@@ -359,7 +345,6 @@ class ManagedSession(Session):
             if c is not None:
                 reset_error = None
                 try:
-                    # Covers setup exceptions before stock request's finally. Reset failure never IDLE.
                     c.reset()
                     clean = True
                 except BaseException as exc:
@@ -434,7 +419,6 @@ class ManagedSession(Session):
                 c, buffer, header_buffer, default_encoding, True
             )
             if isinstance(c, Curl) and not (discard_cookies or self.discard_cookies):
-                # Preserve each redirect response's scope and duplicate header order.
                 url = request_url or self._managed_local.request_url
                 blocks = []
                 for line in header_buffer.getvalue().splitlines():
@@ -504,11 +488,6 @@ class ManagedSession(Session):
 
 
 def _supported_cookie_scope(url, domain):
-    """OnlyFans permits its parent domain; other origins get exact-host cookies.
-
-    This adapter is not a general browser/PSL implementation. In particular,
-    a.co.uk cannot publish a co.uk cookie for another account's origin.
-    """
     from urllib.parse import urlsplit
 
     host = (urlsplit(url).hostname or "").lower()

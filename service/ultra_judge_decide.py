@@ -1,34 +1,17 @@
-"""service/ultra_judge_decide.py — an Ultra plan's judge step, pure (docs/plans/ultra-mode, step 5B).
-
-A judge step {id, question, candidates, pick_n, confirm?} has no `tool`: the AI picks `pick_n` media ids from
-earlier vault_search steps' result lists, all on one Creator (one literal account_id). `candidates` is a
-reference "$<vault_search step>.<path to a list>" (e.g. "$find.data_only.list"), or a list of up to MAX_SOURCES
-of them (deduped by id). Its result is {ids: [...]}; a step using it must be on that same Creator (ultra_decide).
-A send step may hold it only as its media, the whole value "$<judge>.ids".
-`confirm: true` stops the run `needs_you`: ≤PICK_CARD candidates with the AI's picks pre-ticked, until the
-owner's pick (ultra_run.pick). The judge answers ids only (clamped here), so no send-chain stage.
-
-  check       a raw judge step → (step with `refs`, [(field, error)]); account: the Creator it picks from
-  candidates  the referenced read results → [{id, type, thumb, description}], deduped, ≤MAX_CANDIDATES
-  messages    the judge call's messages (docs/prompts NEW-125)
-  picks       the model's reply → its first pick_n ids among the candidates; None when fewer remain
-  needs_you   the step's needs_you state; owner_pick: the owner's ids → an error sentence or None
-  card_rows   the judge's card rows; media_row: a send's media row when its media is a judge's picks
-"""
 from __future__ import annotations
 
 from typing import Any, Mapping
 
 from ultra_schema import JUDGE_KEYS as KEYS, MAX_PICK, MAX_QUESTION
 
-JUDGE = "judge"            # a judge step's kind (it has no tool)
-SOURCE = "vault_search"    # the one tool a judge's candidates come from
-SEND_ARG = "media_files"   # the one send arg that may be "$<judge>.ids"
-PICK_CARD = 6              # candidates a needs_you card shows; confirm needs pick_n ≤ this
+JUDGE = "judge"
+SOURCE = "vault_search"
+SEND_ARG = "media_files"
+PICK_CARD = 6
 MAX_SOURCES = 5
 MAX_CANDIDATES = 150
 MAX_DESC = 400
-PURPOSE = "ultra_judge"      # model, run spend cap + error texts: ultra_plan_decide (the planner's)
+PURPOSE = "ultra_judge"
 TOO_FEW = "the AI found fewer than {n} fitting media among the candidates"
 NO_ANSWER = "the AI pick failed (no usable answer)"
 
@@ -38,15 +21,12 @@ def is_judge(step: Mapping[str, Any]) -> bool:
 
 
 def account(judge: Mapping[str, Any], steps: Mapping[str, Mapping[str, Any]]) -> Any:
-    """The one Creator a judge picks from: its SOURCE steps' account_id (check makes them one literal id)."""
     refs = judge.get("refs") or ()
     return steps[refs[0]["step"]].get("args", {}).get("account_id") if refs else None
 
 
 def check(raw: Mapping[str, Any], sid: str, seen: Mapping[str, Mapping[str, Any]],
           pairs: list[tuple[str, str] | None]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
-    """`seen`: earlier step id → its checked step; `pairs`: each candidates value parsed by ultra_decide as
-    (step, path), None when it is no reference. Every source is an earlier SOURCE step; all on one account_id."""
     errors: list[tuple[str, str]] = []
     if extra := set(raw) - KEYS:
         errors.append(("step", f"a judge step is {{id, question, candidates, pick_n, confirm}}; not {sorted(extra)}"))
@@ -83,8 +63,6 @@ def check(raw: Mapping[str, Any], sid: str, seen: Mapping[str, Mapping[str, Any]
 
 
 def candidates(lists: list[Any]) -> list[dict[str, Any]]:
-    """Each referenced value (a read step's result list) → media rows, deduped by id, ≤MAX_CANDIDATES.
-    ValueError when a value is not a list."""
     out, ids = [], set()
     for rows in lists:
         if not isinstance(rows, list):
@@ -115,7 +93,6 @@ def messages(question: str, pick_n: int, cands: list[dict[str, Any]]) -> list[di
 
 
 def picks(parsed: Any, cands: list[dict[str, Any]], pick_n: int) -> list[int] | None:
-    """The reply's ids that are candidates (distinct, in its order), the first pick_n; None when fewer."""
     raw = parsed.get("media_ids") if isinstance(parsed, Mapping) else None
     known, out = {c["id"] for c in cands}, []
     for v in raw if isinstance(raw, list) else []:
@@ -126,7 +103,6 @@ def picks(parsed: Any, cands: list[dict[str, Any]], pick_n: int) -> list[int] | 
 
 
 def needs_you(step: Mapping[str, Any], cands: list[dict[str, Any]], ids: list[int]) -> dict[str, Any]:
-    """The state the owner answers: the AI's picks first, then other candidates, ≤PICK_CARD."""
     first = [c for c in cands if c["id"] in ids]
     shown = (first + [c for c in cands if c["id"] not in ids])[:PICK_CARD]
     return {"id": step["id"], "state": "needs_you", "question": step["question"], "pick_n": step["pick_n"],
@@ -134,7 +110,6 @@ def needs_you(step: Mapping[str, Any], cands: list[dict[str, Any]], ids: list[in
 
 
 def owner_pick(state: Mapping[str, Any], ids: Any) -> str | None:
-    """Why the owner's ids are refused (None: fine): exactly pick_n distinct ids from the shown candidates."""
     shown = {c["id"] for c in state.get("candidates", ())}
     if (not isinstance(ids, list) or any(isinstance(i, bool) or not isinstance(i, int) for i in ids)
             or len(set(ids)) != len(ids)):
@@ -166,7 +141,6 @@ def card_rows(step: Mapping[str, Any]) -> list[list[str]]:
 
 
 def media_row(judge: Mapping[str, Any]) -> list[list[str]]:
-    """A send's rows for media from a judge's picks (the count is the judge's pick_n, never a string's len)."""
     return [["Media", f"{judge['pick_n']} picked at run time from step {judge['id']} (candidates "
                       f"{_sources(judge)})"],
             ["Picked for", judge["question"]]]

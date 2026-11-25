@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""login_paste (ultra-mode ticket 11): the pasted-logins parser and the credential guard, as tables. Pure.
-
-Cases:
-  case_shared_table    — every row of fixtures/login_paste_cases.json (the table app/lib/loginPaste.test.ts
-                         checks too): parse's login count and bad lines by number + reason, holds_login.
-                         Separators, blank lines, duplicates (any case), each str.splitlines() boundary,
-                         over MAX_LOGINS, the guard's inline forms.
-  case_passwords       — parse's email + password (spaces around the separator dropped, the rest of the line
-                         kept); the relay only, so not in the shared table.
-  case_bad_never_text  — a bad line's report holds its number and reason, never its text.
-  case_fast_at_64kb    — crafted pastes at the route's 64 kB limit (remote_login_api.MAX_PASTE): parse and
-                         holds_login each under 0.2 s (the relay is one process; measured ~10 ms worst).
-
-Run: ./venv/bin/python service/tests/test_login_paste.py   (exit 0 = green)
-"""
-import _harness  # MUST be first (house style; this module touches no DB)
+import _harness  # MUST be first: binds temp DB
 
 import json  # noqa: E402
 import os  # noqa: E402
@@ -38,7 +23,6 @@ def case_shared_table() -> None:
 
 
 PASSWORDS = [
-    # text → [(line, email, password)]
     ("a@x.com:pw1", [(1, "a@x.com", "pw1")]),
     ("  a@x.com : pw 1  ", [(1, "a@x.com", "pw 1")]),
     ("a@x.com:p:w|1", [(1, "a@x.com", "p:w|1")]),
@@ -60,14 +44,14 @@ def case_bad_never_text() -> None:
     assert "secret" not in repr(bad), bad
 
 
-PASTE_LIMIT = 64 * 1024  # remote_login_api.MAX_PASTE (not imported: that pulls in the app)
+PASTE_LIMIT = 64 * 1024
 
 
 def _lines_of(unit: str) -> str:
     return "\n".join([unit] * (PASTE_LIMIT // (len(unit) + 1)))
 
 
-CRAFTED = [  # each a shape that made the earlier regexes backtrack (seconds at 64 kB)
+CRAFTED = [
     _lines_of("a@x.com:x" + " " * 500 + "x"),
     _lines_of("a@" + "x." * 254 + "x,"),
     _lines_of("a@x.com" + " " * 500 + "\u00a0x"),

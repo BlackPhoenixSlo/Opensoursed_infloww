@@ -1,18 +1,3 @@
-"""user_settings — one Settings blob per agency (owner) and Settings tab
-
-Backs `GET/PUT /admin/settings/{tab}` (service/settings_api.py, ADR-0007): the
-six Blob tabs of Settings each keep one whole JSON object per agency. One row
-per (user_id, tab); a PUT replaces `config_json` whole. Nothing reads these
-values yet (ADR-0008).
-
-`ON DELETE CASCADE` removes an agency's blobs with its `users` row.
-
-Nothing seeds this table; an absent row reads as `{}`.
-
-Revision ID: 0065_user_settings
-Revises: 0064_user_llm_keys
-Create Date: 2026-10-13
-"""
 from collections.abc import Sequence
 
 import sqlalchemy as sa

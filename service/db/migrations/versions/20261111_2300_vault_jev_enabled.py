@@ -1,14 +1,3 @@
-"""account_ai_config.vault_jev_enabled — per-account opt-in for the Jev v8 vault flags pass
-
-One nullable boolean (NULL ≡ off): when set, the describe/flags sweeps run TypeSafe Jev + NudeNet on each
-vault photo first (`service/vault_jev.py`) and store `ai_fields_json["_jev"]`. The relay DB never runs
-alembic; its additive-column catch-up (`db.engine.init_db`) adds this column too. Self-contained (no app
-import), inspector-guarded + idempotent.
-
-Revision ID: 0113_vault_jev_enabled
-Revises: 0112_mass_run_crawl_outcome
-Create Date: 2026-11-11
-"""
 from __future__ import annotations
 
 from typing import Sequence

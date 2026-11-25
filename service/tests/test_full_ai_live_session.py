@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_live_session — one Fan through a whole live session (04a ticket 82), OF faked.
-
-Written to the specs (04a › Interfaces + Contracts, 04b › Contracts, 05 › Interfaces + Contracts,
-06 › Saved scene), not to what main does today. Each case is one step on its own account (the
-earlier steps' rows seeded as the spec says they land), so one miss never cascades. A step whose
-owning ticket is not merged fails with `MISS (ticket N): ...`; every miss of a case is listed.
-
-  case_1_chat_reply          his DM -> pre-look -> text bubbles on OF; one row; full LAST_LOOK per bubble
-  case_2_sext_saved_scene    saved scene n1 opening -> sext Turn: scene n2 peak heat 3, Jev reads it
-  case_3_content_ask_ppv     "send me pics" -> sell_now: priced PPV on the last bubble, offer_message_id,
-                             vault_sends, priced `messages` row
-  case_4_purchase_settles    purchase notice (real poll_purchases) -> the rule's tick settles the row
-  case_5_next_turn_no_resell after the buy: a chat Turn (settled at Turn start, pending none, spend
-                             line in the Writer request), then his ask for more (no bought media re-offered)
-  case_6_complaint_free_item complaint after a buy -> make_right: Free item on OF unlocked, row price 0
-  case_7_human_of_app_yield  a human writes in the OF app -> pre-look Stop, no row, yield cooldown;
-                             his next DM inside the yield: nothing sent
-  case_8_off_switch          FULL_AI_CHAT_OFF on -> nothing sent, no row; flipped before bubble 2 -> cut
-
-OF faked at `ax._make_client` (`SessionOF` logs every call in order), Router / info Jev / Heat check
-/ Writers faked (`_full_ai_live_helpers.world`). Temp DB only; no paid call, no real OF call.
-
-Run: cd service && nice -n 10 ../venv/bin/python tests/test_full_ai_live_session.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 from _jev_fixtures import mapped  # noqa: E402
 
 _harness.bootstrap()
@@ -50,22 +26,19 @@ from db.engine import get_session  # noqa: E402
 from db.models import AiDecision, Message, VaultItem, VaultSend  # noqa: E402
 
 NOW = datetime.utcnow
-FAN = 8201                      # the one Fan; each step on its own Creator
+FAN = 8201
 PINNED = ("off_switch", "fans_list", "who_owns", "human_yield", "overtaken", "offer_valid")
 SLOT_TICKET = {"off_switch": 81, "fans_list": 81, "who_owns": 81, "human_yield": 81,
                "overtaken": 66, "offer_valid": 89}
 OFF = "FULL_AI_CHAT_OFF"
-# Sell steps: sell on, one photo per Offer, no Chat tease / price Jev (both would need more fakes).
 SELL = {"sell_on": True, "sext_scene": False, "chat_tease": False, "sell_bundle": "shoot",
         "sell_nearest": "off"}
 VAULT = {101: "$10", 202: "$50", 303: "$10"}
-BOUGHT = 101                    # step 3's PPV media (seeded for steps 4-6)
+BOUGHT = 101
 
 
-# ── Miss collector ────────────────────────────────────────────────────
 
 class Misses:
-    """Every failed expectation of a case, raised together at the end."""
 
     def __init__(self):
         self.items: list[str] = []
@@ -83,12 +56,8 @@ class Misses:
             raise AssertionError(" | ".join(self.items))
 
 
-# ── The faked OF client ───────────────────────────────────────────────
 
 class SessionOF(VaultOF):
-    """VaultOF logging every OF call in order: ("send", fan, text, price, media, previews),
-    ("get_messages", fan), ("unsend", id, fan), ("mark_chat_read", fan). `chat` = what a read of
-    his chat lists (the OF-app items)."""
 
     def __init__(self, chat=()):
         super().__init__()
@@ -125,9 +94,6 @@ def _short(calls) -> list:
 
 
 def expect_send(fan: int, part: dict) -> tuple:
-    """The OF call a bubble is, per spec: text -> send_message(fan, text); priced PPV ->
-    send_message(..., price=, media_files=locked+previews, previews=) (05 › send_priced); Free item ->
-    send_dropping_bad_media's send_message(..., media_files=) with no price."""
     ppv = part.get("ppv")
     if not ppv:
         return ("send", fan, part["text"], None, (), ())
@@ -137,12 +103,11 @@ def expect_send(fan: int, part: dict) -> tuple:
     return ("send", fan, part["text"], None, media, ())
 
 
-# ── The LAST_LOOK spy ─────────────────────────────────────────────────
 
 class Spy:
     def __init__(self):
-        self.events: list[tuple[str, int]] = []   # (check name, look.index), in call order
-        self.names: list[str] | None = None       # LAST_LOOK's names; None = no LAST_LOOK
+        self.events: list[tuple[str, int]] = []
+        self.names: list[str] | None = None
 
     def at(self, i: int) -> list[str]:
         return [n for n, ix in self.events if ix == i]
@@ -150,9 +115,6 @@ class Spy:
 
 @contextlib.contextmanager
 def last_look(m: Misses):
-    """Every Check of `full_ai_look.LAST_LOOK` wrapped to record (name, look.index) (the write gate's DB-only
-    re-look, `of_read` False, not recorded); the list is restored after. Records a MISS per missing seam /
-    slot / order."""
     spy = Spy()
     ll = getattr(full_ai_look, "LAST_LOOK", None)
     if not isinstance(ll, list):
@@ -182,7 +144,6 @@ def last_look(m: Misses):
 
 
 def look_passed(m: Misses, spy: Spy, sent_idx: list[int]) -> None:
-    """The pre-look (index -1, before bubble 0) and every sent bubble ran the FULL list, in order."""
     if spy.names is None:
         return
     m.need(spy.at(-1) == spy.names, 66, f"pre-look ran {spy.at(-1)}, not the full LAST_LOOK {spy.names}")
@@ -202,7 +163,6 @@ def bubble_senders(m: Misses, *, ppv: bool) -> None:
         m.need("ppv" in bs, 90, f"BUBBLE_SENDERS has no 'ppv' (has {sorted(bs)})")
 
 
-# ── Seeding ───────────────────────────────────────────────────────────
 
 DRESSED = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none", "explicitness": "sfw",
            "underwear_visible": True, "vulva_vis": "covered", "breasts_vis": "covered",
@@ -216,7 +176,6 @@ def _jev_fields(lane: str) -> dict:
 
 
 async def seed_vault(aid: str) -> None:
-    """The Creator's vault: VAULT media, each priced by its Jev lane (as _full_ai_sell_helpers._vault)."""
     t0 = datetime(2026, 7, 1)
     async with get_session() as s:
         for mid, lane in VAULT.items():
@@ -227,10 +186,6 @@ async def seed_vault(aid: str) -> None:
 
 async def prior_turn(aid: str, fan: int, his: int, out: int, *, ago: int = 5, scene: dict | None = None,
                      ppv: tuple[int, list[int]] | None = None, text: str = "mm ok") -> int:
-    """An earlier Turn as the live sender leaves it: his DM `his`, its `sent` live row, her bubble
-    `out` (automation_kind full_ai_chat). `ppv` = (cents, locked): the row carries the Offer with
-    `offer_message_id = out`, the bubble is priced, one vault_sends row per locked media
-    (05 › send_outcome SENT). Returns the row id."""
     at = NOW() - timedelta(minutes=ago)
     await _msg(aid, fan, his, "in", "hey", at)
     part: dict = {"text": text, "message_id": out}
@@ -265,7 +220,6 @@ async def prior_turn(aid: str, fan: int, his: int, out: int, *, ago: int = 5, sc
 
 
 class FeedClient:
-    """The purchases feed's client (as test_full_ai_settle_live._FakeClient): `get_json` only."""
 
     def __init__(self, items):
         self.items = items
@@ -279,8 +233,6 @@ _NID = iter(range(910_000_000, 999_999_999))
 
 
 async def buy(aid: str, fan: int, mid: int, cents: int) -> datetime:
-    """He buys PPV `mid`: OF's purchase notice through the real `poll_purchases` (is_paid flip,
-    purchase_notices row, vault_sends stamp). Returns the notice time."""
     at = (NOW() - timedelta(seconds=20)).replace(microsecond=0)
     n = {"id": next(_NID), "type": "paided_message", "subType": "subscriber_pay_for_chat_message",
          "createdAt": at.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
@@ -297,8 +249,6 @@ async def dm(aid: str, fan: int, mid: int, body: str, *, ago_s: int = 30) -> Non
 
 async def job(aid: str, fan: int, mid: int | None, of: SessionOF, *, jev=(QUIET, 1.0), writers=None,
               clear: bool = True):
-    """One live job (`full_ai_live.run`, the job body) for his DM `mid` (None: the rule's interval
-    tick). Returns (result, FakeJev, FakeWriterHTTP). `clear` ends the 10 s cooldown after."""
     rid = await full_ai_live.live_rule(aid)
     payload = ({"only_fan_ids": [fan], "anchor": mid, "_rule_id": rid, "tries": 0} if mid is not None
                else {"_rule_id": rid})
@@ -333,12 +283,8 @@ async def vault_sends(aid: str, fan: int, message_id: int) -> list[VaultSend]:
             VaultSend.account_id == aid, VaultSend.fan_id == fan, VaultSend.message_id == message_id))).scalars())
 
 
-# ── Shared Turn checks ────────────────────────────────────────────────
 
 def check_of_calls(m: Misses, of: SessionOF, fan: int, parts: list[dict]) -> None:
-    """The OF call list in order: one get_messages (the OF-app read) at the pre-look and again just
-    before the first bubble and before a `ppv` bubble, one send per bubble as `expect_send`, then
-    one mark_chat_read."""
     reads = of.read_calls()
     shape = [c[0] for c in of.calls if c[0] in ("get_messages", "send")]
     want_shape = ["get_messages"] + [k for i, p in enumerate(parts)
@@ -357,7 +303,6 @@ def check_of_calls(m: Misses, of: SessionOF, fan: int, parts: list[dict]) -> Non
             m.need(w in got, 90, f"no {kind} on OF for bubble {i}: want {_short([w])}; sends {_short(got)}")
     if text_got == text_want and all(w in got for w in want):
         m.need(got == want, None, f"OF sends out of order: {_short(got)} != {_short(want)}")
-    # A landed Turn clears his unread badge once, after its last send (plan › Switches, ticket 71).
     other = [c for c in of.calls if c[0] not in ("get_messages", "send")]
     read = [("mark_chat_read", fan)] if got else []
     m.need(other == read and of.calls[-len(read):] == read if read else not other, 71,
@@ -368,9 +313,6 @@ def check_of_calls(m: Misses, of: SessionOF, fan: int, parts: list[dict]) -> Non
 
 
 async def check_turn(m: Misses, spy: Spy, of: SessionOF, aid: str, fan: int, mid: int, *, route: str):
-    """One sent Turn: exactly one row, its route, the OF call list, status sent with no cut, the
-    full LAST_LOOK before every landed bubble, one full_ai_chat `messages` row per landed bubble.
-    Returns (row, reply_json, parts) or None."""
     rows = await rows_of(aid, fan, mid)
     m.need(len(rows) == 1, None, f"want exactly one ai_decisions row for the Turn, got {len(rows)}")
     if not rows:
@@ -401,8 +343,6 @@ def offer_media(r: AiDecision) -> list[int]:
 
 
 async def check_ppv_landed(m: Misses, r: AiDecision, parts: list[dict], of: SessionOF, aid: str, fan: int) -> None:
-    """05 › send_outcome SENT: offer_message_id = the PPV's OF id; one vault_sends row per locked
-    media at the Offer's price, was_purchased NULL; the `messages` row priced, kind full_ai_chat."""
     last = parts[-1] if parts else {}
     ppv = last.get("ppv")
     if not m.need(ppv is not None, None, "setup: the Turn's last bubble carries no ppv"):
@@ -423,7 +363,6 @@ async def check_ppv_landed(m: Misses, r: AiDecision, parts: list[dict], of: Sess
            f"PPV messages row {getattr(got, 'automation_kind', None)} {getattr(got, 'price_cents', None)}")
 
 
-# ── Steps ─────────────────────────────────────────────────────────────
 
 async def case_1_chat_reply():
     m, aid, mid = Misses(), "fa_sess_1", 8211
@@ -503,8 +442,6 @@ async def case_5_next_turn_no_resell():
     await seed_vault(aid)
     rid = await prior_turn(aid, FAN, 8251, 8252, ppv=(1000, [BOUGHT]), text="just for u")
     await buy(aid, FAN, 8252, 1000)
-    # 5a: his next line, a plain chat Turn (the spend line rides only a Turn with no Pick,
-    # full_ai_writers.messages_for "No spend line beside a Pick").
     await dm(aid, FAN, mid, "omg that was so hot", ago_s=60)
     of = SessionOF()
     with last_look(m) as spy:
@@ -516,15 +453,14 @@ async def case_5_next_turn_no_resell():
     if got:
         r, _rj, _parts = got
         st = json.loads(r.jev_json or "{}").get("state") or {}
-        if settled:     # an unsettled Offer still reads open: already reported under 90
+        if settled:
             m.need(st.get("pending_offer") == "none", 90, f"pending_offer after the buy {st.get('pending_offer')!r}")
         lp = str(st.get("last_purchase"))
         m.need(any(w in lp for w in ("second", "minute", "hour", "just")), 90, f"last_purchase {lp!r}")
         m.need(r.offer_price_cents is None and not offer_media(r), None, f"a chat Turn carries an Offer: {offer_media(r)}")
     w = json.dumps([x["body"]["messages"] for x in fw.requests if x["host"] == NANO])
     m.need("unlocked 1 PPV" in w, 88, "no spend line ('unlocked 1 PPV') in the Writer request")
-    # 5b: he asks for more: a new Offer, never the media he bought.
-    await dm(aid, FAN, mid2, "send me more", ago_s=0)   # after her 5a bubbles
+    await dm(aid, FAN, mid2, "send me more", ago_s=0)
     of2 = SessionOF()
     with last_look(m) as spy2:
         await job(aid, FAN, mid2, of2, jev=({**QUIET, "wants_content": 0.9}, 1.0))
@@ -544,7 +480,7 @@ async def case_6_complaint_free_item():
     await seed_vault(aid)
     rid = await prior_turn(aid, FAN, 8261, 8262, ppv=(1000, [BOUGHT]), text="just for u")
     at = await buy(aid, FAN, 8262, 1000)
-    async with get_session() as s:      # step 4's end state: the Offer row settled
+    async with get_session() as s:
         await s.execute(update(AiDecision).where(AiDecision.id == rid).values(
             outcome="bought", outcome_at=at, join_src="notice"))
     await dm(aid, FAN, mid, "wtf that pic was so blurry, i want my money back")
@@ -585,7 +521,6 @@ async def case_7_human_of_app_yield():
     until = getattr(f, "automation_paused_until", None)
     m.need(until is not None and until >= NOW() + timedelta(seconds=30), 81,
            f"no Human yield cooldown (paused_until {until}; default yield 60 s from her send)")
-    # His next DM inside the yield: nothing goes out, no row.
     await dm(aid, FAN, mid2, "hello??", ago_s=2)
     of2 = SessionOF()
     res2, _j, _f = await job(aid, FAN, mid2, of2, clear=False)
@@ -597,7 +532,6 @@ async def case_7_human_of_app_yield():
 
 async def case_8_off_switch():
     m = Misses()
-    # A: the switch is on when his DM's job runs.
     aid, mid = "fa_sess_8a", 8281
     await seed_live(aid, {})
     await prior_turn(aid, FAN, 8279, 8280)
@@ -615,10 +549,8 @@ async def case_8_off_switch():
     m.need(not jevs.calls, 81, f"switch on: the Router ran ({len(jevs.calls)})")
     m.need(not await rows_of(aid, FAN, mid), 81, "switch on: a stood-down pre-look wrote a row")
     if spy.names is not None and "off_switch" in spy.names:
-        # W30 F14: the job reads the switch before anything else (no photo read): no pre-look runs.
         m.need(spy.at(-1) == [], 66, f"switch on: pre-look ran {spy.at(-1)} (switch read first)")
 
-    # B: flipped on after bubble 1 landed, before bubble 2's last look (spec: hold -> rate turn -> look).
     aid, mid = "fa_sess_8b", 8285
     await seed_live(aid, {})
     await prior_turn(aid, FAN, 8283, 8284)
@@ -627,9 +559,6 @@ async def case_8_off_switch():
     real_turn, turns = dm_rate.turn, []
 
     async def turn(account_id, **kw):
-        # Per bubble: the loop's turn, then `of_write_paced(dm=True)`'s (passes at once). The 3rd call
-        # is bubble 1's loop turn, before its look (a flip at the 2nd lands during bubble 0's write
-        # wait, which `_gate` now stops: W30 F2).
         turns.append(account_id)
         if len(turns) == 3:
             await runtime_switches.set_override(OFF, True, by="test")

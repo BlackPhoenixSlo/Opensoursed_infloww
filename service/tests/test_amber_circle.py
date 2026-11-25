@@ -1,56 +1,4 @@
 #!/usr/bin/env python3
-"""The Amber circle (creator-badges phase 0F), the Relay half: the guarded Owe reply fold over the held page-0 window
-against Phase C's real Unread set (`badge_reads._sets`, built by `badge_reads_decide.replace_set`), and its publish on
-Phase B's badge path (`values.unread_total.amber` / `amber_at`, `shared_refresher.note_values` captured), driven
-through `events.handle_event` frames, `badge_reads.tick()` and the real routes, OF a fake wire counting every call.
-
-  case_incomplete_set_guard: an incomplete latest set naming F, F's held row read and Fan-last -> F not amber; G,
-                             unnamed, with an unread row -> not amber (blue); H read and Fan-last, unnamed -> amber.
-  case_read_elsewhere_moves_red_to_amber: a Phase C flip `chat_read_changed {F, 0}` on a Fan-last row -> amber +1 in
-                             the read that flipped it (one Attribution call, no window read), red -1, F out of the
-                             Unread set; our own mark read of unread K -> amber +1 before the route's bust, kept after.
-  case_mute_drops_amber:     the mute route on owed M -> amber -1; on unread F -> no publish (never +1).
-  case_restrict_moves_amber_and_r: restrict owed M -> amber -1, red unchanged; restrict unread F -> R +1, red -1;
-                             unrestrict each -> back; all at the route, 0 OF reads.
-  case_restrict_badge_reads_off: no Unread set held -> R from the held window, the same moves at the route.
-  case_lift_restores_amber_no_window_read: restrict owed M -> amber -1, the held window kept with M's row restricted
-                             (`canSendMessage` false, reason "muted"); lift -> amber +1, the row sendable again; no
-                             window read between, 0 OF reads.
-  case_amber_unknown_until_window: no window since restart -> `amber` null; a held window -> its count, `amber_at`
-                             its fetched-at stamp; dropped -> kept; an hour old with no read since -> still its count
-                             (a stale Creator greys red instead).
-  case_unchanged_amber_publishes_nothing: a DM to an already-unread Fan, then a window read with the same rows -> no
-                             publish, Badge version unchanged.
-  case_echo_clears_amber_no_call: a Creator echo (`chatUserId` F) for owed F -> amber -1 at receipt, 0 OF calls;
-                             another owed Fan's echo 3 s later -> -1 again; an echo for unread M -> never amber on a
-                             later refresh.
-  case_dm_moves_amber_to_red: an inbound DM from owed F (hooks, then the transcode) -> amber -1, red +1, 0 OF calls.
-  case_late_window_keeps_echo: a window read asked before an echo for F, landing after it with F Fan-last -> F not
-                             amber, published or in the route's fold.
-  case_late_window_keeps_dm: the same with a DM from F -> F not amber.
-  case_echo_keeps_debounced_bust: echo for F -> amber -1; an `Outbound` echo -> the existing bust drops `list_chats`
-                             and `roster_count`, amber kept (not null); a second inside 20 s -> no second bust.
-  case_route_matches_after_echo: a cached roster-counts answer, then an echo for an owed Fan -> the warm answer, the
-                             last-known count and the held fold give the published amber, 0 OF calls.
-  case_no_fan_in_both:       DM, an Attribution set replace, our mark read (checked while in flight), an echo: at
-                             every step no Fan the window counts amber is in the Unread set, and amber = that count.
-  case_badge_reads_off_amber_still_moves: BADGE_READS=off -> an echo, a DM, our mark read and mark unread each move
-                             amber; counter frames and ticks issue no badge read (0 OF reads).
-  case_badge_reads_lean_amber_moves: BADGE_READS=lean -> the same moves; a counter frame's read waits out the 15 s
-                             lean gap (none at 5 s).
-  case_queue_finish_rereads_once: through `event_transcoder.transcode` with real `chat_queue_*` frames and the loop
-                             driven by `badge_reads.tick()`: finish total 23 -> one page-0 window read (3 calls on the
-                             wire, `walk:badge_queue`), one exact `kind=queue` line; the same frame again or total 4
-                             -> none; `BADGE_READS=off`, no Open tab, Dead session, proxy down, 429 exit hold -> none;
-                             `lean` -> a second finish waits its 15 s gap; a finish 1 s after an Attribution start ->
-                             waits the rest of the gap (queued, no Attribution re-ask), then one read; two finishes
-                             inside the gap -> one read, then one follow-up; an Attribution ask and a finish together
-                             -> the Attribution read first.
-  case_mass_clears_amber:    owed Fans in the held window; the mass's re-read lands with them Creator-last -> the
-                             published amber falls to 0 in that read; the route's `owe_reply` too, at 0 calls.
-
-Run:  ./venv/bin/python service/tests/test_amber_circle.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402  (first: temp DB)
 
@@ -166,7 +114,6 @@ class _Resp:
 
 
 class _Wire:
-    """OF: `GET /chats?filter=unread` pages `unread`, `GET /chats` (no filter) pages `window`; `calls` logs each."""
     def __init__(self, unread=(), window=()):
         self.unread, self.window = list(unread), list(window)
         self.calls: list = []
@@ -188,7 +135,6 @@ class _Wire:
 
 
 class _Writer:
-    """OF's read-state writes (mark read / unread, mute): each answers `{}`; `calls` logs them."""
     def __init__(self):
         self.calls: list = []
 
@@ -213,8 +159,6 @@ class _Clock:
 
 @contextlib.contextmanager
 def _world(wire: _Wire, badge_reads_mode: str | None = None):
-    """Knobs on (`BADGE_READS` unset, or `badge_reads_mode`; modules reloaded: a restart), A's client on `wire`, A an Open tab with its Live connection up, the
-    Relay clock fake; yields (clock, the Creators `note_values` was poked for)."""
     saved_env = {k: os.environ.get(k) for k in ("SHARED_REFRESHER", "UNREAD_TOTAL", "BADGE_READS")}
     os.environ.update(SHARED_REFRESHER="1", UNREAD_TOTAL="1")
     os.environ.pop("BADGE_READS", None)
@@ -266,7 +210,6 @@ def _routes(writer: _Writer, clock: _Clock):
 
 
 async def _land_window(rows: list) -> None:
-    """A page-0 window read landing (held, stamped now, folded by roster-counts): 0 OF calls."""
     relay_cache.invalidate("list_chats", A)
     await relay_cache.get_or_fetch("list_chats", A, _ROSTER_WINDOW_KEY, ttl_seconds=600,
                                    fetcher=lambda: {"list": rows, "hasMore": False, "asked_at": unread_total._clock(),
@@ -477,7 +420,6 @@ def _quiet_hooks():
 
 
 async def _deliver(event: dict, clock: _Clock) -> None:
-    """One frame as the pump takes it, 1 ms after the last: the hooks at receipt, then the persist worker's transcode."""
     clock.t += 1
     time.sleep(0.002)
     with _quiet_hooks():
@@ -520,7 +462,6 @@ async def case_dm_moves_amber_to_red():
 
 
 def _late(wire: _Wire, event: dict, clock: _Clock) -> None:
-    """`event` arrives while the wire answers the next page-0 window read (asked before it, landing after it)."""
     loop, answer = asyncio.get_running_loop(), wire._answer
 
     def _during(method, url):
@@ -635,7 +576,6 @@ async def case_no_fan_in_both():
 
 
 async def _amber_moves(clock: _Clock) -> None:
-    """Echo F, DM K, our mark read of M, our mark unread of G: amber 3 -> 2 -> 1 -> 2 -> 1."""
     me_last = {**_row(F), "lastMessage": {**_row(F)["lastMessage"], "fromUser": {"id": int(A)}}}
     await _land_window([_row(F), _row(K), _row(M, unread=1), _row(G)])
     assert _slot()["amber"] == 3, _slot()
@@ -691,7 +631,6 @@ def _wrow(fan: int, fan_last: bool) -> dict:
 
 
 class _QWire:
-    """OF: `GET /chats` pages `window` (the page-0 window read); anything else fails the case."""
     def __init__(self, window: list):
         self.window, self.calls = window, []
 
@@ -700,7 +639,7 @@ class _QWire:
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         assert method == "GET" and u.path == CHATS and "filter" not in q, (method, url)
         self.calls.append(q)
-        off, lim = int(q["offset"]), min(int(q["limit"]), 10)     # OF answers at most 10 rows a page
+        off, lim = int(q["offset"]), min(int(q["limit"]), 10)
         return _Resp(url, {"list": self.window[off:off + lim], "hasMore": off + lim < len(self.window)})
 
     def get(self, url, headers=None, timeout=None):
@@ -727,9 +666,6 @@ _PROXY_DOWN: set = set()
 
 @contextlib.contextmanager
 def _qworld(wire: _QWire, knob: str | None = None, tabs=frozenset({QA})):
-    """Both Knobs on, `BADGE_READS` = `knob`, modules reloaded (a restart), QA's client on `wire`, `tabs` the Open-tab
-    Creators, the Relay clock fake, the Live connection up; `_DEAD` / `_PROXY_DOWN` / `_HELD` (exit hold seconds)
-    drive eligibility; yields (clock, `badge_read` log lines)."""
     saved_env = {k: os.environ.get(k) for k in ("SHARED_REFRESHER", "UNREAD_TOTAL", "BADGE_READS")}
     os.environ.update({"SHARED_REFRESHER": "1", "UNREAD_TOTAL": "1"})
     if knob is None:
@@ -801,7 +737,7 @@ def _queue_calls() -> int:
 
 
 WINDOW = [_wrow(5000 + i, fan_last=False) for i in range(25)]
-READS = 3   # the 25-row window in OF's 10-row pages
+READS = 3
 
 
 async def case_queue_finish_rereads_once():
@@ -814,13 +750,12 @@ async def case_queue_finish_rereads_once():
         assert _queue_calls() - before == READS, "of_call_stats counts it as walk:badge_queue"
         assert lines == [f"badge_read account={QA} kind=queue calls=3 rows=25 counter=- complete=- mismatch=- "
                          "flips=- restricted=-"], lines
-        await _finish(1)                                       # OF re-sends the finish
-        await _finish(2, total=4)                              # a hand-send
+        await _finish(1)
+        await _finish(2, total=4)
         await _finish(3, total=23, isCanceled=True)
         await _tick_at(clock, t + 60_000)
         assert len(wire.calls) == READS and len(lines) == 1, (wire.calls, lines)
 
-    # [case, make it ineligible, knob, reads once it clears: a hold waits, the others drop the ask]
     for name, setup, knob, after in (
         ("off", lambda tabs: None, "off", 0),
         ("no Open tab", lambda tabs: tabs.discard(QA), None, 0),
@@ -842,7 +777,7 @@ async def case_queue_finish_rereads_once():
             await _tick_at(clock, clock.t + 6000)
             assert len(wire.calls) == after, (name, "once it clears", wire.calls)
 
-    wire = _QWire(WINDOW[:12])                                   # a short window: 2 pages
+    wire = _QWire(WINDOW[:12])
     with _qworld(wire, knob="lean") as (clock, lines):
         t = clock.t
         await _finish(1)
@@ -886,7 +821,7 @@ async def case_queue_finish_rereads_once():
     with _qworld(wire) as (clock, lines):
         t = clock.t
         with badge_reads._lock:
-            badge_reads._gates[QA] = badge_reads_decide.Gate(pending=True)     # an Attribution ask waiting
+            badge_reads._gates[QA] = badge_reads_decide.Gate(pending=True)
         await _finish(1)
         orig_read = badge_reads._read
         kinds: list = []

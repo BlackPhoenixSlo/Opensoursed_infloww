@@ -1,73 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_shadow — Full AI Chat in Shadow mode, through the inbound path.
-
-`webhook_dispatch.on_inbound_message(account, fan, message_id)` then
-`automation_executor.run_once(account, "full_ai_chat")` on the _harness temp
-DB, Jev faked at `_router_jev._client` (`FakeJev`), `TYPESAFE_API_KEY` a fake
-value (shared fixtures: `_full_ai_fixtures`). Assertions are on DB rows, run
-summaries, the Jev request and log lines. The Route table on this path is
-test_full_ai_routes.py.
-
-  case_rule_off_no_job                    rule off: no `full_ai_chat` job
-  case_rule_on_gate_off_one_job           one job {only_fan_ids, anchor, _rule_id}
-  case_rule_on_gate_on_w7_unchanged       W7's own job as with the rule off, plus ours
-  case_kill_switch_no_job                 W7_WEBHOOK_DISPATCH_DISABLED: no job
-  case_hook_failure_keeps_w7              `full_ai_hook_failed`, W7's job still queued
-  case_dispatch_failure_still_runs_hook   W7's dispatch raises: `w7_dispatch_failed`,
-                                          the hook still runs once and queues its job
-  case_dispatch_then_hook_in_order        dispatch, then the hook; a DM buys no backfill
-  case_pending_job_wake_only              a pending job names the Fan: wake only
-  case_late_older_dm_own_job              a DM older than the pending job's anchor,
-                                          her outbound between: its own job, two rows
-  case_unanchored_pending_job_no_fold     a pending job with no anchor: the DM still
-                                          gets its own job
-  case_one_run_one_row                    one run_once: one Decision row, its stats,
-                                          its log line and the one Jev request
-  case_lane_reply_between_two_turns       A, another Lane's outbound, B: one job, two
-                                          rows, each reading only up to its Anchor
-  case_burst_one_row                      three DMs, one run: one row at the third
-  case_dm_after_decision_new_turn         a later DM: a second row, the first untouched
-  case_lane_reply_after_anchor_unread     an outbound after the Anchor is not read
-  case_rerun_decided_anchor_duplicate_turn  no row, no Jev call, `duplicate_turn`
-  case_race_lost_counts_duplicate         a Turn a racing job wrote: a duplicate
-  case_crash_retry_redoes_only_undecided  the write crashes on Turn 2 of 3: error run,
-                                          one row; the retry asks Jev twice, the first
-                                          row kept
-  case_catchup_capped                     three Turns, cap 2: the oldest two decided, `capped` 1
-  case_anchor_missing                     no row, the summary says `anchor_missing`
-  case_rule_off_drops_queued_job          rule Off with a job queued: dropped at claim
-  case_same_fan_two_creators              one row per Creator, each its own chat
-  case_unanchored_is_a_noop               empty payload, interval job: ok, `unanchored`
-  case_photo_dm_reads_media_only          `on_inbound_image` photo DM: one row, his Turn
-                                          `[sent a photo or video]`
-  case_giphy_dm_reads_gif_only            `on_inbound_image` Giphy DM: one row, `[sent a GIF]`
-  case_state_shape                        exactly the probe's state: 12 lines with `when`
-                                          and `ppv`, her last line, last purchase and
-                                          Pending offer, read at or before the Anchor
-  case_cut_runs                           the Turn cut over plain rows: no outbound,
-                                          a split, a trailing outbound, a starting cut
-  case_build_state_plain_rows_match_db    `build_state` on SimpleNamespace rows equals
-                                          the DB path's state for the same thread
-  case_pending_offer                      a funnel's, a human's and an old priced unbought
-                                          outbound read as the Pending offer
-  case_pending_offer_none                 bought, purchased or unsent: "none"
-  case_last_purchase                      the probe's wording within 7 days; past them,
-                                          after the Anchor or none: "none in the last 7 days"
-  case_no_send_a_import_scan              the shadow modules name no send path
-  case_no_send_b_raising_patches          OF client, wire call, lease, cooldown raise:
-                                          still two rows (hook wake-only path and a
-                                          two-Turn catch-up) and an ok run, no hit,
-                                          no other table moves
-  case_no_send_c_mutant_is_caught         a runner calling `_make_client` fails (a) and (b)
-  case_no_send_c_swallowed_call_is_caught a `_make_client` call inside `_router_jev.ask`'s
-                                          try (its error swallowed) is still a hit,
-                                          one per Turn
-
-Run: ./venv/bin/python service/tests/test_full_ai_shadow.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -129,7 +63,6 @@ async def _jobs(aid: str, kind: str | None = None) -> list[ScheduledJob]:
 
 
 def _w7(jobs: list[ScheduledJob]) -> list[tuple[str, dict]]:
-    """W7's own jobs, minus the per-account rule id they carry."""
     out = []
     for j in jobs:
         if j.kind == KIND:
@@ -140,7 +73,6 @@ def _w7(jobs: list[ScheduledJob]) -> list[tuple[str, dict]]:
     return out
 
 
-# ── The hook ──────────────────────────────────────────────────────────
 
 async def case_rule_off_no_job():
     for aid, gate in (("fa_off_g0", False), ("fa_off_g1", True)):
@@ -210,7 +142,6 @@ async def case_hook_failure_keeps_w7():
 
 @contextlib.contextmanager
 def _patched(**names):
-    """Module attributes of webhook_dispatch swapped for the block."""
     saved = {n: getattr(wd, n) for n in names}
     for n, v in names.items():
         setattr(wd, n, v)
@@ -222,9 +153,6 @@ def _patched(**names):
 
 
 async def case_dispatch_failure_still_runs_hook():
-    """W7's dispatch raising does not mute Full AI: `w7_dispatch_failed`, the
-    real hook still awaited once and its job queued, no history backfill, and
-    nothing escapes."""
     aid, fan = "fa_dispfail", 19
     await _seed(aid, rule=True, gate=True)
     await _msg(aid, fan, 851, "in", "hello", T0)
@@ -241,7 +169,7 @@ async def case_dispatch_failure_still_runs_hook():
         scraped.append(a)
     with _patched(_dispatch_inbound=_boom, _full_ai_hook=_hook, enqueue_fan_scrape=_scrape), \
             _logs("of-relay.webhook_dispatch") as lines:
-        await wd.on_inbound_message(aid, fan, 851)     # raises nothing
+        await wd.on_inbound_message(aid, fan, 851)
     assert hooked == [(aid, fan, 851)], hooked
     assert scraped == [], scraped
     assert [j.kind for j in await _jobs(aid)] == [KIND], [j.kind for j in await _jobs(aid)]
@@ -249,8 +177,6 @@ async def case_dispatch_failure_still_runs_hook():
 
 
 async def case_dispatch_then_hook_in_order():
-    """The happy path: W7's dispatch, then the hook; no backfill even if the old
-    dispatch contract said deferred (True)."""
     calls: list[str] = []
 
     async def _dispatch(*_a):
@@ -268,7 +194,6 @@ async def case_dispatch_then_hook_in_order():
 
 
 async def case_pending_job_wake_only():
-    """A pending job naming the Fan: a second DM enqueues nothing, only wakes."""
     aid, fan = "fa_dedup", 16
     rid = await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 2001, "hey", T0)
@@ -286,9 +211,6 @@ async def case_pending_job_wake_only():
 
 
 async def case_late_older_dm_own_job():
-    """B lands late (WS replay) and older, behind a pending job anchored at A
-    with her outbound between them: the job's walk starts after that outbound,
-    so B gets its own job, and both Turns get a row."""
     aid, fan = "fa_late", 17
     await _seed(aid, rule=True, gate=False)
     await _msg(aid, fan, 2051, "out", "hey you", T0 + timedelta(minutes=5),
@@ -305,8 +227,6 @@ async def case_late_older_dm_own_job():
 
 
 async def case_unanchored_pending_job_no_fold():
-    """A pending job naming the Fan with no anchor (keyed `only_fan_ids`,
-    `fan_id` or `test_fan`) decides nothing, so a DM still gets its own job."""
     for i, key in enumerate(("only_fan_ids", "fan_id", "test_fan")):
         aid, fan = f"fa_unfold_{i}", 18
         rid = await _seed(aid, rule=True, gate=False)
@@ -316,20 +236,16 @@ async def case_unanchored_pending_job_no_fold():
         assert [json.loads(j.payload_json).get("anchor") for j in await _jobs(aid, KIND)] == [None, 2061], key
 
 
-# ── One run, one row ──────────────────────────────────────────────────
 
-LONG = "so i was thinking about what you said earlier " * 20       # > 600 chars: untruncated
+LONG = "so i was thinking about what you said earlier " * 20
 
 
 async def _chat(aid: str, fan: int) -> tuple[list[dict], int, datetime]:
-    """14 lines before his Turn (her last), then his Turn of two DMs.
-    Returns the 12 thread lines Jev must read, the Anchor id and time."""
     lines = []
     for i in range(14):
         d = "out" if i % 2 else "in"
         body = f"<p>line {i} &amp; more</p>"
         await _msg(aid, fan, 1000 + i, d, body, T0 + timedelta(minutes=i))
-        # Line i is 20 - i minutes before his Turn: under 10 reads "minutes before".
         lines.append({"from": "her" if d == "out" else "fan", "text": f"line {i} & more",
                       "when": "minutes before" if i >= 11 else "within the last two hours"})
     await _msg(aid, fan, 1100, "in", "hey are you there", T0 + timedelta(minutes=20))
@@ -348,7 +264,6 @@ async def case_one_run_one_row():
         res = await run_once(aid, KIND)
     assert res["status"] == "ok", res
 
-    # The one Jev request: every Router question and the Score, on the pin.
     assert len(fake.calls) == 1, fake.calls
     call = fake.calls[0]
     assert call["model"] == "jev-1.14.0", call["model"]
@@ -369,7 +284,7 @@ async def case_one_run_one_row():
     assert got == {
         "fan_id": fan, "mode": "shadow", "trigger_kind": "inbound", "trigger_key": str(anchor),
         "anchor_message_id": anchor, "anchor_created_at": anchor_at, "route": "chat",
-        "route_row": "otherwise", "heat": 4, "status": "planned",      # 2.7 -> level 3, + 1
+        "route_row": "otherwise", "heat": 4, "status": "planned",
         "question_version": rj.QUESTION_VERSION, "router_model": "jev-1.14.0",
         "writer_model": None, "jev_error": None,
         "arm": full_ai_decide.arm_of(aid, fan), "salt_ver": 1}, got
@@ -389,16 +304,12 @@ async def case_one_run_one_row():
     assert await _jobs(aid, KIND) == []
 
 
-# ── Turn catch-up ─────────────────────────────────────────────────────
 
 def _lines(st: dict) -> list[tuple[str, str]]:
-    """The thread as (from, text): what each line says and who said it."""
     return [(l["from"], l["text"]) for l in st["thread"]]
 
 
 async def case_lane_reply_between_two_turns():
-    """Inbound A, another Lane's outbound, inbound B before the claim: one job,
-    then one run writing two rows, A's then B's."""
     aid, fan = "fa_ab", 51
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 2101, "are you real", T0)
@@ -422,7 +333,6 @@ async def case_lane_reply_between_two_turns():
 
 
 async def case_burst_one_row():
-    """A burst of three DMs, then one run: one row anchored at the third."""
     aid, fan = "fa_burst", 52
     await _seed(aid, rule=True, gate=False)
     for i, body in enumerate(("hey", "u up?", "miss u")):
@@ -442,8 +352,6 @@ def _cols(r: AiDecision) -> dict:
 
 
 async def case_dm_after_decision_new_turn():
-    """A DM after the decision, no outbound between: a second row anchored at it
-    whose Turn holds the earlier DM too; the first row is never touched."""
     aid, fan = "fa_after", 53
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 2301, "hi there", T0)
@@ -462,8 +370,6 @@ async def case_dm_after_decision_new_turn():
 
 
 async def case_lane_reply_after_anchor_unread():
-    """Another Lane's outbound after the Anchor, before the run: the row reads
-    only up to its Anchor."""
     aid, fan = "fa_lateout", 54
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 2401, "what are you doing", T0)
@@ -479,7 +385,6 @@ async def case_lane_reply_after_anchor_unread():
 
 
 async def case_rerun_decided_anchor_duplicate_turn():
-    """A re-run on a decided Anchor (the DM re-delivered): no row, no Jev call."""
     aid, fan = "fa_rerun", 55
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 2501, "hey", T0)
@@ -495,8 +400,6 @@ async def case_rerun_decided_anchor_duplicate_turn():
 
 
 async def case_race_lost_counts_duplicate():
-    """A row lost to a racing job (it wrote the Turn while Jev was asked): no
-    second row, counted as a duplicate."""
     aid, fan = "fa_race", 56
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 2601, "hey", T0)
@@ -516,8 +419,6 @@ async def case_race_lost_counts_duplicate():
 
 
 async def case_crash_retry_redoes_only_undecided():
-    """Three Turns in one job, the write step crashing on the second: an error
-    run with one row; the retry asks Jev only for the two Turns still without a row."""
     aid, fan = "fa_retry", 60
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 3001, "one", T0)
@@ -543,7 +444,7 @@ async def case_crash_retry_redoes_only_undecided():
     assert len(fake.calls) == 2, fake.calls
     (first,) = await _rows(aid)
     before = _cols(first)
-    async with get_session() as s:                      # the retry's backoff, elapsed
+    async with get_session() as s:
         j = await s.get(ScheduledJob, job.id)
         assert j.status == "pending", j.status
         j.run_at = datetime.utcnow() - timedelta(seconds=1)
@@ -557,7 +458,6 @@ async def case_crash_retry_redoes_only_undecided():
 
 
 async def case_catchup_capped():
-    """F21: three undecided Turns, `CATCHUP_CAP` 2: two Jev calls, the oldest two rows, `capped` 1."""
     aid, fan = "fa_cap", 61
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 3101, "one", T0)
@@ -577,7 +477,6 @@ async def case_catchup_capped():
 
 
 async def case_anchor_missing():
-    """An anchor not in `messages`: no row, no Jev call, the summary says why."""
     aid, fan = "fa_missing", 57
     rid = await _seed(aid, rule=True, gate=False)
     await ax.enqueue_job(aid, KIND, payload={"only_fan_ids": [fan], "anchor": 999999, "_rule_id": rid})
@@ -590,7 +489,6 @@ async def case_anchor_missing():
 
 
 async def case_rule_off_drops_queued_job():
-    """Rule switched Off with a job queued: the job is dropped at claim, no row."""
     aid, fan = "fa_dropoff", 58
     rid = await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 2801, "hey", T0)
@@ -607,8 +505,6 @@ async def case_rule_off_drops_queued_job():
 
 
 async def case_same_fan_two_creators():
-    """The same Fan id on two enabled Creators: one row per Creator, each
-    reading its own chat."""
     fan = 59
     for aid, body in (("fa_two_a", "hi from a"), ("fa_two_b", "hi from b")):
         await _seed(aid, rule=True, gate=False)
@@ -624,8 +520,6 @@ async def case_same_fan_two_creators():
 
 
 async def case_unanchored_is_a_noop():
-    """No anchor (an empty payload, and the rule's materialized interval job):
-    no Jev call, no row, an ok run whose summary says `unanchored`."""
     aid = "fa_unanch"
     rid = await _seed(aid, rule=True, gate=False)
     fake = FakeJev()
@@ -643,12 +537,8 @@ async def case_unanchored_is_a_noop():
     assert fake.calls == [] and await _rows(aid) == []
 
 
-# ── What the Router reads ─────────────────────────────────────────────
 
 async def _media_dm(aid: str, fan: int, mid: int, at: datetime, *, gif: bool) -> None:
-    """His media DM lands with no body and reaches the hook through
-    `on_inbound_image`'s hand-off: a photo (media, media count 1), or a Giphy
-    DM (OF sends it with `media: []`, `mediaCount: 0` and a `giphyId`)."""
     frame = ({"id": mid, "text": "", "giphyId": "xT9IgG50Fb7Mi0prBC", "media": [], "mediaCount": 0}
              if gif else
              {"id": mid, "text": "", "media": [{"id": 77, "type": "photo"}], "mediaCount": 1})
@@ -681,12 +571,9 @@ async def case_giphy_dm_reads_gif_only():
 
 
 async def case_state_shape():
-    """The Jev state is the probe's request shape: exactly his Turn, the 12
-    lines before it (`from`, `text`, `when`, an optional `ppv`), her last line,
-    his last purchase and the Pending offer, all read at or before the Anchor."""
     aid, fan = "fa_shape", 63
     await _seed(aid, rule=True, gate=False)
-    t = T0                                      # his Turn starts here
+    t = T0
     gif = json.dumps({"giphyId": "xT9IgG50Fb7Mi0prBC", "media": [], "mediaCount": 0})
     for mid, d, body, at, kw in (
             (4000, "in", "too old to read", t - timedelta(days=4), {}),
@@ -696,7 +583,7 @@ async def case_state_shape():
             (4004, "in", "wow", t - timedelta(days=2) + timedelta(minutes=1), {}),
             (4005, "in", "", t - timedelta(hours=20), dict(media_count=1)),
             (4006, "in", "", t - timedelta(hours=5), dict(raw_json=gif)),
-            (4007, "out", "", t - timedelta(hours=4), {}),       # nothing to read: dropped
+            (4007, "out", "", t - timedelta(hours=4), {}),
             (4008, "out", "you there?", t - timedelta(minutes=90),
              dict(automation_kind="welcome_chatter_for_info")),
             (4009, "in", "yes", t - timedelta(minutes=60), {}),
@@ -704,7 +591,7 @@ async def case_state_shape():
             (4011, "out", "", t - timedelta(minutes=8), dict(media_count=1, automation_kind="image_reply")),
             (4012, "out", "<p>what do you think &amp; want?</p>", t - timedelta(minutes=2), {}),
             (4013, "in", "hmm", t, {}),
-            (4014, "in", "", t + timedelta(minutes=1), dict(media_count=1)),          # the Anchor
+            (4014, "in", "", t + timedelta(minutes=1), dict(media_count=1)),
             (4015, "out", "later, from another Lane", t + timedelta(minutes=2),
              dict(price_cents=900, is_paid=False, automation_kind="reply_mass_funnel"))):
         await _msg(aid, fan, mid, d, body, at, **kw)
@@ -741,7 +628,6 @@ async def case_state_shape():
 
 
 def _ns(mid: int, direction: str, at: datetime, body: str = "", **kw) -> types.SimpleNamespace:
-    """A plain chat row with `Message`'s fields and defaults: no DB."""
     return types.SimpleNamespace(**{
         "message_id": mid, "direction": direction, "created_at": at, "body": body,
         "media_count": 0, "price_cents": 0, "is_paid": None, "purchased_at": None,
@@ -749,8 +635,6 @@ def _ns(mid: int, direction: str, at: datetime, body: str = "", **kw) -> types.S
 
 
 def case_cut_runs():
-    """The one Turn definition over plain rows: runs cut at each outbound, each
-    with the outbound before it (the starting cut for the first)."""
     t = [T0 + timedelta(minutes=i) for i in range(5)]
     start = (T0 - timedelta(hours=1), 1)
     for label, rows, cut, want in (
@@ -769,8 +653,6 @@ def case_cut_runs():
 
 
 async def case_build_state_plain_rows_match_db():
-    """`build_state` over plain rows (no DB) gives the state and offer flag the
-    DB path (`_read`) gives for the same thread."""
     aid, fan = "fa_pure_state", 70
     await _seed(aid, rule=True, gate=False)
     rows = [
@@ -786,7 +668,7 @@ async def case_build_state_plain_rows_match_db():
             s.add(Message(account_id=aid, fan_id=fan, **vars(m)))
         s.add(Transaction(account_id=aid, fan_id=fan, **vars(tx)))
     ((anchor, db_st, db_offer, photo),) = await runner._read(aid, fan, 8005)
-    assert photo is None, photo        # describe_fan_photos off: no record
+    assert photo is None, photo
     assert anchor.message_id == 8005, anchor
     st, has_offer = runner.build_state(rows[3:], rows[:3], tx, rows[2])
     assert (st, has_offer) == (db_st, db_offer), (st, has_offer, db_st, db_offer)
@@ -795,8 +677,6 @@ async def case_build_state_plain_rows_match_db():
 
 
 async def _offer_turn(aid: str, fan: int, offers: list[dict], ago: timedelta = timedelta(hours=1)) -> dict:
-    """Her priced messages `offers` (oldest first, `ago` apart), then his DM:
-    the state Jev read."""
     await _seed(aid, rule=True, gate=False)
     for i, kw in enumerate(offers):
         await _msg(aid, fan, 5001 + i, "out", kw.pop("body"), T0 - ago * (len(offers) - i), **kw)
@@ -808,28 +688,25 @@ async def _offer_turn(aid: str, fan: int, offers: list[dict], ago: timedelta = t
 
 
 async def case_pending_offer():
-    """Her newest priced, unbought, not-unsent outbound before his Turn, from
-    any Lane or a human and of any age: `pending_offer` carries it."""
     st = await _offer_turn("fa_offer_funnel", 64, [
         dict(body="<p>just for you 😈</p>", price_cents=1500, is_paid=False,
              automation_kind="reply_mass_funnel")])
     assert st["pending_offer"] == "locked $15 message: just for you 😈", st
     assert st["her_last_line"] == "just for you 😈 (locked $15 message, he has not bought it)", st
     st = await _offer_turn("fa_offer_human", 65, [
-        dict(body="", price_cents=2000, media_count=3)])          # a human send: no Lane kind
+        dict(body="", price_cents=2000, media_count=3)])
     assert st["pending_offer"] == "locked $20 message: [photo or video]", st
-    st = await _offer_turn("fa_offer_old", 66, [                 # no age limit
+    st = await _offer_turn("fa_offer_old", 66, [
         dict(body="still waiting for you", price_cents=3000, is_paid=False,
              automation_kind="reply_mass_funnel")], ago=timedelta(days=3))
     assert st["pending_offer"] == "locked $30 message: still waiting for you", st
-    st = await _offer_turn("fa_offer_behind", 68, [              # newest unbought, not newest priced
+    st = await _offer_turn("fa_offer_behind", 68, [
         dict(body="first one", price_cents=1000, is_paid=False),
         dict(body="second one", price_cents=1500, is_paid=True)])
     assert st["pending_offer"] == "locked $10 message: first one", st
 
 
 async def case_pending_offer_none():
-    """A bought, a purchased or an unsent priced message is no Pending offer."""
     for aid, kw in (("fa_offer_bought", dict(is_paid=True)),
                     ("fa_offer_purchased", dict(is_paid=None, purchased_at=T0 - timedelta(minutes=30))),
                     ("fa_offer_unsent", dict(is_paid=False, is_unsent=True))):
@@ -838,16 +715,13 @@ async def case_pending_offer_none():
 
 
 async def _purchase_turn(aid: str, fan: int, txs: list[tuple[str, int, timedelta]]) -> str:
-    """His purchases `txs` (kind, cents, how long before his Turn; negative =
-    after its start), then a Turn of two DMs ten minutes apart: the
-    `last_purchase` Jev read."""
     await _seed(aid, rule=True, gate=False)
     async with get_session() as s:
         for kind, cents, before in txs:
             s.add(Transaction(account_id=aid, fan_id=fan, kind=kind, amount_cents=cents,
                               occurred_at=T0 - before))
         s.add(Transaction(account_id=aid, fan_id=fan + 1000, kind="tip", amount_cents=7700,
-                          occurred_at=T0 - timedelta(minutes=1)))      # another Fan's
+                          occurred_at=T0 - timedelta(minutes=1)))
     await _msg(aid, fan, 6001, "in", "hey", T0)
     await _dm(aid, fan, 6002, "you there", T0 + timedelta(minutes=10))
     fake = FakeJev((QUIET, 1.0))
@@ -857,8 +731,6 @@ async def _purchase_turn(aid: str, fan: int, txs: list[tuple[str, int, timedelta
 
 
 async def case_last_purchase():
-    """His newest tip or PPV buy at or before the Anchor, in the probe's words;
-    past 7 days, "none in the last 7 days"."""
     for i, (txs, want) in enumerate((
             ([("tip", 2500, timedelta(hours=3))], "he tipped her $25, about 3 hours ago"),
             ([("ppv_message", 1200, timedelta(minutes=30))],
@@ -866,15 +738,14 @@ async def case_last_purchase():
             ([("ppv_post", 900, timedelta(days=3))], "he bought a locked message for $9, about 3 days ago"),
             ([("ppv_message", 1200, timedelta(days=2)), ("tip", 500, timedelta(minutes=50)),
               ("subscription", 1000, timedelta(minutes=5))], "he tipped her $5, 50 minutes ago"),
-            ([("tip", 500, -timedelta(minutes=5))], "he tipped her $5, 0 minutes ago"),   # inside his Turn
-            ([("tip", 500, -timedelta(minutes=11))], "none in the last 7 days"),          # after the Anchor
+            ([("tip", 500, -timedelta(minutes=5))], "he tipped her $5, 0 minutes ago"),
+            ([("tip", 500, -timedelta(minutes=11))], "none in the last 7 days"),
             ([("tip", 2500, timedelta(days=8))], "none in the last 7 days"),
             ([], "none in the last 7 days"))):
         got = await _purchase_turn(f"fa_buy_{i}", 69, txs)
         assert got == want, (i, got, want)
 
 
-# ── No-send ───────────────────────────────────────────────────────────
 
 _SHADOW = (runner, rj, full_ai_decide, _jev, full_ai_sell, full_ai_photo)
 _BANNED_MODULES = {"of_client", "automations._outbound", "automation_executor", "fan_lease"}
@@ -882,13 +753,11 @@ _BANNED_NAMES = {"_make_client", "send_message", "acquire_fan_lease", "start_fan
 
 
 def _send_paths(source: str) -> list[str]:
-    """No-send (a): every import of a send module and every send name in `source`."""
     found = []
     for n in ast.walk(ast.parse(source)):
         if isinstance(n, ast.Import):
             found += [a.name for a in n.names if a.name in _BANNED_MODULES]
         elif isinstance(n, ast.ImportFrom):
-            # A relative import in automations/ resolves under `automations`.
             mod = ".".join(p for p in ("automations" if n.level else "", n.module or "") if p)
             names = {f"{mod}.{a.name}" if mod else a.name for a in n.names}
             found += [m for m in {mod} | names if m in _BANNED_MODULES]
@@ -904,18 +773,12 @@ def case_no_send_a_import_scan():
     for mod in _SHADOW:
         src = Path(mod.__file__).read_text(encoding="utf-8")
         assert _send_paths(src) == [], (mod.__name__, _send_paths(src))
-    # The scan itself sees what it must.
     assert _send_paths("import automation_executor as ax\nax._make_client('a')\n") == [
         "automation_executor", "_make_client"]
     assert _send_paths("from . import _outbound\n") == ["automations._outbound"]
     assert _send_paths("from fan_lease import acquire_fan_lease\n") == ["fan_lease", "acquire_fan_lease"]
 
 
-# Every send path, at each binding a sender looks it up by: the client factory,
-# OFClient's `request` (the spec's), its wire call (`get` skips `request`) and
-# the proxy-retry funnel the raw CDN calls share (of_client.py:842-847), and the
-# lease and cooldown both on fan_lease and on ax's re-export
-# (automation_executor.py:87-98).
 _SEND_PATHS = ((ax, "_make_client"), (of_client.OFClient, "request"),
                (of_client.OFClient, "_http_call"), (of_client.OFClient, "_proxy_retry"),
                (fan_lease, "acquire_fan_lease"), (fan_lease, "start_fan_cooldown"),
@@ -923,13 +786,11 @@ _SEND_PATHS = ((ax, "_make_client"), (of_client.OFClient, "request"),
 
 
 class SendReached(Exception):
-    """A shadow run reached a send path."""
+    pass
 
 
 @contextlib.contextmanager
 def _raising():
-    """Each send path records its hit, then raises. The hit list, not the raise,
-    is the proof: an `except Exception` on the way cannot swallow a hit."""
     hits: list[str] = []
     saved = [(o, n, getattr(o, n)) for o, n in _SEND_PATHS]
     for o, n, real in saved:
@@ -958,9 +819,6 @@ async def _snapshot() -> dict[str, list]:
 
 
 async def _inbound_run(aid: str, fan: int, mid: int) -> tuple[dict, dict, dict, list[str]]:
-    """Every new path: his DM `mid` (the hook enqueues), another Lane's reply,
-    his DM `mid + 2` (the hook only wakes: the job is pending), then one
-    catch-up run deciding both Turns."""
     await _seed(aid, rule=True, gate=False)
     await _msg(aid, fan, mid, "in", "hey gorgeous", T0)
     await _msg(aid, fan, mid + 1, "out", "hi handsome", T0 + timedelta(minutes=1),
@@ -997,7 +855,7 @@ async def case_no_send_c_mutant_is_caught():
     mutant = types.ModuleType("automations._full_ai_chat_mutant")
     mutant.__file__ = runner.__file__
     try:
-        exec(compile(mutant_src, "<full_ai_chat mutant>", "exec"), mutant.__dict__)  # re-registers KIND
+        exec(compile(mutant_src, "<full_ai_chat mutant>", "exec"), mutant.__dict__)
         assert automation_registry.get_automation(KIND) is mutant.run
         aid = "fa_nosend_c"
         res, before, after, hits = await _inbound_run(aid, 32, 902)
@@ -1013,8 +871,6 @@ async def case_no_send_c_mutant_is_caught():
 
 
 async def case_no_send_c_swallowed_call_is_caught():
-    """`ask` turns every Exception into a GateError, so a send reached there
-    could end as an ok run; the hit is recorded before anything can swallow it."""
     tree = ast.parse(Path(rj.__file__).read_text(encoding="utf-8"))
     ask = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "ask")
     guarded = next(n for n in ask.body if isinstance(n, ast.Try))
@@ -1024,15 +880,13 @@ async def case_no_send_c_swallowed_call_is_caught():
 
     mutant = types.ModuleType("automations._router_jev_mutant")
     exec(compile(mutant_src, "<_router_jev mutant>", "exec"), mutant.__dict__)
-    mutant.GateError = rj.GateError     # the one class the runner catches, as in the real module
+    mutant.GateError = rj.GateError
     real = rj.ask
     rj.ask = mutant.ask  # type: ignore[assignment]     # the runner reads `router.ask`
     try:
         _res, before, after, hits = await _inbound_run("fa_nosend_c2", 33, 903)
     finally:
         rj.ask = real  # type: ignore[assignment]
-    # A Jev failure writes its `jev_failed` row and the catch-up goes on, so the
-    # run ends ok and the swallowed call is caught once per Turn (two Turns).
     assert hits == ["automation_executor._make_client"] * 2, hits
     assert _res["status"] == "ok", _res
     assert [r.route_row for r in await _rows("fa_nosend_c2")] == ["jev_failed"] * 2

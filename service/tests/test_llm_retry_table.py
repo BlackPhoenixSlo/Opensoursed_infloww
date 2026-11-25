@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""W14 — llm_attempt_outcome: the pure retry/give-up decision behind chat().
-
-One failed attempt in, one verdict out — Retry(pause) / KeyErr(kind) / Fail.
-A table, so the rule is visible at a glance and no network is needed:
-
-  - timeouts / transport errors / non-JSON body, 429 and 5xx retry on every
-    attempt but the last, where they fail;
-  - 401/403 → KeyErr("invalid"), 402 → KeyErr("no_credit") (the kinds
-    LLMKeyError / key_error_payload know), never retried;
-  - any other 4xx fails on the first try;
-  - the pause is _LLM_RETRY_BACKOFF_S × (attempt+1), read when called.
-
-Run: ./venv/bin/python service/tests/test_llm_retry_table.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 import llm_client  # noqa: E402
 from llm_client import Fail, KeyErr, Retry, llm_attempt_outcome  # noqa: E402
@@ -22,15 +8,13 @@ N = llm_client._LLM_MAX_ATTEMPTS
 B = llm_client._LLM_RETRY_BACKOFF_S
 FIRST, MID, LAST = 0, 1, N - 1
 
-# (status or exc kind, attempt, expected). The str kinds are illustrative:
-# llm_attempt_outcome treats ANY str as a transient request-side fault.
 _TABLE = [
     ("ReadTimeout",    FIRST, Retry(B * 1)),
     ("ReadTimeout",    MID,   Retry(B * 2)),
     ("ReadTimeout",    LAST,  Fail("attempts_exhausted")),
     ("ConnectError",   FIRST, Retry(B * 1)),
     ("ConnectError",   LAST,  Fail("attempts_exhausted")),
-    ("ValueError",     FIRST, Retry(B * 1)),      # resp.json() on a non-JSON body
+    ("ValueError",     FIRST, Retry(B * 1)),
     ("ValueError",     LAST,  Fail("attempts_exhausted")),
     (429,              FIRST, Retry(B * 1)),
     (429,              LAST,  Fail("attempts_exhausted")),
@@ -47,7 +31,7 @@ _TABLE = [
     (400,              FIRST, Fail("not_retryable")),
     (404,              FIRST, Fail("not_retryable")),
     (422,              FIRST, Fail("not_retryable")),
-    (501,              FIRST, Fail("not_retryable")),  # 5xx outside _RETRYABLE_STATUS
+    (501,              FIRST, Fail("not_retryable")),
 ]
 
 
@@ -62,8 +46,6 @@ def case_table():
 
 
 def case_key_kinds_match_key_status():
-    # Every KeyErr kind is one LLMKeyError documents for a provider refusal
-    # ("missing" is client-side, never a status).
     for status, kind in llm_client._KEY_STATUS.items():
         assert kind in {"invalid", "no_credit"}, (status, kind)
         assert llm_attempt_outcome(status, FIRST, N) == KeyErr(kind), status
@@ -88,7 +70,6 @@ def case_backoff_read_at_call_time():
 
 
 def case_non_object_200_body_fails_cleanly():
-    """A 200 whose JSON is not an object ends as LLMHTTPError with the hold refunded, not an AttributeError."""
     import asyncio
 
     class _Resp:

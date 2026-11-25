@@ -1,22 +1,3 @@
-"""service/xlsx_io.py — read and write .xlsx with the standard library only.
-
-  read_xlsx(data, first_only=False)
-                             → [(sheet name, rows)], every sheet in workbook order
-                               (only the first with `first_only`); a row is a
-                               sparse {column index (A = 0): text}, so a far
-                               cell ref costs one entry, and a ref past Excel's
-                               last column (XFD) is ignored. ValueError when
-                               `data` is not an .xlsx, or unpacks past the
-                               size or sheet caps (a zip bomb).
-  write_xlsx(rows, sheet)    → a one-sheet workbook of `rows`: a number is a
-                               number cell, anything else an inline string
-                               (XML-illegal characters dropped); the sheet
-                               name is cleaned to what Excel takes.
-
-Shared by Growth > Sensitive words (column A of the first sheet), the Scripts
-Excel import (every sheet, columns by header) and the reports' Excel export
-(`POST /admin/stats/xlsx`).
-"""
 from __future__ import annotations
 
 import io
@@ -30,11 +11,10 @@ _NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _MAX_PART = 20 * 1024 * 1024
-# Every part read from one workbook, together: a part listed as many sheets is
-# read once per listing, so the per-part cap alone does not bound a 5 MB upload.
+# Bounds all parts of one workbook together: a part listed by many sheets is read once per listing.
 _MAX_TOTAL = 2 * _MAX_PART
 MAX_SHEETS = 100
-MAX_COLS = 16384  # XFD, Excel's last column
+MAX_COLS = 16384
 
 _STATIC_PARTS = {
     "[Content_Types].xml": (
@@ -69,10 +49,9 @@ def _col_letter(i: int) -> str:
     return out
 
 
-# What XML 1.0 can hold: a control character or a lone surrogate would make the
-# part unreadable (or fail to encode), so it is dropped.
 _XML_ILLEGAL = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
-_MAX_EXACT_INT = 2 ** 53  # an Excel number is a double; a larger int is written as text, digit for digit
+# An Excel number is a double: a larger int is written as text, digit for digit.
+_MAX_EXACT_INT = 2 ** 53
 
 
 def _xml_text(v: object) -> str:
@@ -82,28 +61,23 @@ def _xml_text(v: object) -> str:
 def _is_number(v: object) -> bool:
     if isinstance(v, bool):
         return False
-    if isinstance(v, int):  # before isfinite, which overflows on a huge int
+    if isinstance(v, int):
         return abs(v) <= _MAX_EXACT_INT
     return isinstance(v, float) and math.isfinite(v)
 
 
 def _cell(ref: str, v: str | int | float) -> str:
-    # An inline string is text, never a formula, so it needs no CSV-style escaping.
     if _is_number(v):
         return f'<c r="{ref}"><v>{v!r}</v></c>'
     return f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{_xml_text(v)}</t></is></c>'
 
 
 def sheet_name(name: str) -> str:
-    """`name` as Excel takes it: none of []:*?/\\ or XML-illegal characters, at most 31 characters, "Report" when
-    nothing is left."""
     name = _XML_ILLEGAL.sub("", "".join(" " if ch in "[]:*?/\\" else ch for ch in name))
     return name.strip()[:31] or "Report"
 
 
 def write_xlsx(rows: list[list[str | int | float]], sheet: str) -> bytes:
-    """A one-sheet workbook named `sheet` (cleaned by `sheet_name`) holding
-    `rows`: numbers as number cells, the rest as inline strings."""
     sheet = sheet_name(sheet)
     body = "".join(
         f'<row r="{i}">' + "".join(_cell(f"{_col_letter(j)}{i}", v) for j, v in enumerate(row)) + "</row>"
@@ -129,7 +103,6 @@ def _attr(v: str) -> str:
 
 
 def _part(z: zipfile.ZipFile, name: str, budget: list[int]) -> ET.Element | None:
-    """The part `name` parsed, its size taken from `budget[0]` (bytes left for this workbook)."""
     try:
         info = z.getinfo(name)
     except KeyError:
@@ -158,7 +131,6 @@ Row = dict[int, str]
 
 
 def read_xlsx(data: bytes, first_only: bool = False) -> list[tuple[str, list[Row]]]:
-    """Every sheet of the workbook in order (the first only with `first_only`), as (name, rows)."""
     try:
         return _sheets(zipfile.ZipFile(io.BytesIO(data)), first_only)
     except (zipfile.BadZipFile, ET.ParseError):

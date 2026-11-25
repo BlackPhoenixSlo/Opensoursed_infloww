@@ -1,54 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_haggle_chat — haggle and the unasked offer at the Test chat API (phase 03b,
-ticket 47 phase B2): the DRAFT `counter_offer` / `offer_moment` count only in a `draft_questions`
-window of the test Mode.
-
-`POST /admin/full-ai/test/turn` and `POST /admin/full-ai/test/settle` over the shared selling
-helpers (`_full_ai_sell_helpers`: two-Agency fixture, owner session cookies, a seeded vault) and
-fakes at the network edges only (Jev at `_router_jev._client` / `_info_jev._client`, the Writers at
-`llm_client.httpx.AsyncClient`). Every request runs inside `_guarded`. Vault `PRICED`: Heat 3 sells
-the $50 photo 202 (list 5000, the haggle floor $34 = ceil(0.67 x $50)).
-
-Haggle:
-  case_haggle_reoffers_at_clamped_quote  open Offer 202 at $50 + counter_offer -> row `haggle`, the
-                                         same piece (no fresh pick) at clamp_quote(list, his amount):
-                                         $20 -> $34 (floor, OLD-CORE-33 `was_cents` block), $60 ->
-                                         $50 (plain block), no amount / two amounts / tip -> $34,
-                                         $40 -> $40; `offer_list_cents` 5000, PPV at the quote
-  case_haggle_draft_off_drops            draft_questions off -> `counter_offer` in `dropped`, chat
-  case_haggle_needs_an_open_offer        no open Offer, no Pending tease -> no haggle, no pick
-  case_haggle_on_a_pending_tease         tease 202 then "$20?" -> the teased piece at $34, plain
-                                         price block (the tease named no price)
-  case_haggle_offer_beats_tease          open Offer 202 + a newer tease of 101 -> the Offer's piece
-  case_haggle_repick_capped_at_list      202 gone -> a re-pick at or under $50 (never Heat 4's $100),
-                                         at its own list, plain block, declining it leaves no open
-                                         Offer (the $50 stays superseded); nothing under $50 -> Refusal
-  case_haggle_again_clamps_against_list  a haggle on the haggle row: "$20" -> $34 again (list, never
-                                         the $34 quote's own floor $23)
-  case_buy_after_haggle                  Buy the haggle row -> settles at $34; next Turn: spend line
-                                         $34, `pending_offer` none (the $50 Offer is superseded),
-                                         202 never sold again; Buy the superseded $50 row instead ->
-                                         the haggle row (an owned piece) is not open either
-  case_concurrent_buys_settle_once       Buy on the $50 Offer and its haggle row at once -> one
-                                         settles, the other `already_owned`
-  case_haggle_audit_holds_the_quote      a caption naming the list $50 fails the price check ->
-                                         rewrite; twice -> fallback caption at $34
-
-Unasked offer (offer_moment):
-  case_offer_moment_sells                offer_moment -> sell_now row `offer_moment`, OLD-AIC-05 beat
-  case_hot_sell_gets_step_4              sexual_now beside offer_moment or wants_content -> OLD-AIC-08
-                                         + its step 4 as the beat; with sext off -> the plain beat
-  case_offer_moment_gated                sell off -> chat, no sell-off line, no PPV (with sexual_now:
-                                         sext); draft_questions off -> `offer_moment` in `dropped`
-
-Shadow: test_full_ai_shadow.py and the router golden stay untouched (Shadow's `fired` passes no
-Mode, its `draft_on` is false).
-
-Run: ./venv/bin/python service/tests/test_full_ai_haggle_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, NANO, OWNER_A, PICS, PRICED, TURN, _body, _guarded, _hot, _picks, _ppvs, _put_draft, _reply,
@@ -68,7 +21,6 @@ OK_TEXT = "ok just for u babe"
 
 
 def _turn(body: dict, script: dict | str, verdict):
-    """One test turn under the invariants: (response json, Writer fake, Pick results, Router fake)."""
     script = {NANO: script} if isinstance(script, str) else script
     fw = FakeWriterHTTP({NANO: "ok:hii", **script})
     fj = FakeJev(verdict)
@@ -86,7 +38,6 @@ def _settle(pair: str, row_id: int, outcome: str):
 
 @contextlib.contextmanager
 def _draft(**cfg):
-    """A's draft side with `cfg` over DEFAULTS (through the config API), DEFAULTS again after."""
     _put_draft({**DEFAULTS, **cfg})
     try:
         yield
@@ -103,14 +54,12 @@ def _texts(parts: list[dict]) -> list[str]:
 
 
 def _offer_50(pair: str) -> dict:
-    """Turn 1: he asks, Heat 3 sells the $50 photo 202."""
     got, _, _, _ = _turn(_body(pair, PICS), "ok:mm i have something for u", (_hot(wants_content=0.9), 2.0))
     assert got["offer"]["ref"] == 202 and got["offer"]["price_cents"] == 5000, got["offer"]
     return got
 
 
 def _haggle_checks(got: dict, pair: str, n: int, price: int) -> None:
-    """Row `n` is a haggle re-offer of 202 at `price`, list 5000, its PPV at `price`."""
     assert (got["route"], got["route_row"], got["status"]) == ("sell_now", "haggle", "sent"), got
     assert got["offer"]["kind"] == "offer" and got["offer"]["ref"] == 202, got["offer"]
     assert (got["offer"]["price_cents"], got["offer"]["list_cents"]) == (price, 5000), got["offer"]
@@ -121,10 +70,9 @@ def _haggle_checks(got: dict, pair: str, n: int, price: int) -> None:
     item = json.loads(row.offer_item_ref)
     assert item["ref"] == 202 and row.outcome is None, item
     offers = [r for r in _rows(pair)[:n - 1] if r.offer_price_cents]
-    assert item.get("over") == (offers[-1].id if offers else None), item     # the Offer it re-offers
+    assert item.get("over") == (offers[-1].id if offers else None), item
 
 
-# ── Haggle ────────────────────────────────────────────────────────────
 
 def case_haggle_reoffers_at_clamped_quote():
     cases = (("floor", TWENTY, 3400, True), ("above", "how about $60", 5000, False),
@@ -171,8 +119,6 @@ def case_haggle_needs_an_open_offer():
 
 
 def case_haggle_on_a_pending_tease():
-    """The tease (Heat 3: 202, priceless) then "$20?" -> the teased piece at $34, list 5000, the
-    plain price block (`was_cents_of`: he never saw a price on a tease)."""
     pair = "h-tease"
     with _haggling(), _vault(PRICED):
         tease, _, _, _ = _turn(_body(pair, "how much?"), "ok:mm its a cute one babe", (_hot(price=0.9), 2.0))
@@ -198,9 +144,6 @@ def case_haggle_offer_beats_tease():
 
 
 def case_haggle_repick_capped_at_list():
-    """202 left the vault: the haggle re-picks the same subject and format at Heat 4 but only from
-    pieces listed at or under the haggled $50, so 101 ($10) not 303 ($100), at min(own list, $34)
-    with its own list and the plain block (a piece he never saw); only 303 left -> Refusal."""
     for tag, vault, want in (("cheaper", {101: "$10", 303: "$100"}, 101), ("none", {303: "$100"}, None)):
         pair = f"h-repick-{tag}"
         with _haggling():
@@ -245,31 +188,29 @@ def case_buy_after_haggle():
         got, _, _, _ = _turn(_body(pair, TWENTY, n=2), f"ok:{OK_TEXT}", (_hot(counter_offer=0.9), 2.0))
         assert _settle(pair, got["row_id"], "bought").status_code == 200
         chat, fw, _, fj = _turn(_body(pair, "mm thanks babe", n=3), "ok:hope u liked it", (QUIET, 1.0))
-        assert fj.calls[0]["state"]["pending_offer"] == "none", fj.calls[0]["state"]   # $50 superseded
+        assert fj.calls[0]["state"]["pending_offer"] == "none", fj.calls[0]["state"]
         assert "$34 total" in fw.requests[0]["body"]["messages"][1]["content"]
         sold, _, _, _ = _turn(_body(pair, PICS, n=4), "ok:mm i have something for u",
                               (_hot(wants_content=0.9), 2.0))
     rows = _rows(pair)
     assert (rows[1].outcome, rows[1].offer_price_cents) == ("bought", 3400), rows[1]
-    assert rows[0].outcome is None, rows[0]                 # the superseded $50 Offer stays unsettled
-    assert sold["offer"]["ref"] == 101, sold["offer"]       # 202 is Owned: the next piece sells
-    pair = "h-buy-superseded"                               # Buy the superseded $50 row instead
+    assert rows[0].outcome is None, rows[0]
+    assert sold["offer"]["ref"] == 101, sold["offer"]
+    pair = "h-buy-superseded"
     with _haggling(), _vault(PRICED):
         first = _offer_50(pair)
         _turn(_body(pair, TWENTY, n=2), f"ok:{OK_TEXT}", (_hot(counter_offer=0.9), 2.0))
         assert _settle(pair, first["row_id"], "bought").status_code == 200
-        again = _settle(pair, _rows(pair)[1].id, "bought")       # the haggle row holds the same piece
+        again = _settle(pair, _rows(pair)[1].id, "bought")
         assert (again.status_code, again.json()) == (422, {"detail": "already_owned"}), again.text
         _, _, _, fj = _turn(_body(pair, "mm thanks babe", n=3), "ok:hope u liked it", (QUIET, 1.0))
-        assert fj.calls[0]["state"]["pending_offer"] == "none", fj.calls[0]["state"]   # he owns 202
+        assert fj.calls[0]["state"]["pending_offer"] == "none", fj.calls[0]["state"]
         sold, _, _, _ = _turn(_body(pair, PICS, n=4), "ok:mm i have something for u",
                               (_hot(wants_content=0.9), 2.0))
     assert sold["offer"]["ref"] == 101 and _rows(pair)[1].outcome is None, sold["offer"]
 
 
 def case_concurrent_buys_settle_once():
-    """Buy on the $50 Offer and on its haggle re-offer (the same piece 202) at once: one settles,
-    the other is `already_owned`; one bought row."""
     pair = "h-buy-race"
     with _haggling(), _vault(PRICED):
         first = _offer_50(pair)
@@ -279,7 +220,6 @@ def case_concurrent_buys_settle_once():
 
     @contextlib.asynccontextmanager
     async def slow_reads():
-        """Each settle's reads take a moment, so both Buys read before either writes."""
         async with real() as s:
             execute = s.execute
 
@@ -306,7 +246,6 @@ def case_concurrent_buys_settle_once():
 
 
 def case_haggle_audit_holds_the_quote():
-    """The prompt allows exactly the quote: a caption naming the list $50 fails the price check."""
     pair = "h-audit"
     with _haggling(), _vault(PRICED):
         _offer_50(pair)
@@ -325,7 +264,6 @@ def case_haggle_audit_holds_the_quote():
     _haggle_checks(got2, pair2, 2, 3400)
 
 
-# ── Unasked offer (offer_moment) ──────────────────────────────────────
 
 def case_offer_moment_sells():
     """`chat_tease` off: the pitched unasked offer (test Mode: ESCALATION_TEST). The Chat tease (flag

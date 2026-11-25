@@ -1,60 +1,7 @@
 #!/usr/bin/env python3
-"""
-dispatch_plan — table tests over the automation dispatch rules' pure helpers (the shell is
-automation_executor: `_materialize_due_rules` reads the DB facts in its gate order and calls
-these; `_drain_due_jobs_once` spawns what plan_dispatch returns). No DB, no loop:
-
-  case_trigger_table:          what a decoded trigger_json fires on: non-positive / bool /
-                               string intervals and an empty or non-list daily_at -> None;
-                               an interval wins over a clock; tz_offset_minutes coerced to int,
-                               0 by default.
-  case_bad_tz_table:           a clock's tz_offset_minutes outside the API's 422 contract ("x",
-                               "", "1.5", "60", 9999, True, NaN) -> None from trigger_of and
-                               parse_trigger alike (skipped, never raised: one bad row must not
-                               abort the pass); parse_trigger logs it once per raw value,
-                               trigger_of never; null / absent -> 0; an interval ignores it.
-  case_next_due_table:         next_due, the shown next fire: interval never fired / mid-cadence
-                               / overdue; clock before / after today's slot, owed, tomorrow, tz
-                               offset; max_runs reached -> None; no valid slot -> None; max_runs with no
-                               run_count -> ValueError (plan_rule's contract).
-  case_next_due_agrees_with_due: over a day of `now`s, next_due <= now iff interval_due /
-                               clock_due (one voice with the materializer).
-  case_max_runs_table:         max_runs > 0 kept as int (2.5 -> 2); 0, negative, bool, string,
-                               Infinity / 1e400 / NaN ignored (the shell disables the rule at
-                               runs >= max_runs); a non-finite every_seconds is no interval.
-  case_interval_cadence_table: due at every_seconds since the rule's own last job; a poke
-                               shortens the wait down to min(every, POKE_FLOOR_S), not below
-                               (plan_rule keeps one under the floor: Repoke).
-  case_clock_trigger_table:    a daily_at slot is due once per day after it passes, in the
-                               trigger's local offset; a later slot still owed is due.
-  case_quiet_hours_table:      inside the creator-local band; wrap, dict form, [0,0], half
-                               hours, no clock (never inside), malformed (never inside).
-  case_plan_rule_table:        one rule's step: busy (a running poked pair re-pokes), run limit,
-                               due, in that precedence; then a band -> CheckQuiet, else Enqueue.
-                               A poked interval rule under the floor re-pokes (deferred, not
-                               spent). A poke never makes a clock rule due.
-  case_rv_c15_busy_send_welcome_poke_spent_then_idle_not_rerun: busy pass spends a non-REPOKE poke.
-  case_send_welcome_underfloor_poke_spent: under the floor only REPOKE_KINDS (promo_reactivate,
-                               purchase_followup) keep the poke; send_welcome spends it.
-  case_plan_rule_needs_runs:   max_runs set and run_count None -> ValueError (shell invariant).
-  case_quiet_plan_table:       the band gate: inside -> Skip; outside -> Enqueue; no clock ->
-                               Enqueue(no_clock=True) (the shell warns once).
-  case_bulk_dispatch_goes_by_oldest_due_job: the bulk lane by oldest due run_at, not last_served.
-  case_dispatch_order_table:   operator first, then kind rank, then least recently served,
-                               then account id; in-flight pairs not spawned; the bulk lane.
-  case_dispatch_never_mutates: inputs untouched.
-  case_per_fan_dispatch_table: a per-fan kind (Full AI Chat): one run per Fan, Fans of one
-                               account at once up to the cap (in-flight runs, the sweep's Fan
-                               None too, count), oldest due Fan first; other kinds one per account;
-                               round robin: every account's 1st Fan and other kinds before a 2nd Fan.
-  case_parse_iso_table:        isotime.parse_iso (the shell's `_parse_iso`): naive UTC out; an
-                               offset converted, Z, naive, fractional; garbage / non-str -> None.
-
-Run: ./venv/bin/python service/tests/test_automation_executor_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 import logging  # noqa: E402
 import uuid  # noqa: E402
@@ -73,7 +20,7 @@ K = "send_followup"
 
 
 def case_trigger_table():
-    rows = [   # (decoded trigger_json, Interval | Clock | None)
+    rows = [
         ({}, None),
         ({"every_seconds": 0}, None),
         ({"every_seconds": -5}, None),
@@ -101,7 +48,7 @@ def case_trigger_table():
 
 def case_bad_tz_table():
     import dispatch_plan
-    rows = [   # (tz_offset_minutes, Clock's tz_off_min | None = skipped)
+    rows = [
         ("x", None), ("", None), ("1.5", None), ("60", None), (9999, None), (-9999, None),
         (841, None), (-721, None), (True, None), (False, None), (float("nan"), None),
         (float("inf"), None), ([60], None), ({"m": 60}, None),
@@ -111,10 +58,8 @@ def case_bad_tz_table():
         for parse in (trigger_of, parse_trigger):
             got = parse({"daily_at": ["09:00"], "tz_offset_minutes": raw})
             assert got == (None if want is None else Clock(("09:00",), want, None)), (parse, raw, got)
-    assert parse_trigger({"daily_at": ["09:00"]}) == Clock(("09:00",), 0, None)   # absent
-    # an interval never reads the zone
+    assert parse_trigger({"daily_at": ["09:00"]}) == Clock(("09:00",), 0, None)
     assert parse_trigger({"every_seconds": 60, "tz_offset_minutes": "x"}) == Interval(60, None)
-    # parse_trigger logs once per distinct raw value, with the value; trigger_of never
     fresh, quiet = f"once-{uuid.uuid4().hex}", f"quiet-{uuid.uuid4().hex}"
     seen: list[str] = []
 
@@ -137,29 +82,29 @@ def case_bad_tz_table():
 
 def case_next_due_table():
     d = timedelta(days=1)
-    rows = [   # (trigger, last_fired, run_count, next_due)
-        (Interval(3600, None), None, None, NOW),                                  # never fired: due now
+    rows = [
+        (Interval(3600, None), None, None, NOW),
         (Interval(3600, None), NOW - timedelta(minutes=20), None, NOW + timedelta(minutes=40)),
-        (Interval(3600, None), NOW - timedelta(hours=3), None, NOW - timedelta(hours=2)),   # overdue
-        (Clock(("09:00",), 0, None), None, None, NOW.replace(hour=9)),             # after today's slot, owed
+        (Interval(3600, None), NOW - timedelta(hours=3), None, NOW - timedelta(hours=2)),
+        (Clock(("09:00",), 0, None), None, None, NOW.replace(hour=9)),
         (Clock(("09:00",), 0, None), NOW.replace(hour=9, minute=1), None, NOW.replace(hour=9) + d),
-        (Clock(("13:00",), 0, None), None, None, NOW.replace(hour=13)),            # before today's slot
+        (Clock(("13:00",), 0, None), None, None, NOW.replace(hour=13)),
         (Clock(("13:00",), 0, None), NOW - d, None, NOW.replace(hour=13)),
         (Clock(("09:00", "15:00"), 0, None), NOW.replace(hour=9, minute=1), None, NOW.replace(hour=15)),
-        (Clock(("13:00",), 120, None), None, None, NOW.replace(hour=11)),          # 13:00 at UTC+2 = 11:00 UTC
+        (Clock(("13:00",), 120, None), None, None, NOW.replace(hour=11)),
         (Clock(("13:00",), 120, None), NOW.replace(hour=11, minute=5), None, NOW.replace(hour=11) + d),
-        (Clock(("11:30",), -60, None), None, None, NOW.replace(hour=12, minute=30)),   # UTC-1
-        (Clock(("00:30",), 720, None), None, None, NOW.replace(hour=12, minute=30)),   # local day is tomorrow
-        (Clock(("bad", "25:00"), 0, None), None, None, None),                      # no valid slot
-        (Interval(3600, 3), None, 3, None),                                        # max_runs reached
+        (Clock(("11:30",), -60, None), None, None, NOW.replace(hour=12, minute=30)),
+        (Clock(("00:30",), 720, None), None, None, NOW.replace(hour=12, minute=30)),
+        (Clock(("bad", "25:00"), 0, None), None, None, None),
+        (Interval(3600, 3), None, 3, None),
         (Interval(3600, 3), None, 5, None),
         (Clock(("09:00",), 0, 2), None, 2, None),
-        (Interval(3600, 3), None, 2, NOW),                                         # one run left
+        (Interval(3600, 3), None, 2, NOW),
     ]
     for trig, last, runs, want in rows:
         got = next_due(trig, last, NOW, run_count=runs)
         assert got == want, (trig, last, runs, got, want)
-    for trig in (Interval(3600, 3), Clock(("09:00",), 0, 2)):   # max_runs, run_count not given
+    for trig in (Interval(3600, 3), Clock(("09:00",), 0, 2)):
         try:
             next_due(trig, None, NOW)
         except ValueError:
@@ -182,7 +127,7 @@ def case_next_due_agrees_with_due():
                 else:
                     due = clock_due(now, trig.times, trig.tz_off_min, last)
                 assert (nd is not None and nd <= now) is due, (trig, last, now, nd, due)
-                if not due:   # and at that instant it is due
+                if not due:
                     if isinstance(trig, Interval):
                         assert interval_due(trig.every, last, nd, False), (trig, last, nd)
                     else:
@@ -192,30 +137,29 @@ def case_next_due_agrees_with_due():
 def case_max_runs_table():
     inf, nan = float("inf"), float("nan")
     rows = [(3, 3), (2.5, 2), (1, 1), (0, None), (-1, None), (True, None), ("3", None), (None, None),
-            (inf, None), (1e400, None), (-inf, None), (nan, None)]   # stored Infinity: no OverflowError
+            (inf, None), (1e400, None), (-inf, None), (nan, None)]  # stored Infinity: no OverflowError
     for mx, want in rows:
         for parse in (trigger_of, parse_trigger):
             assert parse({"every_seconds": 60, "max_runs": mx}).max_runs == want, (parse, mx)
             assert parse({"daily_at": ["09:00"], "max_runs": mx}).max_runs == want, (parse, mx)
-    # a non-finite every_seconds is no interval (a clock beside it still applies)
     for every in (inf, 1e400, nan):
         assert trigger_of({"every_seconds": every}) is None, every
         assert trigger_of({"every_seconds": every, "daily_at": ["09:00"]}) == Clock(("09:00",), 0, None)
 
 
 def case_interval_cadence_table():
-    rows = [   # (every, age_s or None, poked, due)
-        (3600, None, False, True),                 # never fired
+    rows = [
+        (3600, None, False, True),
         (3600, 3599, False, False),
         (3600, 3600, False, True),
         (3600, 4000, False, True),
-        (3600, POKE_FLOOR_S, True, True),          # a poke: due from the floor
-        (3600, POKE_FLOOR_S - 1, True, False),     # under the floor: not due (plan_rule defers it)
-        (3600, POKE_FLOOR_S, False, False),        # ... and without the poke, not due
-        (30, 29, True, False),                     # floor = min(every, 60) = 30
+        (3600, POKE_FLOOR_S, True, True),
+        (3600, POKE_FLOOR_S - 1, True, False),
+        (3600, POKE_FLOOR_S, False, False),
+        (30, 29, True, False),
         (30, 30, False, True),
         (0.5, 0.5, False, True),
-        (3600, -5, False, False),                  # a job stamped in the future
+        (3600, -5, False, False),
         (3600, -5, True, False),
     ]
     for every, age, poked, want in rows:
@@ -225,15 +169,15 @@ def case_interval_cadence_table():
 
 
 def case_clock_trigger_table():
-    rows = [   # (daily_at, tz_offset_minutes, last_fired, due)
+    rows = [
         (["09:00"], 0, None, True),
-        (["09:00"], 0, NOW.replace(hour=8), True),              # last job before today's slot
+        (["09:00"], 0, NOW.replace(hour=8), True),
         (["09:00"], 0, NOW.replace(hour=9, minute=1), False),
-        (["13:00"], 0, None, False),                            # not yet today
-        (["13:00"], 120, None, True),                           # 13:00 at UTC+2 = 11:00 UTC
-        (["11:30"], -60, None, False),                          # 11:30 at UTC-1 = 12:30 UTC
+        (["13:00"], 0, None, False),
+        (["13:00"], 120, None, True),
+        (["11:30"], -60, None, False),
         (["bad", "25:00", "09:60", 9], 0, None, False),
-        (["09:00", "11:00"], 0, NOW.replace(hour=10), True),    # the 11:00 slot is still owed
+        (["09:00", "11:00"], 0, NOW.replace(hour=10), True),
         (["09:00", "11:00"], 0, NOW.replace(hour=11, minute=1), False),
         (["09:00", "11:00"], 0, None, True),
     ]
@@ -243,18 +187,18 @@ def case_clock_trigger_table():
 
 
 def case_quiet_hours_table():
-    rows = [   # (band json, tz_off_min, now hour UTC, inside)
+    rows = [
         ("[11, 13]", 0, 12, True),
-        ("[11, 13]", 0, 13, False),                 # end exclusive
-        ("[11, 13]", 120, 12, False),               # 14:00 local
-        ("[22, 6]", 0, 23, True),                   # wraps past midnight
+        ("[11, 13]", 0, 13, False),
+        ("[11, 13]", 120, 12, False),
+        ("[22, 6]", 0, 23, True),
         ("[22, 6]", 0, 5, True),
         ("[22, 6]", 0, 6, False),
         ('{"start": 11, "end": 13}', 0, 12, True),
-        ("[0, 0]", 0, 12, False),                   # disabled
-        ("[11, 13]", None, 12, False),              # no clock: no local band (the shell warns once)
-        ("[12, 13]", 330, 6, True),                 # +5:30: 06:40 UTC is 12:10 local
-        ("[12, 13]", 330, 5, False),                # 05:40 UTC is 11:10 local
+        ("[0, 0]", 0, 12, False),
+        ("[11, 13]", None, 12, False),
+        ("[12, 13]", 330, 6, True),
+        ("[12, 13]", 330, 5, False),
         (None, 0, 12, False),
         ("", 0, 12, False),
         ("{bad", 0, 12, False),
@@ -272,18 +216,18 @@ def case_plan_rule_table():
     slot_done = NOW.replace(hour=9, minute=1)
     band = "[11, 13]"
     E = Enqueue(no_clock=False)
-    rows = [   # (trig, busy, poked, last_fired, run_count, band, plan)
+    rows = [
         (hourly, None, False, None, None, None, E),
         (hourly, None, False, old, None, None, E),
         (hourly, None, False, fresh, None, None, Skip("not_due")),
-        (hourly, None, True, fresh, None, None, E),                       # a poke past the floor
+        (hourly, None, True, fresh, None, None, E),
         (hourly, None, True, NOW - timedelta(seconds=POKE_FLOOR_S - 1), None, None,
-         Repoke()),                                                       # under it: deferred
-        (hourly, None, True, NOW - timedelta(seconds=1), None, band, Repoke()),  # band not read yet
+         Repoke()),
+        (hourly, None, True, NOW - timedelta(seconds=1), None, band, Repoke()),
         (Interval(30, None), None, True, NOW - timedelta(seconds=29), None, None, Repoke()),
         (hourly, None, False, NOW - timedelta(seconds=1), None, None, Skip("not_due")),
         (hourly, "pending", False, None, None, None, Skip("busy")),
-        (hourly, "pending", True, None, None, None, Skip("busy")),        # that job will see it
+        (hourly, "pending", True, None, None, None, Skip("busy")),
         (hourly, "running", False, None, None, None, Skip("busy")),
         (hourly, "running", True, None, None, None, Repoke()),
         (capped, None, False, None, 2, None, E),
@@ -291,12 +235,11 @@ def case_plan_rule_table():
         (capped, None, False, None, 4, None, Disable(4, 3)),
         (clock, None, False, None, None, None, E),
         (clock, None, False, slot_done, None, None, Skip("not_due")),
-        (clock, None, True, slot_done, None, None, Skip("not_due")),      # a poke: no clock slot
+        (clock, None, True, slot_done, None, None, Skip("not_due")),
         (clock, "running", True, slot_done, None, band, Repoke()),
         (clock, None, True, None, None, band, CheckQuiet(band)),
         (hourly, None, False, None, None, band, CheckQuiet(band)),
-        (hourly, None, False, None, None, "", E),                         # unset band: no clock read
-        # precedence: busy > run limit > due > quiet band
+        (hourly, None, False, None, None, "", E),
         (capped, "running", True, fresh, 3, band, Repoke()),
         (capped, "pending", False, fresh, 3, band, Skip("busy")),
         (capped, None, False, fresh, 3, band, Disable(3, 3)),
@@ -308,10 +251,8 @@ def case_plan_rule_table():
         assert got == want, (trig, busy, poked, last, runs, qh, got)
 
 
+# only REPOKE_KINDS keep an under-floor poke; send_welcome spends it so a busy Creator's toasts do not run welcome every minute
 def case_send_welcome_underfloor_poke_spent():
-    """Only REPOKE_KINDS keep a poke that lands under the floor; send_welcome spends it
-    (pre-#850), so a busy Creator's toasts do not run welcome every minute. A poke on a
-    running job follows the same per-kind policy (rv c15)."""
     hourly = Interval(3600, None)
     under = NOW - timedelta(seconds=POKE_FLOOR_S - 1)
     for kind, want in (("send_welcome", Skip("not_due")), ("promo_reactivate", Repoke()),
@@ -326,8 +267,6 @@ def case_send_welcome_underfloor_poke_spent():
 
 
 def case_rv_c15_busy_send_welcome_poke_spent_then_idle_not_rerun():
-    """A toast early in a send_welcome run that lasts past the floor: the busy pass spends the
-    poke, so the next idle pass is not due (no re-run on the old poke); promo_reactivate keeps it."""
     hourly = Interval(3600, None)
     started = NOW - timedelta(seconds=POKE_FLOOR_S + 30)
     for kind, busy_want, idle_want in (("send_welcome", Skip("busy"), Skip("not_due")),
@@ -335,7 +274,6 @@ def case_rv_c15_busy_send_welcome_poke_spent_then_idle_not_rerun():
         got = plan_rule(hourly, busy="running", poked=True, last_fired=started, run_count=None,
                         quiet_hours_json=None, now=NOW, kind=kind)
         assert got == busy_want, (kind, got)
-        # The idle pass: poked only when the busy pass kept it (Repoke).
         got = plan_rule(hourly, busy=None, poked=busy_want == Repoke(), last_fired=started,
                         run_count=None, quiet_hours_json=None, now=NOW, kind=kind)
         assert got == idle_want, (kind, got)
@@ -349,19 +287,18 @@ def case_plan_rule_needs_runs():
         pass
     else:
         raise AssertionError("max_runs set, run_count None: must raise")
-    # busy wins before the run limit is looked at (the shell reads run_count anyway)
     assert plan_rule(Interval(3600, 3), busy="pending", poked=False, last_fired=None,
                      run_count=None, quiet_hours_json=None, now=NOW, kind="send_welcome") == Skip("busy")
 
 
 def case_quiet_plan_table():
-    band = "[11, 13]"   # NOW is 12:00 UTC: inside at offset 0
-    rows = [   # (band, tz_off_min, plan)
+    band = "[11, 13]"
+    rows = [
         (band, 0, Skip("quiet_hours")),
-        (band, 120, Enqueue(no_clock=False)),        # 14:00 local
-        (band, -120, Enqueue(no_clock=False)),       # 10:00 local
-        (band, None, Enqueue(no_clock=True)),        # no clock: band cannot apply, warn
-        ("[0, 0]", None, Enqueue(no_clock=True)),    # disabled band, no clock: still warns (as HEAD)
+        (band, 120, Enqueue(no_clock=False)),
+        (band, -120, Enqueue(no_clock=False)),
+        (band, None, Enqueue(no_clock=True)),
+        ("[0, 0]", None, Enqueue(no_clock=True)),
         ("[0, 0]", 0, Enqueue(no_clock=False)),
         ("{bad", 0, Enqueue(no_clock=False)),
     ]
@@ -375,34 +312,29 @@ def case_dispatch_order_table():
     pairs = [Pair("a", "scrape_chats", False), Pair("b", "send_followup", False),
              Pair("c", "send_welcome", False), Pair("d", "send_followup", False),
              Pair("e", "scheduled_send", True), Pair("f", "send_followup", False)]
-    served = {"b": 100.0, "d": 50.0}   # f never served (0.0), then d, then b
+    served = {"b": 100.0, "d": 50.0}
     got = plan_dispatch(pairs, set(), served, lambda k: rank(k, 50), {"scrape_chats"})
     assert [(s.account_id, s.kind) for s in got] == [
         ("e", "scheduled_send"), ("c", "send_welcome"), ("f", "send_followup"),
         ("d", "send_followup"), ("b", "send_followup"), ("a", "scrape_chats")], got
     assert got[0] == Spawn("e", "scheduled_send", True, False)
     assert got[-1] == Spawn("a", "scrape_chats", False, True)
-    # in flight: not spawned again; the rest keep their order
     got = plan_dispatch(pairs, {("f", "send_followup"), ("a", "scrape_chats")}, served,
                         lambda k: rank(k, 50), {"scrape_chats"})
     assert [s.account_id for s in got] == ["e", "c", "d", "b"], got
-    # a tie on everything but the account id: id order
     got = plan_dispatch([Pair("z", K, False), Pair("m", K, False)], set(), {}, lambda k: 4, set())
     assert [s.account_id for s in got] == ["m", "z"], got
-    # the same pair twice: one spawn
     assert len(plan_dispatch([Pair("a", K, False), Pair("a", K, True)], set(), {}, lambda k: 4, set())) == 1
     assert plan_dispatch([], set(), {}, lambda k: 4, set()) == []
 
 
+# the bulk lane goes by oldest due job, never last_served (process-local: empty after a restart)
 def case_bulk_dispatch_goes_by_oldest_due_job():
-    """The bulk lane queues by each pair's oldest due job, never by `last_served`
-    (process-local: empty after a restart, which put the same ids last every time)."""
     B = "scrape_chats"
     pairs = [Pair("a", B, False, 300.0), Pair("z", B, False, 100.0), Pair("m", B, False, 200.0)]
     for served in ({}, {"z": 999.0, "m": 1.0}):
         got = plan_dispatch(pairs, set(), served, lambda k: 50, {B})
         assert [s.account_id for s in got] == ["z", "m", "a"], (served, got)
-    # a non-bulk pair still goes least recently served first
     got = plan_dispatch([Pair("a", K, False, 1.0), Pair("b", K, False, 2.0)], set(), {"a": 9.0}, lambda k: 4, set())
     assert [s.account_id for s in got] == ["b", "a"], got
 
@@ -420,28 +352,18 @@ def case_per_fan_dispatch_table():
     def plan(pairs, inflight=frozenset(), per_fan=cap):
         return [(s.account_id, s.kind, s.fan) for s in
                 plan_dispatch(pairs, set(inflight), {}, lambda k: 4, set(), per_fan)]
-    # two Fans of one Creator: both spawned (each run claims only its Fan)
     assert plan([Pair("a", F, False, 1.0, 1), Pair("a", F, False, 2.0, 2)]) == [("a", F, 1), ("a", F, 2)]
-    # the same Fan twice: one run
     assert plan([Pair("a", F, False, 1.0, 1), Pair("a", F, True, 2.0, 1)]) == [("a", F, 1)]
-    # a Fan in flight: not spawned again; another Fan is
     assert plan([Pair("a", F, False, 1.0, 1), Pair("a", F, False, 2.0, 2)], {("a", F, 1)}) == [("a", F, 2)]
-    # six Fans, cap 4: the four oldest due
     six = [Pair("a", F, False, float(10 - i), i) for i in range(6)]
     assert plan(six) == [("a", F, i) for i in (5, 4, 3, 2)], plan(six)
-    # in-flight runs count toward the cap, the sweep's (Fan None) too; per account
     assert plan(six, {("a", F, 9), ("a", F, None)}) == [("a", F, 5), ("a", F, 4)]
     assert plan(six + [Pair("b", F, False, 1.0, 1)], {("a", F, i) for i in range(10, 14)}) == [("b", F, 1)]
-    # cap 1: the old one run per account
     assert plan(six, per_fan={F: 1}) == [("a", F, 5)]
-    # no per_fan: one run per (account, kind), as before
     assert len(plan_dispatch(six, set(), {}, lambda k: 4, set())) == 1
-    # another kind with two Fans in its pairs: one run, Fan ignored by the key
     assert plan([Pair("a", K, False, 1.0, None), Pair("a", K, False, 2.0, None)]) == [("a", K, None)]
     assert plan([Pair("a", K, False)], {("a", K)}) == []
     assert run_key("a", K, 7, cap) == ("a", K) and run_key("a", F, 7, cap) == ("a", F, 7)
-    # round robin: 2 Creators x 4 Fans + another kind, 4 run slots (FIFO in spawn order): the first
-    # 4 spawns serve both Creators and the other kind, never one Creator's 2nd+ Fans first
     rr = [Pair(a, F, False, float(i), 10 * i + (a == "b")) for a in ("a", "b") for i in range(4)]
     rr.append(Pair("c", K, False, 9.0))
     got = plan(rr)
@@ -449,19 +371,18 @@ def case_per_fan_dispatch_table():
     assert got[:3] == [("a", F, 0), ("b", F, 1), ("c", K, None)], got
     assert got[3:] == [("a", F, 10), ("b", F, 11), ("a", F, 20), ("b", F, 21), ("a", F, 30), ("b", F, 31)], got
     assert {acc for acc, *_ in got[:4]} == {"a", "b", "c"}, got
-    # a Creator with Fans in flight: its next Fan queues behind another Creator's 1st and 2nd
     got = plan(rr[:-1], {("a", F, 99), ("a", F, 98)})
     assert got[:2] == [("b", F, 1), ("b", F, 11)] and got[2] == ("a", F, 0), got
 
 
 def case_parse_iso_table():
-    rows = [   # (input, naive UTC datetime | None)
+    rows = [
         ("2026-10-30T12:00:00+00:00", datetime(2026, 10, 30, 12, 0)),
         ("2026-10-30T12:00:00Z", datetime(2026, 10, 30, 12, 0)),
-        ("2026-10-30T12:00:00+02:00", datetime(2026, 10, 30, 10, 0)),      # converted, not dropped
+        ("2026-10-30T12:00:00+02:00", datetime(2026, 10, 30, 10, 0)),
         ("2026-10-30T01:30:00-05:30", datetime(2026, 10, 30, 7, 0)),
-        ("2026-10-30T23:00:00-02:00", datetime(2026, 10, 31, 1, 0)),       # across midnight
-        ("2026-10-30T12:00:00", datetime(2026, 10, 30, 12, 0)),            # naive: taken as UTC
+        ("2026-10-30T23:00:00-02:00", datetime(2026, 10, 31, 1, 0)),
+        ("2026-10-30T12:00:00", datetime(2026, 10, 30, 12, 0)),
         ("2026-10-30T12:00:00.250+00:00", datetime(2026, 10, 30, 12, 0, 0, 250000)),
         ("2026-10-30T12:00:00.123456Z", datetime(2026, 10, 30, 12, 0, 0, 123456)),
         ("garbage", None), ("", None), (None, None), (12345, None), (["2026-10-30"], None),

@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""POST /admin/roster/{account_id}/crawl, the on-demand roster crawl seam
-(ADR 0024; the soak harness's only trigger for `subscriber_snapshot`).
-
-Pins: the route is owner-only (401 signed out, 403 for another Agency's
-owner or an account the caller does not own), answers 200 with refresh_roster's stats,
-and `force=True` crawls past the 25-minute `_CRAWL_TTL_S` that the lifecycle
-sweep's own call (force=False) still honours.
-
-OF is a stub client on `automation_executor._make_client`: no network.
-
-Run: ./venv/bin/python service/tests/test_roster_crawl_route.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -32,7 +20,6 @@ FANS = (4100001, 4100002)
 
 
 class _StubOF:
-    """`subscribers` as OF pages it: a bare list, then an empty page."""
 
     def __init__(self):
         self.calls = 0
@@ -89,15 +76,12 @@ def case_owner_crawls_and_force_bypasses_ttl():
     first = asyncio.run(_seen_at())
     assert len(first) == 1, first
 
-    # Seconds later, well inside the 25-minute TTL: the sweep's own call is
-    # told "fresh" and reads nothing ...
     later = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=5)
     assert lm._CRAWL_TTL_S == 25 * 60
     got = asyncio.run(lm.refresh_roster(CREATOR_A, STUB, now=later))
     assert got == {"roster": "fresh"}, got
     assert STUB.calls == first_calls, "force=False crawled inside the TTL"
 
-    # ... while the route (force=True) crawls again and restamps seen_at.
     r = _crawl(owner)
     assert r.status_code == 200 and r.json().get("roster") == "crawled", (r.status_code, r.text)
     assert STUB.calls > first_calls, "the route did not bypass the TTL"

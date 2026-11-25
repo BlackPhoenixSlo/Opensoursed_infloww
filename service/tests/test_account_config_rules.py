@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""test_account_config_rules.py — the pure rules of the config PUT, by table.
-
-`account_config_rules.clean_head` + `clean_config_put` (the Brain PUT,
-`account_config_api`), chained as the route chains them: no DB, no OF, no
-request. The 422 texts are pinned byte for byte; the ABSENT-key rows matter
-most (a `voice` cleared by a save that never named it is a wrong-gender send).
-
-Run:  ./venv/bin/python service/tests/test_account_config_rules.py  (exit 0 = pass)
-"""
 import _harness  # noqa: F401 — MUST be first (temp DB, fake keys)
 
 import copy  # noqa: E402
@@ -28,7 +19,6 @@ SPARSE = ("voice", "model_notes", "daily_cost_cap_cents", "audience_mode", "audi
 
 
 def _put(cfg, aud=NO_AUD):
-    """The route's chain: the head first (before the audience IO), then the rest."""
     head, err = rules.clean_head(cfg, ALLOWED)
     if err is not None:
         assert head is None
@@ -48,11 +38,9 @@ def _err(cfg):
     return err.status_code, err.detail
 
 
-# ── the Brain PUT ─────────────────────────────────────────────────────────────
 
+# ABSENT keys stay unchanged: a voice cleared by a save that never named it is a wrong-gender send
 def case_absent_keys_are_unchanged():
-    """No sparse key joins the upsert unless SENT: voice, notes, audience,
-    cotag, and never nudge_config_json."""
     for cfg in ({}, {"persona": "hi"}, {"voice": ""}, {"voice": None},
                 {"language": "es", "model": "deepseek-v4-pro"}):
         vals = _ok(cfg)
@@ -113,7 +101,6 @@ def case_language():
                       ({"language": "EN"}, None), ({"language": ""}, None),
                       ({"language": None}, None), ({}, None)):
         assert _ok(cfg)["language"] == want, cfg
-    # An unknown code is refused, never stored or silently cleared.
     assert _err({"language": "xx"}) == (422, "language 'xx' is not a supported code")
 
 
@@ -129,7 +116,6 @@ def case_model_and_effort():
     assert _err({"model": "gpt-9"}) == (422, f"model 'gpt-9' is not a known model ({known})")
     assert _ok({"model": " deepseek-v4-pro "})["model"] == "deepseek-v4-pro"
     assert _ok({"model": ""})["model"] is None
-    # Effort is checked against the model being saved; its own default stores NULL.
     assert _ok({"model": "deepseek-v4-pro", "reasoning_effort": "low"})["reasoning_effort"] == "low"
     assert _ok({"model": "deepseek-v4-pro", "reasoning_effort": "high"})["reasoning_effort"] is None
     assert _err({"model": "deepseek-v4-pro", "reasoning_effort": "max"}) == (
@@ -138,9 +124,8 @@ def case_model_and_effort():
         422, "model 'glm-4.5-air' takes no reasoning effort — leave reasoning_effort empty")
     assert _err({"reasoning_effort": "low"}) == (
         422, "model '(none)' takes no reasoning effort — leave reasoning_effort empty")
-    # The helpers themselves, as the route re-exports them.
     assert rules._validate_model(None, "model", ALLOWED) is None
-    assert rules._validate_model("x", "model", set()) == "x"   # no allowlist: kept
+    assert rules._validate_model("x", "model", set()) == "x"
     assert rules._validate_effort("", "deepseek-v4-pro") is None
     vals = _ok({"model_by_purpose": {"chat": "glm-5.3-flash", "retired": "", "x": None}})
     assert json.loads(vals["model_by_purpose"]) == {"chat": "glm-5.3-flash"}, vals
@@ -176,8 +161,6 @@ def case_numbers_and_slots():
 
 
 def case_daily_cost_cap():
-    """Sent-only, bounded on an edit ($100/day), a stored cap above the bound
-    echoes back unchanged, and a Chatter's PUT never moves it."""
     def put(cfg, stored=None, locked=False):
         head, err = rules.clean_head(cfg, ALLOWED)
         assert err is None
@@ -185,12 +168,12 @@ def case_daily_cost_cap():
             AID, ALLOWED, NOW, head, NO_AUD, stored, locked))
     top = rules.MAX_DAILY_COST_CAP_CENTS
     assert top == 10_000
-    rows = [({"daily_cost_cap_cents": 0}, None, False, 0),           # 0 = AI paused
+    rows = [({"daily_cost_cap_cents": 0}, None, False, 0),
             ({"daily_cost_cap_cents": 1234}, 100, False, 1234),
             ({"daily_cost_cap_cents": top}, None, False, top),
-            ({"daily_cost_cap_cents": 50_000}, 50_000, False, 50_000),  # legacy echo
-            ({"daily_cost_cap_cents": 1234}, 100, True, "ABSENT"),     # chatter
-            ({"daily_cost_cap_cents": -1}, 100, True, "ABSENT"),       # chatter: not even read
+            ({"daily_cost_cap_cents": 50_000}, 50_000, False, 50_000),
+            ({"daily_cost_cap_cents": 1234}, 100, True, "ABSENT"),
+            ({"daily_cost_cap_cents": -1}, 100, True, "ABSENT"),
             ({}, 500, False, "ABSENT")]
     for cfg, stored, locked, want in rows:
         vals, err = put(cfg, stored, locked)
@@ -220,8 +203,6 @@ def case_audience_branches_join_only_when_sent():
 
 
 def case_clean_head_is_the_prefix_before_the_audience_io():
-    """The route runs `clean_head` before the audience branch: its checks are
-    the ones that come first, and the rest are left to `clean_config_put`."""
     head = [{"persona": 5}, {"model_notes": "n" * (MODEL_NOTES_MAX + 1)}, {"model": "gpt-9"},
             {"reasoning_effort": "low"}, {"persona_facts": 1}, {"language": "xx"}]
     for cfg in head:
@@ -232,7 +213,6 @@ def case_clean_head_is_the_prefix_before_the_audience_io():
     for cfg in ({"voice": "hom"}, {"utc_offset": 99}, {"cotag_username": "a b"}, {}):
         h, e = rules.clean_head(cfg, ALLOWED)
         assert e is None and isinstance(h, rules.Head), cfg
-    # Several bad keys: the first check in the route's order wins.
     assert _err({"voice": "hom", "persona": 5}) == (422, "persona must be text")
     assert _err({"utc_offset": 99, "voice": "hom"})[1].startswith("voice 'hom'")
 

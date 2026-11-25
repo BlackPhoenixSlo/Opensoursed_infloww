@@ -1,44 +1,3 @@
-"""service/remote_login_api.py — HTTP surface for the served Browserbase login
-(job runner: remote_login.py).
-
-  POST /admin/login/remote/start          begin a login job → the job's status
-  GET  /admin/login/remote/{id}           poll status (no secrets)
-  POST /admin/login/remote/{id}/otp       {"code"}: the 2FA code, while the job is in "otp"
-                                          (404 once the job is past its code deadline, the
-                                          answer for an expired job)
-  POST /admin/login/remote/{id}/cancel    cancel the job
-
-  POST /admin/login/remote/queue          {"text"}: pasted logins (login_paste: email<sep>password per
-                                          line) → a sequential queue (login_queue) + the bad lines (by
-                                          number, never their text); 409 while the owner's last one runs (a cancelled one is replaced)
-  GET  /admin/login/remote/queue          the owner's last queue, as below (404: none since the relay
-                                          started); the card opens it when it holds no id or meets a 409
-  GET  /admin/login/remote/queue/{qid}    each entry's email, state, job id, message, live view
-                                          (404 unknown / restarted / replaced / another principal's)
-  POST /admin/login/remote/queue/{qid}/cancel   stop it (waiting entries dropped, the running job cancelled)
-
-The human solves any challenge in the Browserbase live view whose URL the
-status carries while the job runs. A 2FA code can be typed there too, or sent
-to /otp: the job's thread types it into OnlyFans; a code OnlyFans does not take
-leaves the job in "otp", asking again (remote_login.OTP_REJECTED). One code at a
-time: while one is pending or being checked, another is 409.
-
-SECURITY
-  * /admin/login is in employees._AUDIT_SKIP_PREFIXES: the start body carries
-    the OnlyFans password and must never reach the audit log.
-  * /admin/login is owner-only (chatters._CHATTER_BLOCKED_ADMIN_PREFIXES), like
-    /admin/session.
-  * Only the principal that started a job may read, answer or cancel it (403).
-  * The 2FA code is never echoed: not in the status, not in an error, not in a
-    log line (the /otp body is audit-skipped with the rest of /admin/login).
-  * The proxy is the Add creator flow's Proxy selection: "infloww" (the
-    Inflowwww proxy), "none" or "custom" + proxy_label. Our proxy is never sent
-    to Browserbase; it is bound after the login (remote_login.bind_proxy). With
-    no choice given, the flow's default: the Inflowwww proxy when the relay has
-    a pool, else none. A custom label goes through the same visibility rule as
-    binding one (proxies_admin_api._assert_proxy_assignable): your own or a shared
-    default, never another user's.
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -59,8 +18,7 @@ router = APIRouter()
 
 
 class _StartBody(BaseModel):
-    # Defaults instead of required fields: a 422 echoes the request body, which
-    # would send the password back into an error message. Checked by hand below.
+    # Defaults, not required fields: a 422 echoes the request body, sending the password into an error message.
     email: str = ""
     password: str = ""
     proxy: str = Field("", description=(
@@ -94,7 +52,6 @@ def _require_job(job_id: str) -> remote_login.RemoteLoginJob:
 
 
 def _resolve_proxy(choice: str, label: str) -> tuple[str, str]:
-    """(proxy choice, custom label), checked before any job exists."""
     has_pool = bool(proxy_registry.pool_entries())
     choice = choice or (remote_login.PROXY_CUSTOM if label else
                         remote_login.PROXY_INFLOWWW if has_pool else remote_login.PROXY_NONE)
@@ -142,7 +99,7 @@ def remote_login_start(body: _StartBody = Body(...)) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:  # Browserbase env not configured
+    except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     return job.public()
 
@@ -157,7 +114,7 @@ def _bad(bad: list[login_paste.BadLine]) -> list[dict[str, Any]]:
 
 def _require_queue(queue_id: str) -> login_queue.Queue:
     q = login_queue.get(_principal() or "", queue_id)
-    if q is None:  # unknown, gone with a restart, or another principal's: the card shows "interrupted"
+    if q is None:
         raise HTTPException(status_code=404, detail=_NO_QUEUE)
     return q
 
@@ -176,10 +133,10 @@ async def remote_login_queue(body: Any = Body(None)) -> dict[str, Any]:
             "message": "no email<separator>password line to log in", "bad_lines": _bad(bad)})
     _require_playwright()
     try:
-        remote_login.bb_env()  # fail before a queue exists when the env is not set
+        remote_login.bb_env()
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    proxy, _ = _resolve_proxy("", "")  # the Add creator default: the Inflowwww proxy when the relay has one
+    proxy, _ = _resolve_proxy("", "")
     owner = _principal()
     if owner is None:
         raise HTTPException(status_code=401, detail="sign in required")
@@ -232,7 +189,7 @@ def remote_login_otp(job_id: str, body: Any = Body(None)) -> dict[str, Any]:
         job.submit_otp(code)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except remote_login.RemoteLoginExpired:  # past its code deadline (its thread types no code), maybe still "otp"
+    except remote_login.RemoteLoginExpired:
         raise HTTPException(status_code=404, detail=_NO_JOB)
     except remote_login.RemoteLoginConflict as e:
         raise HTTPException(status_code=409, detail=str(e))

@@ -1,22 +1,3 @@
-"""runtime_switches — owner overrides of the relay's env kill switches and caps
-
-Settings → System sets them (service/runtime_switches.py, PUT
-/admin/system/switches/{name}); each consumer reads DB override > env > default.
-
-  runtime_switches.name        PK, the env var's name (W7_WEBHOOK_DISPATCH_DISABLED, ...)
-  runtime_switches.value_json  JSON bool or integer
-  runtime_switches.updated_by  the master's username
-  runtime_switches.updated_at
-
-The ORM model in db/models.py declares the same table, so `init_db()`'s
-create_all brings it to a booting box; this revision keeps the alembic chain
-canonical. Idempotent (inspector-guarded, house convention). Downgrade drops
-the table: every switch goes back to env / default.
-
-Revision ID: 0098_runtime_switches
-Revises: 0096_of_earnings_daily
-Create Date: 2026-10-26
-"""
 from __future__ import annotations
 
 from typing import Sequence

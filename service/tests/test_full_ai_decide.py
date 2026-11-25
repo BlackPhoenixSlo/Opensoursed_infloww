@@ -1,78 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_decide — Full AI Chat's Route table (`full_ai_decide`) and the
-Router's constants (`_router_jev`), pure, plain assert.
-
-  case_constants_pinned       thresholds, MODEL, the question ids and the
-                              QUESTION_VERSION literal; a wording edit fails
-                              here until the pin moves on purpose
-  case_state_shape_moves_question_version  STATE_VERSION, THREAD_LINES,
-                              PURCHASE_DAYS, PURCHASE_KINDS each move the
-                              digest; PURCHASE_KINDS order does not
-  case_fired_at_the_edge     `fired`: at its threshold a question fires, just
-                              under it does not; test Mode adds TEST_THRESHOLDS
-                              ids (skipped when absent), Shadow never reads them
-  case_otherwise_is_chat      no row holds → chat, row `otherwise`, the fired
-                              set kept
-  case_rows_at_the_edge       every Route table row at its threshold fires,
-                              just under it does not; `fired` agrees
-  case_rows_in_order          each row beats every row below it
-  case_precedence             complains_now > stop > sell/tease/Pending tease;
-                              tease on price, beating sext; wants_content
-                              beats price; declines_buying routes nothing; a
-                              Pending tease sells; says_yes counted only
-                              with a Pending offer or Pending tease
-  case_route_flags            sell off: rows sell_off, tease_off; sext off:
-                              row sext_off; rows 1-5 untouched
-  case_jev_failed_is_chat     `jev_ok` false: chat, Heat 1, `jev_failed`
-  case_heat_is_his_level_plus_one  Heat = min(4, his level + 1), his level the
-                              Score rounded, a tie up; 1 when Jev failed
-  case_arm_of_is_a_fixed_20_pct_holdout  `arm_of` deterministic, ~20 % holdout
-                              over 10,000 Fans; HOLDOUT_PCT 20, SALT_VER 1
-  case_decide_module_is_pure  full_ai_decide imports stdlib and the Router's
-                              constants only
-  case_r10_every_flag_combination  R10 over every fired set of the flagged rows,
-                              Pending offer / tease and flag combination: an off
-                              row is dropped, the first remaining row matches
-  case_r10_shadow_equals_the_old_table  flags on: the pre-R10 table (declines_buying
-                              ignored since 2026-11-15), nothing dropped
-  case_r10_dropped_contents   `dropped` names the removed rows in walk order
-  case_test_mode_questions    Shadow asks exactly QUESTIONS + intensity; test Mode
-                              adds asks_subject / asks_format (Choices) and the
-                              DRAFT Nouls counter_offer / offer_moment; DRAFT set
-  case_question_version_by_mode  Shadow's digest is the pre-03b literal; test
-                              Mode's moves with DRAFT, a Choice option, a wording,
-                              a TEST_THRESHOLDS value (and left its pre-47B value)
-  case_choice_of              argmax; a tie or a missing answer → anything / any
-  case_sell_rows_every_combination  (ticket 47) haggle / offer_moment over every
-                              fired set × draft_on × sell_on × open Offer ×
-                              Pending tease (× Pending offer × sext_on): the
-                              frozen pre-47 table plus the spec's two rows
-  case_sell_rows_dropped      `dropped` worked rows: a DRAFT id that fired but
-                              did not count, haggle → sell_off, offer_moment
-                              names nothing
-  case_shadow_equals_the_pre_47_table  draft_on false: a frozen copy of the
-                              pre-ticket-47 `decide_turn` (declines_buying
-                              ignored since 2026-11-15) over every fired set
-                              of the 11 Phase 01 ids × every other fact
-  case_scene_questions        sext scene: the 4 SCENE ids asked only with
-                              `scene` (Nouls / Choices, not DRAFT); test digest
-                              left its pre-scene value and moves with their
-                              wording; Shadow's never; choice_or_none / defaults
-  case_scene_rows             scene_on alone -> sext row `scene_on`; scene_offer
-                              needs a scene + sell_on, after offer_moment, drop
-                              names nothing; sext off drops scene_on
-  case_scene_off_is_the_old_table  `scene` false: every fired set with the scene
-                              ids decides as without them (ignored, not dropped)
-  case_declines_buying_routes_nothing  owner 2026-11-15: declines_buying fires at .95
-                              in Shadow and test alike and never changes a Decision
-                              (alone = nothing fired; with wants_content / price /
-                              a Pending offer, tease or open Offer = without it)
-
-Run: ./venv/bin/python service/tests/test_full_ai_decide.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import ast  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -82,22 +11,17 @@ from automations import _router_jev as rj  # noqa: E402
 from automations import full_ai_decide as fd  # noqa: E402
 from automations import full_ai_sell  # noqa: E402
 
-# OWNER-REVIEW-router.md items 1-10 and 12, in that order (spec › Interfaces).
 IDS = ("promo", "says_under_18", "complains_now", "asks_if_ai", "stop", "price",
        "wants_content", "declines_buying", "says_yes_to_offer", "sexual_now", "gif_fits")
 THRESHOLDS = {"promo": .7, "says_under_18": .7, "complains_now": .5, "asks_if_ai": .7,
               "stop": .6, "price": .7, "wants_content": .7, "declines_buying": .95,
               "says_yes_to_offer": .7, "sexual_now": .7, "gif_fits": .6}
-# The DRAFT test-Mode Nouls' thresholds (ticket 47 phase B; ASSUMPTION: unprobed .7).
 TEST_THRESHOLDS = {"counter_offer": .7, "offer_moment": .7, "scene_on": .7, "scene_offer": .7,
-                   "wants_content": .65,   # 03d Ask cut-off: test Mode only, Shadow keeps .7
-                   "chat_tease": .7,        # Chat tease (config `chat_tease`), unprobed
-                   "asks_offer_details": .6}   # Offer details (NEW-165), probed 2026-11-17
-# `question_version("test")` before ticket 47 phase B put `TEST_THRESHOLDS` in it.
+                   "wants_content": .65,
+                   "chat_tease": .7,
+                   "asks_offer_details": .6}
 PRE_47B_TEST_VERSION = "4e30e9162a1e"
-# `question_version("test")` before the sext scene (origin/main c847cb09f).
 PRE_SCENE_TEST_VERSION = "8878043c1f4f"
-# Shadow's `question_version()`: declines_buying .95 in every Mode (owner 2026-11-15).
 SHADOW_VERSION = "14f5d4f6222f"
 
 
@@ -115,8 +39,6 @@ def case_constants_pinned():
         (rj.THRESHOLDS, THRESHOLDS, "THRESHOLDS"),
         (set(rj.THRESHOLDS), set(rj.QUESTIONS), "one threshold per question"),
         (rj.TEST_THRESHOLDS, TEST_THRESHOLDS, "TEST_THRESHOLDS"),
-        # 03d: every test id is a `TEST_NOULS` or `QUESTIONS` id; a `QUESTIONS` one replaces its
-        # Shadow cut-off in test Mode only (`fired`); none raises it.
         (set(rj.TEST_THRESHOLDS) <= set(rj.TEST_NOULS) | set(rj.QUESTIONS), True, "test ids known"),
         (set(rj.TEST_NOULS) <= set(rj.TEST_THRESHOLDS), True, "one test threshold per test Noul"),
         ({q for q, t in rj.TEST_THRESHOLDS.items() if q in rj.THRESHOLDS and t > rj.THRESHOLDS[q]},
@@ -125,8 +47,6 @@ def case_constants_pinned():
         (rj.STATE_VERSION, 1, "STATE_VERSION"),
         (rj.PURCHASE_DAYS, 7, "PURCHASE_DAYS"),
         (rj.PURCHASE_KINDS, ("tip", "ppv_message", "ppv_post"), "PURCHASE_KINDS"),
-        # The digest of the wording, thresholds, levels, model and state shape.
-        # Moving it is the point: a Decision row asked under other wording reads apart.
         (rj.QUESTION_VERSION, SHADOW_VERSION, "QUESTION_VERSION"),
         (rj.question_version(), rj.QUESTION_VERSION, "question_version() at import"),
     ]
@@ -135,7 +55,6 @@ def case_constants_pinned():
 
 
 def case_state_shape_moves_question_version():
-    """Each state-shape input is in the digest: changing one moves it."""
     for name, other in (("STATE_VERSION", 2), ("THREAD_LINES", 13), ("PURCHASE_DAYS", 8),
                         ("PURCHASE_KINDS", ("tip", "ppv_message"))):
         real = getattr(rj, name)
@@ -146,7 +65,6 @@ def case_state_shape_moves_question_version():
             setattr(rj, name, real)
         assert moved != rj.QUESTION_VERSION, (name, moved)
     assert rj.question_version() == rj.QUESTION_VERSION
-    # Order-blind: the kinds are a set to the SQL that reads them.
     real = rj.PURCHASE_KINDS
     rj.PURCHASE_KINDS = tuple(reversed(real))
     try:
@@ -161,7 +79,7 @@ def case_fired_at_the_edge():
         assert rj.fired(_quiet(**{q: round(t - .01, 2)})) == frozenset(), (q, "just under")
     assert rj.fired(_quiet()) == frozenset()
     quiet = _quiet(**dict.fromkeys(TEST_THRESHOLDS, 0.0))
-    for q, t in ((q, TEST_THRESHOLDS[q]) for q in rj.TEST_NOULS):   # test-only ids
+    for q, t in ((q, TEST_THRESHOLDS[q]) for q in rj.TEST_NOULS):
         at, under = {**quiet, q: t}, {**quiet, q: round(t - .01, 2)}
         assert rj.fired(at, "test") == frozenset({q}), (q, "test, at threshold")
         assert rj.fired(under, "test") == frozenset(), (q, "test, just under")
@@ -169,7 +87,6 @@ def case_fired_at_the_edge():
     both = {**quiet, "counter_offer": .9, "offer_moment": .7, "price": .7}
     assert rj.fired(both, "test") == frozenset({"counter_offer", "offer_moment", "price"})
     assert rj.fired(both) == frozenset({"price"})
-    # A test id absent from `answers` is not fired; a missing Shadow id still raises.
     assert rj.fired(_quiet(price=.8), "test") == frozenset({"price"})
     assert rj.fired(_quiet(offer_moment=.8), "test") == frozenset({"offer_moment"})
     for mode in ("shadow", "test"):
@@ -181,7 +98,6 @@ def case_fired_at_the_edge():
 
 
 def case_ask_cut_off():
-    """03d: `wants_content` in [.65, .70) fires in test Mode only; .70 in both; .649 in neither."""
     for p, test, shadow in ((.649, False, False), (.65, True, False), (.69, True, False),
                             (.70, True, True)):
         q = _quiet(wants_content=p)
@@ -207,9 +123,6 @@ def case_otherwise_is_chat():
         assert (d.route, d.heat, d.row, d.fired) == exp, (facts, d)
 
 
-# The Route table in first-match order (ticket 27; D42-D44, Opus a-c, R9):
-# (question, extra facts, Route, row). says_yes_to_offer counts only with a
-# Pending offer or Pending tease set.
 TABLE = (
     ("promo", {}, "no_send", "promo"),
     ("says_under_18", {}, "no_send", "says_under_18"),
@@ -229,9 +142,6 @@ def _route(answers: dict[str, float], **facts) -> tuple[str, str]:
 
 
 def case_rows_at_the_edge():
-    """Every row at its threshold fires, just under it does not (chat,
-    `otherwise`; `fired` at the edge is case_fired_at_the_edge); the Decision
-    keeps the fired set."""
     for q, extra, route, row in TABLE:
         t = THRESHOLDS[q]
         at, under = _quiet(**{q: t}), _quiet(**{q: round(t - .01, 2)})
@@ -241,7 +151,6 @@ def case_rows_at_the_edge():
 
 
 def case_rows_in_order():
-    """Each row beats every row below it, all firing together."""
     for i, (q, extra, route, row) in enumerate(TABLE):
         later = {x for x, *_ in TABLE[i:]}
         extras = {k: v for _, e, *_ in TABLE[i:] for k, v in e.items()}
@@ -251,37 +160,31 @@ def case_rows_in_order():
 
 def case_precedence():
     rows = [
-        # complains_now beats stop; stop beats sell, tease and a Pending tease.
         (({"complains_now", "stop"}, {}), ("make_right", "complains_now")),
         (({"stop", "wants_content"}, {}), ("chat", "stop")),
         (({"stop", "says_yes_to_offer"}, {"pending_offer": True}), ("chat", "stop")),
         (({"stop", "price"}, {}), ("chat", "stop")),
         (({"stop", "declines_buying"}, {}), ("chat", "stop")),
         (({"stop"}, {"pending_tease": True}), ("chat", "stop")),
-        # price: tease, beating sext; declines_buying routes nothing (owner 2026-11-15).
         (({"price"}, {}), ("tease", "tease_price")),
         (({"declines_buying"}, {}), ("chat", "otherwise")),
         (({"price", "declines_buying"}, {}), ("tease", "tease_price")),
         (({"declines_buying", "sexual_now"}, {}), ("sext", "sexual_now")),
         (({"price", "sexual_now"}, {}), ("tease", "tease_price")),
-        # wants_content (or a counted yes) with price or declines_buying: sell now.
         (({"wants_content", "price"}, {}), ("sell_now", "sell")),
         (({"wants_content", "declines_buying"}, {}), ("sell_now", "sell")),
         (({"says_yes_to_offer", "declines_buying"}, {"pending_offer": True}), ("sell_now", "sell")),
-        # A Pending tease with nothing fired sells; rows promo to stop still beat it.
         ((set(), {"pending_tease": True}), ("sell_now", "sell")),
         (({"price"}, {"pending_tease": True}), ("sell_now", "sell")),
         (({"promo"}, {"pending_tease": True}), ("no_send", "promo")),
         (({"says_under_18"}, {"pending_tease": True}), ("no_send", "says_under_18")),
         (({"complains_now"}, {"pending_tease": True}), ("make_right", "complains_now")),
         (({"asks_if_ai"}, {"pending_tease": True}), ("ai_dare", "asks_if_ai")),
-        # says_yes_to_offer counts only with a Pending offer or Pending tease.
         (({"says_yes_to_offer"}, {}), ("chat", "otherwise")),
         (({"says_yes_to_offer", "sexual_now"}, {}), ("sext", "sexual_now")),
         (({"says_yes_to_offer"}, {"pending_offer": True}), ("sell_now", "sell")),
         (({"says_yes_to_offer"}, {"pending_tease": True}), ("sell_now", "sell")),
         ((set(), {"pending_offer": True}), ("chat", "otherwise")),
-        # gif_fits is never read.
         (({"gif_fits"}, {}), ("chat", "otherwise")),
         (({"gif_fits", "sexual_now"}, {}), ("sext", "sexual_now")),
     ]
@@ -291,9 +194,6 @@ def case_precedence():
 
 
 def case_route_flags():
-    """Sell off: sell and tease turn chat (rows sell_off, tease_off) unless a later
-    row matches (R10: wants_content + sexual_now is sext); sext off: sext turns chat
-    (row sext_off); no flag touches any other row."""
     off, nosext = {"sell_on": False}, {"sext_on": False}
     rows = [
         (({"wants_content"}, off), ("chat", "sell_off")),
@@ -315,45 +215,37 @@ def case_route_flags():
     for (fired, extra), exp in rows:
         d = fd.decide_turn(_facts(fired, **extra))
         assert (d.route, d.row) == exp, (fired, extra, (d.route, d.row), exp)
-    assert fd.Facts.__dataclass_fields__["sell_on"].default is True      # all on in Shadow
+    assert fd.Facts.__dataclass_fields__["sell_on"].default is True
     assert fd.Facts.__dataclass_fields__["sext_on"].default is True
 
 
 def case_jev_failed_is_chat():
-    """`jev_ok` false: chat, Heat 1, row `jev_failed`, never a no_send."""
     for fired, extra in ((set(), {}), ({"promo"}, {}), ({"says_under_18", "sexual_now"}, {}),
                          (set(), {"pending_tease": True}), (set(), {"sell_on": False})):
         d = fd.decide_turn(_facts(fired, 3.0, jev_ok=False, **extra))
         assert (d.route, d.heat, d.row) == ("chat", 1, "jev_failed"), (fired, extra, d)
 
 
-# Heat = min(4, his level + 1), his level the `intensity` Score rounded to the
-# nearest level, a tie up (D44): the ticket's edges, then the tie edges.
 HEAT_EDGES = ((0.0, 1), (1.5, 3), (3.6, 4), (4.0, 4),
               (0.49, 1), (0.5, 2), (1.49, 2), (2.5, 4), (2.49, 3), (3.49, 4))
 
 
 def case_heat_is_his_level_plus_one():
-    # On every Route: each fired set below lands on a different one.
     for fired in ((), {"sexual_now"}, {"wants_content"}, {"price"}, {"complains_now"},
                   {"asks_if_ai"}, {"promo"}, {"stop"}):
         for intensity, heat in HEAT_EDGES:
             d = fd.decide_turn(_facts(fired, intensity))
             assert d.heat == heat, (fired, intensity, d.heat, heat)
-    for intensity in (0.0, 2.5, 4.0):        # Jev failed: Heat 1 whatever the Score
+    for intensity in (0.0, 2.5, 4.0):
         assert fd.decide_turn(_facts(intensity=intensity, jev_ok=False)).heat == 1, intensity
 
 
 def case_arm_of_is_a_fixed_20_pct_holdout():
-    """`arm_of` is deterministic and gives about 20 % holdout over 10,000 Fans
-    (holdout below 20 of 100, `salt_ver` 1; ADR-0035)."""
     assert (fd.HOLDOUT_PCT, fd.SALT_VER) == (20, 1), (fd.HOLDOUT_PCT, fd.SALT_VER)
     arms = [fd.arm_of("acct_a", fan) for fan in range(10_000)]
     assert set(arms) == {"treatment", "holdout"}, set(arms)
     n = arms.count("holdout")
-    assert 1_900 <= n <= 2_100, n                                           # 20 % +- 1 pp
-    # Pinned literals, as QUESTION_VERSION is: a salt, hash or split change (or
-    # a per-process hash) fails here until the pin moves on purpose (new SALT_VER).
+    assert 1_900 <= n <= 2_100, n
     assert n == 1976, n
     assert [fd.arm_of("acct_b", f) for f in range(10_000)].count("holdout") == 1957
     assert arms[:8] == ["treatment", "treatment", "holdout"] + ["treatment"] * 5, arms[:8]
@@ -370,20 +262,16 @@ def case_decide_module_is_pure():
     froms = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert mods <= _STDLIB, mods
     assert froms <= _STDLIB | {"automations._router_jev"}, froms
-    # From the Router only its constants (UPPER_CASE names), never `ask`.
     for n in ast.walk(tree):
         if isinstance(n, ast.ImportFrom) and n.module == "automations._router_jev":
             names = [a.name for a in n.names]
             assert all(x.isupper() for x in names), names
 
 
-# R10 (ticket 34): the flagged rows in walk order. An off flag drops its row and the
-# walk goes on; reaching `otherwise` names the first kind dropped.
 _FLAGGED_Q = ("wants_content", "says_yes_to_offer", "price", "declines_buying", "sexual_now")
 
 
 def _r10_expect(fired, pending_offer, pending_tease, sell_on, sext_on):
-    """The spec's R10 walk written out (Interfaces › full_ai_decide)."""
     rows = (
         ("sell", "sell_now", sell_on, "wants_content" in fired
          or ("says_yes_to_offer" in fired and pending_offer) or pending_tease),
@@ -396,7 +284,6 @@ def _r10_expect(fired, pending_offer, pending_tease, sell_on, sext_on):
             return route, row, tuple(dropped)
         if match:
             dropped.append(row)
-    # Named by the first drop, a literal table rather than the code's own walk.
     end = {"sell": "sell_off", "tease_price": "tease_off",
            "sexual_now": "sext_off"}[dropped[0]] if dropped else "otherwise"
     return "chat", end, tuple(dropped)
@@ -422,7 +309,6 @@ def case_r10_every_flag_combination():
 
 
 def _pre_r10(fired, po, pt):
-    """The table before R10 with every flag on (ticket 27's rows, verbatim logic)."""
     if "wants_content" in fired or ("says_yes_to_offer" in fired and po) or pt:
         return "sell_now", "sell"
     if "price" in fired or "declines_buying" in fired:
@@ -433,9 +319,6 @@ def _pre_r10(fired, po, pt):
 
 
 def case_r10_shadow_equals_the_old_table():
-    """Shadow passes every flag on (the `Facts` defaults): the same Route and row as
-    before R10 with declines_buying ignored (owner 2026-11-15), nothing dropped, on every
-    combination and every TABLE row."""
     for fired, po, pt, _s, _x in _combos():
         d = fd.decide_turn(fd.Facts(frozenset(fired), 1.0, po, pt, True))
         want = _pre_r10(fired - {"declines_buying"}, po, pt)
@@ -463,23 +346,17 @@ def case_r10_dropped_contents():
          ("chat", "tease_off", ("tease_price", "sexual_now"))),
         (({"sexual_now"}, nosext), ("chat", "sext_off", ("sexual_now",))),
         ((set(), {"pending_tease": True, **off}), ("chat", "sell_off", ("sell",))),
-        # says_yes with no Pending offer is no sell row, so nothing is dropped.
         (({"says_yes_to_offer"}, off), ("chat", "otherwise", ())),
-        # Rows 1-5 come before every flagged row: nothing is dropped.
         (({"complains_now", "wants_content"}, off), ("make_right", "complains_now", ())),
         (({"stop", "sexual_now"}, {**off, **nosext}), ("chat", "stop", ())),
     ]
     for (fired, extra), exp in rows:
         d = fd.decide_turn(_facts(fired, **extra))
         assert (d.route, d.row, d.dropped) == exp, (fired, extra, d, exp)
-    # A Jev failure walks no row.
     assert fd.decide_turn(_facts({"wants_content"}, jev_ok=False, **off)).dropped == ()
 
 
-# ── Test-Mode Router questions (03b ticket 43) ──────────────────────────
 
-# Spec › Interfaces `Ask` (ticket 10 r3's subjects, "anything" included) and formats; the
-# Sell executor's own Literals, so a Choice label is always an `Ask` value.
 SUBJECTS = ("feet", "butt", "tits", "pussy", "nude", "lingerie", "bikini", "shower", "toy",
             "masturbation", "blowjob", "sex", "anything")
 FORMATS = ("photo", "video", "any")
@@ -488,8 +365,6 @@ TEST_IDS = {"asks_subject", "asks_format", "counter_offer", "offer_moment", "ask
 
 
 def case_test_mode_questions():
-    """Shadow asks exactly `QUESTIONS` + `intensity`; test Mode adds the two Choices and the
-    two DRAFT Nouls; the DRAFT set names gif_fits, counter_offer, offer_moment."""
     for shadow in (rj._questions(), rj._questions("shadow")):
         assert list(shadow) == [*IDS, "intensity"], list(shadow)
     test = rj._questions("test")
@@ -501,7 +376,6 @@ def case_test_mode_questions():
     assert tuple(test["asks_format"].criteria) == FORMATS, tuple(test["asks_format"].criteria)
     assert all(test[q].model_dump() == v.model_dump() for q, v in rj._questions().items()
                if q not in rj.TEST_NEW_ONLY)
-    # `asks_if_ai` reads his new messages only in test + live (NEW-158); Shadow keeps Phase 01's.
     assert set(rj.TEST_NEW_ONLY) == {"asks_if_ai"}
     assert test["asks_if_ai"].instructions == rj.TEST_NEW_ONLY["asks_if_ai"]["instructions"]
     assert test["asks_if_ai"].instructions.startswith("In `fan_new_messages`, ")
@@ -511,8 +385,6 @@ def case_test_mode_questions():
 
 
 def case_question_version_by_mode():
-    """Shadow's digest is the pre-03b literal; test Mode's moves with a DRAFT member, a Choice
-    option or a DRAFT Noul's wording, and Shadow's never does."""
     assert rj.question_version() == rj.question_version("shadow") == SHADOW_VERSION
     base = rj.question_version("test")
     assert base != rj.QUESTION_VERSION, base
@@ -541,18 +413,16 @@ def case_question_version_by_mode():
 
 
 def case_choice_of():
-    """Argmax over the Choice's probabilities; a tie at the top or a missing answer is
-    anything / any."""
     rows = [
         ({"asks_subject": {"feet": .7, "butt": .2, "anything": .1}}, "asks_subject", "feet"),
         ({"asks_subject": {"feet": .3, "anything": .6, "tits": .1}}, "asks_subject", "anything"),
         ({"asks_format": {"photo": .1, "video": .8, "any": .1}}, "asks_format", "video"),
         ({"asks_subject": {"feet": .45, "butt": .45, "anything": .1}}, "asks_subject", "anything"),
         ({"asks_format": {"photo": .45, "video": .45, "any": .1}}, "asks_format", "any"),
-        ({"asks_format": {"photo": .5, "video": .2}}, "asks_subject", "anything"),   # missing
+        ({"asks_format": {"photo": .5, "video": .2}}, "asks_subject", "anything"),
         ({}, "asks_format", "any"),
         ({"asks_subject": {}}, "asks_subject", "anything"),
-        ({"asks_subject": {"face": .9, "feet": .1}}, "asks_subject", "anything"),       # not offered
+        ({"asks_subject": {"face": .9, "feet": .1}}, "asks_subject", "anything"),
     ]
     for choices, qid, want in rows:
         got = rj.choice_of(choices, qid)
@@ -560,14 +430,12 @@ def case_choice_of():
 
 
 
-# ── Sell rows haggle / offer_moment (03b ticket 47) ─────────────────────
 
 _SELL_Q = ("complains_now", "wants_content", "says_yes_to_offer", "price", "declines_buying",
            "sexual_now", "counter_offer", "offer_moment")
 
 
 def _before_sext(dropped: tuple[str, ...], row: str) -> tuple[str, ...]:
-    """`row` placed after the sell / tease drops and before a dropped sexual_now."""
     i = dropped.index("sexual_now") if "sexual_now" in dropped else len(dropped)
     return (*dropped[:i], row, *dropped[i:])
 
@@ -646,27 +514,22 @@ def case_sell_rows_dropped():
         (({"offer_moment", "sexual_now"}, on), ("sell_now", "offer_moment", ())),
         (({"offer_moment", "price"}, on), ("tease", "tease_price", ())),
         (({"offer_moment", "wants_content"}, on), ("sell_now", "sell", ())),
-        # The sell flag drops offer_moment and names nothing (no sell-off line).
         (({"offer_moment"}, {**on, **off}), ("chat", "otherwise", ("offer_moment",))),
         (({"offer_moment", "sexual_now"}, {**on, **off}), ("sext", "sexual_now", ("offer_moment",))),
         (({"offer_moment", "sexual_now"}, {**on, **off, **nosext}),
          ("chat", "sext_off", ("offer_moment", "sexual_now"))),
         (({"offer_moment", "price"}, {**on, **off}), ("chat", "tease_off", ("tease_price", "offer_moment"))),
-        # Rows 1-5 first: nothing dropped.
         (({"complains_now", "counter_offer"}, {**on, **oo}), ("make_right", "complains_now", ())),
         (({"stop", "offer_moment"}, {**on, **off}), ("chat", "stop", ())),
     ]
     for (fired, extra), exp in rows:
         d = fd.decide_turn(_facts(fired, **extra))
         assert (d.route, d.row, d.dropped) == exp, (fired, extra, d, exp)
-    # A Jev failure walks no row, DRAFT ids included.
     d = fd.decide_turn(_facts({"counter_offer", "offer_moment"}, jev_ok=False, **on, **oo))
     assert (d.route, d.row, d.dropped) == ("chat", "jev_failed", ()), d
 
 
 def _decide_before_47(facts):
-    """FROZEN: `full_ai_decide.decide_turn` as it was before ticket 47 (main f3ad378e1),
-    copied verbatim so the Shadow proof compares against the real previous table."""
     f = facts.fired
     if not facts.jev_ok:
         return fd.Decision("chat", 1, "jev_failed", f)
@@ -691,9 +554,6 @@ def _decide_before_47(facts):
 
 
 def case_shadow_equals_the_pre_47_table():
-    """Shadow (draft_on false, the default; flags on and off alike): the same Decision as the
-    pre-47 table on every fired set of the 11 Phase 01 ids with declines_buying ignored (owner
-    2026-11-15; the Decision still keeps it in `fired`), whatever open Offer says."""
     from dataclasses import replace
     from itertools import product
     n = 0
@@ -705,19 +565,15 @@ def case_shadow_equals_the_pre_47_table():
         assert fd.decide_turn(facts) == old, (sorted(fired), bits[len(IDS):])
         n += 1
     assert n == 2 ** 17, n
-    # Today's caller (full_ai_turn._route) passes no new keyword: draft_on and open_offer default off.
     assert (fd.Facts(frozenset(), 0.0, False, False, True).draft_on,
             fd.Facts(frozenset(), 0.0, False, False, True).open_offer) == (False, False)
 
 
-# ── Sext scene (config `sext_scene`, owner 2026-11-14) ─────────────────
 
 SCENE_IDS = {"scene_on": "Noul", "scene_offer": "Noul", "scene_stage": "Choice", "offer_level": "Choice"}
 
 
 def case_scene_questions():
-    """The SCENE ids join test Mode's request only with `scene`; never DRAFT; the test digest
-    moved off its pre-scene value and moves with their wording; Shadow's never."""
     assert rj.SCENE == frozenset(SCENE_IDS) and not rj.SCENE & rj.DRAFT
     off, on = rj._questions("test"), rj._questions("test", scene=True)
     assert set(on) - set(off) == set(SCENE_IDS), sorted(set(on) - set(off))
@@ -741,31 +597,29 @@ def case_scene_questions():
         assert rj.question_version("test") != base
     finally:
         rj.SCENE_STATE_KEYS = real_keys
-    rows = [   # (choices, qid, choice_of, choice_or_none)
+    rows = [
         ({"scene_stage": {"peak": .8, "building": .2}}, "scene_stage", "peak", "peak"),
         ({"scene_stage": {"peak": .5, "building": .5}}, "scene_stage", "building", None),
         ({}, "scene_stage", "building", None),
         (None, "scene_stage", "building", None),
         ({"offer_level": {"nude": .6, "soft": .4}}, "offer_level", "nude", "nude"),
-        ({"offer_level": {"any": .9}}, "offer_level", "any", None),     # "any" is never offered
+        ({"offer_level": {"any": .9}}, "offer_level", "any", None),
         ({}, "offer_level", "any", None),
     ]
     for choices, qid, want, want_none in rows:
         assert rj.choice_of(choices or {}, qid) == want, (choices, qid)
         assert rj.choice_or_none(choices, qid) == want_none, (choices, qid)
-    # test Mode fires them at .7; Shadow never reads them.
     q = _quiet(scene_on=.7, scene_offer=.69)
     assert rj.fired(q, "test") == frozenset({"scene_on"}) and rj.fired(q) == frozenset()
 
 
 def case_scene_rows():
-    """Worked rows with `scene` on (every flag on unless named)."""
     on, nosell, nosext = {"scene": True}, {"scene": True, "sell_on": False}, {"scene": True, "sext_on": False}
     rows = [
         (({"scene_on"}, on), ("sext", "scene_on", ())),
         (({"scene_on", "sexual_now"}, on), ("sext", "sexual_now", ())),
         (({"scene_on"}, nosext), ("chat", "sext_off", ("scene_on",))),
-        (({"scene_offer"}, on), ("chat", "otherwise", ())),                 # no scene: nothing
+        (({"scene_offer"}, on), ("chat", "otherwise", ())),
         (({"scene_offer", "scene_on"}, on), ("sell_now", "scene_offer", ())),
         (({"scene_offer", "sexual_now"}, on), ("sell_now", "scene_offer", ())),
         (({"scene_offer", "scene_on"}, nosell), ("sext", "scene_on", ("scene_offer",))),
@@ -783,8 +637,6 @@ def case_scene_rows():
 
 
 def case_scene_off_is_the_old_table():
-    """`scene` false (Shadow, live, flag off): the scene ids are ignored, not recorded — every
-    fired set decides exactly as without them."""
     from itertools import product
     ids = ("wants_content", "price", "sexual_now", "offer_moment", "counter_offer")
     n = 0
@@ -802,8 +654,6 @@ def case_scene_off_is_the_old_table():
 
 
 def case_declines_buying_routes_nothing():
-    """Owner 2026-11-15 ("just be ignorant of this broke stuff"): declines_buying fires at .95 in
-    Shadow and test alike and never changes the Decision (the Writer may joke, test_full_ai_writers)."""
     from dataclasses import replace
     from itertools import product
     for p, want in ((.5, False), (.94, False), (.95, True), (1.0, True)):
@@ -811,7 +661,7 @@ def case_declines_buying_routes_nothing():
         assert rj.fired(q) == rj.fired(q, "shadow") == rj.fired(q, "test"), p
         assert ("declines_buying" in rj.fired(q, "test")) is want, p
     shadow, test = {}, {"draft_on": True, "scene": True, "chat_tease": True}
-    rows = (   # (fired without declines_buying, flags) -> its Decision, declines_buying added
+    rows = (
         ((set(), shadow), ("chat", "otherwise", ())),
         ((set(), test), ("chat", "otherwise", ())),
         (({"wants_content"}, shadow), ("sell_now", "sell", ())),
@@ -830,7 +680,6 @@ def case_declines_buying_routes_nothing():
         d = fd.decide_turn(_facts(fired | {"declines_buying"}, 2.0, **flags))
         assert (d.route, d.row, d.dropped) == want, (sorted(fired), flags, d)
         assert "declines_buying" in d.fired
-    # Every fired set and fact: adding declines_buying changes nothing but `fired`.
     ids = ("wants_content", "says_yes_to_offer", "price", "sexual_now", "counter_offer", "offer_moment",
            "scene_on", "scene_offer", "chat_tease")
     for bits in product((False, True), repeat=len(ids) + 6):

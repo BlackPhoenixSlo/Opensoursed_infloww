@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""
-A08 process_old_fans — guard characterisation (pins TODAY's behaviour).
-
-process_old_fans has no LLM call or sender of its own: it flags the batch, then
-composes gen_info (A02) + apply_profiles (A03) with `force_ids=<batch>`. So its
-two guards live one hop down, and that is where these cases point:
-
-  case_cap_recorded_no_crash:
-      llm_client.chat raises LLMCapExceeded → gen_info counts it (`capped`=1,
-      `generated`=0); the A08 run still ends `ok`, the fan is still flagged,
-      no fan_profiles row, nothing touches OF, stats_json carries the cap.
-  case_force_ids_bypasses_rerun_gate:
-      a fan with 3 inbound msgs is below gen_info's re-run gate (_MIN_NEW_MSGS),
-      so a plain gen_info sweep skips him (control). Through process_old_fans the
-      forwarded force_ids bypasses that gate → profiled. Only the target is
-      seeded (force_ids does not scope who else a sweep would pick); the OF push
-      is exactly set_fan_custom_name + set_fan_note, both for the target.
-
-Run: ./venv/bin/python service/tests/test_process_old_fans_guards.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -48,8 +28,6 @@ _PROFILE = {
 
 
 class FakeOF:
-    """Records EVERY client call (method, args) — gen_info's best-effort OF
-    nickname/notes push goes through here; nothing may hit the network."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
@@ -95,7 +73,6 @@ async def _seed(aid: str, fid: int, in_msgs: int) -> None:
                           created_at=base + timedelta(minutes=i)))
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 async def case_cap_recorded_no_crash():
     aid, fid = "acc_pofg_cap", 9101
@@ -106,7 +83,7 @@ async def case_cap_recorded_no_crash():
 
     res = await run_once(aid, "process_old_fans", payload={"fan_ids": [fid]})
     assert res["status"] == "ok", res
-    assert llm_calls == [fid], llm_calls                       # it was asked, once
+    assert llm_calls == [fid], llm_calls
     assert res["flagged"] == 1 and res["processed"] == 1, res
     g = res["gen_info"]
     assert g and g["capped"] == 1 and g["generated"] == 0 and g["failed"] == 0, g
@@ -127,13 +104,12 @@ async def case_cap_recorded_no_crash():
 
 async def case_force_ids_bypasses_rerun_gate():
     aid, fid = "acc_pofg_force", 9201
-    await _seed(aid, fid, in_msgs=3)        # below gen_info._MIN_NEW_MSGS (8)
+    await _seed(aid, fid, in_msgs=3)
     assert gen_info._MIN_NEW_MSGS > 3, gen_info._MIN_NEW_MSGS
     fake = _use_fake()
     llm_calls: list = []
     _patch_llm(calls=llm_calls)
 
-    # Control: an un-forced gen_info sweep leaves this fan alone.
     plain = await gen_info.run(aid, {}, run_id=0)
     assert plain["candidates"] == 1 and plain["generated"] == 0, plain
     assert plain["skipped_fresh"] == 1 and llm_calls == [], (plain, llm_calls)
@@ -143,8 +119,7 @@ async def case_force_ids_bypasses_rerun_gate():
     assert res["gen_info"]["attempted"] == 1, res["gen_info"]
     assert res["gen_info"]["generated"] == 1, res["gen_info"]
     assert llm_calls == [fid], llm_calls
-    assert fake.sent == [], fake.sent                         # no DM, ever
-    # The OF profile push: (method, fan id = first positional) — only the target.
+    assert fake.sent == [], fake.sent
     assert [(name, a[0]) for name, a, _k in fake.calls] == \
         [("set_fan_custom_name", fid), ("set_fan_note", fid)], fake.calls
 

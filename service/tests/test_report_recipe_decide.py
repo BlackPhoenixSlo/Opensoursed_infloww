@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""report_recipe_decide: the report recipe's pure rules (tables).
-
-Run: ./venv/bin/python service/tests/test_report_recipe_decide.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness
 
 from datetime import date, datetime  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
 import report_recipe_decide as d  # noqa: E402
 
-TODAY = date(2026, 11, 13)  # a Friday
+TODAY = date(2026, 11, 13)
 
 
 def _recipe(**raw):
@@ -39,7 +35,6 @@ def case_parse_errors_per_field():
         ({"dataset": "fan_spend", "window": {"preset": "today"}, "group_by": ["creator"]}, "group_by", "always by"),
         ({"dataset": "sales", "window": {"preset": "today"}, "metrics": ["messages"]}, "metrics", "unknown metric"),
         ({"dataset": "sales", "window": {"preset": "today"}, "sort": "chars"}, "sort", "group_by keys or metrics"),
-        # fan_spend sorts + cuts in SQL: a key sort there would cut the wrong rows (review F1).
         ({"dataset": "fan_spend", "window": {"preset": "today"}, "sort": "fan", "limit": 1}, "sort", "chosen metrics"),
         ({"dataset": "fan_spend", "window": {"preset": "today"}, "sort": "creator"}, "sort", "chosen metrics"),
         ({"dataset": "sales", "window": {"preset": "today"}, "limit": 0}, "limit", "1 to"),
@@ -65,11 +60,10 @@ def case_parse_defaults_and_dedupe():
     c = _recipe(dataset="chat_activity", employees=[4, 4, 5], group_by=["employee", "hour"])
     assert c.employees == (4, 5) and c.group_by == ("employee", "hour")
     assert _recipe(window={"from": "2026-11-01", "to": "2026-11-03"}).window == ("range", "2026-11-01", "2026-11-03")
-    assert d.parse_recipe(r.as_dict())[0] == r  # round trip
+    assert d.parse_recipe(r.as_dict())[0] == r
 
 
 def case_sort_key_is_the_one_ordering():
-    # shape and fan_spend's SQL ORDER BY both read sort_key (review F1): sort, else the time key, else metrics[0].
     assert d.sort_key(_recipe(dataset="fan_spend", metrics=["tips"], limit=1)) == "tips"
     assert d.sort_key(_recipe(dataset="fan_spend", metrics=["total", "tips"], sort="tips")) == "tips"
     assert d.sort_key(_recipe(group_by=["creator", "day"])) == "day"
@@ -101,9 +95,9 @@ def case_resolve_window_presets():
 def case_resolve_window_caps():
     table = [
         ("sales", {"preset": "last_365_days"}, (), None),
-        ("sales", {"from": "2025-01-01", "to": "2026-02-05"}, (), "at most 400"),  # 401 days
+        ("sales", {"from": "2025-01-01", "to": "2026-02-05"}, (), "at most 400"),
         ("employee_sales", {"preset": "last_90_days"}, (), None),
-        ("employee_sales", {"from": "2026-08-01", "to": "2026-11-01"}, (), "at most 92"),  # 93 days
+        ("employee_sales", {"from": "2026-08-01", "to": "2026-11-01"}, (), "at most 92"),
         ("chat_activity", {"preset": "last_30_days"}, ("hour",), None),
         ("chat_activity", {"preset": "last_90_days"}, ("hour",), "by hour"),
     ]
@@ -163,10 +157,8 @@ def case_shape_sums_sorts_and_dollars():
     cols, rows = d.shape(r, cells, {"creator": {"a": "Ana", "b": "Bea"}})
     assert cols == ["Creator", "Gross ($)", "Sales"]
     assert rows == [["Bea", 50.0, 2], ["Ana", 20.0, 4]], rows
-    # A key sort runs A to Z; limit cuts after sorting.
     r2 = _recipe(group_by=["creator"], metrics=["gross"], sort="creator", limit=1)
     assert d.shape(r2, cells, {"creator": {"a": "Ana", "b": "Bea"}})[1] == [["Ana", 20.0]]
-    # The time key orders by default, ties by the first metric.
     r3 = _recipe(group_by=["kind", "day"], metrics=["gross"])
     cells3 = [{"kind": "tip", "day": "2026-11-02", "gross_cents": 100},
               {"kind": "ppv", "day": "2026-11-01", "gross_cents": 100},
@@ -182,7 +174,6 @@ def case_shape_unlock_rate_after_grouping():
     cols, rows = d.shape(r, cells, {"employee": {1: "Ana"}})
     assert cols == ["Employee", "PPVs sent", "Unlock rate (%)"]
     assert rows == [["Ana", 4, 50.0], ["Unattributed", 0, None]], rows
-    # Sorting by a rate puts the blank last.
     r2 = _recipe(dataset="chat_activity", group_by=["employee"], metrics=["unlock_rate"], sort="unlock_rate")
     assert d.shape(r2, cells, {"employee": {1: "Ana"}})[1][-1] == ["Unattributed", None]
 

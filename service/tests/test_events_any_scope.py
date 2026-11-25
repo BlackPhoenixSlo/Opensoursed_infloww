@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""events_decide's any-scope routing (phase-01 1b, ticket 23): `creator_warmed` and the money events the rail and bell
-seed from (`transaction_recorded`, `purchase_notified`, a `toasts` frame carrying a tip or purchase toast) reach a
-model-scoped subscriber for any Creator in its accessible set (the `accounts` clamp the Relay resolves at subscribe,
-owner or chatter), not only the Creator its scope names. Never one outside that set (another Agency's), never an
-unclamped subscriber's other Creators; every other type routes as before (scope, then the clamp).
-
-Pure tables over `events_decide.wants` (the shell's one routing read). Runs as a script (repo convention) or pytest:
-    ./venv/bin/python service/tests/test_events_any_scope.py
-"""
 from __future__ import annotations
 
 import sys
@@ -19,18 +10,18 @@ import events_decide as ed  # noqa: E402
 
 try:
     if __name__ == "__main__":
-        raise ImportError  # script mode uses the runner below, even with pytest installed
+        raise ImportError
     import pytest
     table = pytest.mark.parametrize
-except ImportError:  # script mode: the runner below calls each row
+except ImportError:
     def table(names, rows):
         def mark(fn):
             fn.rows = rows
             return fn
         return mark
 
-A, B, C = "9201", "9202", "9301"          # A and B: one Agency's Creators; C: another Agency's
-MINE = frozenset({A, B})                   # the subscriber's accessible set (owner's, or a chatter's union)
+A, B, C = "9201", "9202", "9301"
+MINE = frozenset({A, B})
 OWNER = "owner-1"
 
 
@@ -63,7 +54,6 @@ def dm(aid) -> dict:
 
 
 @table("scope, accounts, event, wanted", [
-    # A tab scoped to A gets B's warm and money events: B is in its accessible set.
     (f"model:{A}", MINE, warmed(B), True),
     (f"model:{A}", MINE, tx(B), True),
     (f"model:{A}", MINE, bought(B), True),
@@ -71,37 +61,33 @@ def dm(aid) -> dict:
     (f"model:{A}", MINE, toast(B, "tips"), True),
     (f"model:{A}", MINE, toast(B, "purchases"), True),
     (f"model:{A}", MINE, toast(B, "paided_message"), True),
-    (f"model:{A}", MINE, toast(B, "favorited", "tip"), True),       # one money toast in the frame is enough
+    (f"model:{A}", MINE, toast(B, "favorited", "tip"), True),
     (f"model:{A}", MINE, warmed(int(B)), True),
-    (f"model:{A}", MINE, replied(B), True),                          # a reply moves B's row in A's All Models lists
+    (f"model:{A}", MINE, replied(B), True),
     (f"model:{A}", MINE, replied(C), False),
-    (f"model:{A}", None, replied(B), False),                      # an int id compares as its str
-    (f"model:{A}", MINE, refreshed(B), True),                        # the Shared refresher's snapshot, any tab of B
-    (f"model:{A}", MINE, refreshed(C), False),                       # ... never past the clamp
+    (f"model:{A}", None, replied(B), False),
+    (f"model:{A}", MINE, refreshed(B), True),
+    (f"model:{A}", MINE, refreshed(C), False),
     (f"model:{A}", None, refreshed(B), False),
-    # ... never another Agency's Creator, whatever the type.
     (f"model:{A}", MINE, warmed(C), False),
     (f"model:{A}", MINE, tx(C), False),
     (f"model:{A}", MINE, bought(C), False),
     (f"model:{A}", MINE, toast(C, "tip"), False),
-    # ... nor for a subscriber with no accessible set (unclamped: the anonymous escape hatch).
     (f"model:{A}", None, warmed(B), False),
     (f"model:{A}", None, tx(B), False),
     (f"model:{A}", frozenset(), warmed(B), False),
-    # Every other type routes as before: the scope names the Creator, then the clamp.
     (f"model:{A}", MINE, dm(B), False),
-    (f"model:{A}", MINE, toast(B, "favorited"), False),               # a like is not money
+    (f"model:{A}", MINE, toast(B, "favorited"), False),
     (f"model:{A}", MINE, toast(B, "subscribed", "commented"), False),
-    (f"model:{A}", MINE, {"toasts": {"id": 1, "type": "tip"}, "__account_id": B}, False),  # not OF's list shape
+    (f"model:{A}", MINE, {"toasts": {"id": 1, "type": "tip"}, "__account_id": B}, False),
     (f"model:{A}", MINE, {"session_dead": {"dead": True}, "__account_id": B}, False),
     (f"model:{A}", MINE, {"chat_typing": {"fan_id": 7}, "__account_id": B}, False),
     (f"model:{A}", MINE, dm(A), True),
-    (f"model:{A}", MINE, warmed(A), True),                           # its own Creator, as before
+    (f"model:{A}", MINE, warmed(A), True),
     ("all", MINE, warmed(B), True),
     ("all", MINE, warmed(C), False),
-    ("all", None, warmed(C), True),                                  # unclamped "all" as before
-    ("bogus", MINE, warmed(B), False),                               # an unknown scope still sees nothing
-    # Agency-wide events keep their audience rule.
+    ("all", None, warmed(C), True),
+    ("bogus", MINE, warmed(B), False),
     (f"model:{A}", MINE, {"creator_warmed": {"account_id": B}, "__agency": "owner-2"}, False),
 ])
 def test_any_scope(scope, accounts, event, wanted):

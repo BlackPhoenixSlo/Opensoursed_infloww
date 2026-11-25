@@ -1,14 +1,3 @@
-"""service/full_ai_revenue.py — Full AI Chat's revenue readout (spec phase-05 › Phase 07, ADR-0035).
-
-Enrolment is derived, no row: `live_at` = the Creator's first live `ai_decisions` row; a Fan's
-`enrolled_at` = his first inbound `messages` row at / after it (intent to treat: a Fan Full AI never
-answered still counts). Arm = `full_ai_decide.arm_of`, never a stored column. Money =
-`transactions.amount_cents`, every kind, cleared + pending (`full_ai_owned.TX_STATUSES`: pending sales
-count in every earnings total, refunds / chargebacks never), `occurred_at` in
-[enrolled, +14 d); only Fans enrolled 14 d or more ago enter the mean, the rest are `in_window`.
-Routes = live priced rows (price > 0) with an `offer_message_id`: buy rates, not revenue proof.
-Reads only: settles nothing (Turn start and the periodic job do).
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -23,20 +12,18 @@ from db.models import AiDecision, Message, Transaction
 from isotime import iso_z
 
 WINDOW = timedelta(days=14)
-LIVE = "live"       # a row filter in a report (as full_ai_watch.SQL), no behaviour gate
+LIVE = "live"
 NO_HOLDOUT = "no holdout: not a comparison"
 HOLDOUT = "not readable under about 480 Fans per Arm"
 _ORDER = {r: i for i, r in enumerate(get_args(Route))}
 
 
+# txs are already the counted statuses (`load` filters): pending sales count, refunds/chargebacks never.
+# No holdout: one group `all` whatever the Arm; two treated groups side by side would read as a comparison.
 def readout(live_at: datetime | None, cohort: Iterable[tuple[int, datetime, str]],
             txs: Iterable[tuple[int, datetime, int]],
             offers: Iterable[tuple[str, int | None, int | None, str | None]],
             now: datetime, holdout: bool = False) -> dict[str, Any]:
-    """cohort = [(fan_id, enrolled_at, arm)]; txs = [(fan_id, occurred_at, amount_cents)], already
-    the counted statuses (`load` filters them);
-    offers = [(route, offer_price_cents, offer_message_id, outcome)]. No holdout: one group `all`
-    whatever the Arm (two treated groups side by side would read as a comparison)."""
     out: dict[str, Any] = {"live_since": iso_z(live_at), "note": HOLDOUT if holdout else NO_HOLDOUT,
                            "arms": {}, "routes": []}
     if live_at is None:
@@ -71,7 +58,6 @@ def readout(live_at: datetime | None, cohort: Iterable[tuple[int, datetime, str]
 
 
 async def load(account_id: str) -> tuple[datetime | None, list, list, list]:
-    """readout's inputs off the DB: (live_at, cohort, txs, offers); the window is readout's."""
     async with get_session() as s:
         live_at = (await s.execute(select(func.min(AiDecision.created_at)).where(
             AiDecision.account_id == account_id, AiDecision.mode == LIVE))).scalar()
@@ -97,6 +83,5 @@ async def load(account_id: str) -> tuple[datetime | None, list, list, list]:
 
 
 async def revenue(account_id: str, now: datetime | None = None) -> dict[str, Any]:
-    """The route's read: 04b builds no holdout gate, so one group `all`."""
     live_at, cohort, txs, offers = await load(account_id)
     return readout(live_at, cohort, txs, offers, now or datetime.utcnow(), holdout=False)

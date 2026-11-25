@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_owner — `full_ai_owner`'s pure tables (spec 04b › Testing Decisions).
-
-  case_who_owns_table        one case per Stop reason; None when all clear
-  case_who_owns_pairs        each adjacent pair of REASONS set together returns the earlier one (the
-                             off_* trio and the human pair share one field: their order is the loader's,
-                             test_full_ai_owner_io)
-  case_top_spend_edges       0 never stops; equal stops; one cent under does not
-  case_claims_table          true only with off None and listed; a Fan over the Top spend limit, hard
-                             skipped or in a walk is still claimed
-  case_pure_imports          no DB, OF client, lease or dm_rate import (AST)
-
-Run: ./venv/bin/python service/tests/test_full_ai_owner.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 import ast  # noqa: E402
 import dataclasses  # noqa: E402
@@ -26,7 +13,6 @@ from automations.full_ai_owner import OwnerFacts, Stop, claims, who_owns  # noqa
 
 CLEAR = OwnerFacts(off=None, listed=True, hard_skip=False, audience_ok=True, human=None, human_at=None,
                    walk_advancing=False, spend_cents=0, top_spend_cents=100000)
-# reason -> the facts change that alone raises it
 RAISE = {
     "off_global": {"off": "off_global"}, "off_rule": {"off": "off_rule"}, "off_mode": {"off": "off_mode"},
     "not_listed": {"listed": False}, "hard_skip": {"hard_skip": True}, "audience": {"audience_ok": False},
@@ -46,7 +32,7 @@ def case_who_owns_table():
 def case_who_owns_pairs():
     checked = 0
     for a, b in zip(fo.REASONS, fo.REASONS[1:]):
-        if set(RAISE[a]) & set(RAISE[b]):        # one field (off, human): cannot both be set
+        if set(RAISE[a]) & set(RAISE[b]):
             continue
         got = who_owns(dataclasses.replace(CLEAR, **RAISE[a], **RAISE[b]))
         assert got == Stop(a), (a, b, got)
@@ -63,9 +49,9 @@ def case_who_owns_pairs():
 
 def case_top_spend_edges():
     f = lambda spend, top: who_owns(dataclasses.replace(CLEAR, spend_cents=spend, top_spend_cents=top))  # noqa: E731
-    assert f(10**9, 0) is None                    # 0 = off
+    assert f(10**9, 0) is None
     assert f(0, 0) is None
-    assert f(5000, 5000) == Stop("top_spend")     # equal stops
+    assert f(5000, 5000) == Stop("top_spend")
     assert f(4999, 5000) is None
     assert f(5001, 5000) == Stop("top_spend")
 
@@ -75,7 +61,6 @@ def case_claims_table():
             ("off_mode", True, False), ("off_mode", False, False)]
     for off, listed, want in rows:
         assert claims(off, listed) is want, (off, listed)
-    # claims reads only off + listed: a Fan Full AI stops on (spend, hard skip, walk, human) stays claimed
     for change in (RAISE["top_spend"], RAISE["hard_skip"], RAISE["funnel_walk"], RAISE["human"]):
         f = dataclasses.replace(CLEAR, **change)
         assert who_owns(f) is not None and claims(f.off, f.listed), change
@@ -98,7 +83,7 @@ def case_pure_imports():
     assert found == [], found
     imported = {a.name.split(".")[0] for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Import) for a in n.names}
     imported |= {(n.module or "").split(".")[0] for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ImportFrom)}
-    assert imported <= {"__future__", "dataclasses", "datetime", "of_shapes"}, imported   # of_shapes: pure parsers
+    assert imported <= {"__future__", "dataclasses", "datetime", "of_shapes"}, imported
 
 
 if __name__ == "__main__":

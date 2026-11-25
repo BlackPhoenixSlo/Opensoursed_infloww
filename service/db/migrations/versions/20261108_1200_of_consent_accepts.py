@@ -1,13 +1,3 @@
-"""of_consent_accepts — a Creator's "Auto-accept OnlyFans consent" switch and its history
-
-One NEW append-only table (one row per change: account, on/off, who, when; the newest
-row is the setting, none = off). No existing row is touched. `create_all()` brings it
-to a booting box; this file keeps the alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0105_of_consent_accepts
-Revises: 0104_assistant_turns
-Create Date: 2026-11-08
-"""
 from __future__ import annotations
 
 from typing import Sequence

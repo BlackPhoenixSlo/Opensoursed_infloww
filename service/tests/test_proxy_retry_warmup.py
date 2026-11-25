@@ -1,15 +1,3 @@
-"""service/tests/test_proxy_retry_warmup.py — the x-hash / egress warmup
-fetches must funnel through OFClient._proxy_retry, same as real OF calls.
-
-Regression guard for the bug where _ensure_x_hash() ran a RAW self.http.get
-outside _http_call's retry (and outside its try/except), so a single
-datacenter CONNECT-403 blip failed the whole automation tick/job in ~78ms
-with no retry — because _make_client builds a fresh client every tick, the
-unprotected warmup fired on the first signed request of every run.
-
-No DB / no _harness needed: we build a bare OFClient via __new__ and inject a
-fake self.http, so this runs as a plain script like the rest of the suite.
-"""
 import sys
 import os
 import time
@@ -25,8 +13,6 @@ _PROXY_403 = "Failed to perform, curl: (56) CONNECT tunnel failed, response 403"
 
 
 def _bare_client(http):
-    """An OFClient with just the attrs _ensure_x_hash / egress_ip touch — no
-    session load, no network at construction."""
     c = OFClient.__new__(OFClient)
     c.account_id = "TEST"
     c.user_id = "999"
@@ -49,10 +35,6 @@ class _Resp:
 
 
 def case_xhash_retries_then_succeeds():
-    """Transient ProxyError on the first 2 attempts → retried, 3rd succeeds.
-    The >=1200ms wall time proves the 0.4s + 0.8s _proxy_retry pauses actually
-    ran (i.e. this isn't the old fast-fail path); the jitter draw is pinned to
-    1.0, so each pause is its ceiling."""
     calls = {"n": 0}
 
     def flaky_get(url, **kw):
@@ -75,7 +57,6 @@ def case_xhash_retries_then_succeeds():
 
 
 def case_xhash_cached_after_first_fetch():
-    """Second call returns the cached value — no second network hit."""
     calls = {"n": 0}
 
     def count_get(url, **kw):
@@ -89,10 +70,6 @@ def case_xhash_cached_after_first_fetch():
 
 
 def case_xhash_persistent_failure_raises_after_five():
-    """A genuinely dead/blocked proxy still surfaces (we don't retry forever)
-    — exactly `tries` attempts with doubling pauses, then the ProxyError
-    propagates. The jitter draw pinned to 1.0 (each pause its ceiling) and to
-    0.0 (its floor, half: a refusal burst still spends >= 3 s before giving up)."""
     for draw, want in ((1.0, [0.4, 0.8, 1.6, 3.2]), (0.0, [0.2, 0.4, 0.8, 1.6])):
         calls = {"n": 0}
         pauses = []
@@ -116,8 +93,6 @@ def case_xhash_persistent_failure_raises_after_five():
 
 
 def case_egress_ip_retries_then_succeeds():
-    """egress_ip swallows failures (returns None), but should still retry the
-    transient blip rather than give up on the first 403."""
     calls = {"n": 0}
 
     def flaky_get(url, **kw):

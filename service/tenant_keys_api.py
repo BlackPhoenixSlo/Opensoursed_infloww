@@ -1,22 +1,3 @@
-"""service/tenant_keys_api.py — Setup → Keys, THIS agency's own LLM keys.
-
-Distinct from /admin/secrets (secrets_store) in both scope and blast radius:
-those are the DEPLOYMENT's house keys, these are one owner's. An owner may only
-ever read or write their own row — the user id comes from the session and is
-never taken from the request, so there is no cross-tenant write to defend
-against.
-
-A signed-in User is required. A Chatter session resolves to no user here (a
-different principal with a different cookie) and so gets a 401: chatters do the
-messaging work, they do not hold the agency's billing credentials. Writes while
-impersonating are already refused by the session middleware (impersonation is
-read-only), so a founder cannot overwrite a friend's key while wearing their
-identity.
-
-The store itself is `tenant_keys`, which stays free of web imports because the
-LLM money path imports it.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -73,49 +54,17 @@ async def my_llm_keys_set(request: Request) -> dict[str, Any]:
     return {"providers": await tenant_keys.status(user.id)}
 
 
-# ── Founder: set an agency's keys FOR them ────────────────────────────
-#
-# The managed flow this deployment actually runs: an agency connects its OF
-# model and the founder does the rest. Everything else in that flow already
-# works — a master sees every account through the fat set without needing a
-# link, and Admin → Manage grants and revokes them. The one thing missing was
-# the credential: `/admin/my-llm-keys` writes only the SIGNED-IN owner's row,
-# and impersonation is read-only, so an agency that had not pasted a key could
-# not be fixed from any screen.
-#
-# It is also what turns the upgrade step from "sign in as each owner in turn"
-# into one page.
-#
-# Two gates, matching the neighbouring grant/revoke endpoints and then some:
-# a signed-in MASTER for both verbs (a masked hint still leaks the last four
-# characters of another tenant's key, so the read is not public either), plus
-# the founder password on the write, because this stores a credential someone
-# else's models will spend.
 
-# The gate is a ROUTER dependency, not a line at the top of each handler.
-# 231c0ee exists precisely because a gate that had to be typed into every
-# handler was not typed into two of them, and /admin/secrets sat ungated for the
-# life of those routes. Declaring it once means a route added here is master-only
-# by construction — forgetting is no longer possible.
 admin_router = APIRouter(prefix="/admin/users", tags=["tenant-keys"],
                          dependencies=[Depends(require_master)])
 
 
 class AgencyKeysBody(BaseModel):
     admin_password: str = Field(..., min_length=1)
-    # {provider: value}; "" clears. Only the providers named are touched.
     providers: dict[str, str] = Field(default_factory=dict)
 
 
 async def _assert_agency(user_id: str) -> None:
-    """404 on an id that names no agency, before either verb answers.
-
-    Not defensive tidying — both verbs fail badly without it. The read hands
-    back every provider unset, which is indistinguishable from a real agency
-    that never pasted a key, so a mistyped id looks like the problem the screen
-    exists to fix. The write dies on the `user_llm_keys` foreign key as a 500.
-    Same check, same wording, as the grant endpoints one file over.
-    """
     if not await tenant_keys.agency_exists(user_id):
         raise HTTPException(status_code=404, detail=f"unknown user {user_id!r}")
 
@@ -133,25 +82,11 @@ async def agency_llm_key_status_all() -> dict[str, Any]:
     every tenant on the deployment, which is not one agency's business to read.
     Provider NAMES only — never a value or a hint.
     """
-    # Local import, matching `auth.admin_list_user_accounts` — the registry
-    # pulls in the account layer and this module has no business dragging it
-    # into every import of the key API.
-    #
-    # `has_session` is the registry's own answer and the only current one: the
-    # `sessions` TABLE has no live writer, so the store must not be left to
-    # guess from it.
     from accounts import list_accounts
     registry = {
         str(a.get("id") or ""): bool(a.get("has_session"))
         for a in list_accounts() if a.get("id")
     }
-    # What a live model needs before it can reply at all. Named HERE, at the
-    # composition root, rather than inferred in the store or hardcoded in the
-    # component: credentials resolve per provider, so an agency holding only a
-    # DeepInfra key would otherwise read as configured while every chat reply it
-    # makes fails closed. Every account on this deployment leaves
-    # `model_by_purpose` unset and falls through to the house DeepSeek default;
-    # when that stops being true, this set is the one line to change.
     required = {"deepseek"}
     return {"agencies": await tenant_keys.key_overview(registry, required)}
 
@@ -180,15 +115,8 @@ async def agency_llm_keys_set(
     return {"user_id": user_id, "providers": await tenant_keys.status(user_id)}
 
 
-# ── /admin/ai-key-status: the key notice on an automation's page ─────────────
-# Background automations cannot toast, so their page asks here. Readable by
-# anyone who may see the account (chatters too — they get the sentence without
-# the owner-only link), which is why it is its own router and not under the
-# chatter-blocked /admin/my-llm-keys prefix. Presence and a stored sentence
-# only: never a key, a mask or a hint.
 status_router = APIRouter(tags=["tenant-keys"])
 
-# automation kind → the purpose its calls bill under (send_followup's differs).
 _KIND_PURPOSE = {
     "autoreply": "autoreply", "reply_mass_funnel": "reply_mass_funnel",
     "welcome_chatter_for_info": "welcome_chatter_for_info",
@@ -198,20 +126,14 @@ _KIND_PURPOSE = {
 
 
 async def _funnel_needs_key(account_id: str) -> bool:
-    # The walker bills only a generated step: all-written funnels need no key.
     from automations.reply_mass_funnel import needs_llm
     return await needs_llm(account_id)
 
 
-# kind → does it call an LLM right now? Absent: always (while it has a purpose).
 _KIND_NEEDS_KEY = {"reply_mass_funnel": _funnel_needs_key}
 
 
 async def _last_key_error(account_id: str, kind: str, owners: list[str]) -> dict | None:
-    """The `key_error` the kind's LATEST finished run carried, or None. The
-    latest only: a run after the key was fixed carries none, which clears it.
-    A rejected/out-of-credit key the owner has since re-saved is cleared too —
-    the new key hasn't failed yet, so the notice must not wait a day's run."""
     import json as _json
     from sqlalchemy import func, select
     from db.engine import get_session
@@ -253,11 +175,6 @@ async def _kind_provider(account_id: str, kind: str, purpose: str) -> str:
 
 
 async def require_llm_key(account_id: str, kind: str) -> None:
-    """Refuse switching an AI automation ON while it has no usable key: raises
-    `LLMKeyError("missing")` → the app-wide 424 + "add a key" toast. Kinds that
-    call no LLM pass, and so does a kind whose `_KIND_NEEDS_KEY` says it calls
-    none right now (the funnel walker with no generated step on the runs it
-    walks). Live presence only (a rejected key is the run's notice)."""
     import llm_client
     purpose = _KIND_PURPOSE.get(kind)
     if not purpose:
@@ -294,7 +211,6 @@ async def ai_key_status(account_id: str = Query(..., min_length=1),
         last = await _last_key_error(account_id, kind, owners)
         items.append({"kind": kind, "provider": provider, "available": available,
                       "last_key_error": last})
-        # Live presence wins; a stored "missing" is stale once a key exists.
         stored = str(last["error"])[len("api_key_"):] if last else ""
         problem = "missing" if not available else ("" if stored == "missing" else stored)
         if problem:

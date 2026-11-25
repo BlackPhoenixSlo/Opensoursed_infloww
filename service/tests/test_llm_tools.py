@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""llm_client.chat(tools=…, tool_choice=…): OpenAI-shape function calling, DeepSeek only (Ultra planning, step 5).
-
-  case_tool_payload       — tools / tool_choice travel in the body; an assistant `tool_calls` + `role: "tool"`
-                            history passes through as given; the reply's tool_calls come back normalized with
-                            content "" (null content is valid); the audit row's response_text holds the calls.
-  case_no_tools_unchanged — a call without tools sends neither key and returns tool_calls == [].
-  case_other_providers    — tools on a Claude (native Anthropic adapter) or any non-DeepSeek model → LLMConfigError
-                            before any request.
-  case_estimate_counts    — the reservation estimate grows with the tool schemas and an assistant's tool_calls.
-  case_cap_state_user     — cap_state(user_id=…) reads the agency rollup (grok_user_daily_cost), not the account one.
-
-Offline: the transport is stubbed, nothing leaves the process.
-
-Run: cd service/tests && ../../venv/bin/python test_llm_tools.py
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 

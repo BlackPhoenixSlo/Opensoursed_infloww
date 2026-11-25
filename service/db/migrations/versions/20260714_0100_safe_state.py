@@ -1,28 +1,3 @@
-"""safe_state — v2 safe seller state machine columns
-
-Revision ID: 0045_safe_state
-Revises: 0044_upsell
-Create Date: 2026-07-14
-
-Additive (columns only — no new tables):
-  • ladder_state.objection_at / discount_count / bot_accused_count /
-    companion_until / cooldown_until — the v2 safe-state machine
-    (SPEND_REGRET → COOLDOWN/COMPANION, earned-discount beat + one-per-item,
-    bot-accusation 2nd-strike, post-multibuy cooldown). offers_paused_until
-    already exists from 0044. NONE of these ever touches
-    fans.automation_paused_until — a decline/companion/cooldown is ladder-scoped,
-    or it blanks the fan out of welcome/followup/mass too.
-  • rhythm_state.recent_turns_json — rolling last ~20 realized turns (§3.4),
-    recorded at the SEND site and fed back into the next RhythmCtx.
-  • catalog_items.band_lo / band_hi — the derived-band snapshot per media
-    (§4.2 deflation watch); NULL until first quote.
-
-Ships inert: with the AI-Seller lane flags off none of these is written and
-ai_chatter/ppv_send behave byte-identically to today.
-
-Additive + idempotent (inspector-guarded, house convention so a create_all-built
-DB whose alembic_version lags doesn't trip).
-"""
 from __future__ import annotations
 
 from typing import Sequence

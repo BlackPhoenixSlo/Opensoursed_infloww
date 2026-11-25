@@ -1,9 +1,4 @@
-"""Process-wide idle-handle registry. Locks never span network I/O.
-
-Slots survive handle replacement; immutable IDs and generations reject stale
-retirement. The registry owns slots, not clients; finalizers mark orphan slots.
-"""
-
+# Locks never span network I/O.
 import itertools
 import threading
 import time
@@ -53,7 +48,6 @@ class BoundedEvents(list):
 
 
 class Registry:
-    """One registry/sweeper per process. Strong slots, no strong Session/OFClient refs."""
 
     _instance = None
     _instance_lock = threading.Lock()
@@ -111,7 +105,6 @@ class Registry:
             return list(self.slots.values())
 
     def deregister(self, s):
-        # Caller holds slot lock. No registry-to-slot lock nesting elsewhere.
         if (s.life.closed or s.orphan) and not (
             s.curl or s.active or s.pins or s.retiring
         ):
@@ -170,13 +163,12 @@ class Registry:
     def run(self):
         while not self.stop_event.wait(self.interval):
             for s in self.snapshot():
-                if self.stop_event.is_set():   # a timed-out drain: no retire during the rest of shutdown
+                if self.stop_event.is_set():
                     break
                 try:
                     self.retire(s, terminal=s.life.closed or s.orphan)
                 except Exception:
-                    # retire() already recorded it; one bad handle must not
-                    # end idle reclaim for the whole process.
+                    # retire() already recorded it; one bad handle must not end idle reclaim for the whole process.
                     continue
                 except BaseException:
                     self.stop_event.set()
@@ -195,15 +187,14 @@ class Registry:
         with self.lock:
             self.streams.discard(stream)
 
+    # Never hold global/slot locks while a finalizer takes its state lock.
     def finish_completed_streams(self, session=None):
-        # Never hold global/slot locks while a finalizer takes its state lock.
-        # future.done() means the native worker has returned, not merely that
-        # headers arrived or an async caller was cancelled.
         with self.lock:
             streams = list(self.streams)
         for stream in streams:
             if session is None or stream.session is session:
                 future = stream.future
+                # future.done() means the native worker has returned, not merely that headers arrived or an async caller was cancelled.
                 if future is not None and future.done():
                     stream.finish()
 
@@ -212,10 +203,6 @@ class Registry:
             self.accepting = False
 
     def drain(self, timeout=None):
-        """Terminal only: wait for native owners, never force-close active handles.
-        `timeout` (s): give up waiting then and return False (no shutdown), so a stuck
-        native worker can't hold process stop past the container's grace (the idle sweeper
-        stops too: no retires during the rest of shutdown). True: drained."""
         self.stop_admission()
         until = None if timeout is None else time.monotonic() + timeout
         with self.admission_lock:
@@ -223,7 +210,7 @@ class Registry:
         for session in sessions:
             session.close()
         if self.stop_event.is_set():
-            return False   # the caller gave up while a close blocked: no shutdown()/retire after it
+            return False
         while True:
             self.finish_completed_streams()
             if not any(
@@ -240,7 +227,7 @@ class Registry:
         return True
 
     def shutdown(self):
-        # Never force close an active worker; caller must drain first.
+        # Never force-close an active worker; the caller must drain first.
         assert all(not s.active and not s.pins for s in self.snapshot()), (
             "shutdown requires drained leases/pins"
         )

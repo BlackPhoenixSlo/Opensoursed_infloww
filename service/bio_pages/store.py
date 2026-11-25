@@ -1,4 +1,3 @@
-"""Bio reads and retained, batched daily counters on this process's DB engine."""
 from __future__ import annotations
 
 import asyncio
@@ -17,9 +16,8 @@ from db.engine import engine, get_session
 
 log = logging.getLogger("of-relay.bio")
 EventKind = Literal["view", "click"]
+# Relay's init_db adds background_image after a deploy; until then pages read it as '' (migration 0122), not 503.
 _PROFILE_COLS = "id, username, display_name, bio, avatar, background_image, mode, verified"
-# A deploy recreates this service and the relay together; only the relay's init_db adds columns. Until it has added
-# bio_profiles.background_image (migration 0122) a page reads as having none, instead of a 503.
 _PROFILE_COLS_PRE_0122 = _PROFILE_COLS.replace("background_image", "'' AS background_image")
 _PUBLIC_LINK_COLS = ("id, profile_id, link_id, title, default_tracking_code, mode, icon, background_image, "
                      "is_adult, tracking, bot_check")
@@ -76,7 +74,6 @@ async def link_by_link_id(link_id: str) -> dict | None:
 
 
 async def link_profile_id(row_id: str) -> str | None:
-    """The Profile owning the Link row `row_id` (its files' record id), or None."""
     async with get_session() as s:
         return (await s.execute(text("SELECT profile_id FROM bio_links WHERE id = :i"), {"i": row_id})).scalar()
 
@@ -92,8 +89,6 @@ _HOST_ROW = text(
 
 
 async def resolve_host_row(name: str) -> tuple[HostKind, str | None]:
-    """A spare domain, else the Custom Domain's one Profile once DNS proved it (`pending_cert`: its certificate is
-    still being issued, which needs the host served; `live`). A `pending` one names nobody."""
     async with get_session() as s:
         row = (await s.execute(_HOST_ROW, {"d": name, "verified": VERIFIED})).first()
     if row is None:
@@ -104,8 +99,8 @@ async def resolve_host_row(name: str) -> tuple[HostKind, str | None]:
 _batch: dict[tuple[str, str, str, str, str, str], list[int]] = {}
 _flush_lock = asyncio.Lock()
 _flush_task: asyncio.Task | None = None
-MAX_KEYS = 10_000  # early flush at this many keys
-BATCH_CAP = 50_000  # hard cap across pending and in-flight keys
+MAX_KEYS = 10_000
+BATCH_CAP = 50_000
 CHUNK_SIZE = 1_000
 _retry_after = 0.0
 _busy_warnings = 0
@@ -150,7 +145,6 @@ async def _live_split(conn, rows: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 async def _write(rows: list[dict]) -> list[dict]:
-    """One short write transaction; return rows whose profile no longer exists."""
     async with engine.connect() as conn:
         sqlite = engine.url.get_backend_name() == "sqlite"
         if sqlite:
@@ -182,11 +176,7 @@ async def _write(rows: list[dict]) -> list[dict]:
 
 
 async def flush() -> bool:
-    """Persist at most CHUNK_SIZE keys per short transaction. Transient DB errors retain counts;
-    orphan profile keys and permanent errors are dropped with counted lines.
-
-    Never cancel this coroutine: cancellation after the batch swap can lose its uncommitted counts.
-    """
+    # Never cancel: cancellation after the batch swap loses its uncommitted counts.
     global _batch, _retry_after, _busy_warnings, _capped
     async with _flush_lock:
         taken_batch, _batch = _batch, {}
@@ -236,5 +226,4 @@ async def flush_loop(seconds: float, stop: asyncio.Event) -> None:
 
 
 def pending() -> tuple[int, int, int]:
-    """Keys, views and clicks not yet committed."""
     return len(_batch), sum(v[0] for v in _batch.values()), sum(v[1] for v in _batch.values())

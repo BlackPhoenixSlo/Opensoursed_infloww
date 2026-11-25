@@ -1,32 +1,3 @@
-"""service/tracking_links_api.py — Tracking / UTM redirects and owner CRUD.
-
-Fully internal (no OnlyFans dependency). An operator mints a named link with a
-short `slug`; the PUBLIC endpoint `GET /t/{slug}` records one click and 302s to
-the `target_url`. Per-link analytics = clicks over time (subscriber / revenue
-attribution is unavailable: a TrackingClick has no fan-joinable identity and
-the fan never lands on OnlyFans from here).
-
-A link may ask for a "Bot check before redirect" (`bot_check`, Cloudflare
-Turnstile, needs TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY): GET /t/{slug} then
-answers a blank page holding only the widget (the target is nowhere in it) and
-the click counts once POST /t/{slug}/verify passes Cloudflare's siteverify.
-Keys unset → the feature is off and a gated link is a plain 302 (a fan is never
-stranded on a check that cannot pass).
-
-Routes:
-  Public (share-token exempt in server.py):
-    GET  /t/{slug}                                record click → 302 target_url
-                                                  (bot_check: Turnstile page, no click)
-    POST /t/{slug}/verify {token, ref}            siteverify → record click → {url}
-
-  Owner-gated (/admin/*):
-    GET    /admin/tracking-links?account_id=      list links (+ click_count)
-    POST   /admin/tracking-links                  create (auto or custom slug)
-    PATCH  /admin/tracking-links/{link_id}        {bot_check}
-    DELETE /admin/tracking-links/{link_id}        delete (cascades clicks)
-  Click stats (summary, per-link analytics): tracking_stats.py, which also owns the
-  bounded raw click reads.
-"""
 from __future__ import annotations
 
 import html
@@ -67,16 +38,10 @@ def _slugify(text: str) -> str:
     return base[:_MAX_SLUG] or "link"
 
 
-# "javascript:", "data:", "mailto:" … — a scheme with no "//" after it. A host
-# with a port ("ofl.ink:8080/x") is not one: digits follow its colon.
 _BARE_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:(?!\d)", re.I)
 
 
 def _normalize_target(url: Any) -> str | None:
-    """The http(s) URL to store, or None. No scheme → https:// is prepended
-    (`ofl.ink/nora` → `https://ofl.ink/nora`); any other scheme is
-    refused, and so is a host with no dot. The one check: the app sends the
-    target as typed and shows this route's 422."""
     if not isinstance(url, str):
         return None
     url = url.strip()
@@ -99,18 +64,9 @@ def _normalize_target(url: Any) -> str | None:
     return url if len(url) <= 2000 else None
 
 
-# ── Cloudflare Turnstile ("Bot check before redirect") ────────────────
-# The keys, the token check, the siteverify client and its in-flight cap live in
-# turnstile.py (the bio app gates its Reveal with the same).
 
 
-# Per-client verify budget (client_addr: the trusted hop's address, an IPv6
-# client by its /64): VERIFY_CAPACITY at once, refilling one per VERIFY_REFILL_S.
-# Sized for many fans behind one carrier NAT address on a gated link in a click
-# burst (each check plus its Retries), which must not see 429; a script posting
-# garbage tokens is held to ~30 a minute per address (plus _VERIFY_MAX_INFLIGHT
-# overall) and gets 429 before the link lookup and Cloudflare's siteverify. The
-# plain GET is not throttled (a burst of real clicks from one NAT must all land).
+# Sized for many fans behind one carrier NAT in a click burst; garbage-token scripts are held to ~30/min per address. Plain GET is not throttled.
 VERIFY_CAPACITY = 30
 VERIFY_REFILL_S = 2.0
 _verify_buckets = token_bucket.Buckets(max_keys=10_000)
@@ -118,14 +74,11 @@ _clock = time.monotonic
 
 
 def _verify_wait(request: Request) -> int | None:
-    """Take one verify token for this client: None, or the seconds until one is
-    back when its budget is spent."""
     key = token_bucket.bucket_key(client_addr.client_address(request))
     return _verify_buckets.take(key, VERIFY_CAPACITY, VERIFY_REFILL_S, _clock())
 
 
-# The page a gated link answers: dark, blank, the widget alone. It must never
-# hold the target URL (a bot reading the HTML would skip the check).
+# Must never hold the target URL: a bot reading the HTML would skip the check.
 _GATE_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -163,7 +116,6 @@ def _gate_page(site_key: str, ref: str) -> HTMLResponse:
         "Cache-Control": "no-store",
         "X-Robots-Tag": "noindex, nofollow",
         "Referrer-Policy": "no-referrer",
-        # Turnstile's own CSP needs: script + frame from challenges.cloudflare.com.
         "Content-Security-Policy": (
             f"default-src 'none'; script-src 'nonce-{nonce}' https://challenges.cloudflare.com; "
             f"style-src 'nonce-{nonce}'; frame-src https://challenges.cloudflare.com; "
@@ -185,18 +137,16 @@ def _serialize(row: TrackingLink) -> dict:
     }
 
 
-# ── Public redirect (NO auth — a fan clicks this) ─────────────────────
 
 async def _record_click(link_id: int, slug: str, request: Request, *, gate_ref: str | None = None,
                         verified: bool = False) -> None:
-    """Best-effort click row and count in one transaction; labels may fail independently."""
     addr = None
     referer = request.headers.get("referer") or None
     try:
         addr, country = client_addr.edge(request)
         cls = click_classify.classify(request.headers.get("user-agent"), referer)
         if gate_ref is not None:
-            # Forgeable by the fan; it affects only analytics labels, never access or redirect.
+            # Forgeable by the fan: affects only analytics labels, never access or redirect.
             cls = cls._replace(ref=gate_ref if gate_ref in click_classify.REF_FAMILIES else "")
     except Exception as e:
         log.warning("tracking click classify failed slug=%s: %r", slug, e)
@@ -254,7 +204,7 @@ async def follow_tracking_link(slug: str, request: Request):
             ref = ""
         return _gate_page(keys[0], ref)
     await _record_click(link_id, slug, request)
-    # 302 so the browser doesn't cache the hop (each click must re-record).
+    # 302 so the browser doesn't cache the hop: each click must re-record.
     return RedirectResponse(url=target, status_code=302)
 
 
@@ -287,7 +237,6 @@ async def verify_tracking_link(slug: str, request: Request, body: _VerifyBody = 
     return JSONResponse({"url": target}, headers={"Cache-Control": "no-store"})
 
 
-# ── Owner-gated CRUD ──────────────────────────────────────────────────
 
 @router.get("/admin/tracking-links")
 async def list_tracking_links(account_id: str = Query(...)) -> dict[str, Any]:
@@ -316,17 +265,11 @@ async def create_tracking_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
         raise HTTPException(422, "name is required")
     target = _normalize_target(body.target_url)
     if target is None:
-        # Shown as is under the Create form (RedirectLinksPanel): the only check of the target.
         raise HTTPException(422, "Target must be a web address, e.g. ofl.ink/name.")
     base = _slugify(body.slug) if body.slug else _slugify(name)
     now = datetime.utcnow()
 
-    # slug is globally unique → retry a few times with a random suffix on clash.
-    # The try/except MUST sit OUTSIDE the `async with`: on a UNIQUE collision the
-    # flush raises IntegrityError, get_session.__aexit__ rolls back + re-raises,
-    # and we catch it here. Catching it INSIDE the block instead would let the
-    # context manager's success-path auto-commit run on a dead transaction →
-    # PendingRollbackError → 500 (and the retry would never fire).
+    # The try/except MUST sit OUTSIDE `async with`: inside, get_session's success-path commit runs on a dead transaction after the UNIQUE collision (PendingRollbackError -> 500, retry never fires).
     last_err: Exception | None = None
     for attempt in range(6):
         slug = base if (attempt == 0 and body.slug) else f"{base}-{secrets.token_hex(3)}"
@@ -341,7 +284,7 @@ async def create_tracking_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
             log.info("tracking_link_created id=%s account=%s slug=%s",
                      out["id"], body.account_id, slug)
             return out
-        except IntegrityError as e:  # UNIQUE(slug) collision → retry with a new suffix
+        except IntegrityError as e:
             last_err = e
             continue
     raise HTTPException(409, f"could not allocate a unique slug: {repr(last_err)[:120]}")
@@ -372,6 +315,6 @@ async def delete_tracking_link(link_id: int) -> dict[str, Any]:
         if row is None:
             raise HTTPException(404, "tracking link not found")
         assert_account_owned(row.account_id)
-        await s.delete(row)  # clicks cascade (FK ondelete=CASCADE)
+        await s.delete(row)
     log.info("tracking_link_deleted id=%s", link_id)
     return {"deleted": link_id}

@@ -1,8 +1,3 @@
-"""Scoped Set-Cookie intent for OF's buffered CF-cookie persistence.
-
-No snapshot merging: header order within a response, then persistence-lock order
-between responses. An empty value is an update unless expiry explicitly deletes it.
-"""
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from http.cookiejar import Cookie
@@ -46,12 +41,6 @@ class CookieEvent:
 
 
 def response_cookie_events(url, headers, *, now=None):
-    """Parse each Set-Cookie separately; validate domain against the actual URL.
-
-    Domain cookies may target the response host or its dotted parent, never an
-    unrelated host or a single-label parent. IP hosts only accept their own IP.
-    No origin is guessed when the response URL is missing.
-    """
     target = urlsplit(url)
     host = (target.hostname or '').lower()
     if target.scheme not in ('http', 'https') or not host:
@@ -109,7 +98,6 @@ def response_cookie_events(url, headers, *, now=None):
 
 
 def cookie_from_row(row, *, now=None):
-    """Load Playwright/session rows without reviving expired or insecure cookies."""
     now = time.time() if now is None else now
     expires = row.get('expires')
     expires = int(expires) if isinstance(expires, (int, float)) and expires >= 0 else None
@@ -124,7 +112,6 @@ def cookie_from_row(row, *, now=None):
 
 
 def apply_cookie_events(rows, events):
-    """Mutate current disk rows, preserving other cookie scopes and row metadata."""
     changed = False
     for event in events:
         matches = [row for row in rows if cookie_key(row) == event.key]
@@ -135,7 +122,7 @@ def apply_cookie_events(rows, events):
         elif matches:
             row = matches[0]
             if cookie_state(row) != cookie_state(event.row()):
-                domain = row['domain']  # retain capture spelling; hostOnly is explicit
+                domain = row['domain']
                 row.update(event.row())
                 row['domain'] = domain
                 changed = True

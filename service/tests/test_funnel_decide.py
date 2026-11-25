@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""
-funnel_decide.decide — table tests over reply_mass_funnel's pure per-fan status
-machine (docs/reducer-scan.md, Non-React #9).
-
-No DB, no LLM, no OF: every row is (entry, event) -> (entry', effects).
-
-  case_due_table:        past the script's end -> done; else nothing (go on).
-  case_past_end_table:   past the end is done on EVERY event (never an IndexError).
-  case_checked_table:    the precedence run() used to carry inline: offer taken
-                         (halt, or a `next.bought` branch, stamped) beats the reply
-                         gate; no reply -> the interval walk, a spent window's
-                         `next.ignored` branch (never early); a reply -> Generate.
-                         keyword beats bought inside a branch; loop guard; off-end.
-  case_blocked_unreachable_table:  blocked backs off and stays pending; a dead
-                         chat ends the walk.
-  case_sent_table:       routeless PPV is terminal; linear +1 with the sent step's
-                         first interval; last step -> done; `next` routes (keyword
-                         only on a substantive reply), guard armed only with `next`.
-  case_whole_funnel_walk:  one fan: wait, reply, send, keyword branch, PPV, bought.
-  case_offer_since_table:  the `bought` fact's baseline: our last PPV, else the broadcast.
-  case_run_summary:      funnel_run_decide: the tick's tally -> run()'s stats dict.
-
-Run: ./venv/bin/python service/tests/test_funnel_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness
 
 from dataclasses import replace  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
@@ -45,7 +21,6 @@ def m(minutes: float) -> datetime:
     return N + timedelta(minutes=minutes)
 
 
-# ── House funnel ──────────────────────────────────────────────────────
 
 LINEAR = [{"step": 1, "messages": ["a"], "check_intervals_min": [3, 5, 7]},
           {"step": 2, "messages": ["b"]},
@@ -61,17 +36,12 @@ BRANCHY = [
 ROUTELESS_PPV = [{"step": 1, "messages": ["a"]},
                  {"step": 2, "type": "paid_ppv", "messages": ["ppv"]},
                  {"step": 3, "messages": ["never"]}]
-# A `next.bought` whose only other key is default; a branch with no bought key.
 BOUGHT_OFF_END = [{"step": 1, "messages": ["a"], "next": {"bought": 9}}]
 NO_BOUGHT_KEY = [{"step": 1, "messages": ["a"], "next": {"default": 1}}]
-# A keyword-only `next` (no default): a miss falls back to +1.
-# A backward route: step 3 (idx 2) loops back to step 1 (idx 0).
 BACKWARD = [{"step": 1, "messages": ["a"], "check_intervals_min": [1, 2, 3]},
             {"step": 2, "messages": ["b"]},
             {"step": 3, "messages": ["c"], "check_intervals_min": [6, 8, 12],
              "next": {"default": 1}}]
-# Jumped onto idx 2 (an `ignored` route) from idx 0's 2-long list; idx 1 (c - 1)
-# has a 4-long one: the window that runs out is the SENT step's (2 checks).
 JUMP_IGNORED = [{"step": 1, "messages": ["a"], "check_intervals_min": [2, 5]},
                 {"step": 2, "messages": ["b"], "check_intervals_min": [1, 1, 1, 1]},
                 {"step": 3, "messages": ["c"], "next": {"ignored": 4}},
@@ -96,7 +66,6 @@ BOUGHT_MORE = Facts(replied=True, bought=True, substantive=True, reply_text="mor
 
 
 def _check(rows) -> None:
-    """Run every row, collect every mismatch, fail once naming them all."""
     bad = []
     for rid, entry, ev, sc, want_entry, want_fx in rows:
         got_entry, got_fx = decide(entry, ev, sc)
@@ -123,8 +92,6 @@ def case_due_table():
 
 
 def case_past_end_table():
-    """The past-the-end guard runs before any event is read, so a shell that
-    skipped Due still cannot index past the script."""
     past = replace(P0, current_step=3)
     done = replace(past, status="done")
     _check([(f"past the end x {type(ev).__name__}: done, completed", past, ev,
@@ -136,7 +103,6 @@ def case_past_end_table():
 def case_checked_table():
     s_lin, s_br = script(LINEAR), script(BRANCHY)
     _check([
-        # ── offer taken beats everything else on the check
         ("bought, no `next`: halt done/offer_taken, converted",
          P0, Checked(N, BOUGHT), s_lin, replace(P0, status="done", last_error="offer_taken"),
          [Save(), Convert()]),
@@ -162,7 +128,6 @@ def case_checked_table():
          replace(P0, hops=19), Checked(N, BOUGHT), s_br,
          replace(P0, hops=20, last_ppv_sent_at=N, status="done", last_error="loop_guard"),
          [Save(), Complete(), Branch()]),
-        # ── no reply: the interval walk (step 0 polls on its own list)
         ("no reply, check 0 -> check 1 at the list's next gap (+5)",
          P0, Checked(N, QUIET), s_lin, replace(P0, check_count=1, next_check_at=m(5)),
          [Save(), Wait()]),
@@ -186,12 +151,10 @@ def case_checked_table():
          replace(P0, check_count=2, hops=2), Checked(N, QUIET), script(BRANCHY, max_hops=3),
          replace(P0, check_count=2, hops=3, status="done", last_error="loop_guard"),
          [Save(), Complete(), Branch()]),
-        # ── a reply: generate + send, nothing moves yet
         ("replied, linear: Generate, entry untouched", replace(P0, check_count=2),
          Checked(N, REPLIED), s_lin, replace(P0, check_count=2), [Generate()]),
         ("replied with a keyword, branchy: still Generate (the send routes)",
          P0, Checked(N, MORE), s_br, P0, [Generate()]),
-        # ── more precedence cells
         ("bought + a plain (non-keyword) reply, `next.bought`: the bought route, no send",
          P0, Checked(N, Facts(replied=True, bought=True, substantive=True, reply_text="ok")), s_br,
          replace(P0, current_step=3, last_ppv_sent_at=N, hops=1, next_check_at=N),
@@ -200,7 +163,6 @@ def case_checked_table():
          replace(P0, check_count=5), Checked(N, QUIET), s_br,
          replace(P0, current_step=2, check_count=0, next_check_at=N, hops=1),
          [Save(), Branch()]),
-        # ── a routeless PPV step (it is terminal only on Sent)
         ("routeless PPV step, bought: offer_taken, converted",
          replace(P0, current_step=1), Checked(N, BOUGHT), script(ROUTELESS_PPV),
          replace(P0, current_step=1, status="done", last_error="offer_taken"), [Save(), Convert()]),
@@ -210,9 +172,6 @@ def case_checked_table():
         ("routeless PPV step, replied: Generate",
          replace(P0, current_step=1), Checked(N, REPLIED), script(ROUTELESS_PPV),
          replace(P0, current_step=1), [Generate()]),
-        # ── S8 (F1): after a `next` jump (idx 0 -> keyword -> idx 4) the reply-wait
-        #    reads the SENT step's list (idx 0's [3,5,7] -> +5), not idx 3's (c - 1,
-        #    default [2,4,10] -> +4): `last_sent_step` says which step went out.
         ("after a `next` jump the wait reads the sent step's intervals (S8)",
          replace(P0, current_step=4, hops=1, last_sent_step=0), Checked(N, QUIET), s_br,
          replace(P0, current_step=4, hops=1, last_sent_step=0, check_count=1, next_check_at=m(5)),
@@ -305,9 +264,6 @@ def case_sent_table():
 
 
 def case_whole_funnel_walk():
-    """One fan through BRANCHY: silent, then a plain reply (default -> step 2),
-    step 2 sent linear (-> 3), then he buys: step 3 has no `next`, so the
-    purchase halts him offer_taken."""
     s = script(BRANCHY)
     e = P0
     e, fx = decide(e, Due(N), s)
@@ -340,7 +296,6 @@ def case_entry_from_row_round_trips():
 
 
 def case_send_shape_table():
-    """step_number / ppv_send_kwargs: what _send_step hands OF, pure."""
     rows = [
         ("a number", fd.step_number({"step": 3}), 3),
         ("a numeric string", fd.step_number({"step": "4"}), 4),
@@ -370,7 +325,6 @@ def case_offer_since_table():
            if (got := fd.offer_since(e, started)) != want]
     assert not bad, "\n  " + "\n  ".join(bad)
 
-# ── run()'s tally -> stats dict (funnel_run_decide) ───────────────────
 
 def case_run_summary():
     t = frd.Tally()

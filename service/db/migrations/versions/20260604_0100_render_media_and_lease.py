@@ -1,26 +1,3 @@
-"""render_media_and_lease — message_media + fan_lease tables
-
-Revision ID: 0025_render_media_and_lease
-Revises: 0024_chatter_login
-Create Date: 2026-06-04
-
-Two new standalone tables (no rebuilds), grouped because both are greenfield
-infra consumed by later waves:
-
-  message_media — one row per media item on a message; the render-stability
-                  cache (18_chat_render_stability.md §1.1). width/height are
-                  NULLABLE and populated lazily by T-API (OF REST files/info)
-                  and/or a client onload→PATCH. Child of `messages` with
-                  ON DELETE CASCADE so a reconciled mass placeholder takes its
-                  media rows with it.
-  fan_lease     — per-fan send lease for the automation executor (T-EXEC /
-                  MASTER_PLAN §5). PK (account_id, fan_id) = one live lease
-                  per fan, so two automations can't message a fan at once.
-
-Idempotent: each create is guarded by an inspector table-existence check, so
-re-running on a partially-migrated copy is a no-op (house convention, mirrors
-0024_chatter_login).
-"""
 from __future__ import annotations
 
 from typing import Sequence

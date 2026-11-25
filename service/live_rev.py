@@ -1,33 +1,3 @@
-"""
-Live x-of-rev tracker.
-
-OnlyFans pins a per-deploy build hash into the `x-of-rev` request header
-on every signed `/api2/v2/*` call from their SPA. The relay replays
-that header on outgoing calls. OF's signing rules belong to a build, so a
-new live build triggers a sign-rule refresh (sign_rules.py). A session
-captured at an older build keeps working: the rev is not a session-freshness
-signal, and nothing flags sessions on it.
-
-History: we used to scrape OF's homepage HTML to learn the current rev.
-That never actually worked — OF doesn't embed the rev in the homepage
-HTML, only in the SPA's runtime headers — so the probe logged
-`no_rev_in_html` every cycle for nothing.
-
-Today the cache is fed from two trustworthy sources:
-
-  • **Session files** (passive seed): on first lookup we scan all
-    accounts' latest `session_*.json` and pick the most recently
-    captured `headers.x_of_rev`. That's what fresh logins write.
-  • **API response headers** (opportunistic): every outgoing call in
-    `of_client._http_call` peeks at the response's `x-of-rev` header
-    and calls `note()`. OF echoes their current build back on most
-    `/api2/v2/*` responses, so the cache stays current as long as the
-    relay is actively making any API call.
-
-Readers: sign_rules (which build's rules to spread) and GET /admin/rev/live
-(the founder's OF Manager mirror-freshness banner).
-"""
-
 from __future__ import annotations
 
 import json
@@ -39,6 +9,7 @@ from typing import Any
 log = logging.getLogger("of-relay.live-rev")
 
 _lock = threading.Lock()
+# OF's x-of-rev appears only in SPA request/response headers (never homepage HTML); an older-build session keeps working, so it is no freshness signal.
 _cache: dict[str, Any] = {
     "rev": None,
     "fetched_at": 0.0,
@@ -48,10 +19,6 @@ _cache: dict[str, Any] = {
 
 
 def note(rev: str | None, source: str = "unknown") -> None:
-    """External observer hook — call this whenever we see a fresh rev
-    in the wild (response header, capture flow, etc.). No-op when rev
-    is empty or already matches the cached value. Cheap; safe to call
-    on every outgoing request."""
     if not rev:
         return
     rev = str(rev).strip()
@@ -65,28 +32,21 @@ def note(rev: str | None, source: str = "unknown") -> None:
         _cache.update(rev=rev, source=source, fetched_at=time.time(), error=None)
     if prev != rev:
         log.info("live x-of-rev updated %r → %r (source=%s)", prev, rev, source)
-        # A new build: spread its sign rules once to every account (2.17).
         try:
-            import sign_rules  # lazy: sign_rules imports this module
+            # Lazy: sign_rules imports this module.
+            import sign_rules
             sign_rules.request_refresh(f"build {rev}")
         except Exception:
             log.warning("sign rules refresh trigger failed", exc_info=True)
 
 
 def _seed_from_sessions() -> None:
-    """Scan every account's latest session file, pick the rev from the
-    one with the freshest `captured_at`. Called lazily by `get()` when
-    the cache is cold so a freshly-booted relay knows the live rev
-    before its first outgoing call lands."""
     try:
-        # Imported inside the function so module load order doesn't matter
-        # (accounts.py also imports nothing from live_rev today, but stay
-        # defensive — avoids any future circular-import surprise).
         import accounts as account_registry
     except Exception:
         log.warning("live_rev session seed: cannot import accounts module", exc_info=True)
         return
-    candidates: list[tuple[str, str, str]] = []  # (captured_at, rev, account_id)
+    candidates: list[tuple[str, str, str]] = []
     try:
         for meta in account_registry.list_accounts():
             aid = meta.get("id")
@@ -108,21 +68,14 @@ def _seed_from_sessions() -> None:
         log.warning("live_rev session seed walk failed", exc_info=True)
         return
     if not candidates:
-        # Worth knowing — if NO account has a session-captured rev, the live
-        # rev stays unknown until the first /api2/v2/* response lands.
         log.info("live_rev session seed: no captured x_of_rev in any account session")
         return
-    candidates.sort(reverse=True)  # ISO-8601 ts sorts lexicographically
+    candidates.sort(reverse=True)
     _, rev, aid = candidates[0]
     note(rev, source=f"session_seed:{aid}")
 
 
 def refresh(force: bool = False) -> dict[str, Any]:
-    """Compat shim — used to do an HTTP probe of OF's homepage. That
-    source never actually contained the rev, so we replaced it with
-    passive observation (see `note()` and `of_client._http_call`).
-    Today this just seeds from session files if the cache is cold; the
-    `force` kwarg is accepted but doesn't trigger any network call."""
     with _lock:
         have_rev = _cache["rev"]
     if not have_rev or force:
@@ -131,11 +84,7 @@ def refresh(force: bool = False) -> dict[str, Any]:
 
 
 def get(stale_ok: bool = True) -> dict[str, Any]:
-    """Read the cached snapshot. Cold start (no rev cached yet) triggers
-    a one-time session-file seed. `stale_ok` is preserved for callers
-    but has no practical effect anymore — we don't have a hot-refresh
-    path now that the HTML probe is gone."""
-    del stale_ok  # intentionally unused — kept for backward-compat
+    del stale_ok
     if _cache["rev"] is None:
         return refresh()
     return dict(_cache)

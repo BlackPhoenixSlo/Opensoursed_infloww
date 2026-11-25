@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""automations._funnel_routing — characterisation tables for the branching
-storyline router (strip_html / step_number_index / resolve_next). Pins
-today's precedence: keyword > bought > ignored > default > +1 fallback, and
-every unknown/bad target falling back to cur_idx + 1. Pure; no DB, no OF.
-
-Run: ./venv/bin/python service/tests/test_funnel_routing.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -53,18 +46,14 @@ def case_step_number_index():
         assert got == exp, f"step_number_index[{label}]: got {got!r}, expected {exp!r}"
 
 
-# Step numbers 1..6 → indices 0..5.
 _NUM = {n: n - 1 for n in range(1, 7)}
 _FULL = {"next": {"keyword": {"more": 5, "no": 6}, "bought": 4, "ignored": 3, "default": 2}}
 
 
 def case_resolve_next():
     F = _facts
-    # cur_idx is chosen per row so cur_idx + 1 never equals the branch/default
-    # index under test — otherwise a "+1 vs default" mutant is invisible.
-    C = 5  # _FULL rows: cur+1 = 6, distinct from every _FULL target index (1..5)
+    C = 5
     rows = [
-        # (step, facts, cur_idx, expected_idx, label)
         ({}, F(), 0, 1, "no next -> +1"),
         ({"next": None}, F(replied=True), 2, 3, "next None -> +1"),
         ({"next": [3]}, F(), 2, 3, "next not dict -> +1"),
@@ -90,7 +79,6 @@ def case_resolve_next():
         ({"next": {"default": "x"}}, F(replied=True), 1, 2, "non-int target -> +1"),
         ({"next": {"default": "5"}}, F(replied=True), 1, 4, "str target number resolves"),
         ({"next": {"default": 0}}, F(replied=True), 3, 4, "target 0 is unknown step -> +1"),
-        # default 2 -> idx 1; cur 3 -> +1 = 4, so default and +1 differ below.
         ({"next": {"bought": None, "default": 2}}, F(bought=True, replied=True),
          3, 1, "bought None skipped -> default"),
         ({"next": {"keyword": {"": 5, "  ": 6}, "default": 2}},

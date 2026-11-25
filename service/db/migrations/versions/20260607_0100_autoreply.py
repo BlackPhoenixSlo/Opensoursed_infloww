@@ -1,25 +1,3 @@
-"""autoreply — account_ai_config.autoreply_config_json + autoreply_state
-
-Revision ID: 0030_autoreply
-Revises: 0029_webhook_dispatch
-Create Date: 2026-06-07
-
-The `autoreply` automation: keep-warm re-engagement of quiet, low-spend KNOWN
-fans. When WE spoke last and the fan has gone silent for a few minutes, send a
-casual never-PPV line to keep the convo alive (tone-matched to the last messages).
-
-  account_ai_config  — + autoreply_config_json: per-account gate + knobs. JSON
-                       {enabled, silence_min_minutes, silence_max_minutes,
-                       max_nudges, min_gap_minutes, max_lifetime_spend_cents,
-                       recent_spend_days, max_recent_spend_cents,
-                       min_days_since_purchase, min_days_since_first_chat,
-                       last_n_messages, quiet_hours_json}. NULL/absent → OFF.
-
-  autoreply_state    — per-(account, fan) silence-spell tracker so we never
-                       over-nudge: spell_inbound_at / nudges_sent / last_nudge_at.
-
-Additive + nullable + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence

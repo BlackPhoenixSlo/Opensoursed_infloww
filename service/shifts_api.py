@@ -1,71 +1,3 @@
-"""service/shifts_api.py — the Shift schedule, one Agency at a time.
-
-  GET  /admin/shifts?from&to&employee_id?&account_id?
-       → {occurrences: [{shift_id, occurrence_start, occurrence_end,
-          start_utc, end_utc, tz, repeat_days, repeat_until,
-          employees[{id, display_name}], accounts[{id, display_name}]}]}
-       The Agency's non-cancelled Shift occurrences that intersect
-       [from, to), at most 42 days, in start order.
-  POST /admin/shifts  {start_utc, end_utc, tz, repeat_days?, repeat_until?,
-                       employee_ids[≥1], account_ids[≥1], replace?, grant_access?}
-       → the created Shift. A Mirror Employee whose chatter is linked to the
-         Agency but not allowed a Creator is 422 `{detail, grantable[{
-         employee_id, employee_name, account_id, account_name}]}`; resent
-         with `grant_access: true`, those Creators are added to the chatter's
-         allowlist in the Shift's own transaction (the app asks first). This
-         422 comes before the overlap check, so a `replace` never lands on a
-         write that is then refused.
-  PATCH /admin/shifts/{id}  (the same body, plus scope?, occurrence_start?)
-       → the Shift as edited: `scope` "all" (the default) replaces the whole
-       series; "this" and "following" edit from the occurrence starting at
-       `occurrence_start` (`edit_shift`). The same grantable 422 applies.
-  POST /admin/shifts/{id}/cancel  ({scope?, occurrence_start?} or no body)
-       → the Shift: "all" (the default) cancels it (its row stays); "this"
-       removes one occurrence, "following" ends the series before it.
-  GET  /admin/shifts/timesheet?from&to&group=employee|account
-       → {rows: [{key, display_name, scheduled_shifts, shifts_worked,
-          scheduled_minutes, worked_minutes, recorded_earnings_cents,
-          open_now}]}: the Agency's Timesheet for [from, to) (`timesheet`).
-
-The Clock endpoints under the same prefix (clock-in, clock-out, me,
-clocked-in, clock-events) live in service/clock_api.py. server.py mounts
-both routers with the lazy Auto clock-out sweep as a dependency.
-
-docs/spec/phase-02-shifts-time-tracking.md (Interfaces, Agency scope). Every
-handler starts from Phase 1's `agency_context`; check order is 401 (no
-session, even with ALLOW_ANONYMOUS_ADMIN) → 403 (a chatter on an owner
-endpoint) → 404 → 422 (invalid input, or a reference to another Agency's
-Employee or Creator, or an Employee paired with a Creator its chatter login
-cannot access) → 409 (a cancelled Shift). Times on the wire are ISO-8601 UTC
-strings ending in Z; stored times are naive UTC.
-
-Weekly repeats are expanded at read time in the Shift's own `tz` (the
-Occurrence rule, service/shift_time.py, with the other time rules), never
-stored. One occurrence is never a row either (roadmap W6 6.3): "This shift"
-puts its local date in the series' `cancelled_dates`, and "This and
-following" ends the series the day before (`repeat_until`) and, for an
-edit, starts a new series from it. Every create, edit and cancel appends its own
-`actions` row (`shift.create|edit|cancel`, actor `owner:<id>`, before/after)
-beside the audit middleware's generic one.
-
-The overlap rule: unless the Agency's `sales` Settings blob holds
-`multi_employee_shift` as literal `true` ("Multiple employees per shift",
-saved by the Sales Panel and by Shift Settings), a create or edit that puts
-two Employees on one Creator, or that overlaps another live Shift on the same
-Creator, is 409 `{detail, clashes[{shift_id, occurrence_start, account_id}]}`.
-Checked on writes only. With `replace: true` (Infloww's "replace the shifts",
-roadmap W6 6.12) the write goes ahead instead and takes every clashing
-occurrence out of the other Shifts (`_replace`); the Shift's own
-double-staffing is still 409.
-
-Create and edit run the overlap check and their write in one transaction
-locked up front (`_write_txn`): of two concurrent writes on a slot, one 409s.
-
-The scheduling horizon: a create or edit may not put a Shift's start more
-than SCHEDULE_HORIZON ahead (422), unless the start stays where it was
-(`_check_horizon`).
-"""
-
 from __future__ import annotations
 
 import json
@@ -101,19 +33,9 @@ from shifts_timesheet import _overlap_s, timesheet_rows  # noqa: F401 — a kept
 router = APIRouter(prefix="/admin/shifts", tags=["shifts"])
 
 MAX_SHIFT = timedelta(hours=24)
-# How far ahead a Shift may be scheduled (Infloww's shifts_scheduled_months).
-# ASSUMPTION: a year (366 days), counted from now to the Shift's start; a weekly
-# series is expanded at read time, so its later occurrences, "Never" and
-# `repeat_until` are not capped. Rung 5: Infloww's own figure is not in the
-# Inventory. Overturned by Infloww's value or an owner's.
 SCHEDULE_HORIZON = timedelta(days=366)
-# Overlaps are looked for this far after the later of two series' starts:
-# both rules repeat weekly, and 53 weeks spans a whole DST cycle.
 OVERLAP_HORIZON = timedelta(weeks=53)
 
-# Kept for importers: s4s_schedule_api (_parse_range), sales_amend (_own_row),
-# older callers. The helpers live in service/shifts_common.py and
-# service/route_wire.py; `_overlap_s` (imported above) in shifts_timesheet.
 _owner_context = shift_owner_context
 _agency_employee_ids = agency_employee_ids
 _parse_range = parse_range
@@ -124,7 +46,6 @@ _wire = wire
 
 
 async def _shift_people(s, shift_ids: list[int]) -> dict[int, tuple[list[dict], list[dict]]]:
-    """Per Shift: its Employees and its Creators, each sorted by id."""
     out: dict[int, tuple[dict[int, dict], dict[str, dict]]] = {sid: ({}, {}) for sid in shift_ids}
     if not shift_ids:
         return {}
@@ -152,17 +73,6 @@ async def list_occurrences(
     employee_id: str | None = None,
     account_id: str | None = None,
 ) -> dict[str, Any]:
-    # Every parameter is parsed in the handler, after the session checks, so
-    # a signed-out or chatter call is 401/403 whatever its query says.
-    # ASSUMPTION: the list comes wrapped as `{occurrences: [...]}`. Rung 3,
-    # the `{employees: [...]}` envelope of GET /admin/employees. Overturned
-    # if the shared `ShiftOccurrence` contract wants a bare array.
-    # `?account_id` naming a Creator the session does not hold is 403, not the
-    # ticket's 404/422: `_account_isolation_middleware` answers "not your
-    # account" before this handler runs (service/server.py:390-404), and
-    # `agency_context` would again via `assert_account_owned`
-    # (service/employees.py:798). Rung 1, observed. One the session holds
-    # outside this Agency (the Master) is 422 below.
     ctx = await shift_owner_context(account_id)
     start, end = parse_range(from_, to)
     emp_filter: int | None = None
@@ -193,11 +103,6 @@ async def list_occurrences(
         )
         people = await _shift_people(s, sorted({sh.id for _, _, sh in occurrences}))
 
-    # ASSUMPTION: each occurrence also carries its series' `start_utc` and
-    # `end_utc` (the first occurrence), so the edit window opened from any
-    # week prefills the series and not the clicked occurrence. Rung 4: an
-    # additive field on the spec's `ShiftOccurrence`. Overturned if editing
-    # from a later week should move the series' start to that occurrence.
     return {"occurrences": [
         {
             **_shift_json(sh, *people.get(sh.id, ([], []))),
@@ -221,14 +126,6 @@ def _id_list(value: Any, field: str, kind: type) -> list:
 
 
 def _parse_repeat(body: dict, tz: str, start: datetime) -> tuple[list[int] | None, date | None]:
-    """`repeat_days` (ISO weekdays 1..7, at least one, or null) and
-    `repeat_until` (a local date in `tz`, inclusive, or null = "Never").
-
-    ASSUMPTION: an empty `repeat_days` list is 422 rather than "no repeat",
-    and `repeat_until` without `repeat_days`, or before the start's local
-    date, is 422. Rung 4: refusals store nothing and loosening is additive.
-    Overturned if the app needs to send [] for "no repeat".
-    """
     days = body.get("repeat_days")
     until = body.get("repeat_until")
     if days is None:
@@ -261,17 +158,12 @@ def _parse_replace(body: dict[str, Any]) -> bool:
 
 
 def _check_horizon(start: datetime, prior: datetime | None) -> None:
-    """422 when a write moves a Shift's start (from `prior`, the start it
-    edits, None on a create) past SCHEDULE_HORIZON from now, so an
-    occurrence already scheduled beyond it can still be edited in place."""
     if start != prior and start > datetime.utcnow() + SCHEDULE_HORIZON:
         raise HTTPException(status_code=422,
                             detail=f"a Shift can be scheduled at most {SCHEDULE_HORIZON.days} days ahead")
 
 
 def _shift_fields(body: dict[str, Any]) -> dict[str, Any]:
-    """The create and edit body, validated (422s only; references are
-    checked against the Agency separately)."""
     start = parse_utc(body.get("start_utc"), "start_utc")
     end = parse_utc(body.get("end_utc"), "end_utc")
     if end <= start:
@@ -300,8 +192,6 @@ Scope = Literal["all", "this", "following"]
 
 
 def _parse_scope(body: dict[str, Any]) -> tuple[Scope, datetime | None]:
-    """`scope` ("all" when left out) and, for "this" and "following", the
-    `occurrence_start` it starts from (the week list's `occurrence_start`)."""
     scope = body.get("scope", "all")
     if scope not in ("all", "this", "following"):
         raise HTTPException(status_code=422, detail="scope: all, this or following")
@@ -315,25 +205,17 @@ def _local_date(dt: datetime, tz: str) -> date:
 
 
 def _occurrence_date(sh: Shift, at: datetime) -> date:
-    """The local date, in the Shift's `tz`, of its occurrence that starts at
-    `at`; 422 when no occurrence of it does."""
     if not any(o_start == at for o_start, _ in shift_occurrences(sh, at, at + timedelta(microseconds=1))):
         raise HTTPException(status_code=422, detail="occurrence_start is not an occurrence of this Shift")
     return _local_date(at, sh.tz)
 
 
 def _whole(sh: Shift, scope: Scope, at: datetime) -> bool:
-    """Whether a `scope` write from the occurrence starting at `at` covers the
-    whole series: "all", any scope on a Shift that does not repeat, and
-    "following" from its first occurrence still in the series (none before
-    `at`, the stored first date may be cancelled)."""
     return (scope == "all" or not sh.repeat_days
             or (scope == "following" and not shift_occurrences(sh, sh.start_utc, at)))
 
 
 def _cut(sh: Shift, scope: Scope, day: date) -> None:
-    """Take the occurrence on `day` ("this") or every one from it
-    ("following") out of the series `sh`, in place."""
     kept = cancelled_dates(sh.cancelled_dates)
     if scope == "this":
         kept.append(day)
@@ -350,27 +232,6 @@ def _dates_json(days: list[date]) -> str | None:
 async def _check_references(
     s, agency_user_id: str, employee_ids: list[int], account_ids: list[str],
 ) -> list[dict[str, Any]]:
-    """422 unless every Employee and Creator is this Agency's and every
-    (Employee, Creator) pair can be clocked or granted; returns the pairs that
-    need a grant (empty when every pair can already be clocked).
-
-    A Mirror Employee's chatter must be linked to the Agency and allowed the
-    Creator by that owner's allowlist — the same rule that feeds the
-    chatter's `account_ids` and `assert_account_owned`
-    (service/chatters.py:192-229). An Employee with no chatter login may be
-    put on any of the Agency's Creators. A linked chatter missing only the
-    allowlist entry is grantable (the caller's `grant_access`); a chatter not
-    linked to the Agency is refused outright, since a grant would not let it in.
-
-    Only an owner session (or the Master) reaches the Shift writes
-    (`owner_context`), and the same sessions alone may edit Creator access
-    (`/admin/employees` is owner-only, chatters._CHATTER_BLOCKED_ADMIN_PREFIXES),
-    so whoever may send `grant_access` may grant.
-
-    ASSUMPTION: an inactive chatter's Mirror Employee is not refused here;
-    only the link and the allowlist are checked, as the spec names them.
-    Rung 5. Overturned if assigning a deactivated chatter should be 422 too.
-    """
     own_emps = await agency_employee_ids(s, agency_user_id, employee_ids)
     foreign_emps = [e for e in employee_ids if e not in own_emps]
     if foreign_emps:
@@ -414,7 +275,6 @@ def _refusal_text(refused: list[dict[str, Any]]) -> str:
 
 
 def _access_refusal(grantable: list[dict[str, Any]]) -> JSONResponse:
-    """The 422 a `grant_access` resend clears: each pair named; the chatter id stays server-side."""
     return JSONResponse(status_code=422, content={
         "detail": _refusal_text(grantable),
         "grantable": [{k: g[k] for k in ("employee_id", "employee_name", "account_id", "account_name")}
@@ -423,8 +283,6 @@ def _access_refusal(grantable: list[dict[str, Any]]) -> JSONResponse:
 
 
 async def _grant(s, agency_user_id: str, grantable: list[dict[str, Any]]) -> None:
-    """Add each pair's Creator to its chatter's allowlist, in the caller's transaction. A row
-    already there (a concurrent grant) is left as is."""
     if not grantable:
         return
     now = datetime.utcnow()
@@ -439,35 +297,6 @@ async def _check_overlaps(
     s, ctx: AgencyContext, fields: dict[str, Any], own_id: int | None, replaced: Shift | None = None,
     replace: bool = False,
 ) -> JSONResponse | None:
-    """The 409 refusal, or None when the Agency allows multiple employees per
-    shift or the Shift in `fields` double-staffs no Creator. Called before
-    anything is written, so the caller just returns it. With `replace`, a
-    clash with other Shifts only is not refused: those Shifts' clashing
-    occurrences are taken out (`_replace`) and None is returned.
-
-    The 409 body is `{detail, clashes}` at the top level.
-    ASSUMPTION: the spec's `{detail, clashes}` is the whole body, not an
-    object nested under FastAPI's `detail`, so `detail` stays the string
-    every other refusal carries and the app's relay client reads it as is.
-    Rung 5. Overturned if clients expect `detail.clashes`.
-
-    Two ways to clash: the Shift itself puts more than one Employee on a
-    Creator, or one of its occurrences overlaps a non-cancelled occurrence
-    of another of the Agency's Shifts on the same Creator (`find_overlaps`).
-    `own_id` is the Shift being edited, never compared with itself;
-    `replaced`, an unsaved copy of the series a "this" or "following" edit
-    cuts, is compared in place of its stored row.
-
-    ASSUMPTION: the Shift's own double-staffing is reported once per Creator
-    as `{shift_id: null, occurrence_start: <its first start>, account_id}`;
-    null stands for "this Shift", also on an edit. Rung 5. Overturned if the
-    app needs the edited Shift's own id there.
-
-    ASSUMPTION: each other Shift is reported once per shared Creator, at its
-    first occurrence that clashes, not once per clashing week, so a daily
-    series does not produce a year of lines. Rung 5. Overturned if the owner
-    wants every clashing occurrence listed.
-    """
     agency_user_id = ctx.agency_user_id
     if (await applied_blob(s, agency_user_id, "sales")).get("multi_employee_shift") is True:
         return None
@@ -499,9 +328,6 @@ async def _check_overlaps(
 async def _overlap_candidates(
     s, agency_user_id: str, accounts: list[str], own_id: int | None, replaced: Shift | None,
 ) -> dict[int, tuple[Shift, set[str]]]:
-    """By id, each other live Shift of the Agency on one of `accounts`, with
-    the Creators it shares (`find_overlaps`' `existing`); `own_id` left out,
-    `replaced` in place of its stored row."""
     q = (select(Shift, ShiftAssignment.account_id)
          .join(ShiftAssignment, ShiftAssignment.shift_id == Shift.id)
          .where(Shift.agency_user_id == agency_user_id, Shift.status == "scheduled",
@@ -521,18 +347,6 @@ def find_overlaps(
     candidate: Shift, employee_ids: list[int], account_ids: list[str],
     existing: dict[int, tuple[Shift, set[str]]],
 ) -> tuple[list[dict[str, Any]], dict[int, tuple[Shift, list[datetime]]]]:
-    """The overlap rule over loaded Shifts, no DB: `(clashes, hits)`.
-
-    `candidate` is the Shift being written (unsaved), on `employee_ids` and
-    `account_ids`; `existing` is `_overlap_candidates`. `clashes` is the
-    409's list: the candidate's own double-staffing once per Creator
-    `{shift_id: None, occurrence_start: its first start, account_id}`, then
-    each other Shift once per shared Creator at its first clashing
-    occurrence, in (start, id, Creator) order; series are compared from the
-    later start for OVERLAP_HORIZON, occurrences as half-open spans, so
-    touching ends do not clash. `hits` is, by other Shift id, that Shift and
-    its clashing occurrence starts (`_replace`).
-    """
     clashes: list[dict[str, Any]] = []
     if len(employee_ids) > 1:
         clashes += [{"shift_id": None, "occurrence_start": wire(candidate.start_utc), "account_id": acc}
@@ -555,21 +369,6 @@ def find_overlaps(
 
 
 async def _replace(s, ctx: AgencyContext, hits: dict[int, tuple[Shift, list[datetime]]]) -> None:
-    """Take each clashing occurrence (`hits`: by Shift id, the Shift as
-    compared and its clashing occurrence starts) out of its stored Shift: a
-    weekly series puts their local dates in its `cancelled_dates`, a one-off
-    Shift is cancelled. Each Shift changed gets its `shift.edit` or
-    `shift.cancel` row.
-
-    ASSUMPTION: an occurrence leaves whole, on every Creator and with every
-    Employee it has, though it may clash on one shared Creator only: a Shift
-    is one row for all of them. Rung 5. Overturned if replacing should only
-    take the shared Creators off it.
-
-    ASSUMPTION: a series loses its clashing occurrences within
-    OVERLAP_HORIZON, the span the overlap check compares, so the replacing
-    write passes that check; two endless series can clash again after it.
-    Rung 5. Overturned if a replace must also end the other series."""
     now = datetime.utcnow()
     for shift_id, (compared, starts) in sorted(hits.items()):
         row = await s.get(Shift, shift_id)
@@ -588,7 +387,6 @@ async def _replace(s, ctx: AgencyContext, hits: dict[int, tuple[Shift, list[date
 
 
 def _shift_json(sh: Shift, emps: list, accs: list) -> dict[str, Any]:
-    """The series fields of a Shift, shared by the week list and `_shift_out`."""
     return {
         "shift_id": sh.id,
         "start_utc": wire(sh.start_utc),
@@ -602,7 +400,6 @@ def _shift_json(sh: Shift, emps: list, accs: list) -> dict[str, Any]:
 
 
 async def _shift_out(s, sh: Shift) -> dict[str, Any]:
-    """The Shift as the API returns it, and as its audit rows record it."""
     emps, accs = (await _shift_people(s, [sh.id])).get(sh.id, ([], []))
     return {**_shift_json(sh, emps, accs), "status": sh.status,
             "cancelled_dates": [d.isoformat() for d in cancelled_dates(sh.cancelled_dates)]}
@@ -611,14 +408,6 @@ async def _shift_out(s, sh: Shift) -> dict[str, Any]:
 def _audit(s, action: str, ctx: AgencyContext, sh: Shift,
            before: dict[str, Any] | None, after: dict[str, Any],
            granted: list[dict[str, Any]]) -> None:
-    """One `actions` row for a Shift write, in the write's own transaction.
-
-    ASSUMPTION: the row is added in the same session as the write (one
-    commit for both), not through employees._write_action's separate
-    session, so a Shift never changes without its audit row. Rung 3 for the
-    row shape (employees.py:1060 `_write_action`); rung 5 for the
-    transaction. Overturned if audit rows must survive a rolled-back write.
-    """
     s.add(Action(
         employee_id=None,
         account_id=after["accounts"][0]["id"],
@@ -627,7 +416,6 @@ def _audit(s, action: str, ctx: AgencyContext, sh: Shift,
         target_id=str(sh.id),
         payload_json=json.dumps({
             "actor": f"owner:{ctx.agency_user_id}", "before": before, "after": after,
-            # Creator access the write granted (`grant_access`), so the allowlist change is on the Shift's row.
             **({"granted_access": [{"employee_id": g["employee_id"], "account_id": g["account_id"]}
                                    for g in granted]} if granted else {}),
         }),
@@ -650,12 +438,10 @@ def _assign(s, shift_id: int, fields: dict[str, Any]) -> None:
             s.add(ShiftAssignment(shift_id=shift_id, employee_id=emp, account_id=acc))
 
 
-# Without BEGIN IMMEDIATE, 8 concurrent creates on one slot stored 7 Shifts.
+# BEGIN IMMEDIATE: without it 8 concurrent creates on one slot stored 7 Shifts.
 _write_txn = of_writer.immediate_session
 
 
-# response_model=None: FastAPI cannot build a response model from a return
-# type that unions in JSONResponse (the overlap 409).
 @router.post("", response_model=None)
 async def create_shift(request: Request) -> dict[str, Any] | JSONResponse:
     ctx = await shift_owner_context()
@@ -675,8 +461,6 @@ async def create_shift(request: Request) -> dict[str, Any] | JSONResponse:
 
 async def _add_shift(s, ctx: AgencyContext, fields: dict[str, Any],
                      granted: list[dict[str, Any]]) -> dict[str, Any]:
-    """A new Shift from `fields`, its assignments and its `shift.create` row
-    (which records the Creator access the write `granted`)."""
     now = datetime.utcnow()
     shift = Shift(
         agency_user_id=ctx.agency_user_id, status="scheduled",
@@ -693,14 +477,11 @@ async def _add_shift(s, ctx: AgencyContext, fields: dict[str, Any],
 
 
 def _copy(sh: Shift) -> Shift:
-    """An unsaved copy of the series `sh`, for `_check_overlaps`' `replaced`."""
     return Shift(id=sh.id, agency_user_id=sh.agency_user_id, start_utc=sh.start_utc, end_utc=sh.end_utc,
                  tz=sh.tz, repeat_days=sh.repeat_days, repeat_until=sh.repeat_until,
                  cancelled_dates=sh.cancelled_dates, status=sh.status)
 
 
-# The id is a string parsed in the handler: a typed `int` path parameter
-# would let FastAPI answer 422 before the 401/403 session checks run.
 @router.patch("/{shift_id}", response_model=None)
 async def edit_shift(shift_id: str, request: Request) -> dict[str, Any] | JSONResponse:
     """Edit the series: times, tz, repeat, Employees and Creators.
@@ -728,7 +509,8 @@ async def edit_shift(shift_id: str, request: Request) -> dict[str, Any] | JSONRe
     past occurrences must be locked.
     """
     ctx = await shift_owner_context()
-    await request.body()  # read (and cached) before the write lock
+    # Read (and cached) before the write lock.
+    await request.body()
     async with _write_txn() as s:
         shift = await own_agency_row(s, ctx, Shift, shift_id, "shift")
         body = await json_body(request)
@@ -767,21 +549,15 @@ async def edit_shift(shift_id: str, request: Request) -> dict[str, Any] | JSONRe
         if refused := await _check_overlaps(s, ctx, fields, None, replaced=cut, replace=replace):
             return refused
         await _grant(s, ctx.agency_user_id, grantable)
-        # A replace may already have taken clashing dates out of this series
-        # (its own `shift.edit` row), so the cut's row starts from there.
         before = await _shift_out(s, shift)
         _cut(shift, scope, day)
         shift.updated_at = datetime.utcnow()
         await s.flush()
         _audit(s, "shift.edit", ctx, shift, before, await _shift_out(s, shift), [])
-        # The grant goes with the new Shift, whose assignments need it.
         return await _add_shift(s, ctx, fields, grantable)
 
 
-# cancel_shift's transaction (BEGIN IMMEDIATE: two concurrent "this" cancels on
-# one series each rewrote `cancelled_dates` from the same read, one date lost).
-# Its own name, looked up per call, so slop's `shift-cancel-unlocked` fault
-# swaps cancel_shift's alone (not every `_write_txn` route's).
+# Own name, looked up per call, so slop's shift-cancel-unlocked fault swaps cancel_shift's alone.
 _cancel_txn = _write_txn
 
 
@@ -804,7 +580,8 @@ async def cancel_shift(shift_id: str, request: Request) -> dict[str, Any]:
     occurrences must be kept.
     """
     ctx = await shift_owner_context()
-    raw = await request.body()  # read (and cached) before the write lock
+    # Read (and cached) before the write lock.
+    raw = await request.body()
     async with _cancel_txn() as s:
         shift = await own_agency_row(s, ctx, Shift, shift_id, "shift")
         scope, at = _parse_scope(await json_body(request) if raw else {})
@@ -825,7 +602,6 @@ async def cancel_shift(shift_id: str, request: Request) -> dict[str, Any]:
         return after
 
 
-# ── The Timesheet (ticket 14) ───────────────────────────────────────
 
 
 @router.get("/timesheet")
@@ -952,11 +728,7 @@ async def timesheet(
             ClockEvent.in_utc < end + OCCURRENCE_REACH,
             or_(ClockEvent.out_utc.is_(None), ClockEvent.out_utc > start - OCCURRENCE_REACH),
         ))).scalars().all()
-        # Every event's time per Creator, an agency-wide one only inside the
-        # occurrences its Employee holds (`creator_spans`).
         on_creator = await creator_spans(s, events, now)
-        # Recorded earnings: each event's sales (sales_attribution.event_sales, the
-        # one rule Shift records share), counted inside the range by `timesheet_rows`.
         sales = await event_sales(s, events, now, on_creator)
         rows = timesheet_rows(shifts, assigned, events, on_creator, sales,
                               lo=start, hi=end, now=now, by_employee=by_employee)

@@ -1,23 +1,3 @@
-"""GET /auth/fleet/whois: does this shard hold a login with this username?
-
-A fleet runs one Relay per shard (one Agency each). The front shard's
-/site-auth (app/app/site-auth/route.ts) asks every shard this before it
-signs anyone in, so the password goes only to the shard that holds the login
-(.scratch/fleet-sharding/DESIGN.md §3, §10.1). The answer is one bool for a
-username; no password, no ids.
-
-Mounted only when FLEET_SECRET is at least 32 characters (server.py), so a
-single-box install answers 404 as before. Every call must carry the secret in
-`X-Fleet-Secret`. It sits under /auth/, so the share gate and the app's and
-Caddy's /auth/* routes already let it through. It never takes a sign-in
-throttle token and never logs the username.
-
-The username rides in the `X-Fleet-Username` header (percent-encoded), not in
-`?username=`: every request URL, query included, goes to uvicorn's access log
-and /tmp/of-api.log (server.py `_api_access_log`), and the front asks every
-shard about every sign-in, so a query would put each typed name (or a password
-typed into the name field) in every shard's logs.
-"""
 from __future__ import annotations
 
 import hmac
@@ -44,7 +24,6 @@ router = APIRouter()
 
 
 def enabled() -> bool:
-    """True when FLEET_SECRET is long enough to mount the route."""
     if _SECRET and len(_SECRET) < _MIN_SECRET:
         log.warning("fleet whois disabled: FLEET_SECRET < 32 chars")
     return len(_SECRET) >= _MIN_SECRET
@@ -59,6 +38,7 @@ async def whois(
     given = (x_fleet_secret or "").encode("utf-8")
     if not x_fleet_secret or not hmac.compare_digest(given, _SECRET.encode("utf-8")):
         return JSONResponse({"detail": "forbidden"}, status_code=403, headers=_NO_STORE)
+    # Username rides in a header, not `?username=`: query strings reach the access log and every shard sees every sign-in attempt (a password typed into the name field would leak). Never log it or take a sign-in throttle token.
     username = unquote(x_fleet_username)
     if len(username) > 64:
         return JSONResponse({"detail": "username too long"}, status_code=422, headers=_NO_STORE)

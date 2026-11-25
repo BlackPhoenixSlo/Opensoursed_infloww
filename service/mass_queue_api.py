@@ -1,20 +1,3 @@
-"""service/mass_queue_api.py — server.py's mass-message queue block, moved wholesale:
-the composer's broadcast (send now / schedule / save for later), a queued
-message's read + in-place edit, and the cancel / mass unsend.
-
-  POST   /api/of/v2/messages/queue
-  POST   /api/of/v2/messages/queue/later
-  GET    /api/of/v2/messages/queue/{queue_id:int}
-  PUT    /api/of/v2/messages/queue/{queue_id:int}
-  DELETE /api/of/v2/messages/queue/{queue_id}
-
-plus `_open_mass_run` / `_close_mass_run` (the mass_runs mint + close). The pure
-decisions live in mass_queue_decide.py, called through the module attribute.
-`_proxy`, `_get_client`, `_resolve_account_id` are
-relay_host's call-time forwards, never `from server import`, so a test's
-`server._get_client = fake` still reaches the moved code. Included mid-file in
-server.py for route order (pinned by service/tests/test_route_order.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -33,6 +16,7 @@ from automations.send_mass_decide import audience_filter_json, echoed_of
 from relay_host import (
     get_client as _get_client,
     proxy as _proxy,
+    refuse_if_platform_lacks,
     resolve_account_id as _resolve_account_id,
 )
 
@@ -40,27 +24,16 @@ log = logging.getLogger("of-relay")
 
 router = APIRouter()
 
-# One composer send per exact payload per account at a time. The key is
-# reserved (None) before any await, re-stamped with the time just before the OF
-# POST (from then on it may have sent), and dropped on a clear answer: the route
-# returned, it failed before the POST, or OF surely refused (`of_write._may_have_sent`
-# false). Otherwise (a timeout, a dropped connection, a 5xx, a failure after OF
-# took it) the run stays 'running' and the stamp holds the key for
-# `_MAY_HAVE_SENT_S`: an identical send, a Retry or a twin queued behind the
-# broadcast lock, is a 409. In memory: a restart forgets it (the boot heal marks
-# the run interrupted). 10 min is a guess at "the operator checked OF".
+# Send key held 10 min after a possible OF POST so a retry/twin of an unclear send is a 409; in memory, a restart forgets it.
 _MAY_HAVE_SENT_S = 600.0
 _send_keys: dict[tuple[str, str], float | None] = {}
 
 
 def _send_key(account_id: str, body: BaseModel) -> tuple[str, str]:
-    """(account, hash of the payload as the caller sent it)."""
     return str(account_id), hashlib.sha256(body.model_dump_json().encode()).hexdigest()
 
 
 def _reserve_send(key: tuple[str, str]) -> None:
-    """Hold `key` for this send, or 409 while another holds it (in flight, or its
-    POST may have reached OF lately). Sync: nothing runs between check and hold."""
     now = time.monotonic()
     for k in [k for k, t in _send_keys.items() if t is not None and now - t >= _MAY_HAVE_SENT_S]:
         del _send_keys[k]
@@ -73,10 +46,6 @@ def _reserve_send(key: tuple[str, str]) -> None:
 
 @contextlib.asynccontextmanager
 async def _exclude_list_held(account_id: str, excluded_users: list[int]):
-    """The composer's Auto_Exclude sync, yielding its OF list id with the
-    account's `broadcast_lock` held until the caller's block ends: the block is
-    the blast's OF POST. Looked up per call: slop's `auto-exclude-manual-lock-early`
-    fault (slop/lib/auto_exclude_faults.py) wraps it to release the lock early."""
     from audiences import broadcast_lock, ensure_exclude_list
     async with broadcast_lock(account_id):
         yield await ensure_exclude_list(account_id, excluded_users, client=_get_client())
@@ -94,17 +63,7 @@ async def _open_mass_run(
     filters: dict | None = None,
     auto_exclude: int | None = None,
 ) -> tuple[str, int | None, int | None]:
-    """Resolve account + X-Employee-Id and mint a `mass_runs` row so every
-    per-fan outbound row downstream can reference it. Returns
-    `(account_id, employee_id, mass_run_id)` — `mass_run_id` may be None if
-    the mint failed (the broadcast still proceeds; attribution degrades to
-    NULL, same fallback as the single-fan path)."""
     account_id = _resolve_account_id(request)
-    # Resolves header (owner) OR chatter mirror Employee under the
-    # account's owner. Chatters never carry X-Employee-Id and the header
-    # is the only way the old path knew "who sent this"; without this
-    # branch every chatter send showed up as Automation in the per-
-    # employee stats table.
     from employees import resolve_outbound_employee_id
     employee_id = await resolve_outbound_employee_id(request, account_id)
 
@@ -144,29 +103,6 @@ async def _close_mass_run(
     recipient_ids: list[int] | None = None,
     scheduled: bool = False,
 ) -> None:
-    """After OF returns, persist a `messages` row per recipient of the
-    broadcast. Two sources, handled in order:
-
-      1. **Echoed ids.** OF's `/messages/queue` shape varies — some
-         installations echo `{messages: [{userId, id, ...}]}`. For each
-         echoed pair we write the REAL row (`write_outbound_attribution`) and
-         drop any optimistic placeholder for that recipient.
-      2. **Optimistic rows.** For the explicit recipients OF did NOT echo
-         (`recipient_ids`, i.e. the `userIds` audience), we write an optimistic
-         placeholder row at send time — direction='out', `mass_run_id` set,
-         a synthetic `message_id` + `temp_id` — so the broadcast shows up in
-         the chat cache immediately instead of never. The WS pump skips
-         outbound events, so without this the row would otherwise never land.
-
-    List-based audiences (`userLists`) aren't expanded here, so their members
-    aren't in `recipient_ids` and NO per-fan row is written for them. What they
-    get instead: the run itself records the body and OF's send stamp (read by the
-    blast-copy matcher and other readers). Who received it is never read off OF's rosters
-    (the Audience crawl is gone, docs/spec/phase-02-audience-crawl.md): readers
-    assume it from the run's `audience_filter`.
-
-    `scheduled=True` says OF has NOT sent this yet — the run gets no body and no
-    stamp."""
     if mass_run_id is None:
         return
     from attribution import (
@@ -182,7 +118,6 @@ async def _close_mass_run(
     )
     price_cents = _to_cents(price)
 
-    # ── 1) Real rows for any per-fan ids OF echoed in the response ──────
     per_fan_ids = echoed_of(result)
 
     echoed_fans: set[int] = set()
@@ -199,9 +134,6 @@ async def _close_mass_run(
                 created_at=created_at,
                 mass_run_id=mass_run_id,
             )
-            # If an optimistic placeholder for this recipient already landed
-            # (e.g. a retry, or a future async reconciler), drop it so the
-            # real row is the only one left.
             await reconcile_mass_placeholder(
                 account_id=account_id, fan_id=fan_id, mass_run_id=mass_run_id,
             )
@@ -211,7 +143,6 @@ async def _close_mass_run(
                 account_id, mass_run_id, fan_id,
             )
 
-    # ── 2) Optimistic placeholders for the explicit recipients not echoed ─
     pending = mass_queue_decide.pending_placeholders(recipient_ids, echoed_fans)
     if pending:
         await write_mass_optimistic_rows(
@@ -224,9 +155,6 @@ async def _close_mass_run(
             created_at=created_at,
         )
 
-    # ── 3) Close the run. reply_mass_funnel only anchors on status='ok'
-    #      runs, and the Mass Messages tab joins the broadcast cache on
-    #      queue_id — mirror send_mass_message's close step.
     queue_id = result.get("id") if isinstance(result, dict) else None
     try:
         from db.engine import get_session
@@ -239,10 +167,7 @@ async def _close_mass_run(
                 if queue_id is not None:
                     mr.queue_id = int(queue_id)
                 if not scheduled:
-                    # The splice record — mirror send_mass_message's close step.
-                    # A SCHEDULED send leaves both NULL: it has not gone out, so
-                    # there is no line on anyone's thread yet and a `sent_at` in
-                    # the future would put one there.
+                    # Scheduled send leaves both NULL: not sent yet, a future sent_at would put a line on the thread.
                     mr.body = text or ""
                     mr.sent_at = created_at
     except Exception:
@@ -251,14 +176,9 @@ async def _close_mass_run(
 
 class _MassScheduleBody(BaseModel):
     text: str
-    # Optional — omit for an immediate broadcast. /messages/queue is OF's
-    # send-now path when no scheduledDate is in the body; with one it
-    # becomes the scheduled-send path.
     scheduled_date: str | None = Field(
         None, description="ISO 8601 (e.g. 2026-06-01T18:00:00+00:00); omit to send now",
     )
-    # OF's "Save for later": queued with no date (isPublishedWithPeriod: 1),
-    # never sent now. Takes the scheduled branch below.
     save_for_later: bool = False
     user_ids: list[int] = Field(default_factory=list)
     user_lists: list[str] = Field(default_factory=list, description="List ids or built-in names like 'fans'")
@@ -266,87 +186,46 @@ class _MassScheduleBody(BaseModel):
     excluded_user_lists: list[str] = Field(default_factory=list, description="List ids/names to exclude from the audience")
     price: float = Field(0, ge=0)
     locked_text: bool = False
-    # int = existing vault id; dict = fresh-upload claim payload from
-    # the /upload endpoint's `send_with`. Same shape send_message accepts.
     media_files: list[int | dict] = Field(default_factory=list)
-    # Vault ids that ride along unlocked when price > 0. Must be a subset
-    # of `media_files`'s numeric ids.
     previews: list[int] = Field(default_factory=list)
-    # OF user ids of creators to @-tag in the broadcast (sent as `userTags`).
-    # Same picker contract as direct chat sends — ids must come from
-    # /api/of/v2/posts/tagged-friend-users or OF will 400.
     tagged_users: list[int] = Field(default_factory=list)
-    # Giphy id — forwarded as top-level `giphyId` to OF. Multi-GIF mass
-    # broadcasts fan out client-side as separate calls.
     giphy_id: str | None = Field(
         None,
         description="Giphy GIF id forwarded to OF as top-level `giphyId`.",
     )
-    # Native audience filter — forwarded to OF as the top-level `filters` object.
-    # `online_only=True` (or `filters={"online": 1}`) targets fans currently
-    # online at send time. Combine with `user_lists=["fans"]` to blast every
-    # online fan. Mirrors OF web's online broadcast.
     online_only: bool = False
     filters: dict | None = None
-    # DB-sourced audience: inject the fan ids we exchanged a message with in the
-    # last `recent_chat_hours` (newest first, capped to `recent_chat_limit`).
-    # Resolved server-side from the local `messages` table and MERGED into
-    # `user_ids` — no OF call needed. Bots + blacklisted fans are dropped.
     recent_chat_hours: float | None = Field(
         None, gt=0, description="Target fans chatted with in the last N hours (from local DB)",
     )
     recent_chat_limit: int | None = Field(
         None, gt=0, description="Cap the recent-chat audience to the N most-recent fans",
     )
-    # DB-sourced EXCLUSIONS — drop fans from the audience based on recent
-    # activity (resolved server-side, merged into `excluded_users`).
-    #   exclude_replied_hours: fans we sent an OUTBOUND message to in the last
-    #     N hours (i.e. "already replied") — don't re-blast them.
-    #   exclude_inbound_hours: fans who messaged us INBOUND in the last N hours
-    #     — the extra "2h inbound" filter.
     exclude_replied_hours: float | None = Field(
         None, gt=0, description="Exclude fans we replied to (outbound) in the last N hours",
     )
     exclude_inbound_hours: float | None = Field(
         None, gt=0, description="Exclude fans who messaged us (inbound) in the last N hours",
     )
-    # Target fans with UNREAD messages (the OF "Unread" inbox tab), capped at
-    # `unread_limit`. Resolved via OF `GET /chats?filter=unread` and MERGED into
-    # `user_ids`. Great for "reply blast" to fans waiting on us.
     unread_limit: int | None = Field(
         None, gt=0, le=1000, description="Target up to N fans with unread messages",
     )
-    # Auto-unsend: N hours after an immediate broadcast goes out, unsend it from
-    # every recipient. OF has no native timer, so we enqueue a one-shot
-    # `unsend_messages` job at send_time + N hours (the A12 automation calls
-    # DELETE /messages/queue/{id} — the forever-window mass unsend). Ignored for
-    # scheduled sends (unsending a future send is just a cancel).
     unsend_after_hours: float | None = Field(
         None, gt=0, le=8760, description="Auto-unsend the broadcast N hours after it sends",
     )
-    # Funnel anchor — stamps the minted `mass_runs` row with this
-    # `mass_message_funnels.id` so the reply_mass_funnel automation discovers
-    # repliers and walks the funnel's reply/PPV steps. Send-now only (a
-    # scheduled run is closed by OF later, so it never reaches 'ok' here).
     funnel_id: int | None = Field(
         None, gt=0, description="mass_message_funnels.id to walk repliers through",
     )
-    # Online-fans thresholds (Infloww's Total spent / Tipped over / Subscribed
-    # over / Expired over), resolved from our own records by
-    # `audiences.threshold_fan_ids`. Any one set turns the audience into the
-    # explicit ids of the picked lists' members and `user_ids` that clear them
-    # all (online now, with `online_only`), at most THRESHOLD_IDS_MAX — the
-    # lists and the OF online filter drop out. A list OF won't page → 422.
     min_total_spent: float | None = Field(None, gt=0, description="Only fans who spent at least $N")
     min_tipped: float | None = Field(None, gt=0, description="Only fans who tipped at least $N")
     subscribed_over_days: float | None = Field(None, gt=0, description="Only fans subscribed N+ days")
     expired_over_days: float | None = Field(None, gt=0, description="Only fans expired N+ days ago")
-    # Ultra's mass_send (toolbox_decide `fixed`): when the opt-out / dedup guards
-    # leave no list and no fan id, answer 422 and send nothing (no OF call, no
-    # mass_runs row) instead of posting an empty audience.
     require_recipients: bool = Field(
         False, description="422 (nothing sent) when no list and no fan id is left after the guards",
     )
+
+    def is_later(self) -> bool:
+        return bool(self.scheduled_date or self.save_for_later)
 
     def has_thresholds(self) -> bool:
         return bool(self.min_total_spent or self.min_tipped
@@ -365,13 +244,17 @@ async def of_send_or_schedule_mass(
     Attribution: mint a `mass_runs` row up front, then walk the
     OF response for per-fan ids and write attribution rows. This is the
     path the Next UI broadcast composer actually hits."""
-    # The payload's key is held for the whole send (`_reserve_send`).
-    key = _send_key(_resolve_account_id(request), body)
+    aid = _resolve_account_id(request)
+    if body.is_later():
+        refuse_if_platform_lacks(aid, "schedule_mass_message", "scheduled mass message")
+    else:
+        refuse_if_platform_lacks(aid, "send_mass_message", "mass message")
+    key = _send_key(aid, body)
     _reserve_send(key)
     try:
         result = await _send_or_schedule_mass(request, body, key)
     except BaseException:
-        if _send_keys.get(key, 0.0) is None:  # failed before the POST: nothing went out
+        if _send_keys.get(key, 0.0) is None:
             del _send_keys[key]
         raise
     _send_keys.pop(key, None)
@@ -380,21 +263,7 @@ async def of_send_or_schedule_mass(
 
 async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
                                  _key: tuple[str, str]):
-    # DB-sourced audience: merge "chatted in the last N hours" fan ids into the
-    # explicit user_ids before anything else, so mass-run attribution + the OF
-    # send both see the full recipient set.
-    # R1/R2: also resolve whenever a funnel_id is present (even with no other
-    # audience knob) — else a plain funnel launch skips the resolver entirely and
-    # never dedups answerers (the composer used to gate only on recent/exclude/
-    # unread). exclude_funnel_responders drops fans who already answered THIS
-    # funnel; for explicit ids they leave user_ids, for OF-native list/online
-    # audiences they ride the Auto_Exclude list path below (excluded_users).
-    # Run UNCONDITIONALLY (not just when an audience knob is set): the resolver
-    # ALSO applies the always-on MASSdmEXCLUDE opt-out list + not-yet-fired
-    # queued-send dedup, so a plain composer blast still skips an excluded /
-    # already-queued fan. The client is only needed for the OF "Unread" lookup,
-    # so build it only when unread_limit is set.
-    _asked_ids = len(dict.fromkeys(body.user_ids))  # the caller's own fan ids, before any guard drops one
+    _asked_ids = len(dict.fromkeys(body.user_ids))
     _thresholds = body.has_thresholds()
     _online_now = bool(body.online_only or (body.filters or {}).get("online"))
     _refusal = mass_queue_decide.threshold_refusal(
@@ -414,18 +283,14 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
             recent_chat_limit=body.recent_chat_limit,
             exclude_replied_hours=body.exclude_replied_hours,
             exclude_inbound_hours=body.exclude_inbound_hours,
-            exclude_funnel_responders=body.funnel_id,  # R1/R2 answered-once dedup
+            exclude_funnel_responders=body.funnel_id,
             unread_limit=body.unread_limit,
-            # Every blast, priced or not, skips the MASSdmEXCLUDE opt-out list.
             exclude_list_name=MASSDMEXCLUDE_LIST,
             min_spent_cents=round(body.min_total_spent * 100) if body.min_total_spent else None,
             min_tips_cents=round(body.min_tipped * 100) if body.min_tipped else None,
             subscribed_over_days=body.subscribed_over_days,
             expired_over_days=body.expired_over_days,
             online_now=_thresholds and _online_now,
-            # Read only by a thresholded send: the lists it narrows, and the
-            # excluded lists it subtracts (OF's excludedLists is verified on
-            # list audiences only, and this send becomes explicit userIds).
             user_lists=body.user_lists if _thresholds else None,
             excluded_user_lists=body.excluded_user_lists if _thresholds else None,
             client=_get_client() if (body.unread_limit or _thresholds) else None,
@@ -435,8 +300,7 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
     body.user_ids = resolved["included_users"]
     body.excluded_users = resolved["excluded_users"]
     if _thresholds:
-        # The resolved ids ARE the audience: OF unions userLists with
-        # userIds, so a list left in would re-add every fan below the bar.
+        # OF unions userLists with userIds: a list left in would re-add every fan below the bar.
         _refusal = mass_queue_decide.threshold_count_refusal(
             len(body.user_ids), THRESHOLD_IDS_MAX)
         if _refusal is not None:
@@ -446,17 +310,9 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
         body.filters = None
     _skipped_answered = resolved.get("skipped_funnel_responders") or []
     _answered_total = int(resolved.get("funnel_responders_total") or 0)
-    # Excluded ids must leave `user_ids` HERE too — of_client subtracts them
-    # from the wire `userIds` (OF has no per-user exclude field), so if we left
-    # them in `body.user_ids` the mass_runs recipient_count + the optimistic
-    # `messages` rows _close_mass_run writes would be PHANTOM (rows for fans OF
-    # never messaged), and those outbound rows would then poison the contact
-    # guard. Mirror the of_client subtraction so our record matches the send.
+    # Excluded ids must leave user_ids: of_client subtracts them from wire userIds, else recipient_count and optimistic rows are phantom.
     body.user_ids = mass_queue_decide.strip_excluded(body.user_ids, body.excluded_users)
-    # An explicit-ids send (no list, online or filter) subtracts its excluded
-    # lists' members itself: OF's `excludedLists` is verified on list audiences
-    # only. A thresholded send did so in the resolver. A list OF won't page → 422.
-    _listed_out = 0  # fans the guards kept but the excluded lists hold
+    _listed_out = 0
     if (not _thresholds and body.user_ids and body.excluded_user_lists
             and not (body.user_lists or body.online_only or body.filters)):
         from audiences import drop_exclude_list_members
@@ -467,23 +323,12 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
         except AudienceUnknown as e:
             raise HTTPException(422, str(e))
         _listed_out = _kept - len(set(body.user_ids))
-    # No audience left (no id, list, online or filter) → 422 for every caller:
-    # what OF does with an empty audience is unknown, so fail closed. Ultra's
-    # `require_recipients` also refuses an online/filter-only send.
+    # What OF does with an empty audience is unknown: fail closed with 422.
     if (not (body.user_ids or body.user_lists or body.online_only or body.filters)
             or (body.require_recipients and not body.user_lists and not body.user_ids)):
         raise HTTPException(422, mass_queue_decide.nobody_left_refusal(_asked_ids, _listed_out))
-    # OF cannot exclude individual ids from a list/online audience — the
-    # `excludedUsers` body field doesn't exist (verified live 2026-06-12: it was
-    # silently dropped and excluded fans got the blast). Mirror the ids into the
-    # per-account Auto_Exclude OF list, which OF honors via `excludedLists`.
-    # Explicit `user_ids` need no list — they're already stripped just above.
-    # Done under the shared per-account broadcast lock, held from the sync
-    # through the OF POST below (as automation sends hold it): a concurrent
-    # automation send or Auto_Exclude refresh can't rewrite the list between
-    # this blast's sync and OF reading its `excludedLists`. Errors bubble up
-    # (500) — a broadcast without its guard is the bug itself.
-    _later = bool(body.scheduled_date or body.save_for_later)
+    # OF has no excludedUsers field (silently dropped): mirror ids into the Auto_Exclude list, synced under broadcast_lock held through the POST.
+    _later = body.is_later()
     _held = (_exclude_list_held(_aid, body.excluded_users) if mass_queue_decide.needs_exclude_list(
         body.excluded_users, body.user_lists, body.online_only, body.filters) else contextlib.nullcontext())
     async with _held as auto_lid:
@@ -501,21 +346,7 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
             auto_exclude=auto_lid,
         )
         client = _get_client()
-        # OF throttles consecutive broadcast POSTs with a 400 "Please allow 10
-        # seconds". Every automation absorbs that already (of_write_paced pre-spaces
-        # >=11s, of_write_with_retry re-tries once after an async pause); this
-        # handler — the one the Next composer hits, with a human watching — did not.
-        # A blast landing within ~10s of an automation's blast failed AFTER the
-        # audience resolve, the exclude sync and the mass_runs mint, and the manual
-        # resubmit re-paid all of it.
-        #
-        # Retry only, no pacing: pacing would tax the common un-throttled case and
-        # this is the interactive path. Safe to re-send because the retry fires only
-        # on OF's rate-limit 400 — a POST OF refused, so nothing was created. Every
-        # other error still surfaces unchanged. Both kinds are wrapped: scheduled
-        # and immediate are the same throttled endpoint. The function-local import
-        # mirrors this module's other automation_executor uses (that module must not
-        # import server).
+        # OF 400s a broadcast within ~10s of another ("Please allow 10 seconds"): retry once only on that refusal, nothing was created.
         from automation_executor import of_write_with_retry
         shared = dict(
             text=body.text,
@@ -538,19 +369,17 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
                 user_ids=body.user_ids)
         else:
             post, extra = client.send_mass_message, dict(included_users=body.user_ids)
-        _send_keys[_key] = time.monotonic()  # from here OF may have it
+        _send_keys[_key] = time.monotonic()
         try:
             result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra), client=client))
         except Exception as e:
             from automations.send_mass_message import close_run_if_unsent
-            from of_write import _may_have_sent  # at call time: a slop fault swaps it
+            from of_write import _may_have_sent
             await close_run_if_unsent(mass_run_id, e)
             if not _may_have_sent(e):
-                _send_keys.pop(_key, None)  # OF refused: nothing went out
+                _send_keys.pop(_key, None)
             raise
-    # A funnel-linked send only works if the reply-walker runs on this account —
-    # without it the opener goes out and no reply-check ever fires. Best-effort:
-    # never blocks the broadcast (nor holds its lock).
+    # Best-effort: a funnel send without the reply-walker sends the opener and never checks replies; must not block the broadcast.
     if body.funnel_id and mass_run_id is not None:
         try:
             from funnels_api import ensure_funnel_walker
@@ -558,10 +387,6 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
         except Exception:
             log.exception("funnel walker ensure failed (account=%s) — enable "
                           "Reply-walking in My Automations > Auto Funnel", account_id)
-    # Scheduled sends don't produce per-fan rows now — OF fires the actual
-    # messages later. The mass_run_id is stamped on `mass_runs` so the
-    # WS-pump reconciler (TODO inside _close_mass_run) can match the
-    # eventual arrivals.
     if not _later:
         await _close_mass_run(
             account_id=account_id,
@@ -571,16 +396,8 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
             price=body.price,
             result=result,
             recipient_ids=body.user_ids,
-            # Only immediate sends close here (a `_later` run never does — see
-            # §8 of plans/blast-splice, that run stays 'running' forever and is
-            # its own bug), so this is always False. Passed explicitly anyway:
-            # the day a scheduled run learns to close itself, the flag is
-            # already where it belongs.
             scheduled=False,
         )
-        # Auto-unsend timer: schedule a one-shot `unsend_messages` job for the
-        # forever-window mass unsend (DELETE /messages/queue/{id}) at send_time
-        # + N hours. Picked up by the automation supervisor when due.
         queue_id = result.get("id") if isinstance(result, dict) else None
         if body.unsend_after_hours and queue_id:
             from automation_executor import enqueue_job
@@ -598,14 +415,9 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
     if mass_run_id is not None and isinstance(result, dict):
         result.setdefault("_mass_run_id", mass_run_id)
     if isinstance(result, dict) and (_answered_total or _skipped_answered):
-        # R1/R2 surfacing: how many known answerers of this funnel were excluded
-        # from the send (total), and the precise ids removed from an explicit-id
-        # audience. The UI prints "N already answered — skipped".
         result["_skipped_already_answered"] = _answered_total or len(_skipped_answered)
         result["_skipped_already_answered_ids"] = _skipped_answered
     if isinstance(result, dict) and _asked_ids:
-        # How many of the caller's fan ids went into this send after the guards
-        # (opt-out list, queued-send dedup, …); Ultra's step note reads it.
         result["_user_ids_kept"] = {"asked": _asked_ids, "kept": len(set(body.user_ids))}
     return result
 
@@ -681,30 +493,21 @@ async def of_cancel_scheduled(request: Request, queue_id: int):
     resp = await asyncio.to_thread(_proxy, lambda: _get_client().cancel_scheduled(queue_id))
     try:
         account_id = _resolve_account_id(request)
-    except Exception as e:  # authed route — unreachable in practice
+    except Exception as e:
         log.warning("cancel bookkeeping skipped, account unresolved: %s", e)
         return resp
 
-    # Three independent bits of local bookkeeping. OF has already canceled the
-    # queue, so none of them may 500 the caller — and none may be skipped
-    # because an earlier one failed, hence one guard each.
     try:
         await cache.mark_canceled(account_id, queue_id)
     except Exception as e:
         log.warning("mass_broadcast_cache mark_canceled failed: %s", e)
     try:
-        # #R4: a manual mass unsend also closes funnel discovery for that run —
-        # stop enrolling NEW repliers off the deleted mass (the walker keeps
-        # advancing already-engaged fans until a purchase halts them).
         from audiences import close_funnel_discovery_for_queue
         await close_funnel_discovery_for_queue(account_id, queue_id=queue_id)
     except Exception as e:
         log.warning("close_funnel_discovery failed queue_id=%s: %s", queue_id, e)
     try:
-        # Same mirror flip as the per-chat unsend above, one broadcast wide:
-        # every recipient's mirror row would otherwise re-seed as an empty
-        # bubble on their next chat open. Purchasers and funnel follow-ups
-        # are spared inside mark_queue_unsent — they stay live on OF.
+        # Mirror rows left live would re-seed as empty bubbles on each recipient's next chat open; purchasers and funnel follow-ups are spared.
         from messages import mark_queue_unsent
         await mark_queue_unsent(account_id, queue_id)
     except Exception as e:

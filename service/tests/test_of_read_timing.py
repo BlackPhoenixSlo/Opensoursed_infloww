@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""OF passthrough read timing line + chat detail cache/coalesce (chat slowness D2).
-
-Over HTTP with real session cookies and a fake OF transport (the real OFClient
-methods run; only the socket call is replaced, and it holds the client's real
-signed slot, so no request leaves the process):
-
-  • one `of_read_timing` line per timed read (messages, chats, users_list,
-    chat) with every field; a held lane slot shows as lane_wait_ms, a held
-    signed slot as signed_wait_ms, and neither is booked as of_ms;
-  • a cache hit or coalesced joiner logs of_calls=0;
-  • GET /chats/{id}: N concurrent reads of one (account, chat) = 1 OF call;
-    a read within the 30 s TTL = no OF call, one after it = one;
-  • our own chat writes (mark read, mute, pin/unpin, unsend), any recorded
-    send and an inbound DM drop that chat's entry only; an OF-web outbound
-    echo or a fan-less unsend drops the account's entries.
-
-Run: ./venv/bin/python service/tests/test_of_read_timing.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -57,8 +39,6 @@ class _Resp:
 
 
 class _FakeOF:
-    """An OFClient whose socket call holds the real signed slot, sleeps
-    `delay_s` and answers `{"n": call number}`; records (method, path)."""
 
     def __init__(self, account_id: str) -> None:
         self.client = of_client.OFClient.__new__(of_client.OFClient)
@@ -67,7 +47,7 @@ class _FakeOF:
         self.client._http_call = self._http_call
         self.calls: list[tuple[str, str]] = []
         self.delay_s = 0.0
-        self.unsend_reply = {"success": True}   # OF's DELETE /messages/{id} answer (of_sends.unsend_message)
+        self.unsend_reply = {"success": True}
         self._lock = threading.Lock()
 
     def _http_call(self, method: str, url: str, *, json_body=None):
@@ -149,7 +129,6 @@ def _burst(path: str, n: int, **headers) -> list:
     return _burst_paths([path] * n, **headers)
 
 
-# ── The timing line ─────────────────────────────────────────────────────────
 
 def case_each_timed_route_logs_one_line_with_every_field():
     fake = _fresh()
@@ -164,7 +143,7 @@ def case_each_timed_route_logs_one_line_with_every_field():
         kv = _parse(ln)
         assert kv["account"] == A and kv["status"] == "200" and kv["prio"] == "user", ln
         assert int(kv["of_calls"]) >= 1, ln
-        assert int(kv["of_ms"]) >= 40, ln          # the fake's 50 ms upstream
+        assert int(kv["of_ms"]) >= 40, ln
         assert int(kv["total_ms"]) >= int(kv["of_ms"]), ln
     assert _parse(LINES.lines[0])["chat"] == "77" and _parse(LINES.lines[1])["chat"] == "-"
 
@@ -184,9 +163,6 @@ def case_a_held_lane_slot_is_lane_wait_not_of_time():
 
 
 def case_a_background_read_queued_at_admission_shows_it_in_lane_wait_and_total():
-    """The background sub-lane (2) admits before the route runs (`_bg_admission_route`):
-    the third of three concurrent background reads waits there, and its line must
-    still show that wait, inside total_ms."""
     fake = _fresh()
     fake.delay_s = 0.3
     replies = _burst_paths([f"/api/of/v2/chats/{c}" for c in (70, 71, 72)],
@@ -227,7 +203,6 @@ def case_an_upstream_error_logs_its_status():
     assert _parse(LINES.lines[-1])["status"] == "502", LINES.lines
 
 
-# ── get_chat: coalesce + TTL ────────────────────────────────────────────────
 
 def case_concurrent_get_chat_reads_share_one_upstream_call():
     fake = _fresh()
@@ -264,7 +239,6 @@ def case_other_chats_are_their_own_entries():
     assert fake.gets("/api2/v2/chats/92") == 1 and fake.gets("/api2/v2/chats/93") == 1
 
 
-# ── Invalidation ────────────────────────────────────────────────────────────
 
 def case_mark_read_and_mute_drop_that_chat_only():
     fake = _fresh()
@@ -337,8 +311,6 @@ def case_pin_unpin_and_unsend_drop_that_chat_and_unsend_without_fan_drops_all():
 
 
 def case_a_refused_unsend_still_drops_that_chat():
-    """Round 2 #20: OF's 2xx refusal (`success: false`) leaves the message row live but the chat detail drops anyway
-    (a re-read is harmless)."""
     fake = _fresh()
     fake.unsend_reply = {"success": False}
     h = {"X-Account-Id": A}

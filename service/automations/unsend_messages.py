@@ -16,6 +16,8 @@ from messages import (
     _queue_body_and_stamp, mark_mass_runs_unsent, mark_queue_copies_unsent,
     mark_unsent,
 )
+import platforms
+from side_effect_gate import refusal
 
 UNSENT_REASON = "automation:unsend_messages"
 
@@ -293,9 +295,6 @@ def next_history_page(cur: _PageCursor, resp: object,
 
 async def _refresh_mass_cache(account_id: str, client) -> bool:
     import mass_broadcast_cache as cache
-    fetch = getattr(client, "mass_message_history", None)
-    if not callable(fetch):
-        return True
     async with get_session() as s:
         cached_rows = (
             await s.execute(
@@ -317,7 +316,7 @@ async def _refresh_mass_cache(account_id: str, client) -> bool:
     try:
         for _ in range(_MASS_REFRESH_MAX_PAGES):
             resp = await asyncio.to_thread(
-                fetch, start_date=start.strftime(fmt),
+                client.mass_message_history, start_date=start.strftime(fmt),
                 end_date=cur.end_cursor.strftime(fmt),
                 limit=_MASS_REFRESH_PAGE, offset=cur.offset,
             )
@@ -451,6 +450,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     targets = _norm_targets(payload.get("targets"))
     client = None
     mass_refresh_failed = False
+    mass_skipped = None
     wants_mass = any(t.get("kind") == "mass" for t in targets)
     if not targets:
         policy = payload.get("policy") or {}
@@ -465,8 +465,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if wants_mass:
             if not payload.get("dry_run"):
                 client = await asyncio.to_thread(ax._make_client, account_id)
-                mass_refresh_failed = not await _refresh_mass_cache(account_id, client)
-            targets += await _sweep_mass_targets(account_id, plan)
+                if refusal(client, "mass_message_history"):
+                    mass_skipped = "platform_lacks:mass_message_history"
+                    wants_mass = False
+                else:
+                    mass_refresh_failed = not await _refresh_mass_cache(account_id, client)
+            if wants_mass:
+                targets += await _sweep_mass_targets(account_id, plan)
 
     if payload.get("dry_run"):
         return {
@@ -478,15 +483,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "rows_flipped": 0,
         }
 
+    if wants_mass and client is None:
+        backend = platforms.for_account(account_id).backend
+        if backend is not None and refusal(backend.Shim, "mass_message_history"):
+            mass_skipped = "platform_lacks:mass_message_history"
+            wants_mass = False
+            targets = [t for t in targets if t["kind"] != "mass"]
+
     copies_flipped = 0
     if wants_mass:
         # Runs even with no targets: a queue is a target once, so the cancel-vs-scrape race can only be repaired on a tick with none.
         copies_flipped += await _reapply_recent_unsends(account_id)
 
+    skipped = {"mass_skipped": mass_skipped} if mass_skipped else {}
     if not targets:
         return {"targets": 0, "unsent": 0, "failed": 0, "rows_flipped": 0,
                 "copies_flipped": copies_flipped,
-                "mass_refresh_failed": mass_refresh_failed}
+                "mass_refresh_failed": mass_refresh_failed, **skipped}
 
     if client is None:
         client = await asyncio.to_thread(ax._make_client, account_id)
@@ -561,6 +574,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "copies_flipped": copies_flipped,
         "mass_refresh_failed": mass_refresh_failed,
         "post_retry_job_id": post_retry_job_id,
+        **skipped,
     }
 
 

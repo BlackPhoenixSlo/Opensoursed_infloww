@@ -1,25 +1,3 @@
-"""
-event_transcode_decide — the pure decisions of service/event_transcoder.py.
-
-The transcoder is the shell: it owns the DB writes (through `of_writer`), the
-cache patches, the webhook hooks and the per-account state. Everything here is a
-function of its arguments: no clock (callers pass `now`), no DB, no I/O, no
-import of `event_transcoder` (no cycle). Tables: tests/test_event_transcode_decide.py.
-
-  route(event)              which writer an OF WS frame goes to
-  counter_of(event)         OF's Unread counter in a `chat_messages` frame (int >= 0), else None
-  queue_fold / blasted      the "did this account just blast?" ring
-  queue_reread              did a finished blast just enter it (one window re-read)
-  user_blob(payload)        the Fan touch a non-message frame carries
-  dm_key(aid, m)            Skip | Outbound | Echo | None: dm_plan's key/direction half
-  dm_plan(aid, m, now)      Skip | Outbound | Echo | Inbound for a chat_message
-  echo_row(aid, m, echo, now)  the out `messages` row of a Creator echo, None for a queue copy
-  is_inbound_dm(event)      would this frame's dm_plan be Inbound (the persist queue keeps it)
-  money_bust(m)             does an inbound chat_message clear the money feeds' cache
-  fan_upsert(plans)         the `fans` upsert of one chat's DM batch
-  ppv_fields(payload, now)  the ledger row of a PPV-unlock frame
-"""
-
 from __future__ import annotations
 
 import json
@@ -28,14 +6,11 @@ from datetime import datetime
 from typing import Any, Literal, Union
 
 from events_decide import first_key
-from of_shapes import giphy_dm_id   # stdlib-only OF payload-shape reader
+from of_shapes import giphy_dm_id
 from of_coerce import cents_or_zero as to_cents, strip_tags as strip_html  # noqa: F401 — td.strip_html (event_transcoder, tests)
 
-# ── Field parsers ────────────────────────────────────────────────────
 
 def parse_iso(s: str | None) -> datetime | None:
-    """OF returns ISO 8601 with `+00:00` suffix. fromisoformat handles it
-    on 3.11+; we strip a trailing `Z` for the older variant just in case."""
     if not s:
         return None
     try:
@@ -45,7 +20,6 @@ def parse_iso(s: str | None) -> datetime | None:
 
 
 def media_ids(media: list | None) -> list[int]:
-    """Pluck media.id from each item; skip non-int."""
     if not isinstance(media, list):
         return []
     out: list[int] = []
@@ -57,15 +31,11 @@ def media_ids(media: list | None) -> list[int]:
     return out
 
 
-# ── Routing ──────────────────────────────────────────────────────────
 
 Lane = Literal["chat_message", "ppv", "toast", "queue", "other"]
 
 
 def route(event: Any) -> tuple[Lane, str, Any] | None:
-    """`(lane, event_type, payload)` for one frame, None for a non-dict or an
-    envelope with no type. "other" is the touch + discovery-log fall-through; a
-    known type whose payload is not a dict falls through to it, as it always has."""
     event_type = first_key(event)
     if not event_type:
         return None
@@ -79,7 +49,8 @@ def route(event: Any) -> tuple[Lane, str, Any] | None:
     if event_type in ("chat_queue_finish", "chat_queue_update"):
         return "queue", event_type, payload
     if event_type == "chat_messages":
-        return None  # Counted at receipt because the persistence queue can lag or drop frames.
+        # Counted at receipt: the persistence queue can lag or drop frames.
+        return None
     return "other", event_type, payload
 
 
@@ -88,32 +59,16 @@ def counter_of(event: Any) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
 
 
-# ── Broadcast queue ring ─────────────────────────────────────────────
-# A ring is a tuple of `(queue_id, received_at)`, oldest first; the shell keeps
-# one per account and stamps `received_at` with its own monotonic clock.
 
 QUEUE_RING_MAX = 32
-# A queue of fewer than five recipients is a small hand-send, not a blast. Only the
-# FINISH frame's `total` is trustworthy: the first update carries -1.
+# Only the FINISH frame's total is trustworthy: the first update carries -1.
 QUEUE_MIN_RECIPIENTS = 5
 
 Ring = tuple[tuple[int, float], ...]
 
 
+# Canceled removes its entry; replace-by-id since OF can re-send a finish frame.
 def queue_fold(ring: Ring, event_type: str, payload: Any, now: float) -> Ring:
-    """One `chat_queue_*` frame folded into a ring. The envelope, as `event_inbox`
-    stores it::
-
-        {"chat_queue_finish": {"id": 46605849959, "date": "...", "isReady": true,
-         "isDone": true, "total": 23, "pending": 0, "canUnsend": true,
-         "unsendSeconds": 1000000, "hasError": false, "isCanceled": false, ...}}
-
-    Only the FINISH frame records — the first update carries `total: -1` and the
-    ones between carry a falling `pending`, so `total` is only trustworthy at the
-    end. A frame that says `isCanceled` records nothing and REMOVES any entry for
-    the same queue: a blast the creator pulled back is not a blast anyone can be
-    replying to. Replace-by-id: OF can re-send a finish frame, and two entries for
-    one queue would push a real second blast out of a 32-deep ring for no gain."""
     if not isinstance(payload, dict):
         return ring
     try:
@@ -135,27 +90,17 @@ def queue_fold(ring: Ring, event_type: str, payload: Any, now: float) -> Ring:
 
 
 def queue_reread(before: Ring, after: Ring) -> bool:
-    """A finished broadcast `queue_fold` kept (5+ recipients, not cancelled) entered the ring: one window re-read,
-    so Fans the mass answered leave amber. A re-sent finish of a queue already held is no new entry."""
     return bool({q for q, _at in after} - {q for q, _at in before})
 
 
 def blasted(ring: Ring, now: float, seconds: float) -> bool:
-    """Did any queue in the ring finish within `seconds` of `now`?"""
     floor = now - float(seconds)
     return any(at >= floor for _q, at in ring)
 
 
-# ── Fan touch from a non-message frame ───────────────────────────────
 
+# Avatar shape varies: messages give `avatar` (URL), toasts `avatarThumbs` (size->URL); prefer c144, then c50.
 def user_blob(payload: Any) -> tuple[int, dict[str, Any]] | None:
-    """`(fan_id, fields)` a frame's creator-side user blob can refresh, else None.
-
-    OF embeds the blob under a few different keys (toasts use `data.relatedUser`,
-    online events use `user`, …). Avatar shape varies: messages give `avatar`
-    (string URL), toasts give `avatarThumbs` (dict of size→URL). We prefer c144,
-    fall back to c50, then any string. None without an int id or a field worth
-    writing."""
     if not isinstance(payload, dict):
         return None
     user = None
@@ -195,34 +140,26 @@ def user_blob(payload: Any) -> tuple[int, dict[str, Any]] | None:
     return fan_id, fields
 
 
-# ── api2_chat_message ────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Skip:
-    """No primary key: a message id, a fan id or the account is missing."""
     message_id: Any
     fan_id: Any
 
 
 @dataclass(frozen=True)
 class Outbound:
-    """Our own send echoed back: no row (the send handler owns it), cache bust only."""
     message_id: Any
 
 
 @dataclass(frozen=True)
 class Echo:
-    """A Creator send from any client (no `fromUser`, `chatUserId` names the Fan): an out row (`echo_row`), that Fan reads read."""
     message_id: Any
     fan_id: int
 
 
 @dataclass(frozen=True)
 class Inbound:
-    """One inbound DM. `msg`: its `messages` row, exact columns less `raw_json`
-    (the shell's). `image`: the image hook owns it, else the words hook does;
-    `has_media` is the image hook's flag (False for a gif). `tip_cents > 0` fires
-    the tip hook and writes the ledger row."""
     msg: dict
     from_user: dict
     tip_cents: int
@@ -243,10 +180,6 @@ def _int_id(v: Any) -> int | None:
 
 
 def dm_key(account_id: Any, m: dict) -> Union[Skip, Outbound, Echo, None]:
-    """The key/direction half of `dm_plan`, its one owner: Echo (no `fromUser` dict, an
-    integer `chatUserId`, a message id and the account), Skip (no message id, no `fromUser.id` —
-    a non-dict `fromUser` has none — or no account), Outbound (the Fan is the account),
-    None (a Fan's DM: `dm_plan` builds the Inbound). Reads only those keys, never raises."""
     message_id = m.get("id")
     from_user = m.get("fromUser")
     if not isinstance(from_user, dict) and message_id and account_id:
@@ -261,18 +194,8 @@ def dm_key(account_id: Any, m: dict) -> Union[Skip, Outbound, Echo, None]:
     return None
 
 
+# tipAmount is DOLLARS, not `price`: OF sends a tip as chat_message with isTip=true and price=0.
 def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
-    """What one `api2_chat_message` payload becomes. `now` stamps a frame
-    without `createdAt`.
-
-    Direction: 'out' when `fromUser.id == account_id` (OF's echo of a send, which
-    carries no recipient, so no (account, fan, message) key), else 'in'.
-
-    A tip's $ value rides in top-level `tipAmount` (DOLLARS), NOT `price` — OF
-    sends a tip as a chat_message with isTip=true and price=0. Fall back to price
-    for an isTip frame lacking tipAmount; price_cents stays separate so the PPV
-    logic is untouched. ONE predicate picks the words-vs-image lane: a non-tip
-    media/gif DM is the image hook's, which owns its words too."""
     key = dm_key(account_id, m)
     if key is not None:
         return key
@@ -285,7 +208,7 @@ def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
     if is_tip and tip_cents == 0:
         tip_cents = price_cents
     mids = media_ids(m.get("media"))
-    is_paid = m.get("isOpened") if price_cents > 0 else None  # NULL for free messages
+    is_paid = m.get("isOpened") if price_cents > 0 else None
     msg = dict(
         account_id=str(account_id), fan_id=int(fan_id), message_id=int(message_id),
         direction="in",
@@ -300,9 +223,8 @@ def dm_plan(account_id: Any, m: dict, now: datetime) -> DmPlan:
                    image=bool(mids or giphy_dm_id(m)) and not is_tip, has_media=bool(mids))
 
 
+# isFromQueue copies are skipped: a mass's per-Fan rows belong to its placeholders (write_mass_optimistic_rows).
 def echo_row(account_id: Any, m: dict, echo: Echo, now: datetime) -> dict | None:
-    """The out `messages` row of a Creator echo, exact columns less `raw_json`. None for an `isFromQueue`
-    copy: a mass's per-Fan rows belong to its placeholders (attribution.write_mass_optimistic_rows)."""
     if m.get("isFromQueue"):
         return None
     price_cents = to_cents(m.get("price"))
@@ -317,40 +239,20 @@ def echo_row(account_id: Any, m: dict, echo: Echo, now: datetime) -> dict | None
 
 
 def is_inbound_dm(event: Any) -> bool:
-    """Is this OF frame one the transcoder writes as a Fan's DM: the `chat_message`
-    lane (`route`) and a `dm_key` of None, i.e. `dm_plan` would be `Inbound`? Image,
-    gif and tip DMs are. Reads only those keys (no row, no clock), never raises. The
-    persist queue keeps these over every other frame (events_decide.overflow_victim)."""
     r = route(event)
     return r is not None and r[0] == "chat_message" and dm_key(event.get("__account_id"), r[2]) is None
 
 
+# Misreading a money frame costs a sale its bust, a plain DM only one re-read: unclear fields clear the cache.
 def money_bust(m: dict) -> bool:
-    """Does an inbound `api2_chat_message` clear the money feeds' cache
-    (`relay_cache.invalidate_money_feeds`)? Only a plain DM keeps it: `isTip`
-    false and `price` a number equal to 0. A tip (any amount), a price above 0,
-    or a frame lacking the fields to tell (`isTip` not a bool, `price` missing,
-    null or not a number) clears it: a misread money frame would cost a sale
-    its bust, a misread plain DM only one re-read."""
     price = m.get("price")
     if m.get("isTip") is not False or isinstance(price, bool) or not isinstance(price, (int, float)):
         return True
     return price != 0
 
 
+# A blank never clobbers a populated name/avatar: a plain OF message carries only fromUser:{id}.
 def fan_upsert(plans: list[Inbound]) -> tuple[dict, dict, tuple[Any, Any]]:
-    """`(values, on_conflict, (subscribedOn, subscribedBy))` of the `fans` upsert
-    for one chat's DM batch; the shell adds `updated_at` and the flags' source
-    heal (automations._common.source_self_heal_set) to the conflict set.
-
-    The newest non-blank value of each `fromUser` field across the frames wins.
-    On conflict a blank NEVER clobbers a populated name/avatar: a plain OF message
-    carries only `fromUser:{id}`, and writing `.get(...)` there used to null out
-    names a toast/online frame had captured. `source` on insert reads OF's flags
-    (`subscribedOn` = our fan, `subscribedBy` = a creator we follow) — the same
-    rule as _common.classify_source, which this module cannot import (SQLAlchemy).
-    `last_message_received_at` is the batch's latest `created_at`; the shell moves the
-    stored one only forward."""
     first = plans[0].msg
     user: dict = {}
     for p in plans:
@@ -382,13 +284,9 @@ def fan_upsert(plans: list[Inbound]) -> tuple[dict, dict, tuple[Any, Any]]:
     return values, on_conflict, (user.get("subscribedOn"), user.get("subscribedBy"))
 
 
-# ── PPV unlock ───────────────────────────────────────────────────────
 
+# The exact OF shape of a PPV-unlock frame is still unknown: most likely fields, message first.
 def ppv_fields(payload: dict, now: datetime) -> dict | None:
-    """The ledger fields of a PPV-unlock frame (`fan_id`, `message_id`, `kind`,
-    `amount_cents`, `occurred_at`), None when one is missing or the amount is 0.
-    The exact OF shape is still unknown: read the most likely fields, message
-    first."""
     msg = payload.get("message") if isinstance(payload.get("message"), dict) else payload
     message_id = msg.get("id") or payload.get("messageId") or payload.get("message_id")
     fan = (msg.get("fromUser") or payload.get("user") or payload.get("fan") or {})

@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_info_chat — Full AI Test chat: get-to-know info (phase 03a, ticket 35; split from
-test_full_ai_test_chat.py).
-
-Shared setup (seeded Agencies, owner clients, `_guarded`, `_post`, the Writer fakes) is
-`_full_ai_chat_helpers.py`; every Turn runs inside `_guarded` as in test_full_ai_test_chat.py.
-
-   case_info_stated_age_folds        Jev fires stated_his_age, the faked DeepSeek extract says 31:
-                                     reply_json + response fan_info, the next row's fold carries it,
-                                     a newer stated value replaces it (no `fans` row: `_guarded`)
-   case_info_pick_in_writer_system   Jev's `next_question` pick is the chat Writer's ask line;
-                                     `none` asks nothing; a sent ask her ASKED: names counts; a pick he
-                                     answers in the same Turn is not asked or counted; nothing
-                                     missing: no Choice, know enough; a sext Turn: Nouls only,
-                                     no ask, nothing counted
-   case_info_options_and_asked       the Choice offers every missing info field + none, a field
-                                     asked twice included; the state carries the asked counts
-   case_info_lead_in                 `lead_in`: lead head + line, SELF_GIVE, no fetishes ask, lead Jev wording
-   case_info_stalled_extract         extract timeout / Jev failure: reply still written, fan_info
-                                     unchanged, info_error set; extract capped by the Turn deadline,
-                                     no time left skips the stage (`deadline`)
-
-Run: ./venv/bin/python service/tests/test_full_ai_info_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_chat_helpers import (
     _CHAIN_KEYS, _GIF_TAG, A, DEEPSEEK, NANO, OK_LINE, OPENROUTER, OWNER_A, TURN, ZAI, _agency_keys,
@@ -38,36 +15,18 @@ from automations import _info_jev, full_ai_turn, full_ai_writers
 from automations.full_ai_config import DEFAULTS, turn_bound_s
 
 
-# ── Get-to-know (ticket 35) ───────────────────────────────────────────
-#   case_info_stated_age_folds        Jev fires stated_his_age, the faked DeepSeek extract says 31:
-#                                     reply_json + response fan_info, the next row's fold carries it,
-#                                     a newer stated value replaces it (no `fans` row: `_guarded`)
-#   case_info_pick_in_writer_system   Jev's `next_question` pick is the chat Writer's ask line;
-#                                     `none` asks nothing; a sent ask her ASKED: names counts; a pick he
-#                                     answers in the same Turn is not asked or counted; nothing
-#                                     missing: no Choice, know enough; a sext Turn: Nouls only,
-#                                     no ask, nothing counted
-#   case_info_options_and_asked       the Choice offers every missing info field + none, a field
-#                                     asked twice included; the state carries the asked counts
-#   case_info_lead_in                 `lead_in`: lead head + line, SELF_GIVE, no fetishes ask, lead Jev wording
-#   case_info_stalled_extract         extract timeout / Jev failure: reply still written, fan_info
-#                                     unchanged, info_error set; extract capped by the Turn deadline,
-#                                     no time left skips the stage (`deadline`)
 
 from _full_ai_fixtures import FakeInfoJev  # noqa: E402
 from automations.welcome_chatter_for_info import _EXTRACT_FIELDS, _EXTRACT_SYSTEM  # noqa: E402
 
 
 def _extract_says(**vals) -> str:
-    """The faked DeepSeek extract's reply: wcfi's JSON with `vals` filled."""
     return "ok:" + json.dumps({**dict.fromkeys(_EXTRACT_FIELDS, ""), "likes_boobs": False,
                                "likes_ass": False, "recent_events": [], "her_claims": [], **vals})
 
 
 def _info_post(body: dict, info: FakeInfoJev, script: dict | None = None, *, fake_w=None,
                fake_j=None):
-    """One test turn under the invariants with both Jevs and every Writer host faked (a host left
-    out answers OK_LINE): (response json, Writer fake, wall seconds)."""
     full = {NANO: OK_LINE, OPENROUTER: OK_LINE, ZAI: OK_LINE, DEEPSEEK: OK_LINE, **(script or {})}
     fake_w = fake_w or FakeWriterHTTP(full)
     with _agency_keys(_CHAIN_KEYS), _guarded(), fake_w.on(), \
@@ -84,7 +43,6 @@ def case_info_stated_age_folds():
     info = FakeInfoJev(({"his_age": 0.95}, "none"))
     got, fw, _ = _info_post(_body(pair, 1, "im 31 btw, u?"), info, {DEEPSEEK: _extract_says(his_age="31")})
     assert got["status"] == "sent" and got["fan_info"] == {"his_age": "31"}, got
-    # The extract runs before the Writer, once, on DeepSeek with wcfi's verbatim prompt.
     assert [x["host"] for x in fw.requests] == [DEEPSEEK, NANO], fw.requests
     ex = fw.requests[0]
     assert ex["model"] == "deepseek-v4-flash" and ex["timeout"] == 45.0, ex
@@ -93,14 +51,11 @@ def case_info_stated_age_folds():
     assert ex["body"]["response_format"] == {"type": "json_object"}, ex["body"]
     (row,) = _rows(A, pair)
     assert _reply(row)["fan_info"] == {"his_age": "31"} and _reply(row)["info_error"] is None, _reply(row)
-    # `lead_in` and `he_likes` on by default in test Mode: their digest (no fetishes fired: wcfi's
-    # two messages above).
     assert json.loads(row.jev_json)["info_version"] == _info_jev.info_version(lead=True, likes=True, wide=True), row.jev_json
     # Turn 2 states nothing: no extract, the fold carries the age.
     got, fw, _ = _info_post(_body(pair, 2, "what are u up to"), FakeInfoJev())
     assert got["fan_info"] == {"his_age": "31"} and DEEPSEEK not in [x["host"] for x in fw.requests], got
     assert _reply(_rows(A, pair)[1])["fan_info"] == {"his_age": "31"}
-    # Turn 3: a newer stated value replaces the older one.
     got, _, _ = _info_post(_body(pair, 3, "ok im actually 32 lol"), FakeInfoJev(({"his_age": 0.9}, "none")),
                            {DEEPSEEK: _extract_says(his_age="32")})
     assert got["fan_info"] == {"his_age": "32"}, got
@@ -111,7 +66,6 @@ def _system(fw: FakeWriterHTTP) -> str:
     return w["body"]["messages"][0]["content"]
 
 
-# `lead_in` off: the cases below pin today's ask (the lead form: `case_info_lead_in`).
 _LEAD_OFF = {**DEFAULTS, "lead_in": False}
 
 
@@ -130,17 +84,14 @@ def _pick_in_writer_system():
     assert got["status"] == "sent", got
     assert full_ai_writers.ASK_HEAD + "[occupation] " + job in _system(fw), _system(fw)
     (row,) = _rows(A, "p-info-pick")
-    assert _reply(row)["asked"] == {"occupation": 1}, _reply(row)   # her ASKED: line (NEW-168)
-    # `none`: no ask line, nothing counted.
+    assert _reply(row)["asked"] == {"occupation": 1}, _reply(row)
     got, fw, _ = _info_post(_body("p-info-none"), FakeInfoJev(({}, "none")))
     assert full_ai_writers.ASK_HEAD not in _system(fw) and job not in _system(fw), _system(fw)
     assert _reply(_rows(A, "p-info-none")[0])["asked"] == {}
-    # Jev picks his age while he states it: the extract fills it, so no ask, nothing counted.
     got, fw, _ = _info_post(_body("p-info-answered", 1, "im 31"), FakeInfoJev(({"his_age": 0.95}, "his_age")),
                             {DEEPSEEK: _extract_says(his_age="31")})
     assert got["fan_info"] == {"his_age": "31"} and full_ai_writers.ASK_HEAD not in _system(fw), _system(fw)
     assert _reply(_rows(A, "p-info-answered")[0])["asked"] == {}
-    # Every info field known: no Choice asked, the know-enough tier.
     _store_config(A, {"checkpoint": {**_LEAD_OFF, "info_fields": ["his_age"]}})
     try:
         info = FakeInfoJev()
@@ -149,14 +100,12 @@ def _pick_in_writer_system():
         _store_config(A, {"checkpoint": _LEAD_OFF})
     assert "next_question" not in info.calls[0]["questions"], info.calls[0]["questions"]
     assert full_ai_writers.KNOW_ENOUGH in _system(fw), _system(fw)
-    # A sext Turn: Jev still gates what he stated, but no Choice, no ask line, nothing counted.
     info = FakeInfoJev(({}, "occupation"))
     got, fw, _ = _info_post(_body("p-info-sext"), info, fake_j=FakeJev(({**QUIET, "sexual_now": 0.95}, 3.0)))
     assert got["route"] == "sext" and got["status"] == "sent", got
     assert "next_question" not in info.calls[0]["questions"] and info.calls[0]["state"]["asked"] == {}
     assert full_ai_writers.ASK_HEAD not in _system(fw), _system(fw)
     assert _reply(_rows(A, "p-info-sext")[0])["asked"] == {}
-    # A sticker-only reply: Jev picked a field but no text went out, so the ask is not counted.
     _store_config(A, {"checkpoint": {**_LEAD_OFF, "gifs": True}})
     try:
         lone = f"ok:STICKER: {_GIF_TAG}"
@@ -191,7 +140,7 @@ def _options_and_asked():
     missing = [f for f in DEFAULTS["info_fields"] if f != "real_name"]
     q = call["questions"]
     assert list(q["next_question"].criteria) == missing + ["none"], q["next_question"].criteria
-    assert "his_age" in q["next_question"].criteria                 # asked twice: still offered
+    assert "his_age" in q["next_question"].criteria
     assert {k for k in q if k.startswith("stated_")} == {f"stated_{f}" for f in _EXTRACT_FIELDS}, q
     assert call["state"]["asked"] == {f: (2 if f == "his_age" else 0) for f in missing}, call["state"]
     assert call["state"]["fan_new_messages"] == ["line 3"], call["state"]
@@ -199,11 +148,6 @@ def _options_and_asked():
 
 
 def case_info_lead_in():
-    """`lead_in` (default on, test Mode): Jev's pick reaches the Writer as LEAD_HEAD + its
-    LEAD_LINES line (counted in `asked` once her ASKED: names it), SELF_GIVE for SELF_BAN, no "Ask what"; the Choice never
-    offers fetishes and carries the lead wording (`her_last_line` in the state, the lead digest); a
-    pick of fetishes fails the Choice (no ask, `asked` unchanged); every other fact known with
-    fetishes empty is know enough with no Choice."""
     got, fw, _ = _info_post(_body("p-lead-pick"), FakeInfoJev(({}, "occupation")),
                             {NANO: OK_LINE + "\nASKED: occupation"})
     sys_ = _system(fw)
@@ -221,13 +165,11 @@ def case_info_lead_in():
     assert "fetishes" not in nq.criteria and "none" in nq.criteria, nq.criteria
     assert nq.instructions == _info_jev.NEXT_QUESTION_LEAD["instructions"], nq.instructions
     assert "her_last_line" in call["state"], call["state"]
-    # Jev picks fetishes anyway: not offered, so the Choice fails; the reply is still written.
     got, fw, _ = _info_post(_body("p-lead-fet"), FakeInfoJev(({}, "fetishes")))
     assert got["status"] == "sent", got
     (row,) = _rows(A, "p-lead-fet")
     assert _reply(row)["asked"] == {} and _reply(row)["info_error"].startswith("jev_failed"), _reply(row)
     assert full_ai_writers.LEAD_HEAD not in _system(fw), _system(fw)
-    # Every fact but fetishes known: know enough, no Choice.
     pair = "p-lead-enough"
     known = dict(real_name="Sam", his_age="31", home_country="Spain", home_city="Madrid",
                  hobbies="surfing", occupation="chef")
@@ -240,8 +182,6 @@ def case_info_lead_in():
 
 
 class _StallExtract(FakeWriterHTTP):
-    """The DeepSeek extract runs to its full timeout on the Turn clock, then times out; every
-    Writer answers at once."""
 
     def __init__(self, clock: _Clock):
         super().__init__({NANO: OK_LINE, OPENROUTER: OK_LINE, ZAI: OK_LINE, DEEPSEEK: "timeout"})
@@ -267,14 +207,10 @@ def case_info_stalled_extract():
     (row,) = _rows(A, pair)
     assert _reply(row)["info_error"] == "extract:timeout" and _reply(row)["fan_info"] == {}, _reply(row)
     assert wall < 5.0, wall
-    # A failed info Jev: the reply is still written, no extract.
     got, fw, _ = _info_post(_body("p-info-jevfail"), FakeInfoJev(RuntimeError("jev down")))
     assert got["status"] == "sent" and [x["host"] for x in fw.requests] == [NANO], (got, fw.requests)
     err = _reply(_rows(A, "p-info-jevfail")[0])["info_error"]
     assert err.startswith("jev_failed") and "jev down" in err, err
-    # On the Turn clock: Router 180 s of 245 -> the extract gets its 45 s, stalls, NanoGPT the
-    # 20 s left and sends; Router 230 s -> the extract is capped at the 15 s left, no Writer
-    # time remains; Router 245 s -> the info stage is skipped (`deadline`).
     bound = turn_bound_s(DEFAULTS)
     for jev_s, extract_t, writer_t, status in ((180.0, [45.0], [20.0], "sent"),
                                                (230.0, [15.0], [], "failed"), (245.0, [], [], "failed")):

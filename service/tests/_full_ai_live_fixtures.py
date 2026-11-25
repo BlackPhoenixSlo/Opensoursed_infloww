@@ -1,10 +1,3 @@
-"""_full_ai_live_fixtures — the live sender's send-path world (tickets 65, 66), over
-`_full_ai_live_helpers` (its `world`, `seed_live`, `live_rows`, `clear_pause`).
-
-`world()` = the helpers' world with a `LiveOF` and `dm_rate` turns / releases counted
-(`World.turns`, `World.released`; `slot_lost(n)` true raises `run_slot.SlotLost` on rate turn n,
-1-based). Temp DB only (the caller's `_harness`). Every id here is invented.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -25,14 +18,10 @@ from db.models import Fan, Message
 
 __all__ = ["LINE3", "LiveOF", "World", "world", "seed_live", "live_rows", "clear_pause", "dm", "payload",
            "out_rows", "leases", "paused"]
-# Three bubbles after the reply chain for most fans (callers that need >= 3 assert it).
 LINE3 = "ok:omg hiii babe. i just got out of the shower lol. what are u up to tonight?"
 
 
 class LiveOF(FakeOF):
-    """FakeOF whose `before(n, text)` runs before DM n (1-based) is taken and `after(n, text)`
-    once OF took it: raise there to kill the run mid-send (`asyncio.CancelledError` = a relay
-    stop) or fail the send."""
 
     def __init__(self, before: Callable[[int, str], None] | None = None,
                  after: Callable[[int, str], None] | None = None, **kw):
@@ -68,7 +57,7 @@ def world(of: LiveOF | None = None, *, line: str = LINE3, jev=(QUIET, 1.0),
         w = World(of, jevs, fw)
 
         async def turn(account_id, **kw):
-            if "release_budget_s" not in kw:    # the sender's own turn under the loop's: no new place
+            if "release_budget_s" not in kw:
                 return await real_turn(account_id, **kw)
             w.turns += 1
             if slot_lost is not None and slot_lost(w.turns):

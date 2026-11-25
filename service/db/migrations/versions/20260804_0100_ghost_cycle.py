@@ -1,22 +1,3 @@
-"""ghost_cycle — the per-fan scheduled-silence anchor
-
-Revision ID: 0058_ghost_cycle
-Revises: 0057_account_voice
-Create Date: 2026-08-04
-
-Additive (one column):
-  • rhythm_state.ghost_anchor — when this fan's repeating chat/dark cycle
-    started. The ONLY state the ghost cycle keeps: the stage is derived by
-    modulo off this timestamp (`_ghost.window`), so there is no pointer a
-    missed tick could leave stale.
-
-Ships inert: nothing reads or writes it unless `rhythm_ghost_enabled` is on
-(and that key itself is inert without `rhythm_enabled`), so ai_chatter behaves
-byte-identically to today.
-
-Additive + idempotent (inspector-guarded, house convention so a create_all-built
-DB whose alembic_version lags doesn't trip).
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,88 +1,7 @@
 #!/usr/bin/env python3
-"""promo_create_guard — the Create reservation (docs/spec/phase-01-promo-preempt.md, ADR-0040):
-
-  case_two_reservers_one_wins    the partial unique index: one open row per Creator.
-  case_reserve_rereads_the_campaign  a campaign gone or changed since the decision → refused.
-  case_newer_create_refused      an automatic create refuses when a create settled after its
-                                 decision read.
-  case_rv_c01_stale_read_does_not_overwrite_manual  a manual create sent before the read and
-                                 settled during it, or a fresh manual id missing from the read.
-  case_rv_c06_rule_gone_dry_run_tick_or_stale_read_refuses  read over 90 s, re-ticked, the
-                                 claimed rule dry run / deleted / none: refused (reserve, CAS).
-  case_sending_cas               pending → sending once; a recheck miss → failed not_sent, no POST.
-  case_outcome_table             2xx + id → created; no id / bad body / 5xx / timeout → unknown;
-                                 4xx → failed http_<status> (captcha / price_free by body, the
-                                 asked wait kept); refused before send → not_sent; deactivated;
-                                 a dead session; the raw route's 502 read through its cause;
-                                 proxy refusal / DNS / connect failure / pool busy → not_sent.
-  case_failed_backoff_and_turn_off  each failed automatic create sets not_before (doubling,
-                                 Retry-After in full); a first 429 keeps Keep running on, a
-                                 second in a row turns it off (rate_limited) with one notice.
-  case_budget_windows_ignore_manual  budget_state counts automatic rows of the last 24 h only.
-  case_rule_and_limit_rechecked  an automatic create refuses when the promo_reactivate rule is
-                                 off or the Re-create limit is spent.
-  case_free_trial_limit_optional  owner 11-21: a capped Free trial with no Re-create limit
-                                 reserves (indefinite); a cap-0 one is refused (trial_unlimited).
-  case_manual_adoption_makes_mirror  a manual create adopted by a read gets its mirror row,
-                                 unarmed; a raw (OF mirror) one gets none.
-  case_clear_open_row            the operator's "create anyway" settles the open row cleared.
-  case_rv_c02_clear_only_from_the_state_shown  a row that started sending since is not cleared.
-  case_reconcile_adopt           a unique candidate settles created: campaign repointed, the
-                                 old id kept under it, one notice per row.
-  case_reconcile_several_candidates  two matches stay open (reconcile_reads counts the read).
-  case_reconcile_pre_id_excluded  an id seen in the decision read is never adopted.
-  case_rv_c03_foreign_promo_before_send_not_adopted  window from sent_at; no pre-send read →
-                                 never adopted.
-  case_rv_c02_reconcile_leaves_fresh_sender_alone  sending: the sender's until SETTLE_GRACE_S.
-  case_rv_c02_pending_expiry_loses_to_sender  the pending expiry is a pending-only CAS.
-  case_rv_c07_pending_released_by_time_without_read  a failed read still releases it.
-  case_reconcile_null_cap_is_zero  OF's null cap matches a sent 0.
-  case_reconcile_no_match_stays_open  no candidate: open, reconcile_reads + 1.
-  case_reconcile_pending_past_grace_fails  a pending row past SETTLE_GRACE_S never reached OF.
-  case_unknown_lost_at_unknown_off_s  no candidate UNKNOWN_OFF_S after the send → lost, Keep
-                                 running off (create_unknown), one notice.
-  case_rv_c13_turn_off_persists_keep_warning_at  the stop's time is on the campaign.
-  case_rv_r02_pre_send_failure_backs_off_keeps_running  proxy CONNECT refusal → not_sent.
-  case_rv_c05_takeover_moved_before_post_refused  expect_kept re-checked at the sending CAS.
-  case_rv_c04_duplicate_notices_once  the migration's unticked duplicates: one notice each.
-  case_settle_atomic             a crash before commit leaves the row open, the campaign as it was.
-  case_rv_r08_late_created_after_cleared_keeps_id  refused late success: id kept on the row.
-  case_listed_at_marks_seen_live  the first read showing a created id live stamps listed_at.
-  case_fence_rechecked_and_stamped  an automatic reserve refuses (fence) off the stamped box;
-                                 the row carries this box's id; a manual one is never fenced.
-  case_fence_notices_at_boot     each fenced Kept campaign: one owner notice per env value
-                                 (re-tick text for a row with no stamp), none for a stamped one.
-  case_rvb_c2_reserve_rechecks_backoff_budget_and_failed_send  in the reservation's own
-                                 transaction: a back-off ahead, a full budget window (this row
-                                 not counted), no recovery slot for a Pre-emption, and a send
-                                 failed after the decision read refuse it.
-  case_rvb_r3_timed_window_rechecked  an auto_timed reservation outside its window (local
-                                 deadline from OF's end + skew) refuses at reserve and at the
-                                 sending CAS.
-  case_rvb_r3_skew_sampled_at_answer  the clock skew is the answer's arrival minus OF's
-                                 createdAt, not the sending stamp (the POST may wait after it).
-  case_rvb_r2_failed_preempt_keeps_running  a 400 or a second 403/429 in a row on a Fill or
-                                 Timed: Keep running stays on, its early tick goes off, one
-                                 notice that names it; a captcha still turns Keep running off.
-  case_rvb_c5_unknown_preempt_notifies_now  a Pre-emption with no clear answer files the
-                                 owner notice at once; the row stays open for the reconcile.
-  case_f2_untick_during_slot_wait_no_post  a real OFClient whose only signed slot is held: the
-                                 Employee unticks Keep running (or Keep running moves, for a
-                                 manual create) while the sender waits; the guard re-run right
-                                 before the request leaves refuses it: zero POSTs, failed
-                                 not_sent, no back-off. Nothing changed: one POST, created.
-  case_w30_f1_untick_during_proxy_backoff_no_retry  untick during the back-off: no retry.
-  case_w30_f22_untick_during_signing_or_telemetry_no_post  untick while an attempt signs or
-                                 waits on the telemetry lock: nothing sent; a write with no
-                                 PRE_DISPATCH still retries a refused CONNECT (W30 F21).
-  case_w30_f20_reserve_names_the_blocking_and_landed_row  create_open carries the open row's
-                                 id; unless_landed settled created → create_landed (locked).
-
-Run: ./venv/bin/python service/tests/test_promo_create_guard.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -123,14 +42,13 @@ async def _creator(aid: str, *, of_id=500, owner=True) -> int:
                             auto_reactivate=True, reactivate_count=0, created_at=datetime.utcnow(),
                             keep_host_id=BOX)
         s.add(row)
-        # The Keep running tick's rule: enabled, live (not dry run).
         s.add(AutomationRule(account_id=aid, name="keep", kind="promo_reactivate", is_enabled=True,
                              trigger_json="{}", steps_json='{"dry_run": false}'))
         await s.flush()
         return row.id
 
 
-_TICK = object()   # _reserve: the campaign's current keep_ticked_at (the run's decision)
+_TICK = object()
 
 
 async def _reserve(aid, cid, *, terms=TERMS, pre=(500,), source="auto_ended", read_at=None,
@@ -160,7 +78,6 @@ async def _notices(aid) -> list[AgencyNotification]:
 
 
 async def _age(rid, seconds):
-    """Backdate a row's clocks (created_at, sent_at) by `seconds`."""
     async with get_session() as s:
         r = await s.get(PromoCreateReservation, rid)
         r.created_at -= timedelta(seconds=seconds)
@@ -183,7 +100,6 @@ async def _sent(aid, cid, **kw) -> g.Reservation:
 
 
 async def _unknown(aid, cid, **kw) -> g.Reservation:
-    """Sent with no answer: the reconcile owns it (no sender left)."""
     res = await _sent(aid, cid, **kw)
     await g.settle(res, g.Outcome("unknown"))
     return res
@@ -229,14 +145,11 @@ async def case_newer_create_refused():
 
 
 async def case_rv_c01_stale_read_does_not_overwrite_manual():
-    """A manual create starts before the automatic GET, the GET misses it, then it settles:
-    the automatic create refuses (settled after the read); with a fresh read that still
-    misses the manual id (OF lists late), it refuses too (manual_unlisted)."""
     aid = "gd_c01"
     cid = await _creator(aid)
     manual = await g.reserve(aid, None, "manual_raw", TERMS, {}, None, None)
     assert await g.mark_sending(manual, {}) is None
-    read_at = datetime.utcnow()                     # the automatic GET begins
+    read_at = datetime.utcnow()
     await g.settle(manual, g.outcome_of(res=[{"id": 777}]))
     assert not await g.has_open(aid)
     assert await _reserve(aid, cid, read_at=read_at) == g.Refused("newer_create")
@@ -254,7 +167,6 @@ async def case_rv_c06_rule_gone_dry_run_tick_or_stale_read_refuses():
         g.Refused("decision_stale")
     assert await _reserve(aid, cid, ticked=datetime.utcnow() - timedelta(hours=1)) == \
         g.Refused("campaign_changed"), "re-ticked since the decision"
-    # Live at reserve, switched to dry run before the POST: no POST.
     res = await _reserve(aid, cid, rule_id=rid)
     assert isinstance(res, g.Reservation), res
     async with get_session() as s:
@@ -262,12 +174,12 @@ async def case_rv_c06_rule_gone_dry_run_tick_or_stale_read_refuses():
     assert await g.mark_sending(res, {"auto_reactivate": True}) == "rule_off"
     assert (await _row(res.id)).error_class == "not_sent"
     assert await _reserve(aid, cid, rule_id=rid) == g.Refused("rule_off")
-    async with get_session() as s:                  # the claimed rule deleted, another live
+    async with get_session() as s:
         await s.delete(await s.get(AutomationRule, rid))
         s.add(AutomationRule(account_id=aid, name="keep2", kind="promo_reactivate", is_enabled=True,
                              trigger_json="{}", steps_json='{"dry_run": false}'))
     assert await _reserve(aid, cid, rule_id=rid) == g.Refused("rule_off")
-    async with get_session() as s:                  # no rule at all
+    async with get_session() as s:
         for r in (await s.execute(select(AutomationRule).where(AutomationRule.account_id == aid))).scalars():
             await s.delete(r)
     assert await _reserve(aid, cid) == g.Refused("rule_off")
@@ -286,7 +198,7 @@ async def case_sending_cas():
     cid = await _creator(aid)
     res = await _reserve(aid, cid)
     async with get_session() as s:
-        (await s.get(PromoCampaign, cid)).auto_reactivate = False      # unticked after reserve
+        (await s.get(PromoCampaign, cid)).auto_reactivate = False
     assert await g.mark_sending(res, {"auto_reactivate": True}) == "campaign_changed"
     row = await _row(res.id)
     assert (row.state, row.error_class, row.sent_at) == ("failed", "not_sent", None), row.state
@@ -298,7 +210,6 @@ class _Resp:
 
 
 def _raw(err: BaseException, status: int) -> HTTPException:
-    """server._proxy's translation of a transport / pool error: `raise ... from e`."""
     try:
         raise HTTPException(status, str(err)) from err
     except HTTPException as e:
@@ -306,7 +217,6 @@ def _raw(err: BaseException, status: int) -> HTTPException:
 
 
 def _raw_502(err: OFAPIError) -> HTTPException:
-    """server._proxy's translation: the OF error rides along as the cause."""
     try:
         raise HTTPException(502, {"upstream_status": err.response.status_code}) from err
     except HTTPException as e:
@@ -336,7 +246,6 @@ async def case_outcome_table():
          "failed", "session_dead"),
         (dict(error=_raw_502(OFAPIError("429", response=_Resp(429)))), "failed", "http_429"),
         (dict(error=HTTPException(502, "no cause")), "unknown", None),
-        # rv r2/c8: provably before the request left the box → not_sent, never unknown.
         (dict(error=curl_exc.ProxyError("CONNECT 403")), "failed", "not_sent"),
         (dict(error=_raw(curl_exc.ProxyError("CONNECT 403"), 502)), "failed", "not_sent"),
         (dict(error=curl_exc.DNSError("no such host")), "failed", "not_sent"),
@@ -370,7 +279,7 @@ async def case_failed_backoff_and_turn_off():
     assert (row.state, row.error_class, row.retry_after_s) == ("failed", "http_429", 30.0)
     assert abs((row.not_before - (t0 + timedelta(seconds=120))).total_seconds()) < 5, row.not_before
     assert (await _campaign(cid)).auto_reactivate and await _notices(aid) == []
-    async with get_session() as s:      # the back-off over: a reserve inside it is refused
+    async with get_session() as s:
         (await s.get(PromoCreateReservation, res.id)).not_before = datetime.utcnow()
     res = await _sent(aid, cid)
     await g.settle(res, g.outcome_of(error=OFAPIError("429", response=_Resp(429))))
@@ -415,7 +324,7 @@ async def case_rule_and_limit_rechecked():
     res = await _reserve(aid, cid)
     assert isinstance(res, g.Reservation), res
     async with get_session() as s:
-        (await s.get(PromoCampaign, cid)).recreates_left = 0          # spent after the reserve
+        (await s.get(PromoCampaign, cid)).recreates_left = 0
     assert await g.mark_sending(res, {"auto_reactivate": True}) == "limit_reached"
     assert (await _row(res.id)).error_class == "not_sent"
 
@@ -479,8 +388,6 @@ async def case_clear_open_row():
 
 
 async def case_rv_c02_clear_only_from_the_state_shown():
-    """The operator was shown a stale pending row; its sender flipped it to sending since:
-    "create anyway" does not clear the active sender."""
     aid = "gd_c02_clear"
     await _creator(aid)
     res = await g.reserve(aid, None, "manual", MANUAL, {}, [], None)
@@ -527,22 +434,17 @@ async def case_reconcile_pre_id_excluded():
     res = await _unknown(aid, cid, pre=(500, 601))
     assert await g.reconcile(aid, [_item(601)]) == 0
     assert (await _row(res.id)).state == "unknown"
-    # and a candidate outside the window (made before the send) is not one either
     assert await g.reconcile(aid, [_item(602, at=datetime.utcnow() - timedelta(minutes=5))]) == 0
-    # nor one whose terms differ
     for other in (_item(603, counts=9), _item(604, message="x"), _item(605, type_="expired")):
         assert await g.reconcile(aid, [other]) == 0, other
     assert (await _row(res.id)).state == "unknown"
 
 
 async def case_rv_c03_foreign_promo_before_send_not_adopted():
-    """A same-terms promo made after the reservation but before its POST, then the POST goes
-    unanswered: not adopted (the window starts at sent_at). A manual row with no read before
-    its send is never adopted."""
     aid = "gd_c03"
     cid = await _creator(aid)
     res = await _reserve(aid, cid)
-    await _age(res.id, 60)                          # reserved a minute ago, still pending
+    await _age(res.id, 60)
     foreign = _item(601, at=datetime.utcnow() - timedelta(seconds=30))
     assert await g.mark_sending(res, {"auto_reactivate": True}) is None
     await g.settle(res, g.Outcome("unknown"))
@@ -560,8 +462,6 @@ async def case_rv_c03_foreign_promo_before_send_not_adopted():
 
 
 async def case_rv_c02_reconcile_leaves_fresh_sender_alone():
-    """A sending row's sender may still be in its POST: no adoption, no read counted, until
-    SETTLE_GRACE_S past sent_at; then the reconcile has it."""
     aid = "gd_c02_sender"
     cid = await _creator(aid)
     res = await _sent(aid, cid)
@@ -574,8 +474,6 @@ async def case_rv_c02_reconcile_leaves_fresh_sender_alone():
 
 
 async def case_rv_c02_pending_expiry_loses_to_sender():
-    """Reconcile reads an expired pending row; its worker wins pending → sending before the
-    cleanup writes: the pending-only CAS leaves the sender alone (no second POST freed)."""
     aid = "gd_c02_race"
     cid = await _creator(aid)
     res = await _reserve(aid, cid)
@@ -583,7 +481,7 @@ async def case_rv_c02_pending_expiry_loses_to_sender():
     real = g.settle
 
     async def worker_first(r, outcome, **kw):
-        await g.mark_sending(res, {"auto_reactivate": True})      # the worker's CAS lands first
+        await g.mark_sending(res, {"auto_reactivate": True})
         return await real(r, outcome, **kw)
     g.settle = worker_first
     try:
@@ -595,7 +493,6 @@ async def case_rv_c02_pending_expiry_loses_to_sender():
 
 
 async def case_rv_c07_pending_released_by_time_without_read():
-    """OF reads keep failing: elapsed time alone releases a never-sent row."""
     aid = "gd_c07"
     cid = await _creator(aid)
     res = await _reserve(aid, cid)
@@ -656,7 +553,6 @@ async def case_unknown_lost_at_unknown_off_s():
 
 
 async def case_rv_c13_turn_off_persists_keep_warning_at():
-    """The committed stop carries its time (the 4 h sweep reads it, not the log line)."""
     aid = "gd_c13"
     cid = await _creator(aid)
     t0 = datetime.utcnow()
@@ -668,8 +564,6 @@ async def case_rv_c13_turn_off_persists_keep_warning_at():
 
 
 async def case_rv_r02_pre_send_failure_backs_off_keeps_running():
-    """The proxy refuses CONNECT once `_proxy_retry` gave up: the POST never left, so the row is
-    failed not_sent with a back-off, never unknown (which would turn Keep running off)."""
     aid = "gd_r02"
     cid = await _creator(aid)
     res = await _reserve(aid, cid)
@@ -688,8 +582,6 @@ async def case_rv_r02_pre_send_failure_backs_off_keeps_running():
 
 
 async def case_rv_c05_takeover_moved_before_post_refused():
-    """The form showed Keep running on campaign A; another tab moved it before the POST: the
-    sending CAS refuses (keep_running_moved), no POST."""
     aid = "gd_c05"
     cid = await _creator(aid)
     res = await g.reserve(aid, None, "manual", MANUAL, {}, None, None, expect_kept=cid)
@@ -706,7 +598,6 @@ async def case_rv_c05_takeover_moved_before_post_refused():
 
 
 async def case_rv_c04_duplicate_notices_once():
-    """The one-Kept migration's unticked duplicates: one owner notice each, once."""
     aid = "gd_dup"
     cid = await _creator(aid)
     async with get_session() as s:
@@ -747,8 +638,6 @@ async def case_settle_atomic():
 
 
 async def case_rv_r08_late_created_after_cleared_keeps_id():
-    """A late success after "create anyway": the settle is refused, but OF's id lands on the
-    row (held: no other reservation adopts it); no repoint, no notice."""
     aid = "gd_late"
     cid = await _creator(aid)
     res = await _sent(aid, cid)
@@ -794,7 +683,7 @@ async def case_fence_rechecked_and_stamped():
     assert isinstance(res, g.Reservation) and (await _row(res.id)).host_id == BOX, res
     os.environ[g.HOST_ENV] = ""
     try:
-        assert await g.mark_sending(res, {"auto_reactivate": True}) == "fence"   # env gone before the POST
+        assert await g.mark_sending(res, {"auto_reactivate": True}) == "fence"
     finally:
         os.environ[g.HOST_ENV] = BOX
 
@@ -808,13 +697,13 @@ async def case_fence_notices_at_boot():
         (await s.get(PromoCampaign, a)).keep_host_id = "box-a"
         (await s.get(PromoCampaign, b)).keep_host_id = None
     assert await g.fence_notices() >= 2
-    assert await g.fence_notices() >= 2                     # a second boot files nothing new
+    assert await g.fence_notices() >= 2
     mine, theirs, none = await _notices(aid), await _notices(old), await _notices(ok)
     assert len(mine) == 1 and g.FENCE_TEXT in mine[0].text, [n.text for n in mine]
     assert mine[0].dedupe_key == f"promo_keep_fenced:{a}:{BOX}", mine[0].dedupe_key
     assert len(theirs) == 1 and g.RETICK_TEXT in theirs[0].text, [n.text for n in theirs]
     assert none == [], [n.text for n in none]
-    os.environ[g.HOST_ENV] = "box-c"                        # a new env value: one more each
+    os.environ[g.HOST_ENV] = "box-c"
     try:
         await g.fence_notices()
     finally:
@@ -850,17 +739,14 @@ async def case_rvb_c2_reserve_rechecks_backoff_budget_and_failed_send():
     for ago in (600, 1200):
         await _auto_row(aid, cid, ago_s=ago)
     assert await _reserve(aid, cid, source="auto_fill") == g.Refused("no_recovery_slot")
-    res = await _reserve(aid, cid)                  # the 3rd of 3: this row itself not counted
+    res = await _reserve(aid, cid)
     assert isinstance(res, g.Reservation), res
-    # a send that failed after this decision's read (its back-off already over): the read
-    # predates whatever that send did on OF
     aid = "gd_c2_failed"
     cid = await _creator(aid)
     read_at = datetime.utcnow() - timedelta(seconds=30)
     await _auto_row(aid, cid, ago_s=20, state="failed", sent_ago_s=15, error_class="http_400",
                     not_before=now - timedelta(seconds=1))
     assert await _reserve(aid, cid, read_at=read_at) == g.Refused("newer_create")
-    # never sent (refused before the POST): no effect on OF, the read still holds
     aid = "gd_c2_not_sent"
     cid = await _creator(aid)
     await _auto_row(aid, cid, ago_s=20, state="failed", error_class="not_sent")
@@ -879,7 +765,6 @@ async def case_rvb_r3_timed_window_rechecked():
     assert await _reserve(aid, cid, source="auto_timed", timed_end=far) == g.Refused("timed_window")
     res = await _reserve(aid, cid, source="auto_timed", timed_end=datetime.utcnow() + timedelta(seconds=100))
     assert isinstance(res, g.Reservation), res
-    # the window closed while the POST waited for its slot: no POST
     assert await g.mark_sending(replace(res, timed_end=past), {"auto_reactivate": True}) == "timed_window"
     assert (await _row(res.id)).error_class == "not_sent"
 
@@ -893,7 +778,6 @@ async def case_rvb_r3_skew_sampled_at_answer():
 
     class Client:
         def create_promo(self, **kw):
-            # the POST waited 100 s for its slot after the sending stamp
             asyncio.run_coroutine_threadsafe(_age(res.id, 100), loop).result()
             return [{"id": 777, "createdAt": datetime.utcnow().isoformat() + "+00:00"}]
     sent = await g.send(res, {"auto_reactivate": True}, Client, TERMS)
@@ -912,7 +796,7 @@ async def case_rvb_r2_failed_preempt_keeps_running():
         if prev_status is not None:
             res = await _sent(aid, cid, source="auto_fill")
             await g.settle(res, g.outcome_of(error=OFAPIError(str(prev_status), response=_Resp(prev_status))))
-            async with get_session() as s:               # its back-off over
+            async with get_session() as s:
                 (await s.get(PromoCreateReservation, res.id)).not_before = datetime.utcnow()
             c = await _campaign(cid)
             assert (c.auto_reactivate, c.preempt) == (True, True), "a first 403/429 backs off only"
@@ -930,7 +814,6 @@ async def case_rvb_r2_failed_preempt_keeps_running():
         off = [t for t in mine if "Re-create at 90% filled is off" in t]
         assert len(mine) == (1 if prev is None else 2) and len(off) == 1 \
             and "short wait" not in off[0], (aid, texts)
-    # captcha: Keep running off as before; the early-failure notice promises no re-create
     aid = "gd_r2_captcha"
     cid = await _creator(aid)
     async with get_session() as s:
@@ -941,7 +824,6 @@ async def case_rvb_r2_failed_preempt_keeps_running():
     assert (c.auto_reactivate, c.keep_warning) == (False, "captcha"), (c.auto_reactivate, c.keep_warning)
     texts = [n.text for n in await _notices(aid)]
     assert not any("short wait" in t for t in texts), texts
-    # a first 429 (nothing turned off): the short-wait notice, the tick stays
     aid = "gd_r2_first"
     cid = await _creator(aid)
     async with get_session() as s:
@@ -965,7 +847,6 @@ async def case_rvb_c5_unknown_preempt_notifies_now():
     texts = [n.text for n in await _notices(aid)]
     assert len(texts) == 1 and "no promo may be live" in texts[0], texts
     assert (await _campaign(cid)).auto_reactivate
-    # an After-end with no clear answer: still no notice (the reconcile has it)
     aid = "gd_c5_ended"
     cid = await _creator(aid)
     res = await _sent(aid, cid)
@@ -973,7 +854,6 @@ async def case_rvb_c5_unknown_preempt_notifies_now():
     assert await _notices(aid) == []
 
 
-# ── rwl fixes ───────────────────────────────────────────────────────────────
 
 class _WireResp:
     def __init__(self, body):
@@ -987,9 +867,6 @@ class _WireResp:
 
 
 def _slot_client(aid, sent, answer_id):
-    """A real OFClient (no session) with ONE signed slot; its fake curl session records each
-    request that leaves the box and answers OF's created LIST: every gate in _http_call and
-    the real _proxy_retry run."""
     import threading
     from _of_wire import fake_wire
     from of_client import OFClient
@@ -1012,16 +889,14 @@ def _slot_client(aid, sent, answer_id):
 
 
 async def _send_while_held(res, recheck, c, change):
-    """send() while the slot is held; once the row is sending (the sender waits on the slot),
-    run `change`, then free the slot."""
-    c._signed_slots.acquire()          # another call holds the account's only signed slot
+    c._signed_slots.acquire()
     task = asyncio.create_task(g.send(res, recheck, lambda: c, TERMS))
     try:
         for _ in range(500):
             if (await _row(res.id)).state != "pending":
                 break
             await asyncio.sleep(0.01)
-        assert (await _row(res.id)).state == "sending"     # past the CAS, waiting on the slot
+        assert (await _row(res.id)).state == "sending"
         await change()
     finally:
         c._signed_slots.release()
@@ -1043,7 +918,6 @@ async def case_f2_untick_during_slot_wait_no_post():
     r = await _row(res.id)
     assert (r.state, r.error_class, r.sent_at, r.not_before) == ("failed", "not_sent", None, None), \
         (r.state, r.error_class, r.sent_at, r.not_before)
-    # nothing changed while it waited: one POST, created
     async with get_session() as s:
         (await s.get(PromoCampaign, cid)).auto_reactivate = True
     res = await _reserve(aid, cid)
@@ -1052,7 +926,6 @@ async def case_f2_untick_during_slot_wait_no_post():
         return None
     out = await _send_while_held(res, {"auto_reactivate": True}, c, nothing)
     assert len(sent) == 1 and out.outcome.state == "created", (sent, out)
-    # a manual create: Keep running moved while it waited
     aid = "gd_f2_manual"
     kept = await _creator(aid)
     sent = []
@@ -1067,8 +940,6 @@ async def case_f2_untick_during_slot_wait_no_post():
 
 
 async def case_n1_failed_dispatch_check_is_not_sent():
-    """The last guard itself raising (a locked DB) sent nothing: failed `not_sent`, the row
-    closed, never `unknown` (which would block creates and end in create_unknown)."""
     aid = "gd_n1_check_raises"
     cid = await _creator(aid)
     sent: list[str] = []
@@ -1087,13 +958,10 @@ async def case_n1_failed_dispatch_check_is_not_sent():
     assert out.outcome is not None and (out.outcome.state, out.outcome.error_class) == ("failed", "not_sent"), out
     r = await _row(res.id)
     assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
-    assert not await g.has_open(aid)        # closed: the next create is not blocked
+    assert not await g.has_open(aid)
 
 
 async def case_w30_f1_untick_during_proxy_backoff_no_retry():
-    """W30 F1: the first CONNECT is refused by the proxy (nothing reached OF); the Employee
-    unticks during _proxy_retry's pause; the retry re-runs the guard: no second wire request,
-    failed not_sent. Nothing changed: the retry sends (two wire attempts, created)."""
     from of_client import FULL_RETRY, RetryPolicy  # noqa: F401
     aid = "gd_w30_f1_backoff"
     cid = await _creator(aid)
@@ -1137,7 +1005,6 @@ async def case_w30_f1_untick_during_proxy_backoff_no_retry():
     assert wire == ["POST"] and out.outcome is None and out.refused == "campaign_changed", (wire, out)
     r = await _row(res.id)
     assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
-    # nothing changed during the pause: the retry goes out, created
     async with get_session() as s:
         (await s.get(PromoCampaign, cid)).auto_reactivate = True
     wire.clear()
@@ -1147,10 +1014,6 @@ async def case_w30_f1_untick_during_proxy_backoff_no_retry():
 
 
 async def case_w30_f22_untick_during_signing_or_telemetry_no_post():
-    """W30 F22: the guard is each attempt's last step before the bytes leave. The Employee
-    unticks while the first attempt signs, or while a retry waits on the proxy telemetry
-    lock (after the back-off pause): no request leaves, failed not_sent. A write with no
-    PRE_DISPATCH (W30 F21) still retries through a refused CONNECT as before."""
     import threading
     import of_client
     import proxy_health
@@ -1193,7 +1056,6 @@ async def case_w30_f22_untick_during_signing_or_telemetry_no_post():
                 (await s.get(PromoCampaign, cid)).auto_reactivate = False
         return lambda: asyncio.run_coroutine_threadsafe(untick(), loop).result()
 
-    # 1. untick while the first attempt signs
     aid = "gd_w30_f22_sign"
     cid = await _creator(aid)
     res = await _reserve(aid, cid)
@@ -1203,7 +1065,6 @@ async def case_w30_f22_untick_during_signing_or_telemetry_no_post():
     r = await _row(res.id)
     assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
 
-    # 2. first CONNECT refused; untick while the retry waits on the telemetry lock
     aid = "gd_w30_f22_tele"
     cid = await _creator(aid)
     res = await _reserve(aid, cid)
@@ -1226,7 +1087,6 @@ async def case_w30_f22_untick_during_signing_or_telemetry_no_post():
     assert len(starts) == 2, starts
     assert wire == ["POST"] and out.outcome is None and out.refused == "campaign_changed", (wire, out)
 
-    # 3. W30 F21: no PRE_DISPATCH (any other write): the refused CONNECT is retried, sent
     wire.clear()
     of_client.time.sleep = lambda _s: None
     try:
@@ -1239,9 +1099,6 @@ async def case_w30_f22_untick_during_signing_or_telemetry_no_post():
 
 
 async def case_w30_f20_reserve_names_the_blocking_and_landed_row():
-    """W30 F20: in reserve's own locked transaction: an open row refuses `create_open` with its
-    id; `unless_landed` naming a row settled created refuses `create_landed`; one not created
-    (cleared) lets the replacement through."""
     aid = "gd_w30_f20"
     await _creator(aid)
     first = await g.reserve(aid, None, "manual", TERMS, {}, None, None)

@@ -1,14 +1,3 @@
-"""owner_tokens + actions.via — owner access tokens for non-browser callers (MCP)
-
-One NEW table (`owner_tokens`: sha256 of an `ifw_` bearer token, its owner, name, hint, expiry, last use,
-revoke) and one nullable column (`actions.via`, "token <name>" on a token request's audit row, NULL
-before). No existing row is touched. `create_all()` / init_db's additive-column catch-up bring both to a
-booting box; this file keeps the alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0118_owner_tokens
-Revises: 0117_full_ai_decisions
-Create Date: 2026-11-14
-"""
 from __future__ import annotations
 
 from typing import Sequence

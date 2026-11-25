@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""OnlyFans' "Consent not accepted" as a pinned agency notification
-(service/consent_notices.py + notifications_api.PINNED_KIND).
-
-The OF answers are fakes handed to `consent_notices.observe` as
-`OFClient._http_call` hands them (status, url, body); the feed is read and
-dismissed over HTTP with real owner session cookies from the shared
-two-Agency fixture: a consent refusal files one row per owner, the read and
-read-all refuse / skip it, the retention sweep keeps it, a /users/me
-approval or an accepted media send clears it, a text-only send does not,
-and an Agency that unlinks the Creator no longer sees it nor counts it, in
-any unread count (the read hides it, never deletes; the unlink / delete
-routes do, the unlink before it commits, the delete and a clear for every
-Agency). No state
-in memory: a flag or clear lost to a race or a failed write is redone by the
-next verdict, and an owner linked after the flag gets the row on the next.
-
-Run: ./venv/bin/python service/tests/test_consent_notices.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -56,7 +38,6 @@ class _R:
 
 
 def _observe(*calls) -> None:
-    """Each (method, url, body, response) through observe on a running loop, then its scheduled work."""
     async def _run():
         for method, url, body, r in calls:
             cn.observe(ACC, method, url, body, r)
@@ -103,7 +84,7 @@ def case_verdicts():
     assert post(f"{OF}/messages/queue", {"mediaFiles": [1]}, 400, '{"error":{"message":"other"}}') is None
     assert cn.verdict("GET", f"{OF}/chats", None, _R(400, CONSENT_400)) == (None, None)
 
-    class _NoBody:  # a GET of anything but /users/me, or a 2xx write, never reads the body
+    class _NoBody:
         status_code = 200
 
         @property
@@ -212,7 +193,7 @@ def case_the_revoke_route_deletes_the_agencys_row():
     try:
         assert _rows() == [], "an unlinked Agency kept its consent row"
     finally:
-        asyncio.run(_link(A, True))   # the grant route wants a registry meta.json the fixture lacks
+        asyncio.run(_link(A, True))
     _refuse_send()
     assert len(_rows(A)) == 1, "re-linked, a new refusal must file again"
 
@@ -248,12 +229,12 @@ def case_the_account_delete_route_drops_every_agencys_row():
     _reset()
     asyncio.run(_link(B, True))
     _refuse_send()
-    asyncio.run(_link(B, False))   # B's row outlives its link: hidden, then the delete takes it too
+    asyncio.run(_link(B, False))
     d = account_registry.ACCOUNTS_DIR / ACC
     keep = d.with_name(ACC + ".kept")
     shutil.copytree(d, keep)
     try:
-        account_registry.upsert_account(ACC, nickname="Ava")   # the route wants the meta.json the fixture lacks
+        account_registry.upsert_account(ACC, nickname="Ava")
         r = OWNER_A.delete(f"/admin/accounts/{ACC}")
         assert r.status_code == 200 and r.json() == {"ok": True}, r.text
         assert _rows() == [], [(n.agency_user_id, n.account_id) for n in _rows()]
@@ -275,7 +256,7 @@ def case_a_flag_after_account_delete_files_nothing():
         r = OWNER_A.delete(f"/admin/accounts/{ACC}")
         assert r.status_code == 200, r.text
         assert asyncio.run(_linked(A)), "the delete is expected to leave the link (else this case proves nothing)"
-        filed = asyncio.run(cn.flag(ACC, "NC"))   # an in-flight OF call's 400 lands after the delete
+        filed = asyncio.run(cn.flag(ACC, "NC"))
         assert filed == 0 and _rows() == [], f"a flag after the delete filed {filed} row(s) nothing can remove"
     finally:
         if d.exists():
@@ -311,7 +292,7 @@ def case_a_clear_that_raced_the_flag_is_redone_by_the_next_verdict():
     _reset()
     real = notifications_api.notify
 
-    async def clear_first(*a, **k):   # the clear runs between the flag's read and its insert
+    async def clear_first(*a, **k):
         assert await cn.clear(ACC) == 0
         return await real(*a, **k)
     notifications_api.notify = clear_first

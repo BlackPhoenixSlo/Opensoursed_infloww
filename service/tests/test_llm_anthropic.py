@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""Anthropic (Claude) through its NATIVE Messages API with prompt caching.
-
-Each case pins a wire fact measured live on 2026-11-07 against
-https://api.anthropic.com/v1/messages:
-
-  1. `x-api-key` + `anthropic-version` on POST /v1/messages; the system prompt
-     travels as a text block with `cache_control: ephemeral`, and usage splits
-     the prompt into input / cache_creation / cache_read tokens.
-  2. `temperature` < 1 is a 400 on Claude 4.7+, so it must not travel for
-     these models — and still must for the rest.
-  3. Every 5.5 model 400s on `thinking: enabled`; Opus/Sonnet 5.5 also on
-     `disabled`, so they state `adaptive`. Haiku 5.5 takes `disabled`.
-  4. Cache reads bill the hit rate, cache writes 1.25x input.
-  5. Error statuses map to the same kinds as every provider (401 key invalid,
-     429/529 retried, 400 not retried).
-
-Offline: the transport is stubbed, nothing leaves the process.
-
-Run: cd service/tests && ../../venv/bin/python test_llm_anthropic.py
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -51,8 +31,6 @@ _WARM = {"input_tokens": 50, "cache_creation_input_tokens": 0,
 
 
 class _Client:
-    """httpx.AsyncClient stand-in: records each POST, answers from `script`
-    (a list of (status, json) consumed in order; the last one repeats)."""
     calls: list = []
     script: list = [(200, _native(_COLD))]
 
@@ -155,7 +133,7 @@ async def case_native_request_shape_with_cached_system_block():
             assert k not in body, (mid, k, body)
         if mid == "claude-haiku-5-5":
             assert body["thinking"] == {"type": "disabled"}, body
-        else:   # `enabled` and `disabled` are 400s on Opus/Sonnet 5.5 natively
+        else:
             assert body["thinking"] == {"type": "adaptive"}, body
         assert MODELS[mid].effort_choices == (), mid
 
@@ -205,10 +183,6 @@ def case_response_is_normalized_to_the_openai_shape():
 
 
 async def case_cache_write_then_read_bill_their_own_rates():
-    """Opus, 50 fresh + 38.9k system + 300 out:
-      write call: 50*0.4 + 38900*0.5 + 300*2.0 per 1k = 20.07c = 2007 mc
-      read  call: 50*0.4 + 38900*0.02 + 300*2.0 per 1k = 1.398c = 140 mc
-    against 38950*0.4 + 0.6 = 16.18c = 1618 mc when nothing caches."""
     aid = "acct_claude_cache"
     await _seed_account(aid)
     _Client.reset((200, _native(_COLD)), (200, _native(_WARM)))
@@ -226,23 +200,15 @@ async def case_cache_write_then_read_bill_their_own_rates():
         assert row.status == "done" and row.cost_cents == res.cost_cents, row
         assert row.cache_hit_tokens == res.cache_hit_tokens, row
         assert row.tokens_in == 38950 and row.endpoint == "/v1/messages", row
-    # Sonnet / Haiku write rates are 1.25x their input too.
     assert llm_client._cost_millicents("claude-sonnet-5-5", 1000, 0, 0, 1000) == 25
     assert llm_client._cost_millicents("claude-haiku-5-5", 8000, 0, 0, 8000) == 10
-    # Clamp: write can't exceed what the hit left of tokens_in.
     assert llm_client._cost_millicents("claude-opus-5-5", 1000, 0, 900, 900) == \
         llm_client._cost_millicents("claude-opus-5-5", 1000, 0, 900, 100)
-    # A model with no write rate bills a (never-reported) write at miss.
     assert llm_client._cost_millicents("deepseek-v4-flash", 1000, 0, 0, 1000) == \
         llm_client._cost_millicents("deepseek-v4-flash", 1000, 0)
 
 
 async def case_help_http_route_caches_prompt_and_persists_costs():
-    """Real HTTP route + resolver + client + DB, only provider wire stubbed.
-
-    Bypasses: local anonymous-admin mode, seeded account, scripted provider
-    usage. Proves integration/accounting, not Anthropic's actual cache hit.
-    """
     import json
     import os
     from fastapi import FastAPI
@@ -268,7 +234,6 @@ async def case_help_http_route_caches_prompt_and_persists_costs():
         calls.append(json.loads(request.content))
         return httpx.Response(200, json=_native(_COLD if len(calls) == 1 else _WARM))
 
-    # Construct the inbound ASGI client before replacing outbound clients.
     async with real_client(transport=httpx.ASGITransport(app=app),
                            base_url="http://test") as client:
         os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -386,8 +351,6 @@ async def case_other_models_still_speak_openai_with_temperature():
 
 
 async def case_json_object_on_claude_is_refused_before_it_fires():
-    """Claude 400s on json_object; the call must die here, free — no request,
-    no cap slot — while a DeepSeek JSON call still goes out."""
     await _seed_account("acct_claude_json")
     _Client.reset((200, {"choices": [{"message": {"content": "{}"}}], "usage": {}}))
     orig = llm_client.httpx.AsyncClient
@@ -412,16 +375,10 @@ async def case_json_object_on_claude_is_refused_before_it_fires():
 
 
 async def case_reservation_counts_the_full_native_output_and_the_write_rate():
-    """The pre-flight reserve is the most the call can bill: Claude may write
-    the whole prompt to cache (1.25x input) and spend MAX_TOKENS (4096, adaptive
-    thinking included), not the 1024 assumed for the OpenAI lanes. A cap the old
-    all-miss/1024 reserve fit under (~2.2c on Opus) but the real worst case
-    (~8.3c) doesn't is refused before the request goes out."""
     tokens_in = 270
     assert llm_client._reserve_millicents("claude-opus-5-5", tokens_in) == \
         llm_client._cost_millicents("claude-opus-5-5", tokens_in,
                                     llm_anthropic.MAX_TOKENS, 0, tokens_in)
-    # No write rate, no stated max: unchanged all-miss + 1024.
     assert llm_client._reserve_millicents("deepseek-v4-flash", tokens_in) == \
         llm_client._cost_millicents("deepseek-v4-flash", tokens_in,
                                     llm_client._ASSUMED_OUTPUT_TOKENS)
@@ -439,10 +396,6 @@ async def case_reservation_counts_the_full_native_output_and_the_write_rate():
 
 
 async def case_output_cut_at_max_tokens_returns_empty_not_a_fragment():
-    """Claude's stop_reason max_tokens (adaptive thinking ate MAX_TOKENS) is a
-    fragment: the caller gets content="" (its empty-answer path), the row stays
-    done with the billed cost. Narrow to the native wire: an OpenAI-lane
-    "length" reply keeps its text (pre-#302 behaviour)."""
     data = llm_anthropic.to_openai_response(_native(
         _COLD, content=[{"type": "text", "text": "Hel"}], stop="max_tokens"))
     assert data["choices"][0]["message"]["content"] == "", data
@@ -471,8 +424,6 @@ async def case_output_cut_at_max_tokens_returns_empty_not_a_fragment():
 
 
 async def case_json_purposes_never_resolve_to_claude():
-    """Override, pin and brain set to Claude: a JSON purpose falls through each
-    to the house model (with a warning); a text purpose keeps Claude."""
     import json as _json
     from automations._common import DEFAULT_MODEL, JSON_OBJECT_PURPOSES, resolve_model
     aid = "acct_claude_everywhere"
@@ -485,9 +436,7 @@ async def case_json_purposes_never_resolve_to_claude():
     for purpose in JSON_OBJECT_PURPOSES:
         got = await resolve_model(aid, purpose, override="claude-haiku-5-5")
         assert got == DEFAULT_MODEL, (purpose, got)
-        # A pin on a JSON purpose to a model that CAN do JSON still wins.
         assert await resolve_model(aid, purpose, override="deepseek-v4-pro") == "deepseek-v4-pro"
-    # Text purposes are untouched: the pin and the brain still apply.
     assert await resolve_model(aid, "help_assistant") == "claude-opus-5-5"
     assert await resolve_model(aid, "autoreply") == "claude-sonnet-5-5"
 

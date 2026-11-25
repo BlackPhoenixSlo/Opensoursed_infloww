@@ -1,4 +1,3 @@
-"""An untagged outbound row reads as a human send and stands the bot down."""
 from __future__ import annotations
 
 import threading

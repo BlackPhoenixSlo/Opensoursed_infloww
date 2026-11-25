@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
-"""
-auto_exclude_decide — table tests over the pure rules of an Auto_Exclude past
-the 20k backstop. No DB, no OF.
-
-  case_next_batch_table:   adds (guard − members) before removes (members −
-                           guard), ascending, at most n; `skip` leaves an id out
-                           of both; None when in sync.
-  case_refresh_due_table:  due once REFRESH_EVERY_S passed since the last
-                           attempt; the module global read at call time.
-
-Run: ./venv/bin/python service/tests/test_auto_exclude_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness
 
 import auto_exclude_decide as aed  # noqa: E402
 from auto_exclude_decide import Mirror, next_batch, refresh_due  # noqa: E402
@@ -48,7 +36,7 @@ def case_refresh_due_table():
     ], refresh_due)
     old = aed.REFRESH_EVERY_S
     try:
-        aed.REFRESH_EVERY_S = 3.0          # a patched module global reaches it
+        aed.REFRESH_EVERY_S = 3.0
         assert refresh_due(m, 1_003.0) and not refresh_due(m, 1_002.0)
     finally:
         aed.REFRESH_EVERY_S = old

@@ -1,50 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_offer_details_chat — Offer details through `run_turn` at the Test chat API (spec
-docs/spec/phase-01-full-ai-offer-details.md), over the shared selling helpers
-(`_full_ai_sell_helpers`) and fakes at the network edges only (Jev at `_router_jev._client`, the
-Writers at `llm_client.httpx.AsyncClient`). Every request runs inside `_guarded`.
-
-  case_c_open_offer_questions_hold_state   ticket 03 (C): an open Offer, then four questions -> route
-                                     chat, row `offer_details`, no new Offer row, the same Open Offer,
-                                     `asked` and `scene` as before, no `held_tease`
-  case_c_writer_answers_from_facts   lead_in + gifs on, a dare due: the Writer gets NEW-166 + the facts
-                                     block, no offers line / ask / lead / dare / sticker / spend line /
-                                     GIF; `dared_of` stays False
-  case_c_same_as_first_offer         Offers A, B, B again: "same as the first one" compares with A
-                                     ("no"); the oldest Offer has no same-as line
-  case_c_catalogue_price_changed_uses_quoted   the folder price moves after sending: the block says
-                                     the price it went out at
-  case_c_no_offer_asks_which_one     no Offer: the which-one goal and `OFFER_NONE`
-  case_c_messages_for_branch_unit    `messages_for` on the row over a worked `OfferFacts` (exact block);
-                                     row `otherwise` unchanged; wording logged as NEW-166 / NEW-167
-  case_c_tease_question_holds_tease  (flips A's inert case) a tease, then a question -> `offer_details`
-                                     with `held_tease`, the tease still pending; "ok" sells the teased
-                                     piece; with nothing pending, `offer_details` with no `held_tease`
-  case_c_vault_read_failure_still_answers  a vault read that raises still answers from the row's facts
-  case_d_two_fails_send_fallback    ticket 04 (D): "3 vids total" twice over a 1-pic $10 Offer -> the
-                                     fallback "1 pic, $10", no PPV, `reply_json.offer_details` exact
-                                     (`check: fallback`, `failed`), none of it in parts
-  case_d_fail_then_pass_is_rewrite  a failed draft, then a true one -> `check: rewrite`
-  case_d_every_writer_fails_sends_fallback   no Writer text -> the fallback, `failed: []`
-  case_d_fallback_banned_is_dropped the fallback hits the side's banned word -> nothing sent,
-                                     `check: dropped`
-  case_d_check_raise_sends_fallback a raise in `offer_answer_ok` is a failed check: no rewrite,
-                                     the fallback, `failed: ["error"]`, never a dropped reply
-  case_d_missing_description        `missing: ["description"]`, a short answer, no attachment
-  case_d_missing_media_fallback_no_counts   `missing: ["media"]`, the fallback names no count
-  case_d_quote_reply_end_to_end     (moved from 02) two Offers, the newer open; `reply_to_n` = the
-                                     older card's Turn -> that row, `step: quote_reply`; the check
-                                     never runs off row `offer_details`
-  case_b_reply_to_n_api              ticket 02 (B): `reply_to_n` >= n or < 1 -> 422; a valid one lands
-                                     on his row as `reply_json.reply_to_n` and the session read returns it
-                                     with that Turn number in the Offer ask (`quote_row_id`); the other
-                                     side's row with the same number is never it
-
-Run: ./venv/bin/python service/tests/test_full_ai_offer_details_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, IDS, NANO, OPENROUTER, OWNER_A, PRICED, TURN, _db, _guarded, _hot, _no_offer, _picks, _ppvs, _reply,
@@ -76,8 +33,6 @@ def _body(pair: str, text: str, n: int = 1, side: str = "draft", **kw) -> dict:
 
 
 def _turn(body: dict, writer: str | list[str], verdict, info: FakeInfoJev | None = None):
-    """One test turn under the invariants: (response json, Router fake, Writer fake). A list
-    `writer` answers one request per entry, whichever host asks."""
     fw = FakeWriterHTTP({NANO: writer, OPENROUTER: writer})
     fj = FakeJev(verdict)
     with _guarded(), _picks(), fw.on(), _fake_jev(fj, info):
@@ -89,9 +44,8 @@ def _turn(body: dict, writer: str | list[str], verdict, info: FakeInfoJev | None
 def case_c_open_offer_questions_hold_state():
     pair = "od-open"
     with _sell_draft(sext_scene=True), _vault(PRICED):
-        # A chat Turn asks his city (the Asked count), then a hot sell opens a scene and an Offer.
         _turn(_body(pair, "hey"), "ok:hii where u from\nASKED: home_city", (_hot(), 1.0),
-              FakeInfoJev(({}, "home_city")))                       # her marker counts (NEW-168)
+              FakeInfoJev(({}, "home_city")))
         sold, _, _ = _turn(_body(pair, "send me something hot", n=2), "ok:mm this one babe",
                            (_hot(wants_content=0.9, sexual_now=0.9), 3.0))
         assert sold["route"] == "sell_now" and sold["offer"]["ref"] == 101, sold
@@ -99,7 +53,6 @@ def case_c_open_offer_questions_hold_state():
         before = _reply(offer)
         assert before["asked"] and before["scene"], before
         for n, text in enumerate(("what is this of?", "photo or video?", "how many?", "how long is it?"), 3):
-            # The info Jev would pick his city again: an answer asks nothing, so nothing counts.
             got, _, _ = _turn(_body(pair, text, n=n), "ok:its me in jeans babe", (_hot(**{Q: 0.95}), 3.0),
                               FakeInfoJev(({}, "home_city")))
             rows = _rows(pair)
@@ -118,7 +71,7 @@ def case_c_writer_answers_from_facts():
         _turn(_body(pair, "send me pics"), "ok:mm this one babe", (_hot(wants_content=0.9), 1.0))
         joke, _, _ = _turn(_body(pair, "are u a bot?", n=2), "ok:beep boop lol", (_hot(asks_if_ai=0.9), 1.0))
         assert joke["route"] == "ai_dare", joke
-        assert full_ai_test.dare_due_of(_rows(pair))       # the dare is due this Turn
+        assert full_ai_test.dare_due_of(_rows(pair))
         got, _, fw = _turn(_body(pair, "whats in it?", n=3), "ok:its a mirror selfie in jeans babe",
                            (_hot(**{Q: 0.95, "gif_fits": 0.9}), 1.0))
     assert got["route"] == "chat" and not any("gif" in p for p in got["parts"]), got
@@ -132,12 +85,10 @@ def case_c_writer_answers_from_facts():
                    wr.STICKER_EXCEPTION, cat_stickers.prompt_block("allow", _voice.VOICE_HER)):
         assert banned not in system, (banned, system)
     assert "he's spent" not in user, user
-    # The details row carried no dare: the dare-carry fold stays false on the next Turn.
     assert not full_ai_test.dared_of(_rows(pair))
 
 
 def _again(pair: str, n: int) -> None:
-    """Her newest Offer row sent again as the side's Turn `n` (B's pieces again, a later Offer)."""
     async def go():
         async with get_session() as s:
             src = (await s.execute(select(AiDecision).where(
@@ -156,8 +107,6 @@ def _details_system(pair: str, text: str, n: int) -> str:
 
 
 def case_c_vault_read_failure_still_answers():
-    """A failed vault read (a DB error, not a timeout) never drops the Turn: the Writer still answers
-    from the row's own facts, and the row is recorded as `offer_details`."""
     pair = "od-vault-fail"
 
     async def boom(*_a, **_k):
@@ -186,7 +135,6 @@ def case_c_same_as_first_offer():
         first = _rows(pair)[0].created_at
         assert f"same pieces as the 1st offer, sent {first:%a %b} {first.day}: no" in system, system
         assert "price it went out at: $50" in system and "$10" not in system, system
-        # The oldest Offer resolved (named by its price): no same-as line.
         system = _details_system(pair, "wait was the $10 one a pic?", 5)
         assert "price it went out at: $10" in system and "same pieces" not in system, system
 
@@ -236,9 +184,6 @@ CLIP = OfferFacts(locked_kinds={"video": 1}, locked=1, preview_kinds={"photo": 1
 
 
 def case_c_messages_for_branch_unit():
-    """`messages_for` on row offer_details (seam 3): goal + exact facts block, no offers line, ask,
-    lead few-shot, dare beat, sticker or spend line; BROKE_JOKE still applies; row `otherwise` is
-    unchanged by `offer_facts`."""
     facts = _unit_facts(CLIP, lead_in=True, gifs=True)
     system, user = (m["content"] for m in wr.messages_for("chat", "offer_details", 1, facts, None,
                                                           gif_ok=False, broke=True))
@@ -255,7 +200,6 @@ def case_c_messages_for_branch_unit():
                    wr.STICKER_EXCEPTION, wr.CONTRACT_OFFER):
         assert banned not in system, (banned, system)
     assert "he's spent" not in user, user
-    # A tease (no price named yet), a Free item, no description, no Offer at all.
     for quoted, want in ((None, "price it went out at: no price named yet"), (0, "price it went out at: free")):
         of = replace(CLIP, quoted_cents=quoted, descriptions=(), same_as_first=None)
         system = wr.messages_for("chat", "offer_details", 1, _unit_facts(of), None, gif_ok=False)[0]["content"]
@@ -263,12 +207,10 @@ def case_c_messages_for_branch_unit():
     system = wr.messages_for("chat", "offer_details", 1, _unit_facts(None), None, gif_ok=False)[0]["content"]
     assert ("THE OFFER HE MEANS (the only facts you may state about it):\n"
             "- none: nothing he said points to one offer, so you don't know which one he means.") in system, system
-    # Ordinary chat: the same facts, row otherwise, keep today's prompt (no goal, no block).
     plain = _unit_facts(CLIP, lead_in=True)
     system, user = (m["content"] for m in wr.messages_for("chat", "otherwise", 1, plain, None))
     assert wr.DARE_NEXT in system and wr.OFFER_GOAL not in system and "THE OFFER HE MEANS" not in system, system
     assert "he's spent" in user, user
-    # The wording is logged (owner rule): each piece in its docs/prompts entry.
     new = (Path(__file__).resolve().parents[2] / "docs" / "prompts" / "new" / "current-repo.md").read_text("utf-8")
     goal, block = (new[new.index(f"### {i}"):][:new[new.index(f"### {i}"):].index("\n#", 1)]
                    for i in ("NEW-166", "NEW-167"))
@@ -288,7 +230,6 @@ def case_c_tease_question_holds_tease():
                            (_hot(**{Q: 0.95}), 2.0))
         assert Q in fj.calls[0]["questions"], sorted(fj.calls[0]["questions"])
         first, row = _rows(pair)
-        # A text answer: chat on row offer_details, no Offer, the Pending tease still stands.
         assert (got["route"], row.route_row) == ("chat", "offer_details"), (got["route"], row.route_row)
         assert got["offer"] is None and got["parts"], got
         _no_offer(row)
@@ -296,12 +237,10 @@ def case_c_tease_question_holds_tease():
         assert jev["answers"][Q] == 0.95 and Q in jev["fired"], jev
         assert _reply(row)["held_tease"] == first.id, _reply(row)
         assert full_ai_test.pending_tease_of(_rows(pair), datetime.utcnow()).id == first.id
-        # The next ordinary Turn sells the teased piece.
         ok, _, _ = _turn(_body(pair, "ok", n=3), "ok:here u go babe", (_hot(), 3.0))
     sold = _rows(pair)[2]
     assert (ok["route"], sold.route_row) == ("sell_now", "sell"), (ok["route"], sold.route_row)
     assert ok["offer"]["kind"] == "offer" and ok["offer"]["ref"] == 101, ok["offer"]
-    # Nothing pending: the question still routes offer_details (A's inert case, flipped), no held_tease.
     pair = "od-nothing"
     with _sell_draft(), _vault(PRICED):
         got, _, _ = _turn(_body(pair, "is it a video?"), "ok:which one babe", (_hot(**{Q: 0.95}), 1.0))
@@ -315,7 +254,7 @@ def case_b_reply_to_n_api():
     with _sell_draft(), _vault(PRICED):
         _turn(_body(pair, "how much?"), "ok:mm its a cute one babe, u wanna see it", (_hot(price=0.9), 1.0))
         fw = FakeWriterHTTP({NANO: "ok:x", OPENROUTER: "ok:x"})
-        with _guarded(), _picks(), fw.on(), _fake_jev(FakeJev((_hot(), 2.0))):   # nothing leaves on a regression
+        with _guarded(), _picks(), fw.on(), _fake_jev(FakeJev((_hot(), 2.0))):
             for bad in (2, 3, 0, -1):
                 r = OWNER_A.post(TURN, json=_body(pair, "this one?", n=2, reply_to_n=bad))
                 assert r.status_code == 422, (bad, r.status_code, r.text)
@@ -330,9 +269,8 @@ def case_b_reply_to_n_api():
     assert [x.get("reply_to_n") for x in rows] == [None, 1, None], rows
 
 
-# ── D: the Offer answer check, fallback and diagnostics ───────────────
 
-LIE = "ok:its 3 vids total babe"        # one pic was offered: fails media + count
+LIE = "ok:its 3 vids total babe"
 
 
 def _texts(got: dict) -> list[str]:
@@ -340,7 +278,6 @@ def _texts(got: dict) -> list[str]:
 
 
 def _sold(pair: str) -> AiDecision:
-    """A 1-pic Offer at $10 (vault 101) sent on the side's Turn 1."""
     sold, _, _ = _turn(_body(pair, "send me pics"), "ok:mm this one babe", (_hot(wants_content=0.9), 1.0))
     assert sold["offer"]["ref"] == 101, sold
     return _rows(pair)[0]
@@ -367,7 +304,6 @@ def case_d_two_fails_send_fallback():
         "media_ids": {"locked": [101], "previews": []}, "step": "media", "check": "fallback",
         "failed": ["media", "count"], "missing": []}, rep["offer_details"]
     assert [a.get("rewrite", False) for a in rep["attempts"]] == [False, True], rep["attempts"]
-    # Diagnostics never reach fan-facing parts.
     words = set(" ".join(_texts(got)).lower().replace(",", " ").split())
     for k, v in rep["offer_details"].items():
         assert all(k not in p for p in got["parts"]) and k not in words, (k, got["parts"])
@@ -397,7 +333,6 @@ def case_d_every_writer_fails_sends_fallback():
 
 @contextlib.contextmanager
 def _banned(word: str):
-    """`word` on A's Agency Sensitive words list (the side's banned words) for the block."""
     async def add():
         async with get_session() as s:
             s.add(SensitiveWord(agency_user_id=IDS["agency_a_owner"], word=word, word_key=word))
@@ -478,7 +413,6 @@ def case_d_missing_media_fallback_no_counts():
         got, row = _ask(pair, "ok:its 1 pic babe", text="whats in it?")
     assert _texts(got) == ["$10"], got
     od = _reply(row)["offer_details"]
-    # An id the vault never held has no description either.
     assert (od["check"], od["failed"], od["missing"], od["media_ids"]) == (
         "fallback", ["none"], ["description", "media"], {"locked": [999], "previews": []}), od
 
@@ -493,7 +427,6 @@ def case_d_quote_reply_end_to_end():
         newer = _rows(pair)[1]
         assert full_ai_test.open_offer_of(_rows(pair)).id == newer.id
         got, row = _ask(pair, "ok:yes that one babe", n=3, text="this one?", reply_to_n=1)
-        # Off row offer_details the check never runs: the same lie ships as written.
         plain, _, _ = _turn(_body(pair, "lol", n=4), LIE, (_hot(), 1.0))
     od = _reply(row)["offer_details"]
     assert (od["offer_row_id"], od["step"], od["check"]) == (first.id, "quote_reply", "ok"), od

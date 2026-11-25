@@ -1,23 +1,3 @@
-"""nudge_online — nudge_state table + account_ai_config.nudge_config_json
-
-Revision ID: 0027_nudge_online
-Revises: 0026_llm_provider
-Create Date: 2026-06-05
-
-The "message a fan when they come online" automation (library/NUDGE_ONLINE_PLAN.md).
-
-  nudge_state        — NEW per-(account, fan) table: poll-and-diff online
-                       timestamps (last_seen_online_at), the re-engagement cap
-                       (last_nudged_at / nudge_count), no-reply backoff
-                       (no_reply_streak), the pending fire-job dedup latch
-                       (pending_job_id), and repeat_mode rotation
-                       (last_variation_idx / last_slot). Dedicated so it never
-                       collides with fans.last_online_at (WS-pump owned).
-  account_ai_config  — + nudge_config_json (per-account nudge config; NULL →
-                       the automation's built-in defaults).
-
-Idempotent: guarded by inspector checks (house convention, mirrors 0025/0026).
-"""
 from __future__ import annotations
 
 from typing import Sequence

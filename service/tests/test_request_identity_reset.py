@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""A request never starts with the previous request's identity.
-
-Under the plain asyncio loop, a keep-alive connection that paused reading (a body past
-uvicorn's high-water mark) re-arms its reader inside the request task, so the next request on
-that connection starts with a COPY of that task's ContextVars. Measured 2026-11-14: a signed-out
-`GET /admin/reports/files/{id}` right after its owner's requests answered 200 with the file.
-The session hooks therefore clear every identity before resolving their own.
-
-Run: ./venv/bin/python service/tests/test_request_identity_reset.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -41,7 +31,6 @@ async def _seen(hook) -> tuple:
 
 
 def _stale_context() -> contextvars.Context:
-    """What the next request on the connection inherits: the last request's four identities."""
     ctx = contextvars.Context()
     ctx.run(auth._request_user.set, auth.AuthedUser("u1", "prev", {"1"}, False))
     ctx.run(auth._impersonation.set, auth.Impersonation("u0", "founder", "u1", "prev"))
@@ -50,6 +39,7 @@ def _stale_context() -> contextvars.Context:
     return ctx
 
 
+# A keep-alive reader re-arm copies the previous request's ContextVars; hooks must clear identity first (signed-out read leaked a file).
 def case_session_hook_clears_the_owner_identities():
     user, imp, tok, _ = _stale_context().run(asyncio.run, _seen(auth.session_middleware))
     assert (user, imp, tok) == (None, None, None), (user, imp, tok)

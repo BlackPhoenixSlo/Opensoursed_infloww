@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_live_typing — typing, GIF, photo read, mark read (04a ticket 71, full_ai_live).
-
-OF faked (`LiveOF` behind `ax._make_client`), Jev + Writers faked, the vision call faked at
-`inbound_describe.describe_message`, holds recorded (never slept). Temp DB only.
-
-  case_typing_sign            on: each text bubble's hold = typing_delay_seconds(text, wpm), in order; off: 0 s
-  case_typing_notification    off -> indicator False; on + account indicator off -> False; both on -> True
-  case_text_and_gif           text bubbles, then one `giphy_id` DM; gif part has its message_id; cat_stickers marked
-  case_gif_only               one OF call, `sent`, no hold above 0 s
-  case_photo_read             describe_fan_photos on: the job's client reaches describe, image_desc stored,
-                              Jev state has "[he sent: ...]", reply_json.fan_photo; off: no describe call
-  case_describe_fails         the Turn still sends; fan_photo.outcome "failed"
-  case_mark_read              once after a sent Turn (then read_flip.after_write); not after no_send / stood down; its error leaves `sent`, no flip
-  case_config_reference       none of the three live switches reads "Read by nothing yet"
-
-Run: ./venv/bin/python service/tests/test_full_ai_live_typing.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -55,7 +38,6 @@ def _patched(obj, name, value):
 
 @contextlib.contextmanager
 def _holds(indicator: bool = True):
-    """Record every `hold_with_typing` (seconds, typing_indicator); wpm fixed, account indicator given."""
     got = []
 
     async def hold(_aid, _fan, seconds, *, typing_indicator=False, cut=None):
@@ -201,9 +183,9 @@ async def case_mark_read():
     with _patched(read_flip, "after_write", after_write):
         _res, w, row = await _turn("fa_rd_sent", 811, 10901)
         assert row.status == "sent" and w.of.read == [811], w.of.read
-        assert flips == [("fa_rd_sent", 811, 0)], flips   # as a chatter's read: badge, lists, other tabs
+        assert flips == [("fa_rd_sent", 811, 0)], flips
         _res, w, row = await _turn("fa_rd_fail2", 815, 10941, of=ReadFailsOF())
-        assert row.status == "sent" and flips == [("fa_rd_sent", 811, 0)], flips   # a failed read: no flip
+        assert row.status == "sent" and flips == [("fa_rd_sent", 811, 0)], flips
     _res, w, row = await _turn("fa_rd_nosend", 812, 10911, jev=({**QUIET, "promo": 0.99}, 1.0))
     assert row.status == "no_send" and w.of.read == [], w.of.read
     saved = list(full_ai_look.LAST_LOOK)

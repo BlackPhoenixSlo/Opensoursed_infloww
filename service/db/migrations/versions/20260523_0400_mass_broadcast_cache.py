@@ -1,21 +1,3 @@
-"""mass_broadcast_cache: local cache of OF mass-message history
-
-Revision ID: 0021_mass_broadcast_cache
-Revises: 0020_saved_reply_script
-Create Date: 2026-05-23
-
-Backs the /settings → Mass messages tab. Mass-message unsend has no edit
-window (OF reports `unsendSeconds=1000000`), so the operator's chance to
-cancel a broadcast lives forever — meaning the listing needs to be
-instant + always available, not gated on a fresh OF roundtrip per
-account.
-
-Cache strategy:
-  • Upsert on every fetch from /users/me/stats/messages/group.
-  • Flip `is_canceled=True` immediately when the cancel endpoint succeeds,
-    so the row stops looking unsendable without waiting for OF to refresh.
-  • TTL is application-side; this table just stores rows + `fetched_at`.
-"""
 from __future__ import annotations
 
 from typing import Sequence

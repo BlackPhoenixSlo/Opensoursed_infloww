@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""push_notice: SSE frame -> notices, driven by fixtures/notice_cases.json (shared with the app
-and desktop ports, design.md B3). Run: venv/bin/python -m pytest service/tests/test_push_notice.py -q"""
-import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # pytest: tests/ is a package
+import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _harness  # noqa: E402,F401  (first: temp DB)  (first: temp DB)
 
 import json
@@ -12,10 +10,9 @@ import push_notice as pn  # noqa: E402
 from types import SimpleNamespace as NS  # noqa: E402
 
 _FX = Path(__file__).parent / "fixtures"
-SHARED = json.loads((_FX / "notice_cases.json").read_text())["cases"]       # the app's table
-CASES = json.loads((_FX / "notice_cases_relay.json").read_text())["cases"]  # relay-only extras
+SHARED = json.loads((_FX / "notice_cases.json").read_text())["cases"]
+CASES = json.loads((_FX / "notice_cases_relay.json").read_text())["cases"]
 
-# lib/notifSettings DEFAULT_NOTIF_SETTINGS.toast; pushTypes = the keys on (enabled && osPing).
 _DEFAULT_TOAST = {"message": False, "purchases": True, "tip": True, "subscribed": False,
                   "mentioned": False, "commented": False, "favorited": False}
 
@@ -25,7 +22,6 @@ def _row(n):
 
 
 def _pushed(c):
-    """What the relay pushes for a case: notices_for, then should_push with pushTypes(settings)."""
     s = c.get("settings") or {}
     toast = {**_DEFAULT_TOAST, **(s.get("toast") or {})}
     on = s.get("enabled", True) and s.get("osPing", True)

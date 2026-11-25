@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_claim_chat — the Claim audit and price check on a sell Turn's final text, through the
-Relay API (phase 03b, ticket 45).
-
-`POST /admin/full-ai/test/turn` over the shared Full AI chat helpers (two-Agency fixture, owner
-session cookies), a one-clip vault, and fakes at the two network edges only (Jev at
-`_router_jev._client`, the Writers at `llm_client.httpx.AsyncClient`). Every Turn runs inside the
-03a invariants plus content_offers and `ownership.stamp_media_owned` patched to raise.
-
-  case_good_caption_no_rewrite   a caption true to the Pick: one Writer call, its text, the PPV,
-                                 caption_fallback false
-  case_claim_fail_then_fallback  "5 videos" for a one-clip Pick: one rewrite (same Writer, same
-                                 messages), still wrong -> the fallback caption carries the PPV,
-                                 caption_fallback true, attempts show the rewrite
-  case_disclose_fail_then_fallback / case_disclose_pass  a Pick not what he asked for (asks photo,
-                                 vault one clip): silent text twice -> the disclosing fallback; a
-                                 negated "no pics rn ... this vid" passes first time
-  case_claim_fail_rewrite_ok     a wrong first caption, a true rewrite: the rewrite's text ships
-  case_wrong_price_then_fallback a price that is not the PPV's -> same as the claim failure
-  case_deadline_no_rewrite       the first caption leaves less than one writer_timeout_s of the
-                                 Turn bound: no rewrite, the fallback caption, caption_fallback
-                                 true, Turn time on the clock <= turn_bound_s
-
-Run: ./venv/bin/python service/tests/test_full_ai_claim_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 from _jev_fixtures import mapped  # noqa: E402
 
 import contextlib  # noqa: E402
@@ -50,11 +26,10 @@ from db.models import CatalogItem, ContentOffer, VaultItem  # noqa: E402
 CONFIG = "/admin/full-ai/config"
 PICS = "send me pics"
 CLIP = 301
-FALLBACK = "1 vid, $10 to unlock"          # fallback_caption of the one-clip $10 Pick
+FALLBACK = "1 vid, $10 to unlock"
 
 
 async def _seed_offer_row() -> None:
-    """One content_offers row (on a catalog item), so the snapshot would show an INSERT or UPDATE."""
     async with get_session() as s:
         item = CatalogItem(account_id=A)
         s.add(item)
@@ -77,7 +52,6 @@ class StampReached(Exception):
 
 @contextlib.contextmanager
 def _sell_guarded():
-    """03a's `_guarded`, plus content_offers unchanged and the owned stamp never hit."""
     real, hits = ownership.stamp_media_owned, []
 
     async def trap(*_a, **_k):
@@ -94,7 +68,6 @@ def _sell_guarded():
 
 
 def _post(script: list[str], pair: str, *, fake_w=None, fake_j=None):
-    """One sell Turn ("send me pics", draft side) under the invariants: (response, Writer fake)."""
     fake_w = fake_w or FakeWriterHTTP({})
     fake_w.script = {NANO: list(script)}
     with _sell_guarded(), fake_w.on(), _fake_jev(fake_j or FakeJev(({**QUIET, "wants_content": 0.9}, 1.0))):
@@ -103,7 +76,6 @@ def _post(script: list[str], pair: str, *, fake_w=None, fake_j=None):
     return r, fake_w
 
 
-# ── Config + a one-clip vault ─────────────────────────────────────────
 
 def _put_draft(draft: dict) -> None:
     rev = OWNER_A.get(CONFIG, params={"account_id": A}).json()["rev"]
@@ -111,7 +83,6 @@ def _put_draft(draft: dict) -> None:
     assert r.status_code == 200, r.text
 
 
-# test_full_ai_sell_chat.py's DRESSED, as a clip: sfw, solo, priced by its Jev lane alone ($10).
 DRESSED = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none", "explicitness": "sfw",
            "underwear_visible": True, "vulva_vis": "covered", "breasts_vis": "covered",
            "anus_vis": "not_in_frame", "over_vulva": "jeans", "over_breasts": "t-shirt",
@@ -123,7 +94,6 @@ JEV = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": "$10", "state": {}
 
 @contextlib.contextmanager
 def _one_clip_sell():
-    """A's draft side sells and A's vault is one $10 clip, for the block."""
     async def add():
         async with get_session() as s:
             s.add(VaultItem(account_id=A, media_id=CLIP, kind="video", duration_seconds=12,
@@ -159,7 +129,6 @@ def _outcomes(attempts: list[dict]) -> list[tuple]:
 EURYALE = DEFAULTS["writers"][0]
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 def case_good_caption_no_rewrite():
     pair = "p-claim-good"
@@ -180,7 +149,6 @@ def case_claim_fail_then_fallback():
         r, fw = _post(["ok:5 videos just for u babe", "ok:all my videos r waiting for u"], pair)
     got = r.json()
     assert got["status"] == "sent", got
-    # One rewrite: the same Writer, the same messages (regenerated, no added prompt text).
     assert len(fw.requests) == 2 and fw.requests[1]["body"]["messages"] == fw.requests[0]["body"]["messages"]
     assert _outcomes(got["attempts"]) == [(EURYALE, "ok", False), (EURYALE, "ok", True)], got["attempts"]
     assert _texts(got["parts"]) == [FALLBACK], got["parts"]
@@ -222,14 +190,10 @@ def case_wrong_price_then_fallback():
 
 
 def _photo_ask():
-    """His ask is photos (`asks_format` photo); the vault holds the one clip: a Pick not what he asked for."""
     return FakeJev(({**QUIET, "wants_content": 0.9}, 1.0, {"asks_format": "photo"}))
 
 
 def case_disclose_fail_then_fallback():
-    """Client rule 2026-11-16: her text over a Pick not what he asked for must say so ("disclose");
-    twice silent -> the disclosing fallback caption, which skips the typo pass (review item 10:
-    a slip in "not" / "vid" would void the disclosure) even with typos on every reply."""
     pair = "p-claim-disclose"
     with _one_clip_sell():
         _put_draft({**DEFAULTS, "sell_on": True, "typo_pct": 100})
@@ -255,7 +219,6 @@ def case_disclose_pass():
 
 
 class _SlowWriter(FakeWriterHTTP):
-    """Each Writer request runs to its full timeout on the clock, then answers its script."""
 
     def __init__(self, clock: _Clock):
         super().__init__({})
@@ -267,8 +230,6 @@ class _SlowWriter(FakeWriterHTTP):
 
 
 def case_deadline_no_rewrite():
-    """The Router stalls 170 s of the 245 s Turn and NanoGPT takes its full 45 s: 30 s is left, less
-    than one writer_timeout_s, so the wrong caption gets no rewrite."""
     bound = turn_bound_s(DEFAULTS)
     assert bound == 245 and DEFAULTS["writer_timeout_s"] == 45, bound
     clock = _Clock()

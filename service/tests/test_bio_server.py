@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Standalone bio process and retained counter lifecycle on a throwaway relay-initialized DB."""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness
 
 _harness.bootstrap()
 
@@ -46,7 +45,6 @@ def case_selected_columns_match_models():
 
 
 def case_process_path_mode_and_bot_check():
-    """The real process from its env: BIO_PATH_PREFIX=/p pages, and a bot_check Link gated by a loopback siteverify."""
     import http.server
     import threading
 
@@ -151,7 +149,7 @@ def case_process_shutdown_flushes():
                     r = cl.get("/.netlify/functions/reveal?id=k00000000001",
                                headers={"Sec-Fetch-Site": "same-origin"})
                     assert r.status_code == 200 and r.json()["realUrl"] == "https://example.test/go"
-            time.sleep(0.3)  # a flush has taken the batch and is waiting on BEGIN IMMEDIATE
+            time.sleep(0.3)
             p.send_signal(signal.SIGTERM)
             time.sleep(0.3)
             lock.rollback()
@@ -290,8 +288,6 @@ def _daily_for(pid: str) -> tuple:
 
 
 def case_orphan_key_never_poisons_flush():
-    """A buffered key for a profile deleted before the flush (FK gone) is dropped with one counted error line;
-    every other key still lands and flush answers True (Consult 6 hard gate)."""
     async def go():
         con = sqlite3.connect(_harness.DB_PATH)
         con.execute("PRAGMA foreign_keys=ON")
@@ -322,8 +318,6 @@ def case_orphan_key_never_poisons_flush():
 
 
 def case_batch_hard_cap_under_db_failure():
-    """A DB that stays locked never grows the batch past BATCH_CAP: new keys are dropped with a counted, rate-limited
-    error; keys already held keep counting and land once the DB frees."""
     async def go():
         old = store.MAX_KEYS, store.BATCH_CAP
         store.MAX_KEYS, store.BATCH_CAP = 3, 5
@@ -340,7 +334,7 @@ def case_batch_hard_cap_under_db_failure():
             assert len(store._batch) <= store.BATCH_CAP, len(store._batch)
             kept = set(store._batch)
             for key in kept:
-                await store.record("view", *key[1:])  # same key: still counts
+                await store.record("view", *key[1:])
             assert all(store._batch[k][0] == 2 for k in kept), store._batch
             capped = [ln for ln in logs.lines if "batch full" in ln]
             assert 1 <= len(capped) <= 2, logs.lines

@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""OFClient.get_messages `peek`: Background reads must peek (a first-page thread GET marks
-the chat read on OF; `id=9223372036854775807` returns the same newest page and leaves it
-unread, measured on sandbox OF 80000112).
-
-  case_peek_table: peeked newest-first first page -> Int64-max Peek cursor; peek with an
-      older-than cursor -> that cursor; no peek with an older-than cursor (load-older, vault
-      poll) -> that cursor, unchanged; peek with an offset page -> no cursor; peek with asc is rejected; no peek
-      -> no cursor. One GET each.
-  case_pinned_read_peeks: get_pinned_messages always sends filter=pinned plus the Peek
-      cursor (without an `id` it marks the chat read too).
-  case_fansly_shim_accepts_and_ignores_peek: the Fansly shim takes `peek` and sends the
-      same /message request as without it.
-
-Run: ./venv/bin/python service/tests/test_of_reads_peek.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 import fansly_backend  # noqa: E402,F401 — puts ../fansly on sys.path
@@ -21,6 +6,7 @@ import of_client  # noqa: E402
 import of_reads  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
 
+# A first-page thread GET marks the chat read on OF; id=int64 max returns the same page unread.
 PEEK = 9223372036854775807
 
 

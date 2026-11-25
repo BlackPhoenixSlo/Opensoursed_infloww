@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""automations.names — characterisation tables for what we may CALL a fan
-(strip_spend_tier / is_place_word / is_greetable_name / name_token /
-resolve_fan_name / build_structured_nickname). Risk = the wrong name in a fan
-DM or the OF chat header, so the rows lean on emoji, spend-tier suffixes,
-place words, empty/None, whitespace and username-like handles. Pins today's
-behaviour, including rows that look questionable (marked PIN: in the label).
-Pure; no DB writes (Fan rows are transient).
-
-Run: ./venv/bin/python service/tests/test_names.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -76,7 +66,6 @@ def case_is_place_word():
 
 def case_is_greetable_name():
     rows = [
-        # (s, here, expected, label)
         (None, (), False, "None"),
         ("", (), False, "empty"),
         ("   ", (), False, "whitespace"),
@@ -109,7 +98,6 @@ def case_is_greetable_name():
 
 def case_name_token():
     rows = [
-        # (s, last, expected, label)
         (None, False, "", "None"),
         ("", False, "", "empty"),
         ("   ", False, "", "whitespace"),

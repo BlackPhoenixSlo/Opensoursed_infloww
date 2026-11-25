@@ -1,16 +1,3 @@
-"""saved_replies: add script_id + script_step
-
-Revision ID: 0020_saved_reply_script
-Revises: 0019_saved_reply_gif
-Create Date: 2026-05-23
-
-Template scripts (Small Fixes #5). A saved reply can opt into a script by
-setting `script_id` (free-text group name) + `script_step` (1-based order).
-The composer caches the last-sent step per chat in localStorage; if a
-template with `script_id === cursor.script_id && script_step === cursor.step + 1`
-exists, the chat shows a one-tap "next in script" bubble. Both columns
-default to NULL (existing rows have no script).
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,23 +1,3 @@
-"""link_list — the Edit dialog's List on Growth's links (link_meta)
-
-Backs service/link_metrics.py's List: the OnlyFans fan list a free trial link's
-or tracking link's claimers are added to with OF's own "Add to list" (one call
-adds every current claimer; a repeat adds nobody twice).
-
-  link_meta.list_id           OF's custom list id (a number, kept as text)
-  link_meta.list_name         its name when picked, for the List column
-  link_meta.list_added_count  OF's claim count at the last successful add;
-                              NULL = not added to this list yet
-
-All three are nullable, so `init_db()`'s additive catch-up adds them on a box
-that boots without running alembic; this revision keeps the chain canonical.
-Idempotent (inspector-guarded, house convention). Downgrade drops the columns;
-that loses only which list a link feeds (the fans already in it stay on OF).
-
-Revision ID: 0074_link_list
-Revises: 0073_link_metrics
-Create Date: 2026-10-18
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -49,6 +29,7 @@ def upgrade() -> None:
                 b.add_column(sa.Column(name, typ, nullable=True))
 
 
+# Loses only which list a link feeds; the fans already in it stay on OF.
 def downgrade() -> None:
     have = _have()
     with op.batch_alter_table("link_meta") as b:

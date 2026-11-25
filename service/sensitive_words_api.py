@@ -1,32 +1,3 @@
-"""service/sensitive_words_api.py — Growth > Sensitive words, one list per Agency.
-
-Infloww's feature (remote web bundle, menu 87 "/admin/growth/sensitive-words"):
-an Agency-wide word list, managed on its own Growth page, that every composer
-checks while you type. A hit shows "Input contains prohibited language: [word]"
-under the text; the mass message and script editors refuse to send or save
-until the text is clean, the one-to-one chat composer only warns. The checking
-happens in the app (app/lib/sensitiveWords.ts); this module stores the list.
-
-  GET  /admin/sensitive-words[?account_id=]
-       → {words: [str]} sorted A-Z. Any session of the Agency: every composer
-         reads it, a chatter's too. A chatter linked to several Agencies that
-         names no Creator gets the union of their lists.
-  POST /admin/sensitive-words/add     {words: [str]}      → import result
-  POST /admin/sensitive-words/update  {old, latest}       → {word}
-  POST /admin/sensitive-words/delete  {words: [str]}      → {deleted: n}
-  GET  /admin/sensitive-words/export                      → .xlsx of the list
-  GET  /admin/sensitive-words/template                    → the empty .xlsx template
-  POST /admin/sensitive-words/import  multipart `file`    → import result
-
-The import result is {total, success_count, fail_count, failed: [{word, reason}]}.
-A word is trimmed, its inner whitespace collapsed to one space, and must be 1 to
-32 characters (Infloww's input limit). Matching is case-insensitive, so the list
-holds each word once in any case; a repeat is a failure, not an error.
-
-Every route under /admin/sensitive-words/ is owner session or Master: the
-chatter admin gate refuses a chatter 403 (`chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`)
-and each handler checks again through `owner_context`. Signed out is 401.
-"""
 from __future__ import annotations
 
 import re
@@ -52,7 +23,6 @@ _MAX_ROWS = 5000
 
 
 def clean_word(raw: Any) -> str:
-    """The stored form of one word: trimmed, inner whitespace one space."""
     return re.sub(r"\s+", " ", raw).strip() if isinstance(raw, str) else ""
 
 
@@ -173,19 +143,16 @@ async def import_words(file: UploadFile = File(...)) -> dict[str, Any]:
         rows = read_xlsx_first_column(data)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
-    words = [w for w in rows[1:] if w.strip()][:_MAX_ROWS]  # row 1 is the header
+    words = [w for w in rows[1:] if w.strip()][:_MAX_ROWS]
     if not words:
         raise HTTPException(status_code=422, detail="the file holds no sensitive words")
     return await _add(ctx.agency_user_id, words)
 
 
 def write_column(column: list[str]) -> bytes:
-    """A one-sheet workbook with `column` down column A."""
     return write_xlsx([[v] for v in column], HEADER)
 
 
 def read_xlsx_first_column(data: bytes) -> list[str]:
-    """Column A of the workbook's first sheet, one string per row in order
-    (a row with no A cell reads ""). ValueError when `data` is not an .xlsx."""
     sheets = read_xlsx(data, first_only=True)
     return [row.get(0, "") for row in sheets[0][1]] if sheets else []

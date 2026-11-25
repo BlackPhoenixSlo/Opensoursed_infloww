@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""request_log.RequestLog: one `req id=… path=<template> status=… ms=…` line per
-request on the relay's real middleware stack, X-Request-Id echoed (incoming one
-honoured, cleaned), health probes skipped, CHATTERLY_SLOW_REQ_MS flips the line
-to WARNING, SSE is `stream=1` and never warns, an unhandled error is a 500 line
-and its /admin/errors row carries the request id.
-
-Run: ./venv/bin/python service/tests/test_request_log.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -64,7 +56,6 @@ class _Tap(logging.Handler):
 
 
 def _logged(client, path, **kw):
-    """(response, [(level, line)]) for one request."""
     tap = _Tap()
     logging.getLogger("of-relay").addHandler(tap)
     try:
@@ -134,7 +125,6 @@ def case_unhandled_error_logs_500_and_reraises():
     assert r.status_code == 500, r.status_code
     assert " path=/__reqlog_boom status=500 " in lines[0][1], lines
     rid = lines[0][1].split()[1].removeprefix("id=")
-    # No session: the row names no Agency, so only the Master (instance owner) reads it.
     errs = fx.login_owner("agency_master").get("/admin/errors").json()
     mine = [e for e in errs["list"] if "reqlog-boom" in (e.get("message") or "")]
     assert mine and mine[0]["context"] == {"request_id": rid}, (rid, mine)

@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager new-post: a poll's length, and a vault item as a Story.
-
-The composer's poll duration rides on POST /posts as `votingDue` (days); No
-limit sends none, as OF's composer (`MakeFeedPost getDataObject`: only
-`votingDuration > 0`). The vault dialog's "Add to story" uses the existing
-POST /api/of/v2/stories: a video by its vault id (`mediaFiles: [id]`, OF's
-`createStoryByFileId`), a photo by its full url (the relay re-uploads it, as
-OF's `addStoryFromVault`). Plain-assert, OF faked (no request leaves the
-process).
-
-  case_poll_length_is_voting_due
-  case_poll_no_limit_sends_no_voting_due
-  case_story_by_vault_id_body
-  case_story_route_forwards_media_files
-  case_story_route_reuploads_media_url
-
-Run: ./venv/bin/python service/tests/test_new_post_extras.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -28,7 +10,6 @@ import server  # noqa: E402
 
 
 def _client():
-    """An OFClient whose every request is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = "4242"
     c.sent = []

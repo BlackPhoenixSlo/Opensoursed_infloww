@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_heat_chat — the Heat check (ticket 96, spec 06) through the Test chat API.
-
-`POST /admin/full-ai/test/turn` with the owner's cookies, Jev faked at `_router_jev._client`, the
-Heat check's Jev at `_heat_jev._client`, the Writers at their wire; every request inside
-`_full_ai_sell_helpers._guarded`.
-
-  case_byte_identity       non-sext Turns, and a sext Turn with `floor_on` off: the Router and
-                           Writer requests equal the golden captured on main before 96's edits
-                           (`HEAT_CAPTURE=1` rewrites it; only ever on a clean main)
-  case_ok                  Score 3.0 at Heat 3 -> one heat request, `ok`, the Writer's parts
-  case_rewrite             4.0 then 3.0 -> a second Writer request with equal messages (`rewrite`),
-                           the second text ships, `regen_ok`, `redo_score`
-  case_over_twice          4.0, 4.0 -> the first text ships, `over_sent`, row sent
-  case_fail_open           the heat client raises -> the text ships, `error` + reason, 1 Writer request
-  case_rewrite_lost        the rewrite empty / leaking / its ask failing -> the first text ships,
-                           `over_sent`, the first chain's `leak` / `dropped_reason` / `typo_state`
-  case_no_time             under one `writer_timeout_s` left -> no rewrite, `over_sent`
-  case_not_asked           chat, scene sell_now, no_send, `floor_on` off, no Writer answer -> 0 heat
-                           requests, no `heat_check`
-  case_session_read        the session read and the turn response carry `heat_check`
-
-Run: ./venv/bin/python service/tests/test_full_ai_heat_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, NANO, OPENROUTER, OWNER_A, TURN, _body, _guarded, _put_draft, _reply, _rows, _vault,
@@ -43,8 +20,6 @@ GOLDEN = Path(__file__).with_name("test_full_ai_heat_chat.requests.golden.json")
 
 
 class FakeHeatJev:
-    """`_heat_jev._client`: pops a score (or an exception) per call, records {state, questions}.
-    With none left it raises: a call nobody scripted is a failure, never an answer."""
 
     def __init__(self, *verdicts):
         self.verdicts, self.calls = list(verdicts), []
@@ -64,7 +39,7 @@ class FakeHeatJev:
 def _heat(fake):
     try:
         from automations import _heat_jev
-    except ImportError:             # main before ticket 96 (the golden capture)
+    except ImportError:
         yield fake
         return
     real = _heat_jev._client
@@ -85,7 +60,6 @@ def _draft(**cfg):
 
 
 def _turn(pair, n, text, answers, writer, *, intensity=2.0, choices=None, heat=None):
-    """One Turn: (response json, Writer fake, Router fake, heat fake). `intensity` 2.0 -> Heat 3."""
     script = writer if isinstance(writer, dict) else {NANO: writer}
     fw = FakeWriterHTTP({NANO: "ok:hii", OPENROUTER: "ok:hii", **script})
     jev = FakeJev(({**QUIET_SCENE, **answers}, intensity, choices or {}))
@@ -96,7 +70,6 @@ def _turn(pair, n, text, answers, writer, *, intensity=2.0, choices=None, heat=N
 
 
 def _requests(jev, fw) -> list:
-    """The Router's and the Writers' requests as plain data (SDK questions dumped)."""
     out = [{"jev": {"model": c["model"], "state": c["state"],
                     "questions": {q: v.model_dump(mode="json") for q, v in c["questions"].items()}}}
            for c in jev.calls]
@@ -107,8 +80,6 @@ SEXUAL = {"sexual_now": .9}
 
 
 def _byte_turns() -> dict:
-    """The Turns whose requests must not move: chat, sell_now, no_send, sext and scene sext with
-    `floor_on` off. Each on its own pair, n 1, fixed text."""
     got = {}
     with _draft(sext_scene=False, floor_on=True, sell_on=True, chat_tease=False), _vault({101: "$10"}):
         for name, text, answers in (("chat", "how was ur day", {}), ("sell", "send me pics", {"wants_content": .9}),
@@ -134,13 +105,11 @@ def case_byte_identity():
     assert got == want, "requests moved vs the main capture"
 
 
-# ── The check ────────────────────────────────────────────────────────────
 
 FIRST, SECOND = "mm i want u so bad", "mm come here baby"
 
 
 def _sext(pair, writer, *verdicts, n=1, **cfg):
-    """A Route sext Turn at Heat 3 (sext_scene off, floor_on on unless `cfg` says)."""
     with _draft(**{"sext_scene": False, "floor_on": True, **cfg}):
         return _turn(pair, n, "ur making me so hard", SEXUAL, writer, heat=FakeHeatJev(*verdicts))
 
@@ -203,7 +172,6 @@ def case_fail_open():
 
 @contextlib.contextmanager
 def _drop_when(marker: str):
-    """`shape_parts` drops (reason `banned`) only a draft holding `marker`."""
     from automations import _reply_shape
     real = _reply_shape.shape_parts
 
@@ -219,7 +187,7 @@ def _drop_when(marker: str):
 
 
 def case_rewrite_lost():
-    cases = (   # (name, rewrite script, heat verdicts, writer requests, heat requests)
+    cases = (
         ("empty", "empty", (4.0,), 2, 1),
         ("leak", "ok:lets meet in person tonight", (4.0,), 2, 1),
         ("dropped", "ok:zzdrop mm", (4.0,), 2, 1),
@@ -234,7 +202,6 @@ def case_rewrite_lost():
         rp = _hc(pair)
         h = rp["heat_check"]
         assert (h["outcome"], h["level"], h["redo_score"]) == ("over_sent", 4, None), (name, h)
-        # the first chain's marks stay
         assert rp["leak"] == [] and rp["dropped_reason"] is None, (name, rp)
         assert rp["typo_state"] == {"at": None, "since": 1}, (name, rp["typo_state"])
         assert g["status"] == "sent", (name, g)
@@ -243,7 +210,7 @@ def case_rewrite_lost():
 def case_no_time():
     from automations import full_ai_turn
     real = full_ai_turn.turn_bound_s
-    full_ai_turn.turn_bound_s = lambda cfg: 30.0        # under one writer_timeout_s (45) left
+    full_ai_turn.turn_bound_s = lambda cfg: 30.0
     try:
         g, fw, _, hf = _sext("hc-late", {NANO: [f"ok:{FIRST}", f"ok:{SECOND}"]}, 4.0)
     finally:
@@ -281,7 +248,6 @@ def case_not_asked():
 
 
 class _PriceOne:
-    """`_price_jev._client` answering the Offer price Score at level 1."""
     async def system_one(self, state, questions, model=None):
         return SimpleNamespace(scores={"price": SimpleNamespace(score=1.0, probabilities={1: 1.0})})
 

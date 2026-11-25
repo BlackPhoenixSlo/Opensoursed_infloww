@@ -1,13 +1,3 @@
-"""vault_account_settings — per-Creator vault switches (folder price is final, standard folders)
-
-One NEW table (`vault_account_settings`: account_id, folder_price_final, standard_folders,
-updated_at). No row = both off, so no existing account changes. `create_all()` brings it to a
-booting box; this file keeps the alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0124_vault_account_settings
-Revises: 0123_vault_folder_prices
-Create Date: 2026-11-16
-"""
 from __future__ import annotations
 
 from typing import Sequence

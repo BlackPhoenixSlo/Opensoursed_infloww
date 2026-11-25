@@ -82,6 +82,8 @@ def turn_text(turn) -> str:
 
 
 def live_ask(rows, now: datetime, tease, turn) -> OfferAsk:
+    """The live loader's ask: his live rows on this account (`full_ai_live.load`), the Pending
+    tease `_folds` kept (a `Teased`, its row looked up by id), his Turn's inbound messages."""
     tease_row = next((r for r in rows if r.id == tease.row_id), None) if tease is not None else None
     return build_ask(rows, now, live_open_ids(rows, now), tease_row, turn_text(turn), live=True,
                      quote_message_id=quote_message_id_of(turn))
@@ -247,8 +249,9 @@ async def load_offer_vault(account_id: str, media_ids: Iterable[int]) -> dict[in
 
 Rule = Literal["media", "count", "duration", "dollars", "free", "none"]
 RULES: tuple[Rule, ...] = ("media", "count", "duration", "dollars", "free", "none")
+# A word that marks a count or a "free" as the free previews' ("1 free pic", "1 pic as a preview").
 _PREVIEW_WORDS = frozenset({"free", "preview", "previews"})
-_ORDINAL = frozenset({"st", "nd", "rd", "th"})
+_ORDINAL = frozenset({"st", "nd", "rd", "th"})     # a digit's suffix: "2nd" is no count
 _SECS = frozenset({"sec", "secs", "second", "seconds"})
 _MINS = frozenset({"min", "mins", "minute", "minutes"})
 SECS_SLACK = 5
@@ -287,6 +290,8 @@ def _spelled_cents(words: list[str]) -> int | None:
 
 
 def _after_noun(words: list[str]) -> bool:
+    """A preview word in `words` (the reach after a media noun) before the next count or media
+    noun, so "1 pic + 1 free preview" never lends the 2nd count's "free" to the 1st."""
     for w in words:
         if _count_word(w) is not None or w in _KIND_NOUNS:
             return False
@@ -311,7 +316,7 @@ def _said(text: str) -> _Said:
             lengths.append((n, "sec" if nxt in _SECS else "min"))
         elif nxt in _KIND_NOUNS:
             counts.append((n, _kind(nxt), _after_noun(toks[i + 2:i + 5])))
-        elif (i + 2 < len(toks) and toks[i + 2] in _KIND_NOUNS and nxt.isalpha()
+        elif (i + 2 < len(toks) and toks[i + 2] in _KIND_NOUNS and nxt.isalpha()     # "1 paid pic"
               and nxt not in _NOT_A_COUNT and nxt not in _NUMBER_WORDS):
             counts.append((n, _kind(toks[i + 2]), nxt in _PREVIEW_WORDS or _after_noun(toks[i + 3:i + 6])))
     cents = {round(float(a or b) * 100) for a, b in _AMOUNT.findall(text)}

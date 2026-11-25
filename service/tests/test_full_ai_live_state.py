@@ -1,39 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_live_state — never double-send (04a ticket 65, automations/full_ai_live.py).
-
-OF faked (`LiveOF` behind `ax._make_client`), Jev + Writers faked, temp DB. Every case asserts the
-FakeOF call count, the row's `status` and the outbound `messages` rows of kind full_ai_chat.
-
-  case_killed_on_bubble_2            CancelledError inside send 2: 1 bubble on OF, row `sending`;
-                                     rerun (lease left as a hard crash leaves it): nothing sent,
-                                     `unconfirmed`, lease gone; a fresh job on the Anchor sends
-                                     nothing; his next DM is a new Turn that sends
-  case_killed_after_of_took_bubble_1 OF took bubble 1, the run dies before its messages row: row
-                                     `sending`, no messages row; rerun: nothing sent (the row is the
-                                     only guard), `unconfirmed`; his next DM is a new Turn
-  case_dies_before_any_send          killed in bubble 1's typing hold: no row; rerun sends once
-  case_two_runs_one_turn_key         row pre-inserted `sending` after load: nothing sent, rate turn
-                                     given back, the other run's row untouched
-  case_slot_lost_bubble_1            SlotLost on rate turn 1: no row, no OF call, raised; retry sends once
-  case_slot_lost_bubble_2            SlotLost on rate turn 2: `sent`, cut slot_lost, raised; retry nothing
-  case_send_error                    bubble 1 raises: `failed`, lease gone, no cooldown;
-                                     bubble 2 raises: `sent`, cut send_error
-  case_unreachable_fan               "Cannot send message to this user": skip_list + 7-day pause
-  case_no_id_first_bubble            OF answers no id: `failed`, quarantine probed once
-  case_offer_column_survives_record  `outcome` / `jev_ms` set between reserve and record survive;
-                                     row["id"] is the reserved row's id
-  case_drain_waits_for_a_reserved_turn   SIGTERM in bubble 2's hold: the hold ends, drain() waits
-                                     (1 waited, 0 left), every bubble sent, the holds after it 0 s, `sent`
-  case_draining_before_the_reserve   run_once while draining: no OF call, no row, rate turn given back;
-                                     job `done` + the same payload re-queued at +20 s (tries kept); it sends after
-  case_drain_slot_released_on_raise_and_cancel   a raise after the reserve / a cancel after bubble 1:
-                                     the drain slot is gone, a later drain() waits for nothing
-
-Run: ./venv/bin/python service/tests/test_full_ai_live_state.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -67,7 +35,6 @@ def _kill_at(n: int, exc: BaseException):
 
 
 async def _run(aid, fan, mid, rid, **kw):
-    """One job run in its own world: (result or the exception, World)."""
     with world(**kw) as w:
         try:
             res = await full_ai_live.run(aid, payload(fan, mid, rid), run_id=0)
@@ -82,7 +49,6 @@ async def _one(aid):
 
 
 def _n(row) -> int:
-    """Bubbles the row's reply has (the reply chain decides: 2-4 for these lines)."""
     return len(json.loads(row.reply_json)["parts"])
 
 
@@ -94,19 +60,17 @@ async def case_killed_on_bubble_2():
     assert isinstance(res, asyncio.CancelledError), res
     row = await _one(aid)
     assert (w.of.calls, len(w.of.sent), row.status) == (2, 1, "sending"), (w.of.calls, row.status)
-    assert _n(row) >= 3, _n(row)            # killed on bubble 2 of >= 3
-    assert len(await out_rows(aid, fan)) == 1 and await paused(aid, fan) is not None   # a bubble landed: rest
-    await clear_pause(aid, fan)                                      # a hard crash runs no finally:
-    assert await ax.acquire_fan_lease(aid, fan, KIND, ttl_s=900)    # no rest, its lease left
+    assert _n(row) >= 3, _n(row)
+    assert len(await out_rows(aid, fan)) == 1 and await paused(aid, fan) is not None
+    await clear_pause(aid, fan)
+    assert await ax.acquire_fan_lease(aid, fan, KIND, ttl_s=900)
     res, w = await _run(aid, fan, mid, rid)
     assert res == {"skipped": "no_turn"}, res
     row = await _one(aid)
     assert (w.of.calls, row.status, len(await out_rows(aid, fan))) == (0, "unconfirmed", 1)
     assert await leases(aid) == []
-    # A fresh job on the same Anchor: still nothing.
     res, w = await _run(aid, fan, mid, rid)
     assert res == {"skipped": "no_turn"} and w.of.calls == 0, res
-    # His next DM is a new Turn that sends.
     await clear_pause(aid, fan)
     await dm(aid, fan, mid + 1, "u there?", ago_s=0)
     res, w = await _run(aid, fan, mid + 1, rid)
@@ -164,7 +128,7 @@ async def case_two_runs_one_turn_key():
     await dm(aid, fan, mid)
     real = full_ai_live.load_typing_wpm
 
-    async def other_run_first(account_id):     # after load, before the reserve
+    async def other_run_first(account_id):
         async with get_session() as s:
             await s.execute(sqlite_insert(AiDecision).values(
                 account_id=aid, fan_id=fan, mode="live", trigger_kind="inbound", trigger_key=str(mid),
@@ -190,7 +154,7 @@ async def case_slot_lost_bubble_1():
     assert isinstance(res, run_slot.SlotLost), res
     assert (w.of.calls, await live_rows(aid), await out_rows(aid, fan)) == (0, [], [])
     assert await leases(aid) == [] and await paused(aid, fan) is None
-    res, w = await _run(aid, fan, mid, rid)          # the executor's retry
+    res, w = await _run(aid, fan, mid, rid)
     row = await _one(aid)
     n = _n(row)
     assert (res["row_status"], row.status, w.of.calls, len(await out_rows(aid, fan))) == ("sent", "sent", n, n)
@@ -280,7 +244,7 @@ async def case_offer_column_survives_record():
     async def reserve_then_settle(row, anchor):
         got = await real(row, anchor)
         seen.append((row, got))
-        async with get_session() as s:      # e.g. settle_pull lands between reserve and record
+        async with get_session() as s:
             await s.execute(update(AiDecision).where(AiDecision.id == got).values(outcome="bought", jev_ms=4242))
         return got
     full_ai_live._reserve = reserve_then_settle
@@ -293,7 +257,7 @@ async def case_offer_column_survives_record():
     n = _n(row)
     assert (row.status, row.outcome, w.of.calls, len(await out_rows(aid, fan))) == ("sent", "bought", n, n), \
         (row.status, row.outcome, w.of.calls, n)
-    assert row.jev_ms == 4242 != rowdict["jev_ms"], (row.jev_ms, rowdict["jev_ms"])   # a row-dict column too
+    assert row.jev_ms == 4242 != rowdict["jev_ms"], (row.jev_ms, rowdict["jev_ms"])
     assert rowdict["id"] == got == row.id == res["row_id"], (rowdict.get("id"), got, row.id)
 
 
@@ -306,21 +270,21 @@ async def case_drain_waits_for_a_reserved_turn():
 
     async def hold(_aid, _fan, seconds, **kw):
         holds.append(seconds)
-        if len(holds) == 1:                 # bubble 1 goes straight out
+        if len(holds) == 1:
             return
-        if len(holds) == 2:                 # bubble 1 is on OF; SIGTERM lands in bubble 2's real hold
+        if len(holds) == 2:
             in_hold.set()
         await real_hold(_aid, _fan, seconds, **kw)
 
     async def wpm(_aid):
-        return 1                            # every text bubble would "type" for up to a minute
+        return 1
     full_ai_live.hold_with_typing, full_ai_live.load_typing_wpm = hold, wpm
     try:
         with world() as w:
             task = asyncio.create_task(full_ai_live.run(aid, payload(fan, mid, rid), run_id=0))
             await asyncio.wait_for(in_hold.wait(), 10)
             assert w.of.calls == 1 and task in ax._sends_open, w.of.calls
-            out = await ax.drain(timeout_s=10)       # the running hold ends at the drain
+            out = await ax.drain(timeout_s=10)
             res = await task
     finally:
         full_ai_live.hold_with_typing, full_ai_live.load_typing_wpm = real_hold, real_wpm
@@ -354,9 +318,9 @@ async def case_draining_before_the_reserve():
             ScheduledJob.account_id == aid, ScheduledJob.kind == KIND).order_by(ScheduledJob.id))).scalars()
     now = datetime.utcnow()
     assert (old.id, old.status, new.status, new.attempts or 0) == (job_id, "done", "pending", 0), (old.status, new.status)
-    assert json.loads(new.payload_json) == pl, new.payload_json      # `tries` untouched
+    assert json.loads(new.payload_json) == pl, new.payload_json
     assert now + timedelta(seconds=15) < new.run_at <= now + timedelta(seconds=21), new.run_at
-    async with get_session() as s:                                   # after the restart, once due
+    async with get_session() as s:
         await s.execute(update(ScheduledJob).where(ScheduledJob.id == new.id)
                         .values(run_at=now - timedelta(seconds=1)))
     with world() as w:

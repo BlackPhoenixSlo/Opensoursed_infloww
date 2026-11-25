@@ -1,26 +1,3 @@
-"""
-messages.py — server-side endpoints for the per-chat message timeline.
-
-Endpoints, all keyed on (account_id, fan_id):
-
-  GET    /admin/messages/{account_id}/{fan_id}?limit=&before_id=
-                                          → paginated history (newest first)
-  POST   /admin/messages/{account_id}/{fan_id}/mark-read
-                                          → zero out chats.unread_count
-                                            (LOCAL only — the OF call lives
-                                            in the existing relay endpoint)
-
-Re-exports the mirror writes (`mark_unsent` and friends, messages_unsent.py):
-the local half of an unsend, called by the relay's OF routes and by the
-unsend_messages automation once OF confirms. The paid-messages read model
-(query builder, CSV row, mass summaries) lives in messages_query.py.
-
-This file owns NONE of the OF-network logic — every row served comes from
-the local `messages` / `message_flags` / `chats` tables that the WS
-transcoder populates. Outbound sends + OF-side read receipts live in
-of_client.py and the relay endpoints in server.py.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +17,7 @@ from attribution_backfill import TRACKED_STATUSES
 from stats import _parse_date
 from auth import assert_account_owned, assert_employee_filter_owned, clamp_account_filter
 from of_coerce import json_list
-from of_shapes import DIM_KEYS, media_urls   # shared OF payload-shape readers
+from of_shapes import DIM_KEYS, media_urls
 from messages_query import (  # noqa: F401 — some re-exported (tests: messages._collapsed_mass_rows)
     _CSV_HEADER, _apply_dashboard_filters, _build_messages_query, _collapsed_mass_rows,
     _csv_row, _keyset_where, _page, _paid_row,
@@ -66,10 +43,6 @@ def _row_to_dict(
         "sender_name": m.sender_name,
         "body": m.body,
         "media_ids": json_list(m.media_ids),
-        # Per-item media with NULLABLE width/height — the render-stability
-        # cache (18_chat_render_stability §1.1). `media_ids` (id-only, legacy)
-        # is kept for back-compat; `media` carries the dims the skeleton/grid
-        # need. Empty until a live OF fetch / client PATCH fills message_media.
         "media": media or [],
         "media_count": m.media_count,
         "price_cents": m.price_cents,
@@ -94,19 +67,8 @@ def _row_to_dict(
     }
 
 
-# ── media dimensions (18_chat_render_stability §1.1) ────────────────────
-#
-# message_media is the render-stability cache: one row per media item, with
-# NULLABLE width/height. Dims are NEVER read from a Message.raw_json — the WS
-# event carries only the media id (DA bug 1). They come from two lazy sources:
-#   1. the live OF REST /chats/{id}/messages media objects, whose
-#      `files`/`info` blocks carry source/full/preview width+height
-#      (verified against real OF payloads — see reconcile_rest_media);
-#   2. a client onload→PATCH for items OF never sized.
-# Every consumer tolerates null dims (neutral skeleton box).
 
 def _as_pos_int(v: Any) -> int | None:
-    """Coerce an OF width/height to a positive int, else None."""
     try:
         n = int(v)
     except (TypeError, ValueError):
@@ -114,12 +76,8 @@ def _as_pos_int(v: Any) -> int | None:
     return n if n > 0 else None
 
 
+# Dims never come from Message.raw_json: the WS event carries only the media id.
 def extract_media_dims(media: dict) -> tuple[int | None, int | None]:
-    """Pull natural (width, height) from one OF REST media object.
-
-    Reads files.{full,source,preview}, then the same under `info`, then a
-    top-level width/height. Returns (None, None) for a WS-shaped media item
-    (id only) — which is exactly why raw_json can't be the dims source."""
     if not isinstance(media, dict):
         return (None, None)
     for container_key in ("files", "info"):
@@ -133,12 +91,10 @@ def extract_media_dims(media: dict) -> tuple[int | None, int | None]:
                 h = _as_pos_int(sub.get("height"))
                 if w and h:
                     return (w, h)
-    # Some payloads put width/height directly on the media object.
     return (_as_pos_int(media.get("width")), _as_pos_int(media.get("height")))
 
 
 def _media_duration_ms(media: dict) -> int | None:
-    """Video/audio length in ms if OF provided it (seconds upstream)."""
     if not isinstance(media, dict):
         return None
     dur = media.get("duration")
@@ -154,8 +110,6 @@ def _media_duration_ms(media: dict) -> int | None:
 
 
 def _media_to_dict(mm: MessageMedia) -> dict[str, Any]:
-    """message_media row → the OFMedia-ish shape the seed payload returns.
-    width/height stay nullable; the UI tolerates null (neutral skeleton box)."""
     return {
         "id": mm.media_id,
         "type": mm.type,
@@ -170,7 +124,6 @@ def _media_to_dict(mm: MessageMedia) -> dict[str, Any]:
 async def _load_media_for_messages(
     s: AsyncSession, account_id: str, fan_id: int, message_ids: list[int],
 ) -> dict[int, list[dict[str, Any]]]:
-    """message_id → its message_media rows (as dicts), for a page of messages."""
     if not message_ids:
         return {}
     rows = (
@@ -191,15 +144,6 @@ async def _load_media_for_messages(
 async def reconcile_rest_media(
     s: AsyncSession, account_id: str, fan_id: int, of_messages: list[dict],
 ) -> None:
-    """Upsert message_media rows from OF REST messages — the PRIMARY dims
-    source. One row per media item, dims from files/info when present.
-
-    FK-safe: message_media is a CASCADE child of `messages`, so we only write
-    rows whose parent message already exists (the WS pump / outbound
-    attribution own message persistence — T-API does not take that over;
-    cold-start rows still get dims inline on the live payload). Existing dims
-    survive on conflict via COALESCE, so a client onload→PATCH is never
-    clobbered by a later REST refresh that happens to lack dims."""
     by_msg: dict[int, list[dict]] = {}
     for m in of_messages or []:
         if not isinstance(m, dict):
@@ -249,9 +193,7 @@ async def reconcile_rest_media(
             stmt = ins.on_conflict_do_update(
                 index_elements=["account_id", "fan_id", "message_id", "media_id"],
                 set_={
-                    # COALESCE(excluded, existing): a fresh REST refresh updates
-                    # fields it actually has, but never overwrites a stored value
-                    # (e.g. a client onload→PATCHed dim) with a null.
+                    # A REST refresh lacking dims must not null a value a client PATCH stored.
                     "type": func.coalesce(ins.excluded.type, MessageMedia.type),
                     "width": func.coalesce(ins.excluded.width, MessageMedia.width),
                     "height": func.coalesce(ins.excluded.height, MessageMedia.height),
@@ -276,22 +218,6 @@ async def reconcile_rest_media(
 async def stamp_rest_media_dims(
     account_id: str, fan_id: int, of_messages: list[dict],
 ) -> None:
-    """Mutate each media item in `of_messages` to carry top-level width/height
-    (so the client gets dims without parsing OF's nested files/info).
-
-    Source order per item: OF inline dims first; then a stored message_media
-    row (e.g. a prior client onload→PATCH) for items OF never sized. Leaves
-    dims null when neither source has them.
-
-    READ-ONLY by design. `sync_rest_media_dims` used to do this AND the write
-    in one await; it is gone, split into this half — the part the HTTP
-    response actually needs, so it stays on the request path — and
-    `persist_rest_media_dims`, which the caller fires and forgets. That split
-    took a write transaction on the single shared SQLite writer off every chat
-    open and every 30s/2min poll.
-
-    Best-effort — callers wrap in try/except so a media hiccup never breaks
-    chat load."""
     if not of_messages:
         return
     need_db: dict[int, list[dict]] = {}
@@ -337,17 +263,6 @@ async def stamp_rest_media_dims(
 async def persist_rest_media_dims(
     account_id: str, fan_id: int, of_messages: list[dict],
 ) -> None:
-    """Persist OF REST dims into message_media. The WRITE half of what used to
-    be `sync_rest_media_dims`, meant to be fired and forgotten by the route.
-
-    Nothing in the HTTP response depends on it: `stamp_rest_media_dims` has
-    already put every dim the client needs on the payload, and this only
-    populates the store that a LATER request reads from. Running it off the
-    request path means a chat open no longer waits on the shared SQLite writer.
-
-    Swallows its own exceptions rather than relying on the caller: it runs in a
-    bare `create_task`, where an escaping error would only surface as an
-    unretrieved-task warning."""
     if not of_messages:
         return
     try:
@@ -360,17 +275,9 @@ async def persist_rest_media_dims(
         )
 
 
-# ── routes ─────────────────────────────────────────────────────────────
-#
-# NOTE: route order matters in FastAPI. The literal-third-segment route
-# (`mark-read`) is declared BEFORE the int-parameter route `/{message_id}`
-# so "mark-read" doesn't try to parse as an int and 422. The PPV-list
-# route at /admin/paid-messages lives at a different prefix, but is
-# declared first here as a defensive measure — if anyone ever moves it
-# under /admin/messages/* the parametric `{account_id}/{fan_id}` below
-# would shadow it.
 
 
+# Route order matters: the literal `mark-read` segment is declared before int-param routes, and this one before the parametric `{account_id}/{fan_id}` that would shadow it.
 @router.get("/admin/paid-messages")
 async def list_paid_messages(
     request: Request,
@@ -391,8 +298,6 @@ async def list_paid_messages(
     ),
     format: str = Query("json", pattern="^(json|csv)$"),
     limit: int = Query(50, ge=1, le=100),
-    # The Message dashboard's filters (plain defaults, so the tests' direct
-    # calls see None/False, not a Query sentinel). Validated below.
     q: str | None = None,
     min_price_cents: int | None = None,
     max_price_cents: int | None = None,
@@ -460,17 +365,12 @@ async def list_paid_messages(
         unsent_only=unsent_only, sender_type=sender_type,
     )
     account_ids = clamp_account_filter(account_id)
-    # Gate the second axis. Without this, a chatter with access to
-    # account_X could ask `?employee_id=<arbitrary id>` and read every
-    # message attributed to that random employee on account_X — see the
-    # audit notes for the bypass this closed.
+    # Without this a chatter could read any employee's messages via ?employee_id=.
     await assert_employee_filter_owned(employee_id)
     start = _parse_date(from_, field="from", request=request)
     end = _parse_date(to, field="to", request=request)
 
     if format == "csv":
-        # Pulling the account-nickname map up front keeps the row loop
-        # join-free; the rows stream in the download's own session.
         nick_map: dict[str, str] = {}
         async with get_session() as s:
             nick_rows = (await s.execute(select(Account.id, Account.nickname))).all()
@@ -484,27 +384,17 @@ async def list_paid_messages(
             fan_query=fan_query, fan_id=fan_id,
             for_csv=True, kind=kind, **filters,
         ).order_by(Message.created_at.desc(), Message.message_id.desc())
-        # Filename uses raw inputs so the user sees the date range they
-        # typed (not the parsed naive-UTC version we computed for SQL).
         filename = (f"messages_{csv_export.safe_filename_part(from_)}"
                     f"_to_{csv_export.safe_filename_part(to)}.csv")
-        # The sentinel line has always been 16 cells against the
-        # 17-column header; kept so existing exports stay byte-identical.
+        # Sentinel line is 16 cells vs the 17-column header; kept so exports stay byte-identical.
         return csv_export.download(
             filename, lambda s2: csv_export.query_rows(s2, q), _CSV_HEADER,
             lambda row: _csv_row(row, nick_map), truncated_width=16,
         )
 
-    # Collapse mass broadcasts into one summary row per run, EXCEPT when the
-    # view is already narrow (a single fan or a fan search) — there the raw
-    # per-fan rows are what the operator wants. Inbound has no mass rows.
     do_collapse = (collapse_mass and fan_id is None and not fan_query and direction != "in"
                    and kind != "direct")
 
-    # Composite keyset cursor: (sent_at, message_id) DESC. before_sent_at is
-    # the previous page's last send time; before_id breaks ties within the
-    # same timestamp. before_dt is naive UTC to match the column convention
-    # (these isoformat strings always carry a "T", so no end-of-day shift).
     before_dt: datetime | None = None
     if before_sent_at:
         try:
@@ -526,7 +416,6 @@ async def list_paid_messages(
             for_csv=False, kind=kind, **filters,
         )
         if do_collapse:
-            # Per-fan mass rows are replaced by the summary rows below.
             mq = mq.where(Message.mass_run_id.is_(None))
         mq = _keyset_where(mq, before=before, before_id=before_id)
         mq = mq.order_by(Message.created_at.desc(), Message.message_id.desc()).limit(limit)
@@ -541,9 +430,6 @@ async def list_paid_messages(
                 before=before, limit=limit, **filters,
             )
 
-    # 200-char body truncation kept for paid-only (default) so PPV-tab
-    # payloads stay small; expanded to 2000 once the All-Messages tab
-    # asks for inbound or free bodies (rendered with line-clamp client-side).
     body_cap = 200 if type_ == "paid" else 2000
     return _page([_paid_row(r, body_cap) for r in rows], mass_rows, limit)
 
@@ -569,29 +455,20 @@ async def list_messages(
     client's fresh-page merge can't retire it. The chat UI is this endpoint's
     only consumer, and the OF fetch is the truth for anything older."""
     assert_account_owned(account_id)
-    from attribution import _MASS_PLACEHOLDER_BASE  # local: matches _collapsed_mass_rows
-    from transaction_ingest import _TIP_MSG_ID_BASE  # band END — tips start here
+    from attribution import _MASS_PLACEHOLDER_BASE
+    from transaction_ingest import _TIP_MSG_ID_BASE
     placeholder_floor = datetime.utcnow() - timedelta(hours=1)
     async with get_session() as s:
         q = (
             select(Message)
             .where(Message.account_id == account_id, Message.fan_id == fan_id)
-            # The age cutoff applies ONLY to the mass-placeholder band
-            # [5e15, 6e15). At 6e15 the ledger-synthesized TIP rows begin
-            # (transaction_ingest._TIP_MSG_ID_BASE) — those are permanent
-            # synthetic history the WS pump never saw, and this seed is their
-            # ONLY render path, so they must never age out.
+            # Age cutoff only for the mass-placeholder band [5e15, 6e15); tip rows (>=6e15) are permanent synthetic history, never age out.
             .where(or_(
                 Message.message_id < _MASS_PLACEHOLDER_BASE,
                 Message.message_id >= _TIP_MSG_ID_BASE,
                 Message.created_at >= placeholder_floor,
             ))
-            # An unsent bubble is gone from OF, so it must not seed the pane:
-            # the seed carries no media, so it would repaint as an empty
-            # locked shell on every reload. The client drops these too, but
-            # filtering here is what makes the mirror flip (mark_unsent, in
-            # messages_unsent.py) effective for a browser still running an
-            # older bundle.
+            # Unsent bubble is gone from OF; the seed has no media, so it would repaint as an empty locked shell.
             .where(Message.is_unsent.is_(False))
             .order_by(Message.message_id.desc())
             .limit(limit)
@@ -603,8 +480,6 @@ async def list_messages(
             s, account_id, fan_id, [m.message_id for m in rows]
         )
         items = [_row_to_dict(m, media_by_msg.get(m.message_id, [])) for m in rows]
-        # next_before_id: cursor the client passes next call. Null means
-        # this page was shorter than `limit`, so there's nothing more.
         next_before = items[-1]["message_id"] if len(items) == limit else None
         return {
             "messages": items,
@@ -659,30 +534,17 @@ async def list_message_attribution(
         by_msg_id[str(r.message_id)] = {
             "employee_id": r.sent_by_employee_id,
             "display_name": r.display_name,
-            # Which automation sent it ("welcome_chatter_for_info", "autoreply", …). When set,
-            # the bubble shows the specific automation name instead of the flat
-            # "Automation" sentinel that every bot send's display_name resolves to.
             "automation_kind": r.automation_kind,
-            # Denormalized mass sender tag ("mass-kingsley1") for HUMAN broadcast
-            # rows; "" for 1:1 sends and automation-fired mass (the Automation
-            # sentinel is excluded in attribution.mass_sender_tag). The bubble
-            # prefers this over the automation label / employee name.
             "sender_name": r.sender_name,
             "color": r.color,
-            # Set once WE unsent it (mark_unsent / the mass-unsend flips). The
-            # bubble is gone from OF, so the thread draws a "Message withdrawn"
-            # line in its place; `unsent_reason` tells a manual unsend from an
-            # automatic one ("automation:…").
             "unsent_at": r.unsent_at.isoformat() if r.unsent_at else None,
             "unsent_reason": r.unsent_reason,
-            # When it was sent: the withdrawn line's Date divider.
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
     return {"by_msg_id": by_msg_id}
 
 
 def _iso(v: Any) -> datetime | None:
-    """Parse an OF ISO timestamp ('...Z' or '+00:00'); None on anything odd."""
     if not isinstance(v, str) or not v:
         return None
     try:
@@ -692,28 +554,7 @@ def _iso(v: Any) -> datetime | None:
 
 
 async def reconcile_chats_from_of(account_id: str, of_chats: list[dict]) -> int:
-    """Reconcile local `chats` from a fresh OF /chats payload — read state +
-    last-message direction. Returns the number of chats touched.
-
-    Why this exists: OF's `unreadMessagesCount` is the SOURCE OF TRUTH for read
-    state (cleared when a chat is read on OF web OR via our mark-as-read), but
-    nothing local mirrored it. `chats.unread_count` is WS-incremented and only
-    zeroed by an app-side outbound send, so it drifted toward "every chat that
-    ever got a DM" — which is why the roster blue badge read as a *total* instead
-    of the real unread backlog. We piggy-back on the inbox's existing /chats fetch
-    (NO new OF calls) to pull OF's truth into the tables the roster aggregate reads.
-
-    Per chat we:
-      • set `unread_count` = OF's count (unconditional — OF is authoritative), and
-      • advance the last message + persist its direction MONOTONICALLY, so an
-        OF-web reply (which the WS pump skips) flips the chat off the owe-reply
-        badge without waiting for the next scrape.
-
-    Monotonic-on-message_id makes the last-message advance safe against a
-    concurrent WS write landing a newer inbound mid-reconcile; unread_count is set
-    every time because read state isn't monotonic. Best-effort: the OF-cache writer,
-    swallows errors — a sync hiccup must never break the inbox response it rides on.
-    """
+    # OF's unreadMessagesCount is the read-state truth, set unconditionally; the last message only advances forward so a concurrent WS write isn't clobbered.
     from db import of_writer  # noqa: PLC0415
     try:
         return await of_writer.write(_reconcile_chats, (str(account_id), of_chats))
@@ -724,12 +565,7 @@ async def reconcile_chats_from_of(account_id: str, of_chats: list[dict]) -> int:
 
 
 async def _reconcile_chats(conn, items: list) -> list:
-    """of_writer op for `reconcile_chats_from_of`: each item is (account_id, OF chats page).
-    Three executemany statements per page, so the OF-cache transaction (group-committed with
-    every other reconcile and DM queued meanwhile) holds the write lock for a few round-trips,
-    not three per chat; 50 Creators' inbox reads at once used to queue 50 such transactions
-    on SQLite's busy timeout."""
-    from attribution import adopt_thread_placeholders  # local: circular import
+    from attribution import adopt_thread_placeholders
 
     out = []
     for own, of_chats in items:
@@ -742,21 +578,18 @@ async def _reconcile_chats(conn, items: list) -> list:
             lm = c.get("lastMessage") or {}
             lm_id = lm.get("id")
             from_id = (lm.get("fromUser") or {}).get("id")
-            # (a) the last message WITH its direction, so the roster's last_message_id→direction
-            #     join can classify it; do_nothing: never clobber a fuller row the WS/scrape wrote.
+            # do_nothing: never clobber a fuller row the WS/scrape wrote.
             if lm_id is not None and from_id is not None:
                 direction = "out" if str(from_id) == own else "in"
                 msgs.append(dict(account_id=own, fan_id=fan_id, message_id=int(lm_id),
                                  direction=direction, body=(lm.get("text") or ""),
                                  created_at=_iso(lm.get("createdAt")) or datetime.utcnow()))
-                # Fastest place we ever see OF's real id for an un-echoed optimistic send (the
-                # scrape is hours behind): fold the stub in, only behind an OUTBOUND last message.
+                # Fastest place we see OF's real id for an un-echoed optimistic send (scrape is hours behind).
                 if direction == "out":
                     outbound.append(fan_id)
-            # (b) unread_count = OF truth, unconditionally (create row if new).
+            # unread_count is OF truth, set unconditionally.
             unread.append(dict(account_id=own, fan_id=fan_id,
                                unread_count=int(c.get("unreadMessagesCount") or 0)))
-            # (c) advance the chat's last message forward-only.
             if lm_id is not None:
                 last.append(dict(account_id=own, fan_id=fan_id, last_message_id=int(lm_id),
                                  last_message_at=_iso(lm.get("createdAt")),
@@ -806,27 +639,18 @@ async def mark_chat_read(account_id: str, fan_id: int) -> dict[str, Any]:
     unread returns `cleared=false`, letting the UI skip a needless roster
     refetch."""
     assert_account_owned(account_id)
-    # Read state mirrors OF's, so it goes through the OF-cache writer — in
-    # order with the DMs of this chat queued before it, and in their commit.
+    # Read state goes through the OF-cache writer, in order with this chat's queued DMs.
     from db import of_writer  # noqa: PLC0415
     cleared = await of_writer.write(_clear_unread, (account_id, int(fan_id)),
                                     key=(account_id, int(fan_id)))
-    # cleared=False → no chats row yet (WS hasn't transcoded one) OR it was
-    # already read. Not an error — 200 with cleared=false.
     if cleared:
-        # Reading a chat moves it off the roster's blue (unread) count. That
-        # badge is served from a 5-min OF cache that ONLY the WS pump busts
-        # (on messages) — a read isn't a message, so without this the poll
-        # would keep serving the pre-read count for up to the full TTL. Bust
-        # it so the next roster poll re-reads OF and the badge drop sticks.
+        # Roster unread badge is a 5-min OF cache only the WS pump busts; a read isn't a message, so bust it.
         import relay_cache  # noqa: PLC0415 — defer; avoids an import cycle at module load
         relay_cache.invalidate("roster_count", account_id)
     return {"account_id": account_id, "fan_id": fan_id, "cleared": cleared}
 
 
 async def _clear_unread(conn, items: list) -> list:
-    """of_writer op: zero one chat's unread. The WHERE guards on
-    `unread_count > 0`, so each read reports whether it ACTUALLY changed."""
     out = []
     for account_id, fan_id in items:
         res = await conn.execute(
@@ -838,7 +662,6 @@ async def _clear_unread(conn, items: list) -> list:
     return out
 
 
-# A full pull still running after the route returned, per (account, fan): a repeat click joins it.
 _full_pulls: dict[tuple[str, int], asyncio.Task] = {}
 _PULL_WAIT_S = 8.0
 _PULL_MAX_CHUNKS = 20
@@ -944,25 +767,6 @@ async def local_mass_sales(
     queues: dict[int, int],
     since: datetime | None,
 ) -> dict[int, tuple[int, int]]:
-    """`{broadcast: (buyers, earnings_cents)}` from OUR rows — no OF call. The one
-    count behind both the Message dashboard's mass summaries and the sent list's
-    Purchased / Earnings.
-
-    A broadcast is the caller's key: `runs` maps a `mass_run_id`, and `queues` an
-    OF queue id, to it (the dashboard keys on the run, the sent list on the
-    queue). A fan's copy is recognised the two ways `mark_queue_copies_unsent`
-    recognises one by id: the run we recorded (placeholder included), or OF's own
-    `queueId` on a scraped frame — read structurally, `LIKE` is the prefilter.
-
-    A copy counts when the ledger link marked it bought (`is_paid` /
-    `purchased_at` on that row), at the copy's price, and its linked transaction, if any, is not a refund, chargeback
-    or failure (pending counts, like every earnings read). A funnel follow-up
-    (`funnel_step`) carries the run's id but is its own sale, so it stays out.
-    One sale per fan per broadcast, so a placeholder still standing beside its
-    real twin counts once.
-
-    A floor, not OF's figure: a list-audience blast has no row for a buyer
-    whose copy we never scraped or polled. Earnings are gross (the offer price)."""
     if not runs and not queues:
         return {}
     refunded = (

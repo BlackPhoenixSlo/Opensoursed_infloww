@@ -1,28 +1,3 @@
-"""service/priority_mass_api.py — Smart Messages' Priority mass message runs.
-
-The routes behind the "Priority mass message" card and the "Priority mass
-messages" list (automations/priority_mass sends them):
-
-  POST /admin/priority-mass/runs
-       {account_id, text, media_files, previews, price, locked_text,
-        user_lists, excluded_user_lists}                   → the run
-       Validates, refuses a listed Sensitive word (the Agency's list, the
-       composers' matcher) or a blocking banned word, makes the run `resolving`
-       and queues its first leg, which freezes the audience. The same message
-       to the same Creator launched again inside `_REPEAT_S` is refused 409 (a
-       double click). `user_lists` holds "fans", "following" or OF list ids;
-       `excluded_user_lists` OF list ids.
-  GET  /admin/priority-mass/runs?account_id=               → {runs: [...]}
-       Newest first, each with its recipients counted per status and `stalled`
-       (live, but no leg queued or running: the chain died; Resume restarts it).
-  POST /admin/priority-mass/runs/{id}/cancel               → the run
-       Live runs only: the run turns `cancelled` and its pending fans `skipped`.
-       A send already in flight may still land.
-  POST /admin/priority-mass/runs/{id}/resume               → the run
-       Queues the next leg of a stalled run.
-
-Every route checks the Creator is the caller's (`assert_account_owned`).
-"""
 from __future__ import annotations
 
 import json
@@ -48,10 +23,9 @@ router = APIRouter(prefix="/admin/priority-mass")
 
 _TEXT_MAX = 2000
 _MEDIA_MAX = 20
-_PRICE_MIN, _PRICE_MAX = 3, 200     # OF's priced-message floor and $200 PPV ceiling
+_PRICE_MIN, _PRICE_MAX = 3, 200
 _REPEAT_S = 120
 _LIST_LIMIT = 50
-# The composers' "Please check the contents of the messages" (app/lib/sensitiveWords.ts).
 SENSITIVE_BLOCK_MESSAGE = "Please check the contents of the messages"
 
 

@@ -1,21 +1,3 @@
-"""Keep running guards — Create reservations, per-Creator Keep state, campaign guard columns
-
-docs/spec/phase-01-promo-preempt.md (Schema), one revision for both slices:
-  • promo_create_reservations (NEW): every promo create is a row before its POST (ADR-0040);
-    partial unique uq_promo_create_open = one open row per Creator.
-  • promo_keep_state (NEW): the claim memo and the Re-check slot (+ its owning job), one row per Creator.
-  • promo_campaigns + recreates_left, keep_host_id, keep_warning, keep_warning_at, keep_ticked_at (nullable)
-    and preempt (NOT NULL DEFAULT 1, read by Slice B only).
-  • uq_promo_keep_one: one Kept campaign per Creator. A legacy Creator with several keeps the one ticked
-    (else created) last; the rest are unticked with keep_warning 'kept_duplicate' (the boot notice tells
-    the owners, promo_create_guard.duplicate_notices).
-`create_all()` / `db.engine.init_db`'s additive catch-up bring the same to a booting box;
-this file keeps the alembic chain linear. Inspector-guarded + idempotent, like 0125.
-
-Revision ID: 0126_promo_preempt
-Revises: 0125_promo_campaign_expiry
-Create Date: 2026-11-19
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -33,7 +15,6 @@ _RESERVATIONS = "promo_create_reservations"
 _STATE = "promo_keep_state"
 _OPEN = "state IN ('pending','sending','unknown')"
 _KEPT = "auto_reactivate = 1"
-# Same statement as db.engine's boot catch-up (a box upgrades through init_db, not alembic).
 _DEDUPE_KEPT = (
     "UPDATE promo_campaigns SET auto_reactivate = 0, keep_warning = 'kept_duplicate', "
     "keep_warning_at = CURRENT_TIMESTAMP WHERE auto_reactivate = 1 AND id <> ("
@@ -58,6 +39,7 @@ def upgrade() -> None:
         if col.name not in live:
             op.add_column(_CAMPAIGNS, col)
     if "uq_promo_keep_one" not in {i["name"] for i in insp.get_indexes(_CAMPAIGNS)}:
+        # legacy Creators with several keeps: newest-ticked stays, rest unticked with a warning
         op.execute(_DEDUPE_KEPT)
         op.create_index("uq_promo_keep_one", _CAMPAIGNS, ["account_id"], unique=True,
                         sqlite_where=sa.text(_KEPT), postgresql_where=sa.text("auto_reactivate"))

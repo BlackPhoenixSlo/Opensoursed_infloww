@@ -1,54 +1,3 @@
-"""Write-path telemetry: one JSON log line per interval (default 60 s) and one
-on shutdown, so production shows what the SQLite write path carries before
-anyone resizes it. Observation only: nothing here waits, caps or drops.
-
-    INFO of-relay.write_telemetry write_telemetry {...}
-
-`docker logs <relay container> 2>&1 | grep ' write_telemetry {'` collects them (the
-JSON starts at the first `{`). Historical DM peaks, from a DB copy instead:
-scripts/dm_peak_rates.py. Fields:
-
-  reason   interval | shutdown | flush (an explicit emit())
-  s        seconds the line covers
-  in       frames / dms handed to events.handle_event (dms: inbound
-           api2_chat_message), f1/f10 and d1/d10: the most in one 1 s / 10 s
-           wall-clock-aligned bucket; acct: {account: {f, d, d1, d10}}
-  q        persist queue: depth max (after a put), age_ms max (enqueue ->
-           taken by the worker), head_age_ms (oldest still queued at emit),
-           batches, batch mean / max
-  w        per writer: SQLite write transactions (those that ran at least one
-           INSERT/UPDATE/DELETE/REPLACE) — n, wait [p50, p95, max] ms = the
-           first write statement's wall time (SQLite takes the write lock
-           there, so this holds the busy_timeout wait), hold [p50, p95, max]
-           ms = first write done -> COMMIT/ROLLBACK returned (the lock is held
-           all of it, event-loop delays included), hold_sum_ms, locked
-           ('database is locked' / busy errors), rb (rolled back)
-  lock     sum of hold + wait over all writers / interval: how much of the
-           interval the single write lock was taken or being fought for
-  pool     out_max (checked out at once), open_max (connections open at once),
-           overflow_max (beyond pool_size: spill connections), opened / closed
-           this interval, spills (checkouts that waited SPILL_AFTER_S)
-  drops    per reason, this interval: queue_full (drop-oldest), persist_error
-           (an event_inbox row discarded after its row-by-row retry),
-           transcode_exception (transcode swallowed it: canonical rows not
-           written), shutdown_queued / shutdown_inflight (cancelled by
-           stop_persist_worker); drops_cum: the same since process start
-  ow       the OF-cache writer (db/of_writer.py): batches (= its write
-           transactions), ops, merged (ops coalesced into another op of the
-           same key), batch_mean / batch_max (ops per transaction), flush_ms
-           [p50, p95, max] (BEGIN IMMEDIATE -> COMMIT returned), age_ms [p50,
-           p95, max] (op queued -> committed: what a caller waited), q_max (ops
-           queued at once), failed (ops that failed alone and raised to their
-           caller); its lock wait / hold are under w.of_writer. Drop reason
-           writer_shutdown = ops still queued when stop() gave up
-  sse      api2_chat_message frames: fan-out -> written to an /events
-           socket, n and lag [p50, p95, max] ms
-
-Writers: a ContextVar set where the write path starts (`writer(...)`: persist,
-transcode, webhook_dispatch, automation_enqueue), else `http:<METHOD> <path>`
-(ids folded to {}) from the request hook, else the asyncio task's coroutine.
-CHATTERLY_WRITE_TELEMETRY_S=0 turns all of it off (no engine listeners).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -67,16 +16,11 @@ log = logging.getLogger("of-relay.write_telemetry")
 
 INTERVAL_S = float(os.environ.get("CHATTERLY_WRITE_TELEMETRY_S", "60") or 0)
 ENABLED = INTERVAL_S > 0
-_SAMPLES_MAX = 4000   # per histogram per interval; reservoir beyond that
-_WRITERS_MAX = 40     # distinct writer labels per interval; the rest are "other"
+_SAMPLES_MAX = 4000
+_WRITERS_MAX = 40
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE", "REPLAC")
-# An explicit transaction on an AUTOCOMMIT connection (db/of_writer.immediate,
-# the ledger ingest): BEGIN IMMEDIATE takes the write lock, so it starts the
-# timing, and a COMMIT / ROLLBACK statement (not the DBAPI's commit()) ends it.
 _BEGIN_IMMEDIATE = "BEGIN IMMEDIATE"
 _TXN_END = {"COMMIT": False, "END": False, "ROLLBACK": True}
-# Every path that loses an event, always on the line (0 included), so a missing
-# key never reads as "no drops".
 DROP_REASONS = ("queue_full", "persist_error", "transcode_exception", "shutdown_queued", "shutdown_inflight",
                 "writer_shutdown")
 
@@ -146,17 +90,15 @@ class _Interval:
 
 _cur = _Interval()
 _drops_cum: dict[str, int] = {}
-_enq: "list[float]" = []          # enqueue monotonic times, FIFO with the persist queue
-_enq_head = 0                     # index of the oldest still queued in _enq
-_pool = None                      # the instrumented engine's pool
+_enq: "list[float]" = []
+_enq_head = 0
+_pool = None
 _spills_seen = 0
 _task: asyncio.Task | None = None
 
 
-# ── ingest ───────────────────────────────────────────────────────────
 
 def frame(account_id, event_type, event) -> None:
-    """One frame handed to events.handle_event."""
     if not ENABLED:
         return
     c = _cur
@@ -182,7 +124,7 @@ def frame(account_id, event_type, event) -> None:
         return
     m = event.get(event_type)
     if not isinstance(m, dict) or str((m.get("fromUser") or {}).get("id")) == key:
-        return  # an outbound echo
+        return
     c.dms += 1
     a.d += 1
     if sec != a.sec:
@@ -198,7 +140,6 @@ def frame(account_id, event_type, event) -> None:
 
 
 def enqueued(depth: int) -> None:
-    """An item went into the persist queue, which now holds `depth`."""
     if not ENABLED:
         return
     _enq.append(time.monotonic())
@@ -207,9 +148,6 @@ def enqueued(depth: int) -> None:
 
 
 def dequeued(n: int = 1) -> None:
-    """`n` items left the persist queue (taken by the worker from its head, or
-    displaced on overflow — the oldest non-DM, maybe mid-queue; the head's
-    timestamp is popped either way, so q.age_ms is approximate under overflow)."""
     global _enq_head
     if not ENABLED:
         return
@@ -247,13 +185,11 @@ def drop(reason: str, n: int = 1) -> None:
 
 
 def writer_queued(depth: int) -> None:
-    """An op went into the OF-cache writer's queue, which now holds `depth`."""
     if ENABLED and depth > _cur.ow_q:
         _cur.ow_q = depth
 
 
 def writer_batch(ops: int, entries: int, flush_ms: float, ages_ms: list[float]) -> None:
-    """The OF-cache writer committed `ops` ops (`entries` after coalescing)."""
     if not ENABLED:
         return
     c = _cur
@@ -277,11 +213,9 @@ def sse_sent(lag_ms: float) -> None:
         _cur.sse.add(lag_ms)
 
 
-# ── writer labels ────────────────────────────────────────────────────
 
 @contextlib.contextmanager
 def writer(name: str):
-    """Label the SQLite writes made inside (and in tasks started inside)."""
     token = _writer.set(name)
     try:
         yield
@@ -290,7 +224,6 @@ def writer(name: str):
 
 
 def labelled(name: str):
-    """Decorator: `writer(name)` around every call of an async function."""
     def wrap(fn):
         @functools.wraps(fn)
         async def run(*a, **kw):
@@ -304,7 +237,6 @@ _ID_SEG = re.compile(r"/(?:\d+|[0-9a-fA-F-]{16,})(?=/|$)")
 
 
 async def label_request_writes(request, call_next):
-    """http_hooks hook: label the request's writes `http:<METHOD> <path>`."""
     if ENABLED and _writer.get() is None:
         _writer.set(f"http:{request.method} {_ID_SEG.sub('/{}', request.url.path)}")
     return await call_next(request)
@@ -336,16 +268,9 @@ def _w(label: str) -> _Writer:
     return w
 
 
-# ── the engine hook ──────────────────────────────────────────────────
 
+# Wraps dialect execute/commit/rollback, not Connection events: those enable per-statement dispatch for every hook, and commit fires before the DBAPI commit.
 def instrument(async_engine) -> None:
-    """Time and count `async_engine`'s writes. Its dialect's execute / commit /
-    rollback methods are wrapped on the instance (not SQLAlchemy Connection
-    events: any of those switches on per-statement event dispatch for every
-    hook; and its commit event fires before the DBAPI commit, not after). A
-    write transaction's state lives in its DBAPI connection's `info` from the
-    first write statement until COMMIT / ROLLBACK returns. Pool counts come
-    from pool events. Nothing here changes what runs or when."""
     global _pool
     if not ENABLED:
         return
@@ -391,7 +316,7 @@ def instrument(async_engine) -> None:
             return
         end = time.perf_counter()
         w = _w(st[2])
-        if st[1] is None:  # the first write itself failed
+        if st[1] is None:
             w.wait.add((end - st[0]) * 1000)
             w.rb += 1
             return
@@ -430,7 +355,7 @@ def instrument(async_engine) -> None:
         c = _cur
         try:
             out = _pool.checkedout()
-            ov = _pool.overflow()   # QueuePool: open connections - pool_size
+            ov = _pool.overflow()
             size = _pool.size()
         except Exception:  # noqa: BLE001 — NullPool / StaticPool keep no such counts
             return
@@ -447,10 +372,8 @@ def instrument(async_engine) -> None:
     event.listen(_pool, "checkout", on_checkout)
 
 
-# ── emission ─────────────────────────────────────────────────────────
 
 def snapshot(reason: str) -> dict:
-    """The current interval as a dict, and start the next one."""
     global _cur, _spills_seen
     c, _cur = _cur, _Interval()
     now = time.monotonic()
@@ -487,7 +410,6 @@ def snapshot(reason: str) -> dict:
 
 
 def emit(reason: str = "flush") -> dict | None:
-    """Log the current interval as one JSON line and start the next. Never raises."""
     if not ENABLED:
         return None
     try:
@@ -505,12 +427,11 @@ async def _loop() -> None:
         await asyncio.sleep(max(0.0, nxt - time.monotonic()))
         emit("interval")
         nxt += INTERVAL_S
-        if nxt < time.monotonic():  # the loop was stalled past a whole interval
+        if nxt < time.monotonic():
             nxt = time.monotonic() + INTERVAL_S
 
 
 def start() -> None:
-    """Start the periodic emitter on the running loop. Idempotent."""
     global _task, _cur
     if not ENABLED or (_task is not None and not _task.done()):
         return
@@ -520,7 +441,6 @@ def start() -> None:
 
 
 async def stop() -> None:
-    """Stop the emitter and log the last (partial) interval."""
     global _task
     if _task is not None:
         _task.cancel()

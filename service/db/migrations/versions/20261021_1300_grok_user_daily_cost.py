@@ -1,20 +1,3 @@
-"""grok_user_daily_cost — the daily LLM soft cap for a call with no account
-
-  grok_user_daily_cost — one row per (day, agency users.id, provider): the
-                         same reserve-and-check rollup as grok_daily_cost, for
-                         the help bot asked before any OnlyFans account is
-                         connected (service/assistant_api.py). Rows go with
-                         their agency (ON DELETE CASCADE).
-
-The ORM model declares the same table, so `init_db()`'s create_all brings it to
-a booting box; this revision keeps the alembic chain canonical. Idempotent
-(inspector-guarded, house convention). Downgrade drops the table, losing only
-today's no-account spend counters.
-
-Revision ID: 0095_grok_user_daily_cost
-Revises: 0092_model_notes
-Create Date: 2026-10-21
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -48,6 +31,7 @@ def upgrade() -> None:
     )
 
 
+# Loses only today's no-account spend counters.
 def downgrade() -> None:
     if _TABLE in set(sa.inspect(op.get_bind()).get_table_names()):
         op.drop_table(_TABLE)

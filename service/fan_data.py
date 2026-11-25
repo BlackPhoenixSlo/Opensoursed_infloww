@@ -1,11 +1,3 @@
-"""service/fan_data.py — the per-fan profile data behind Stats → Fan reports →
-User data (`GET /admin/stats/per-fan-data`).
-
-Read-only on OUR DB. One row per profiled fan (`fan_profiles`), joined with
-its `fans` row (display name, nickname, facts, note mirror, last touch) and
-its lifetime spend from `transactions`. Each load runs on its OWN session
-(never share an AsyncSession across branches). No writes.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,9 +9,9 @@ from automations._common import build_facts_note
 from db.engine import get_session
 from db.models import Fan, FanProfile, Transaction
 
-_DEFAULT_LIMIT = 5000  # profiled fans per read
+# Each load runs on its OWN session: never share an AsyncSession across branches.
+_DEFAULT_LIMIT = 5000
 
-# The column contract the endpoint returns as `columns`. Positional order.
 _HEADER = [
     "fan_name", "fan_id", "chat_id", "nickname", "short_bio", "bullet_points",
     "Q1", "Q2", "Q3", "Tease1", "Tease2", "Tease3",
@@ -29,8 +21,6 @@ _HEADER = [
 
 @dataclass
 class _Row:
-    """Detached snapshot of one profiled fan, joined with its fans row +
-    live spend. Built under the load sessions so they close before use."""
     fan_id: int
     fan_name: str
     nickname: str
@@ -65,9 +55,7 @@ async def _load_profiles(account_id: str, limit: int) -> list[FanProfile]:
 
 
 async def _load_fans(account_id: str, fan_ids: list[int]) -> dict[int, Fan]:
-    """fan_id → Fan, for the display name + last-touch columns. Own session.
-    Chunked at 900 ids so a multi-thousand read never trips SQLite's
-    bind-variable cap (999 on older builds)."""
+    # Chunked at 900 ids: SQLite's bind-variable cap is 999 on older builds.
     out: dict[int, Fan] = {}
     if not fan_ids:
         return out
@@ -83,11 +71,8 @@ async def _load_fans(account_id: str, fan_ids: list[int]) -> dict[int, Fan]:
     return out
 
 
+# Cleared AND pending count (pending ~7 days, as on every earnings read); chargebacks/refunds out; fan_id NULL rows (sub rebills) dropped.
 async def _load_spend(account_id: str) -> dict[int, int]:
-    """fan_id → SUM(amount_cents) over `TRACKED_STATUSES` (cleared AND pending —
-    a sale is pending for ~7 days and still counts, as on every earnings read;
-    chargebacks/refunds stay out). Own session. fan_id NULL rows (sub
-    rebills) are dropped — they aren't attributable to a profiled fan."""
     async with get_session() as s:
         rows = (await s.execute(
             select(
@@ -111,27 +96,18 @@ def _build_rows(
     for p in profiles:
         fid = int(p.fan_id)
         fan = fans.get(fid)
-        # Best available human label, then the profile's captured original name.
         fan_name = ""
         if fan is not None:
             fan_name = _s(fan.of_display_name) or _s(fan.of_username)
         fan_name = fan_name or _s(p.original_name) or str(fid)
-        # Profile nickname is canonical; fall back to whatever label the fans row
-        # carries so the column is rarely blank.
         nickname = _s(p.nickname)
         if not nickname and fan is not None:
             nickname = _s(fan.generated_nickname) or _s(fan.custom_nickname)
-        # Profile freshness drives "last_updated"; fall back to the fans row.
         last_updated = ""
         if p.last_generated_at is not None:
             last_updated = p.last_generated_at.isoformat()
         elif fan is not None and fan.updated_at is not None:
             last_updated = fan.updated_at.isoformat()
-        # bullet_points = the SAME useful-first fact line apply_profiles pushes to
-        # the drawer note (Recent → Intr → Job → Rel → Kinks, then short_bio at the
-        # bottom; EMPTY fields skipped; name/age/loc/spend omitted — they're in the
-        # nickname / total_spend column). Derived from the fans-row facts (no
-        # gen_info regen needed). A larger cap than the OF note so the bio fits.
         facts = {} if fan is None else {
             "hobbies": _s(fan.hobbies),
             "job": _s(fan.occupation),
@@ -140,10 +116,7 @@ def _build_rows(
             "recent_events": _s(fan.recent_events),
         }
         bullets = build_facts_note(facts, max_len=2000, short_bio=_s(p.short_bio))
-        # "added" iff the note is actually on OF. We mirror `fans.notes` ONLY when the
-        # OF notice push succeeds (and get_user syncs it from OF), so a non-empty
-        # mirror == the note reached OnlyFans; non-subscribers (notice 404s) stay
-        # "not added". The bullet line above is what SHOULD be there either way.
+        # "added" iff the note is on OF: fans.notes is mirrored only when the notice push succeeds; non-subscribers (404) stay "not added".
         note_on_of = "added" if (fan is not None and _s(fan.notes).strip()) else "not added"
         out.append(_Row(
             fan_id=fid,
@@ -162,9 +135,6 @@ def _build_rows(
 
 
 async def build_fan_data(account_id: str, limit: int = _DEFAULT_LIMIT) -> list[dict]:
-    """Per-fan dicts for one account, in `_HEADER` column order plus the
-    read-surface extras (`account_id`, `language`). total_spend is dollars
-    (cents/100)."""
     profiles = await _load_profiles(account_id, limit)
     fans = await _load_fans(account_id, [int(p.fan_id) for p in profiles])
     spend = await _load_spend(account_id)
@@ -181,7 +151,6 @@ async def build_fan_data(account_id: str, limit: int = _DEFAULT_LIMIT) -> list[d
             "total_spend": round(r.total_spend_cents / 100.0, 2),
             "message_count": r.message_count,
             "last_updated": r.last_updated, "note_on_of": r.note_on_of,
-            # Not in _HEADER: the fan's language.
             "language": (fan.language if fan is not None else None),
         })
     return out

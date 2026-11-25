@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_heat — the Heat check's pure parts (ticket 96, spec 06), plain assert.
-
-  case_level_of_table        2.49 -> 2, 2.5 -> 3, 3.5 -> 4, 0 -> 0 (`heat_of`'s rounding, a tie up)
-  case_over_table            her level above the cap; at cap 4 nothing is over
-  case_wording_is_intensity  REPLY_LEVEL is INTENSITY turned on her: same shape, his -> her
-  case_wording_in_catalog    REPLY_LEVEL pinned to docs/prompts NEW-155 and its README row
-  case_version_moves         HEAT_VERSION moves with the wording
-  case_no_mode_check         `_heat_jev` and `_heat_check` read no Mode
-
-Run: ./venv/bin/python service/tests/test_full_ai_heat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 import inspect  # noqa: E402
 import json  # noqa: E402

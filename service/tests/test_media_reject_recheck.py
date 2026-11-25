@@ -1,39 +1,7 @@
 #!/usr/bin/env python3
-"""
-`_send_failure.recheck_rejected_media` — OF refused a send's attachment, so each
-refused vault id is re-read by id (`vault_stills.resolve_fresh`). A media the
-creator deleted on OF 404s there and leaves the mirror (`removed_at`), which
-every picker already skips; without this the collect walk never removes it and
-the next fan/tick picks the dead media again.
-Plain-assert, no pytest (repo convention). OF = a fake client (wire boundary).
-
-Cases:
-  case_gone_leaves_mirror_and_picker  — 404 ⇒ `removed_at` stamped, returned as
-                                        gone, the vault cache invalidated, and the
-                                        Full AI pool read (`vault_scripts._load_rows`)
-                                        no longer offers it.
-  case_alive_stays_and_is_refreshed   — 200 ⇒ row stays live, url refreshed.
-  case_transient_stays_live           — 502 ⇒ row stays live, nothing returned.
-  case_dedupe_and_cap                 — duplicates collapse; at most 10 GETs.
-  case_never_raises                   — a garbage id is skipped alone, a malformed
-                                        OF payload is logged and swallowed; None
-                                        account ⇒ no-op.
-  case_dead_or_unknown_ids_cost_no_get — an id already `removed_at`, or with no
-                                        mirror row, is never re-read.
-  case_recent_ids_are_not_reread      — an id checked within the hour (alive or
-                                        fetch failed) is skipped; older ⇒ re-read.
-  case_send_dropping_bad_media_rechecks — the async sender schedules the re-check
-                                        after its text-only resend; the outcome is
-                                        unchanged even when the re-check fails inside.
-  case_recheck_runs_off_the_send_path — the send returns before the re-check's GET
-                                        finishes; a raising re-check never reaches
-                                        the sender.
-
-Run: ./venv/bin/python service/tests/test_media_reject_recheck.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -74,8 +42,6 @@ def _files(sig: str) -> dict:
 
 
 class FakeOF:
-    """`vault_media_by_id`: `alive` ids answer, `transient` ids 502, the rest 404.
-    `send_message` refuses any media with OF's `mediaFiles` 400."""
 
     account_id = A
 
@@ -159,15 +125,12 @@ async def case_dedupe_and_cap():
 
 async def case_never_raises():
     await _seed(7131, 7132, 7133)
-    # A garbage id: skipped alone, the good id beside it still asked.
     of = FakeOF()
     assert await recheck_rejected_media(A, of, ["not-an-id", None, 7133]) == [7133]
     assert of.byid == [7133], of.byid
-    # A malformed OF payload breaks the mirror write: that id is skipped, the next still checked.
     of = FakeOF(alive={7131}, payload={"id": 7131, "listStates": 5})
     assert await recheck_rejected_media(A, of, [7131, 7132]) == [7132]
     assert (await _item(7131)).removed_at is None
-    # No account: no-op.
     of = FakeOF()
     assert await recheck_rejected_media(None, of, [7131]) == [] and of.byid == []
 
@@ -177,7 +140,6 @@ async def case_dead_or_unknown_ids_cost_no_get():
     async with get_session() as s:
         (await s.get(VaultItem, (A, 7301))).removed_at = datetime.utcnow()
     of = FakeOF()
-    # 7301 already removed, 7399 never mirrored: no GET; 7302 live: asked.
     assert await recheck_rejected_media(A, of, [7301, 7399, 7302]) == [7302]
     assert of.byid == [7302], of.byid
     of = FakeOF()
@@ -189,10 +151,8 @@ async def case_recent_ids_are_not_reread():
     of = FakeOF(alive={7311}, transient={7312})
     assert await recheck_rejected_media(A, of, [7311, 7312]) == []
     assert of.byid == [7311, 7312], of.byid
-    # Another fan's reject, same media, same hour: no GET (alive and fetch_failed alike).
     assert await recheck_rejected_media(A, of, [7311, 7312]) == []
     assert of.byid == [7311, 7312], of.byid
-    # An hour on: asked again.
     for k in [(A, 7311), (A, 7312)]:
         _send_failure._RECHECKED[k] -= _send_failure._RECHECK_TTL_S + 1
     assert await recheck_rejected_media(A, of, [7311, 7312]) == []
@@ -200,7 +160,6 @@ async def case_recent_ids_are_not_reread():
 
 
 async def _drain() -> None:
-    """Await every re-check the senders scheduled (the tasks are detached)."""
     await asyncio.gather(*list(_send_failure._RECHECK_TASKS), return_exceptions=True)
 
 
@@ -212,7 +171,6 @@ async def case_send_dropping_bad_media_rechecks():
     assert out == SendOutcome({"id": 5551, "text": "hi"}, False), out
     assert of.sent == [[7141], []] and of.byid == [7141], (of.sent, of.byid)
     assert (await _item(7141)).removed_at is not None, "the rejected id was not re-checked"
-    # The re-check failing inside never changes the outcome.
     of = FakeOF(alive={7142}, payload={"id": 7142, "listStates": 5})
     out = await send_dropping_bad_media(of, 42, "hi", ["junk", 7142], send_purpose="gated")
     await _drain()
@@ -221,7 +179,6 @@ async def case_send_dropping_bad_media_rechecks():
 
 
 class _GatedOF(FakeOF):
-    """By-id reads wait on `gate` (bounded, so a regression fails instead of hanging)."""
 
     def __init__(self):
         super().__init__()
@@ -245,7 +202,6 @@ async def case_recheck_runs_off_the_send_path():
     assert (await _item(7151)).removed_at is not None
     assert not _send_failure._RECHECK_TASKS, "a finished task stays referenced"
 
-    # A re-check that raises: the sender's outcome stands, the task logs and leaves the set.
     real = _send_failure.recheck_rejected_media
 
     async def boom(*a, **kw):

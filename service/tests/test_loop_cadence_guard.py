@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""
-No loop may compute its own sleep without a floor.
-
-2026-08-21: `transaction_ingest` slept for `interval - elapsed`. A cycle that
-overran its interval made that negative, `asyncio.sleep()` returned instantly,
-and the loop spun. The box sat at 100% CPU for ~4 hours; Hostinger applied a
-CPU cap; the cap outlived the fix by ~18 hours. One missing `max()`.
-
-Two halves:
-  1. A STATIC guard over every module under service/ — any `sleep(...)` whose
-     delay is computed by subtraction must be wrapped in `max(...)`. Parsed
-     with `ast`, not grep, so `max(FLOOR, interval - elapsed)` reads as safe
-     and `sleep(interval - elapsed)` does not. A checker that cries wolf gets
-     deleted; this one should only fire on the real shape.
-  2. Unit cases for `cadence`, including the two properties that actually
-     matter: the floor survives a raising body, and cancellation is not
-     delayed by it.
-
-Deliberate exception: put `# cadence-ok: <reason>` on the sleep line.
-
-Plain-assert standalone script (no pytest), run via:
-    ./venv/bin/python service/tests/test_loop_cadence_guard.py
-Exit 0 = all pass.
-"""
 from __future__ import annotations
 
 import ast
@@ -47,20 +23,15 @@ def _expect(label: str, ok: bool, detail: str = "") -> None:
         _failures.append(label)
 
 
-# ── Half 1: the static guard ────────────────────────────────────────────
 
 def _unguarded_subtractions(tree: ast.AST) -> bool:
-    """True if `tree` contains a subtraction that is NOT inside a max() call.
-
-    Descent stops at `max(...)`: everything under it is guarded by definition,
-    which is what keeps `max(FLOOR, interval - elapsed)` from being flagged."""
     found = False
 
     def walk(node: ast.AST) -> None:
         nonlocal found
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
                 and node.func.id == "max":
-            return                      # guarded subtree — do not descend
+            return
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
             found = True
             return
@@ -118,8 +89,6 @@ def case_no_unguarded_computed_sleeps() -> None:
 
 
 def case_guard_actually_detects_the_2026_08_21_bug() -> None:
-    """The checker must fail on the real shape — otherwise case 1 passing
-    proves only that the checker is blind."""
     bad = ast.parse("import asyncio\nasync def f():\n    await asyncio.sleep(INTERVAL - elapsed)\n")
     good = ast.parse("import asyncio\nasync def f():\n    await asyncio.sleep(max(FLOOR, INTERVAL - elapsed))\n")
     plain = ast.parse("import asyncio\nasync def f():\n    await asyncio.sleep(30)\n")
@@ -134,10 +103,8 @@ def case_guard_actually_detects_the_2026_08_21_bug() -> None:
     _expect("guard ALLOWS a plain constant sleep", not hits(plain))
 
 
-# ── Half 2: cadence behaviour ───────────────────────────────────────────
 
 def case_floor_holds_when_the_body_raises() -> None:
-    """The exception path is the real spin risk: fail fast, retry instantly."""
     async def run():
         t0 = time.monotonic()
         try:
@@ -151,8 +118,6 @@ def case_floor_holds_when_the_body_raises() -> None:
 
 
 def case_cancellation_is_not_delayed() -> None:
-    """Awaiting in `finally` during shutdown would hold the container open for
-    a full interval and turn a clean stop into a SIGKILL."""
     async def run():
         async def loop():
             while True:

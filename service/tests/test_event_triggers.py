@@ -1,38 +1,7 @@
 #!/usr/bin/env python3
-"""Event-driven purchase and welcome triggers (roadmap W2 2.10).
-
-A purchase (the 30s purchases poll proving one, or a WS unlock frame) pokes the
-`purchase_followup` rule, and a `subscribed` toast pokes `send_welcome` and
-`promo_reactivate` (`automation_executor.poke_rule`). The next materializer pass treats a poked
-interval rule as due without waiting for its cadence, and changes nothing
-else. Pinned here against the real materializer and a temp DB:
-
-  • a poke materializes the rule's own job (rule_id, steps payload) before
-    the cadence has elapsed; without a poke the cadence still holds;
-  • no double-fire: repeated pokes over repeated passes give ONE job; a poke
-    while that job is still pending adds nothing and is spent; a poke while it
-    RUNS fires once more after it, never during it;
-  • the floor: a poke within min(every_seconds, 60 s) of the last fire does
-    not fire yet; for promo_reactivate / purchase_followup it is kept and fires on
-    the first pass past the floor, for send_welcome it is spent;
-  • no rule, a disabled rule, or quiet hours: a poke enqueues nothing; inside quiet hours a
-    promo_reactivate / purchase_followup poke is kept for the band's end (W30 F10);
-  • the hooks: a fresh purchase notification pokes once, its re-sighting and
-    a stale one do not; a `subscribed` toast pokes send_welcome and
-    promo_reactivate, a `favorited` one does not; a WS unlock frame pokes purchase_followup;
-  • the toast gate (`promo_reactivate.should_poke`): with a fresh read of the live Kept
-    promo, promo_reactivate is poked only when its Claims plus the toasts since that read
-    reach one short of the trigger (the Fill threshold, else the cap), or its end is near;
-    no read, or one older than 600 s, pokes and keeps no toast history (F15). send_welcome
-    is always poked. A replayed toast (an id the Creator already counted) pokes nothing (W30 F28).
-
-No network: no OF client is built, nothing runs a job.
-
-Run: ./venv/bin/python service/tests/test_event_triggers.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -53,19 +22,18 @@ from db.engine import get_session  # noqa: E402
 from db.models import Account, AccountAiConfig, AutomationRule, ScheduledJob  # noqa: E402
 
 FOLLOWUP, WELCOME, PROMO = "purchase_followup", "send_welcome", "promo_reactivate"
-_STEPS = {"enabled": False, "text": "thanks {name}"}   # never sends: no job runs here
+_STEPS = {"enabled": False, "text": "thanks {name}"}
 _N = 0
 
 
 async def _rule(kind: str, *, every: int = 3600, enabled: bool = True,
                 quiet: list[int] | None = None) -> str:
-    """A fresh account with one interval rule of `kind`; returns the account id."""
     global _N
     _N += 1
     aid = f"evt_{kind}_{_N}"
     async with get_session() as s:
         s.add(Account(id=aid))
-        if quiet is not None:   # a clock, or quiet hours do not apply (rhythm)
+        if quiet is not None:
             s.add(AccountAiConfig(account_id=aid, utc_offset=0, timezone="UTC"))
         s.add(AutomationRule(
             account_id=aid, name=f"{kind} {aid}", kind=kind, is_enabled=enabled,
@@ -90,23 +58,18 @@ async def _set_status(aid: str, status: str) -> None:
 
 
 async def _age(aid: str, seconds: float) -> None:
-    """Make every job of `aid` `seconds` old (the cadence and poke-floor anchor)."""
     async with get_session() as s:
         await s.execute(update(ScheduledJob).where(ScheduledJob.account_id == aid)
                         .values(created_at=datetime.utcnow() - timedelta(seconds=seconds)))
 
 
 async def _fired_once(aid: str, kind: str) -> None:
-    """The rule's first fire (no prior job, so it is due), then marked done and
-    aged past the poke floor: from here on its cadence is NOT elapsed, but a
-    poke may fire it."""
     await ax._materialize_due_rules()
     assert len(await _jobs(aid, kind)) == 1
     await _set_status(aid, "done")
     await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
 
 
-# ── The materializer ────────────────────────────────────────────────────────
 
 async def case_a_poke_fires_the_rules_own_job_before_its_cadence():
     aid = await _rule(FOLLOWUP)
@@ -136,7 +99,7 @@ async def case_repeated_pokes_over_repeated_passes_give_one_job():
 
 async def case_a_poke_on_a_job_not_yet_started_is_spent_and_adds_nothing():
     aid = await _rule(FOLLOWUP)
-    await ax._materialize_due_rules()            # first fire: a pending job
+    await ax._materialize_due_rules()
     ax.poke_rule(aid, FOLLOWUP)
     await ax._materialize_due_rules()
     assert len(await _jobs(aid, FOLLOWUP)) == 1
@@ -154,7 +117,7 @@ async def case_a_poke_during_a_run_fires_once_after_it_never_during():
         await ax._materialize_due_rules()
         assert len(await _jobs(aid, FOLLOWUP)) == 1, "a job stacked on a running one"
     await _set_status(aid, "done")
-    await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)   # a sweep long enough to outlast the floor
+    await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
     await ax._materialize_due_rules()
     await ax._materialize_due_rules()
     jobs = await _jobs(aid, FOLLOWUP)
@@ -165,9 +128,9 @@ async def case_a_poke_under_the_floor_is_deferred_to_the_first_pass_past_it():
     aid = await _rule(PROMO, every=300)
     await ax._materialize_due_rules()
     await _set_status(aid, "done")
-    await _age(aid, 10)                        # last fire 10 s ago: under the 60 s floor
+    await _age(aid, 10)
     ax.poke_rule(aid, PROMO)
-    for _ in range(2):                         # passes under the floor: no job, poke kept
+    for _ in range(2):
         await ax._materialize_due_rules()
         assert len(await _jobs(aid, PROMO)) == 1, "a poke under the floor fired the rule"
         assert (aid, PROMO) in ax._poked, "the floored poke was spent"
@@ -175,12 +138,11 @@ async def case_a_poke_under_the_floor_is_deferred_to_the_first_pass_past_it():
     await ax._materialize_due_rules()
     jobs = await _jobs(aid, PROMO)
     assert [j.status for j in jobs] == ["done", "pending"], [j.status for j in jobs]
-    assert ax._poked == set(), ax._poked       # fired: spent now
+    assert ax._poked == set(), ax._poked
     await _set_status(aid, "done")
     await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
     await ax._materialize_due_rules()
     assert len(await _jobs(aid, PROMO)) == 2, "the deferred poke fired twice"
-    # send_welcome is not a REPOKE_KINDS kind: its poke under the floor is spent
     aid = await _rule(WELCOME, every=300)
     await ax._materialize_due_rules()
     await _set_status(aid, "done")
@@ -212,7 +174,7 @@ async def case_no_rule_a_disabled_rule_or_quiet_hours_enqueue_nothing():
     ax.poke_rule("evt_no_rule", FOLLOWUP)
     off = await _rule(FOLLOWUP, enabled=False)
     ax.poke_rule(off, FOLLOWUP)
-    quiet = await _rule(WELCOME, quiet=[0, 24])   # a band covering every hour
+    quiet = await _rule(WELCOME, quiet=[0, 24])
     ax.poke_rule(quiet, WELCOME)
     await ax._materialize_due_rules()
     assert await _jobs("evt_no_rule", FOLLOWUP) == []
@@ -222,26 +184,23 @@ async def case_no_rule_a_disabled_rule_or_quiet_hours_enqueue_nothing():
 
 
 async def case_w30_f10_a_quiet_hours_poke_is_kept_for_the_end_of_the_band():
-    """W30 F10: a promo_reactivate poke inside quiet hours is held, not spent: it fires on
-    the first pass after the band ends, not an hourly cadence later."""
-    aid = await _rule(PROMO, quiet=[])      # a clock, no band yet
+    aid = await _rule(PROMO, quiet=[])
     await _fired_once(aid, PROMO)
     async with get_session() as s:
         await s.execute(update(AutomationRule).where(AutomationRule.account_id == aid)
-                        .values(quiet_hours_json=json.dumps([0, 24])))   # every hour
+                        .values(quiet_hours_json=json.dumps([0, 24])))
     ax.poke_rule(aid, PROMO)
     await ax._materialize_due_rules()
     assert len(await _jobs(aid, PROMO)) == 1, "a poke broke through quiet hours"
     assert (aid, PROMO) in ax._poked, "the quiet-hours skip spent the promo poke"
     async with get_session() as s:
         await s.execute(update(AutomationRule).where(AutomationRule.account_id == aid)
-                        .values(quiet_hours_json=None))                 # the band ended
+                        .values(quiet_hours_json=None))
     await ax._materialize_due_rules()
     assert [j.status for j in await _jobs(aid, PROMO)] == ["done", "pending"]
     assert ax._poked == set(), ax._poked
 
 
-# ── The hooks ───────────────────────────────────────────────────────────────
 
 class _Pokes:
     def __enter__(self):
@@ -277,7 +236,7 @@ async def case_a_fresh_purchase_pokes_the_followup_once_and_never_on_a_re_sighti
         with _Pokes() as p:
             items = [_purchase(9_001, now), _purchase(9_002, now)]
             await pn._handle_items("evt_buy", None, items)
-            assert p.seen == [("evt_buy", FOLLOWUP)], p.seen   # once per batch
+            assert p.seen == [("evt_buy", FOLLOWUP)], p.seen
             await pn._handle_items("evt_buy", None, items)
             assert p.seen == [("evt_buy", FOLLOWUP)], "a re-sighting poked again"
             await pn._handle_items("evt_buy", None, [_purchase(9_003, now - timedelta(days=1))])
@@ -302,8 +261,6 @@ async def case_a_subscribed_toast_pokes_the_welcome_and_promo_and_other_toasts_d
 
 
 async def case_w30_f28_replayed_subscribe_toast_pokes_once():
-    """W30 F28: the same subscribe toast (same id) re-sent pokes nothing a second time; a new
-    id, or a toast with no id, still pokes."""
     def frame(*ids):
         return {"toasts": [{"type": "subscribed", **({} if i is None else {"id": i})} for i in ids],
                 "__account_id": "evt_replay"}
@@ -318,7 +275,6 @@ async def case_w30_f28_replayed_subscribe_toast_pokes_once():
 
 
 def _gate(aid, claims, *, cap=50, preempt=True, age_s=0.0, ends_in_s=None):
-    """The toast gate as if a run just read the live Kept promo."""
     fin = None if ends_in_s is None else \
         (datetime.utcnow() + timedelta(seconds=ends_in_s)).isoformat() + "+00:00"
     pr._set_gate(aid, {"claims_present": True, "subscriber_count": claims,
@@ -339,7 +295,7 @@ async def case_toast_far_from_threshold_no_poke():
 
 
 async def case_toast_near_threshold_pokes():
-    _gate("gate_near", 42)                      # cap 50: threshold 45, poke at 44
+    _gate("gate_near", 42)
     with _Pokes() as p:
         await _toast("gate_near")
         assert ("gate_near", PROMO) not in p.seen, p.seen
@@ -350,7 +306,7 @@ async def case_toast_near_threshold_pokes():
 async def case_toast_burst_in_one_frame_counts_each():
     _gate("gate_burst", 41)
     with _Pokes() as p:
-        await _toast("gate_burst", 3)          # 41 + 3 = 44
+        await _toast("gate_burst", 3)
         assert p.seen == [("gate_burst", WELCOME), ("gate_burst", PROMO)], p.seen
 
 
@@ -364,8 +320,6 @@ async def case_toast_no_or_stale_read_pokes():
 
 
 async def case_f15_stale_gate_keeps_no_toast_history():
-    """F15: with no gate, or a stale one (rule off / fenced after a read), every toast pokes
-    and nothing is kept: the history never grows in the transcoder's hot path."""
     _gate("gate_stale_many", 2, age_s=601)
     pr._gate.pop("gate_gone", None)
     with _Pokes() as p:
@@ -386,7 +340,7 @@ async def case_toast_end_near_pokes():
 
 
 async def case_toast_without_preempt_waits_for_the_cap():
-    _gate("gate_cap", 44, preempt=False)        # After-end only: trigger = cap 50, poke at 49
+    _gate("gate_cap", 44, preempt=False)
     with _Pokes() as p:
         await _toast("gate_cap", 4)
         assert ("gate_cap", PROMO) not in p.seen, p.seen

@@ -1,42 +1,10 @@
 #!/usr/bin/env python3
-"""
-Stale mass-placeholder rows — the "long-unsent ppv_send blasts haunt the chat
-pane" bug (notification-open path). Two backend halves:
-
-  case_mass_sweep_flips_placeholder_rows:
-      The mass cache sweep now recovers OUR mass_run_id via the
-      mass_broadcast_cache.queue_id → mass_runs.queue_id join, so after OF
-      cancels the broadcast `_flip_mass_unsent` mirrors is_unsent onto the
-      per-recipient 5e15-band placeholder rows. Pre-fix the sweep hardcoded
-      mass_run_id=None and the rows stayed "sent" locally forever.
-  case_mass_sweep_without_run_still_unsends:
-      A cache row with NO matching mass_runs row (manual OF-web blast) still
-      sweeps — mass_run_id stays None, nothing to flip, no crash.
-  case_seed_endpoint_filters_stale_placeholders:
-      GET /admin/messages/{aid}/{fid} (the chat pane's DB seed) serves a
-      placeholder only while fresh (≤1h). Stale placeholders are excluded;
-      real rows of any age still page through.
-  case_sweep_spares_funnel_step_messages:
-      Canceling the broadcast queue must flip ONLY the broadcast rows —
-      reply_mass_funnel step sends share the mass_run_id but are per-chat
-      messages still live on OF (funnel_step guard).
-  case_seed_endpoint_keeps_ledger_tips:
-      The 6e15 ledger-tip band (transaction_ingest._TIP_MSG_ID_BASE) is
-      PERMANENT synthetic history — exempt from the 1h bridge cutoff.
-
-Run: ./venv/bin/python service/tests/test_mass_placeholder_staleness.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -63,6 +31,9 @@ class FakeClient:
         self.cancel_calls.append(int(queue_id))
         return {"success": True}
 
+    def mass_message_history(self, **_kw):
+        return {"items": [], "hasMore": False}
+
 
 def _use_fake() -> FakeClient:
     fake = FakeClient()
@@ -77,7 +48,6 @@ async def _seed_account(aid: str) -> None:
 
 
 async def _add_cast(aid: str, qid: int, *, hours_old: float) -> None:
-    """An old, free, image-less broadcast — eligible for the mass_text sweep."""
     async with get_session() as s:
         s.add(MassBroadcastCache(
             account_id=aid, queue_id=qid,
@@ -100,8 +70,6 @@ async def _add_run(aid: str, qid: int) -> int:
 
 async def _add_placeholder(aid: str, fan_id: int, run_id: int, *,
                            hours_old: float, price_cents: int = 999) -> int:
-    """A per-recipient optimistic row exactly as write_mass_optimistic_rows
-    persists it: synthetic 5e15-band id, mass_run_id set, is_unsent False."""
     mid = mass_placeholder_message_id(run_id)
     async with get_session() as s:
         s.add(Message(
@@ -119,7 +87,6 @@ async def _msg(aid: str, fan_id: int, mid: int) -> Message | None:
         return await s.get(Message, (aid, fan_id, mid))
 
 
-# ── case 1: sweep resolves mass_run_id and flips the placeholder rows ──
 async def case_mass_sweep_flips_placeholder_rows():
     aid = "9301"
     await _seed_account(aid)
@@ -143,12 +110,11 @@ async def case_mass_sweep_flips_placeholder_rows():
     print("[ok] case_mass_sweep_flips_placeholder_rows")
 
 
-# ── case 2: no mass_runs row → still unsends on OF, flips nothing, no crash ──
 async def case_mass_sweep_without_run_still_unsends():
     aid = "9302"
     await _seed_account(aid)
     fake = _use_fake()
-    await _add_cast(aid, 2001, hours_old=10)  # manual OF-web blast: no MassRun
+    await _add_cast(aid, 2001, hours_old=10)
 
     r = await run_once(aid, KIND, payload={"policy": {"mass_text_hours": 8}})
 
@@ -157,7 +123,6 @@ async def case_mass_sweep_without_run_still_unsends():
     print("[ok] case_mass_sweep_without_run_still_unsends")
 
 
-# ── case 3: the chat-pane DB seed serves only FRESH placeholders ──────
 async def case_seed_endpoint_filters_stale_placeholders():
     aid, fan = "9303", 777
     await _seed_account(aid)
@@ -165,8 +130,6 @@ async def case_seed_endpoint_filters_stale_placeholders():
     run_stale = await _add_run(aid, 3002)
     mid_fresh = await _add_placeholder(aid, fan, run_fresh, hours_old=0.5)
     mid_stale = await _add_placeholder(aid, fan, run_stale, hours_old=48)
-    # A real (non-band) outbound row, much older than the 1h bridge window —
-    # the cutoff must apply ONLY to the placeholder band.
     async with get_session() as s:
         s.add(Message(account_id=aid, fan_id=fan, message_id=88001,
                       direction="out", body="hey", media_count=0,
@@ -182,7 +145,6 @@ async def case_seed_endpoint_filters_stale_placeholders():
     print("[ok] case_seed_endpoint_filters_stale_placeholders")
 
 
-# ── case 4: funnel step sends share mass_run_id but must NOT be flipped ──
 async def case_sweep_spares_funnel_step_messages():
     aid, fan = "9304", 555
     await _seed_account(aid)
@@ -190,8 +152,6 @@ async def case_sweep_spares_funnel_step_messages():
     await _add_cast(aid, 4001, hours_old=10)
     run_id = await _add_run(aid, 4001)
     mid_ph = await _add_placeholder(aid, fan, run_id, hours_old=10)
-    # A walker step-2 send: REAL per-chat message id, same mass_run_id,
-    # funnel_step stamped — still live on OF after the queue cancel.
     async with get_session() as s:
         s.add(Message(account_id=aid, fan_id=fan, message_id=77002,
                       direction="out", body="step 2 tease", media_count=0,
@@ -211,7 +171,6 @@ async def case_sweep_spares_funnel_step_messages():
     print("[ok] case_sweep_spares_funnel_step_messages")
 
 
-# ── case 5: 6e15 ledger-tip band is exempt from the seed's 1h cutoff ──
 async def case_seed_endpoint_keeps_ledger_tips():
     from transaction_ingest import _TIP_MSG_ID_BASE
     aid, fan = "9305", 888

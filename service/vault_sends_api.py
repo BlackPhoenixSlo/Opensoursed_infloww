@@ -1,18 +1,3 @@
-"""service/vault_sends_api.py — server.py's vault-sends block, moved wholesale:
-per-fan vault-send history (record + chat-open backfill + picker badges) and the
-wall-media scan.
-
-  POST /admin/vault/sends
-  POST /admin/vault/sends/backfill
-  GET  /admin/vault/wall-media
-  GET  /admin/vault/fan-history
-  POST /admin/vault/fan-history/sync
-
-The account-wide aggregate over `vault_sends` (`/admin/vault/media-stats`) lives in vault.py.
-`_load_client` is relay_host's call-time forward, never `from server import`,
-so a test's `server._load_client = fake` still reaches it. Included mid-file
-in server.py for route order (pinned by service/tests/test_route_order.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -35,11 +20,6 @@ log = logging.getLogger("of-relay.vault_sends")
 router = APIRouter()
 
 
-# ── Vault sends + per-fan history ─────────────────────────────────────
-# Powers the picker's "you sent this to her 2 weeks ago / she bought it"
-# badges. Frontend writes here right after a successful chat-send (better
-# than wrapping the OF send proxy — keeps that path a clean mirror, and
-# lets us decide per-call whether to track, e.g. don't track mass-sends).
 
 class _VaultSendBody(BaseModel):
     account_id: str
@@ -69,8 +49,6 @@ async def admin_vault_sends_create(body: _VaultSendBody = Body(...)) -> dict[str
                 fan_id=body.fan_id,
                 media_id=mid,
                 price_cents=body.price_cents,
-                # was_purchased flips later when a matching transaction
-                # lands (see Transaction ingest path). Default null = unknown.
             ))
         await s.commit()
     return {"ok": True, "inserted": len(real_ids)}
@@ -80,9 +58,6 @@ class _VaultBackfillItem(BaseModel):
     message_id: int
     media_ids: list[int] = Field(default_factory=list)
     price_cents: int = Field(0, ge=0)
-    # OF reports `isOpened=true` on a PPV once the fan has paid; we mirror
-    # that as `was_purchased`. None for free sends — leave the column null
-    # so the UI can distinguish "definitely not paid" vs "wasn't paid for".
     was_purchased: bool | None = None
     sent_at: str | None = Field(None, description="OF's createdAt (ISO); the row's sent_at when inserted.")
 
@@ -94,8 +69,6 @@ class _VaultBackfillBody(BaseModel):
 
 
 async def _upsert_sends(account_id: str, fan_id: int, items: list[_VaultBackfillItem]) -> tuple[int, int, int]:
-    """(inserted, updated, skipped). A missing (media, message) row is inserted; an existing one is
-    skipped, except that an item seen bought flips it to was_purchased=True (never back)."""
     from db.of_writer import immediate_session
     from db.models import VaultSend
     from sqlalchemy import select, update
@@ -173,15 +146,11 @@ async def admin_vault_sends_backfill(body: _VaultBackfillBody = Body(...)) -> di
     inserted, updated, skipped = await _upsert_sends(body.account_id, body.fan_id, body.items)
     out: dict[str, Any] = {"ok": True, "inserted": inserted, "updated": updated, "skipped": skipped}
     if inserted or updated:
-        # The fan's new history (GET /admin/vault/fan-history's body): the chat open sets it instead of reading
-        # it again (every page granting /admin/vault/sends grants fan-history: permissions._PICKER).
         out["history"] = await _fan_history(account_id=body.account_id, fan_id=body.fan_id)
     return out
 
 
 def _parse_of_iso(s: Any) -> datetime | None:
-    """OF's postedAt is "2026-04-12T17:33:11+00:00"-ish. Returns a naive
-    UTC datetime (matches the rest of our DB convention) or None."""
     if not isinstance(s, str):
         return None
     try:
@@ -191,12 +160,6 @@ def _parse_of_iso(s: Any) -> datetime | None:
 
 
 def _session_user_id(account_id: str, client: Any) -> int | None:
-    """The Creator's own OF id from the signed session (`OFClient.user_id`, a
-    string): a positive int, or None when it is not all ASCII digits. A Fansly
-    account is None: its old `/users/me` id was a string, so the scan has
-    always 500'd there."""
-    # ASSUMPTION: Fansly keeps today's 500 (rung 2, ticket "same 500 as today"; no Fansly wall-media path found).
-    # Overturned when Fansly wall media becomes a supported path (FanslyShimClient.user_posts walks /timelinenew).
     if platforms.Lack.WALL_MEDIA in platforms.for_account(account_id).lacks:
         return None
     s = str(client.user_id)
@@ -251,8 +214,6 @@ async def admin_vault_wall_media(
     if my_id is None:
         raise HTTPException(status_code=500, detail="Could not resolve current user id from /users/me")
 
-    # 1. Load scan state; honor `force` by wiping watermarks (rows stay —
-    #    re-walking just re-confirms what we know via on_conflict_do_nothing).
     async with get_session() as s:
         state = (await s.execute(
             select(WallScanState).where(WallScanState.account_id == account_id)
@@ -262,17 +223,11 @@ async def admin_vault_wall_media(
             state.oldest_post_published_at = None
             state.fully_backfilled = False
             await s.flush()
-        # Snapshot the values we need outside the session (state row is
-        # detached after the `async with` exits).
         prev_newest = state.newest_post_published_at if state else None
         prev_oldest = state.oldest_post_published_at if state else None
         prev_backfilled = bool(state.fully_backfilled) if state else False
         prev_total = int(state.scanned_posts_total) if state else 0
 
-    # 2. Pick mode + cursor. Three cases:
-    #    • first   — never scanned this account before, walk forward from top.
-    #    • refresh — fully covered already, walk forward and stop at watermark.
-    #    • backfill — middle: walk backward from oldest known post.
     if prev_newest is None and prev_oldest is None:
         mode = "first"
         before: str | None = None
@@ -289,9 +244,8 @@ async def admin_vault_wall_media(
         )
         stop_forward_at = None
 
-    # 3. Walk pages, accumulating new (account, media, post, published_at).
     new_rows: list[dict[str, Any]] = []
-    seen_media_in_call: set[int] = set()  # dedupe within this call's batch
+    seen_media_in_call: set[int] = set()
     scanned = 0
     page_newest_ts: datetime | None = None
     page_oldest_ts: datetime | None = None
@@ -319,15 +273,9 @@ async def admin_vault_wall_media(
                 page_newest_ts = posted_at
             if posted_at and (page_oldest_ts is None or posted_at < page_oldest_ts):
                 page_oldest_ts = posted_at
-            # Refresh-mode stop: posts older-than-or-equal-to the watermark
-            # are already in our DB. Don't enqueue their media (we have
-            # them) and flag the outer loop to bail.
             if mode == "refresh" and stop_forward_at and posted_at and posted_at <= stop_forward_at:
                 hit_known_top = True
                 continue
-            # OF posts carry a top-level `price` (dollars, float) for paid /
-            # PPV wall posts; free posts omit it or send 0. Convert to cents
-            # so the picker can badge "WALL $X.XX".
             try:
                 post_price_cents = int(round(float(post.get("price") or 0) * 100))
             except (TypeError, ValueError):
@@ -354,17 +302,13 @@ async def admin_vault_wall_media(
         if not before:
             break
 
-    # 4. Persist new rows + scan state, then read the full union back.
     now = datetime.utcnow()
     new_fully_backfilled = prev_backfilled
     if mode == "first":
         new_fully_backfilled = not of_has_more
     elif mode == "backfill" and not of_has_more:
         new_fully_backfilled = True
-    # refresh mode never flips back to False — force=True is the only path
-    # that resets the watermarks.
 
-    # Merge watermarks: extend in whichever direction this call walked.
     new_newest = page_newest_ts
     if prev_newest is not None and (new_newest is None or prev_newest > new_newest):
         new_newest = prev_newest
@@ -375,25 +319,19 @@ async def admin_vault_wall_media(
     new_total = prev_total + scanned
 
     async with get_session() as s:
-        # Ensure the parent accounts row exists — wall_media + wall_scan_state
-        # both FK to accounts.id. Without import_legacy ever running for this
-        # account, the FK insert blows up. Idempotent ON CONFLICT no-op.
         from db.models import Account
         await s.execute(
             sqlite_insert(Account)
             .values(id=account_id, is_active_default=False)
+            # wall_media FKs accounts.id, which may not exist if import_legacy never ran.
             .on_conflict_do_nothing(index_elements=["id"])
         )
         if new_rows:
             ins = sqlite_insert(WallMedia).values(new_rows)
-            # Upsert price_cents to MAX(existing, incoming) so a media seen
-            # in both a free and a paid wall post keeps the paid signal, and
-            # already-recorded rows pick up a price on a forward/force
-            # re-scan. post_id / post_published_at keep their first-seen
-            # values — only the price is refined.
             await s.execute(
                 ins.on_conflict_do_update(
                     index_elements=["account_id", "media_id"],
+                    # MAX keeps the paid signal for media seen in both a free and a paid wall post.
                     set_={"price_cents": func.max(WallMedia.price_cents, ins.excluded.price_cents)},
                 )
             )
@@ -423,8 +361,6 @@ async def admin_vault_wall_media(
             .where(WallMedia.account_id == account_id)
         )).all()
 
-    # Only the priced rows go in the map — keeps the payload lean (free wall
-    # posts are the common case and the frontend defaults missing ids to 0).
     media_prices = {
         str(int(mid)): int(cents)
         for mid, cents in all_rows
@@ -469,7 +405,6 @@ async def _fan_history(account_id: str, fan_id: int) -> dict[str, Any]:
     from db.models import Transaction, VaultSend
     from sqlalchemy import select
     async with get_session() as s:
-        # All sends to this fan, newest first.
         sends_res = await s.execute(
             select(VaultSend)
             .where(VaultSend.account_id == account_id, VaultSend.fan_id == fan_id)
@@ -479,9 +414,6 @@ async def _fan_history(account_id: str, fan_id: int) -> dict[str, Any]:
         if not sends:
             return {"by_media": {}}
 
-        # Pull transactions referenced by any of our sends so we can mark
-        # was_purchased + sum paid amounts. Filter to message-bearing txns
-        # to skip subscription rebills + tips.
         msg_ids = {s.message_id for s in sends if s.message_id is not None}
         tx_by_msg: dict[int, list[Transaction]] = {}
         if msg_ids:
@@ -516,12 +448,9 @@ async def _fan_history(account_id: str, fan_id: int) -> dict[str, Any]:
             elif snd.message_id not in messages:
                 entry["send_count"] += 1
                 messages.add(snd.message_id)
-            # Sends came back newest-first, so the first one we see is
-            # the most recent — only fill these when they're still empty.
             if entry["last_sent_at"] is None:
                 entry["last_sent_at"] = snd.sent_at.isoformat() if snd.sent_at else None
                 entry["last_price_cents"] = snd.price_cents or 0
-            # was_purchased: row flag OR any matching transaction.
             if snd.was_purchased:
                 entry["was_purchased"] = True
             if snd.message_id is None:
@@ -539,10 +468,6 @@ async def _fan_history(account_id: str, fan_id: int) -> dict[str, Any]:
         return {"by_media": by_media}
 
 
-# ── Per-fan OF chat-media sync ────────────────────────────────────────
-# The thread backfill only sees the pages a chatter scrolled; this walks OF's chat gallery
-# (the Creator's media messages to the Fan) once per SYNC_FRESH, so a long-tenure Fan's old
-# sends and buys reach the picker badges too.
 
 SYNC_FRESH = timedelta(days=7)
 SYNC_FAIL_COOLDOWN = timedelta(hours=1)
@@ -565,8 +490,6 @@ def _sync_due(synced_at: datetime | None, last_attempt_at: datetime | None, now:
 
 
 def _sync_item(m: Any, creator_id: str) -> _VaultBackfillItem | None:
-    """One OF chat-media message as a backfill item: the Creator's own (a `fromUser` naming
-    anyone else is skipped), with real media ids; None otherwise."""
     if not isinstance(m, dict):
         return None
     sender = m.get("fromUser")
@@ -591,8 +514,6 @@ def _sync_item(m: Any, creator_id: str) -> _VaultBackfillItem | None:
 
 async def _walk_fan_media(account_id: str, fan_id: int, client: Any,
                           creator_id: str) -> tuple[list[_VaultBackfillItem], int, bool]:
-    """(items, pages, complete) from OF's `chats/{fan}/media`, newest first, at most SYNC_RECENT_WINDOW_PAGES pages.
-    Any OF error (a 429 after the walk's one retry too) raises: a partial walk is never recorded as a sync."""
     def page(cursor: Any) -> Any:
         return client.chat_media(fan_id, limit=SYNC_PAGE_LIMIT, from_user=creator_id, skip_users="all", last_id=cursor)
 
@@ -623,7 +544,6 @@ async def _walk_fan_media(account_id: str, fan_id: int, client: Any,
 
 async def _write_sync(account_id: str, fan_id: int, now: datetime, *, pages: int | None = None,
                       complete: bool | None = None) -> None:
-    """A finished walk (pages given) stamps synced_at; a failed one only last_attempt_at."""
     from db.engine import get_session
     from db.models import FanMediaSync
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert

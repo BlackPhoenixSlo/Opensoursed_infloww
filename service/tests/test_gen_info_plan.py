@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""test_gen_info_plan.py — the pure half of gen_info (gen_info_plan) + its seams.
-
-  • build_user_prompt golden: bytes captured from main (68646e684) BEFORE the split.
-  • plan_persist tables: nickname guard, facts serialise, events merge/timeline,
-    language floor.
-  • Through the REAL gen_info._persist on the harness temp DB: keep-if-empty fields,
-    the operator's manual language pin (plan still offers the detection; SQL keeps the
-    pin).
-  • Seams read at call time: run() goes through gen_info_plan.plan_persist, and
-    _persist reads PROFILE_KEEP_IF_EMPTY off the module (MANUAL_LANGUAGE_SOURCES: slop fault).
-
-Run:  ./venv/bin/python service/tests/test_gen_info_plan.py   (exit 0 = green)
-"""
 import _harness  # noqa: F401 — MUST be first
 
 _harness.bootstrap()
@@ -40,10 +27,9 @@ def _cand(fid, **kw):
     return c
 
 
-_EVIDENCE = [("in", "x" * 50)]          # past LANG_EVIDENCE_MIN_CHARS (40)
+_EVIDENCE = [("in", "x" * 50)]
 
 
-# ── build_user_prompt golden (captured on main before the split) ─────
 
 _GOLDEN_101 = (
     "Fan OF display name: Jeff Trafford  (username/handle: jeffy_t — a handle, NOT a real name)\n"
@@ -56,7 +42,6 @@ _GOLDEN_101 = (
 )
 _GOLDEN_103 = ("Fan OF display name: (unknown)\nFan message count: 0\nLifetime spend: $0.00\n\n"
                "Chat history (oldest→newest):\n\n")
-# 1600 msgs, spender (≥ $50) → 500+500 fan-only window; too big to inline.
 _GOLDEN_102_SHA = "e444687987ef804d17ea9ed3afb3a9ce13b3fe544db25d4eb7eda1a458b22f13"
 _GOLDEN_102_LEN = 13432
 
@@ -77,24 +62,22 @@ def case_build_user_prompt_golden():
     pb = P.build_user_prompt(b)
     assert (hashlib.sha256(pb.encode()).hexdigest(), len(pb)) == (_GOLDEN_102_SHA, _GOLDEN_102_LEN), len(pb)
     assert P.build_user_prompt(c) == _GOLDEN_103, repr(P.build_user_prompt(c))
-    assert gen_info._build_user_prompt is P.build_user_prompt   # alias, not a copy
+    assert gen_info._build_user_prompt is P.build_user_prompt
 
 
-# ── plan_persist (pure) ──────────────────────────────────────────────
 
 def case_nickname_guard_table():
     rows = [
-        # (candidate kwargs, data nickname, expected nickname)
-        (dict(fid=111222333), "111222333/Vancouver", "Vancouver"),            # id as name
+        (dict(fid=111222333), "111222333/Vancouver", "Vancouver"),
         (dict(fid=5, known={"home_country": "Canada"}), "Canada/Canada/office job",
-         "Canada/office job"),                                               # place as name
-        (dict(fid=6), "Bob/??/31", "Bob/31"),                                # placeholder slot
-        (dict(fid=7), "Bob/Toronto/31/Whale", "Bob/Toronto/31"),             # tier stripped
-        (dict(fid=8, of_name="Jeff Trafford"), "Toronto/31", "Jeff/Toronto/31"),  # hint prepended
-        (dict(fid=9, of_name="Jeff Trafford"), "jeff/Toronto", "jeff/Toronto"),   # hint already lead
-        (dict(fid=10, known={"generated_nickname": "Old/Nick/Free"}), "", "Old/Nick"),  # keep old
-        (dict(fid=11), "", ""),                                              # nothing at all
-        (dict(fid=12, of_name="R342"), "", ""),                              # handle ≠ hint
+         "Canada/office job"),
+        (dict(fid=6), "Bob/??/31", "Bob/31"),
+        (dict(fid=7), "Bob/Toronto/31/Whale", "Bob/Toronto/31"),
+        (dict(fid=8, of_name="Jeff Trafford"), "Toronto/31", "Jeff/Toronto/31"),
+        (dict(fid=9, of_name="Jeff Trafford"), "jeff/Toronto", "jeff/Toronto"),
+        (dict(fid=10, known={"generated_nickname": "Old/Nick/Free"}), "", "Old/Nick"),
+        (dict(fid=11), "", ""),
+        (dict(fid=12, of_name="R342"), "", ""),
     ]
     for kw, nick, want in rows:
         fid = kw.pop("fid")
@@ -116,17 +99,15 @@ def case_facts_serialise_table():
     assert fs["hobbies"] == "golf, ski", fs["hobbies"]
     assert json.loads(fs["communication_style"]) == {"chatty": True}, fs["communication_style"]
     assert fs["his_age"] == "40", fs
-    assert "employer" not in fs and "fetishes" not in fs, fs        # empty ⇒ never clobber
+    assert "employer" not in fs and "fetishes" not in fs, fs
     assert fs["real_name"] == "Mike", fs
     assert plan.fan_set == {"grok_facts_updated_at": NOW, "updated_at": NOW}, plan.fan_set
     assert plan.events == {}, plan.events
-    # 'Unknown' is truthy, so `original_name or real_name` picks it, then it blanks:
-    # the profile's original_name stays NULL while the fact real_name still lands.
     assert plan.profile_set["original_name"] is None, plan.profile_set
     assert plan.profile_set["generated_by_grok_call_id"] == 9
-    # original_name alone fills real_name; an explicit 'Unknown' alone blanks.
     p2 = P.plan_persist(_cand(21), {"original_name": "Zed"}, call_id=None, now=NOW)
     assert p2.facts["real_name"] == "Zed" and p2.profile_set["original_name"] == "Zed"
+    # 'Unknown' is truthy, so `original_name or real_name` picks it, then it blanks: original_name stays NULL, real_name still lands.
     p3 = P.plan_persist(_cand(22), {"original_name": "Unknown"}, call_id=None, now=NOW)
     assert "real_name" not in p3.facts and p3.profile_set["original_name"] is None
     for kind, raw, want in [
@@ -149,14 +130,11 @@ def case_events_merge_order():
         {"date": "2026-11-02", "event": "c"},
         {"date": "2026-11-02", "event": "d"},
     ], plan.events["recent_events_timeline"]
-    # nothing new → neither column written (a sparse run never clears events)
     p0 = P.plan_persist(_cand(31, known=known), {"recent_events": []}, call_id=1, now=NOW)
     assert p0.events == {}, p0.events
-    # only known events → flat list rewritten as-is, timeline untouched
     p1 = P.plan_persist(_cand(32, known=known), {"recent_events": ["a"]}, call_id=1, now=NOW)
     assert json.loads(p1.events["recent_events"]) == ["a", "b"]
     assert "recent_events_timeline" not in p1.events
-    # caps: flat list first 20, timeline last 30; broken prior timeline → fresh only
     big = {"recent_events": json.dumps([f"e{i}" for i in range(19)]),
            "recent_events_timeline": "not json"}
     p2 = P.plan_persist(_cand(33, known=big), {"recent_events": ["n1", "n2", "n3"]},
@@ -173,13 +151,12 @@ def case_events_merge_order():
 
 def case_language_plan_table():
     rows = [
-        # (messages, raw language, write_lang)
         (_EVIDENCE, "en", "en"),
         (_EVIDENCE, "Spanish", "es"),
         (_EVIDENCE, "pt-BR", "pt"),
         (_EVIDENCE, "xx", None),
-        ([("in", "x" * 39)], "en", None),          # under the evidence floor
-        ([("out", "x" * 500)], "en", None),        # creator text is not evidence
+        ([("in", "x" * 39)], "en", None),
+        ([("out", "x" * 500)], "en", None),
     ]
     for msgs, raw, wl in rows:
         plan = P.plan_persist(_cand(40, messages=msgs), {"language": raw}, call_id=1, now=NOW)
@@ -188,7 +165,6 @@ def case_language_plan_table():
         assert "language" not in cols and "language_source" not in cols, cols
 
 
-# ── Through the real _persist (harness temp DB) ──────────────────────
 
 async def _seed(fid, *, fan=None, profile=None):
     async with get_session() as s:
@@ -229,35 +205,31 @@ async def case_keep_if_empty_through_persist():
             await _write(_cand(fid, fan_msg_n=12, spend_cents=300), {field: data[field]})
             _f, p = await _rows(fid)
             assert getattr(p, field) == want, (field, label, getattr(p, field), want)
-            # metadata always takes the new value
             assert (p.message_count_at_gen, p.total_spend_at_gen_cents, p.generated_by_grok_call_id,
                     p.last_generated_at) == (12, 300, 7, NOW), (field, label)
 
 
 async def case_manual_language_pin_through_persist():
     rows = [
-        # (fid, stored language, stored source, want language, want source)
-        (601, "es", "manual", "es", "manual"),   # operator pin wins
-        (602, "es", "ai", "en", "ai"),           # prior AI guess is refreshed
-        (603, None, None, "en", "ai"),           # never set
+        (601, "es", "manual", "es", "manual"),
+        (602, "es", "ai", "en", "ai"),
+        (603, None, None, "en", "ai"),
     ]
     for fid, lang, src, want_lang, want_src in rows:
         await _seed(fid, fan={"language": lang, "language_source": src})
         c = _cand(fid, messages=_EVIDENCE)
         plan = await _write(c, {"language": "en", "nickname": "Al/Rome", "occupation": f"job{fid}"})
-        assert plan.write_lang == "en", plan.write_lang                # plan still offers it
+        assert plan.write_lang == "en", plan.write_lang
         f, _p = await _rows(fid)
         assert (f.language, f.language_source) == (want_lang, want_src), (fid, f.language, f.language_source)
         assert (f.generated_nickname, f.occupation) == ("Al/Rome", f"job{fid}"), (
-            fid, f.generated_nickname, f.occupation)                     # rest of the row lands, own fan
-    # under the evidence floor nothing is written, pin or not
+            fid, f.generated_nickname, f.occupation)
     await _seed(604, fan={"language": "de", "language_source": "ai"})
     await _write(_cand(604, messages=[("in", "hi")]), {"language": "en"})
     f, _p = await _rows(604)
     assert (f.language, f.language_source) == ("de", "ai"), (f.language, f.language_source)
 
 
-# ── Seams: module attrs read at call time ────────────────────────────
 
 class _FakeResponse:
     status_code = 200
@@ -331,7 +303,7 @@ async def case_persist_reads_keep_if_empty_at_call_time():
     finally:
         P.PROFILE_KEEP_IF_EMPTY = saved
     _f, p = await _rows(fid)
-    assert p.short_bio is None, p.short_bio     # guard off ⇒ the empty value went through
+    assert p.short_bio is None, p.short_bio
 
 
 if __name__ == "__main__":

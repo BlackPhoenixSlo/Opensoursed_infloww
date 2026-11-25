@@ -1,25 +1,3 @@
-"""service/login_queue.py — the pasted-logins queue (ultra-mode ticket 11; HTTP: remote_login_api, parser:
-login_paste). Per owner, in memory, one login at a time: each entry is a `remote_login.start_login(...,
-backend="browserbase")` job on the relay's default proxy, polled until it ends.
-
-- One queue per owner: a new paste while one runs is refused (409); a finished or cancelled one is
-  replaced. A replaced queue's job may still be winding down (it still holds its email): the new worker
-  waits up to SETTLE_S for it to end before its first login. An entry for an email whose old job is still
-  running after that is an error (STILL_ENDING) + notice, never started; the others run.
-- A password lives in its entry only until its job starts, the queue is cancelled or the run ends
-  (each clears it); it never reaches a status, the DB, the audit, a log line or a notice.
-- A job in "otp" shows on the card, which posts the code to /admin/login/remote/{job_id}/otp
-  (the job's principal is the owner, so the existing route takes it).
-- A job that errors (or a start that raises) leaves an `ultra_needs_you` notice "<email> not logged in"
-  and the queue moves on. One not ended within its window + GRACE_S is cancelled, then given SETTLE_S to
-  end: its real end is shown (done: no notice); still running or cancelled: an error (TIMED_OUT) + the
-  notice "<email> not logged in after 5 min" (the job's own window running out files that text too).
-  A job cancelled on its own (Stop on the card) moves on with no notice.
-- A relay restart drops every queue: the card shows `interrupted` for an unknown queue id.
-
-The worker is a task on the loop serving the request that pasted (it inherits that request's
-context, so start_login's thread links each new account to the owner, as the Add creator card's).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -35,8 +13,10 @@ from login_paste import LOGINS_PAGE
 log = logging.getLogger(__name__)
 
 POLL_S = 1.5
-GRACE_S = 30  # past remote_login.JOB_WINDOW_S: the job is cancelled
-SETTLE_S = 30  # after that cancel: wait this long for the job to end before the next login
+# past remote_login.JOB_WINDOW_S: the job is cancelled
+GRACE_S = 30
+# after that cancel: wait for the job to end before the next login
+SETTLE_S = 30
 WAITING = "waiting"
 NOT_LOGGED_IN = "{email} not logged in"
 NOT_LOGGED_IN_TIMEOUT = "{email} not logged in after 5 min"
@@ -76,7 +56,7 @@ class Queue:
 
 
 _QUEUES: dict[str, Queue] = {}
-_TASKS: set[asyncio.Task] = set()  # strong refs until each run ends
+_TASKS: set[asyncio.Task] = set()
 
 
 class QueueBusy(RuntimeError):
@@ -84,7 +64,6 @@ class QueueBusy(RuntimeError):
 
 
 def current(owner: str) -> Queue | None:
-    """The owner's last queue (running or ended), None when none since the relay started."""
     return _QUEUES.get(owner)
 
 
@@ -94,8 +73,6 @@ def get(owner: str, queue_id: str) -> Queue | None:
 
 
 def start(owner: str, logins: list[tuple[str, str]], proxy: str) -> Queue:
-    """A new queue for `owner` running `logins` ((email, password), in order) on `proxy`, its worker
-    started on the running loop. QueueBusy: the owner's last queue still runs (not cancelled)."""
     cur = _QUEUES.get(owner)
     if cur is not None and not cur.finished and not cur.cancelled:
         raise QueueBusy("a login queue is already running — wait for it or cancel it")
@@ -109,7 +86,6 @@ def start(owner: str, logins: list[tuple[str, str]], proxy: str) -> Queue:
 
 
 def cancel(q: Queue) -> None:
-    """Stop the queue: waiting entries cancelled and their passwords dropped, the running job cancelled."""
     q.cancelled = True
     _drop_waiting(q)
     for e in q.entries:
@@ -118,7 +94,6 @@ def cancel(q: Queue) -> None:
 
 
 def _drop_waiting(q: Queue) -> None:
-    """Every password dropped; the entries not started yet are cancelled."""
     for e in q.entries:
         e.password = None
         if e.state == WAITING:
@@ -126,7 +101,6 @@ def _drop_waiting(q: Queue) -> None:
 
 
 def _running_emails(q: Queue | None) -> set[str]:
-    """The emails `q`'s jobs still log in (lower case): each holds remote_login's per-email lock."""
     if q is None:
         return set()
     return {e.email.lower() for e in q.entries
@@ -165,7 +139,7 @@ async def _one(q: Queue, e: Entry) -> None:
         job = remote_login.start_login(
             email=e.email, password=password or "", principal=q.owner, proxy=q.proxy, proxy_label="",
             proxy_defaulted=True, nickname=None, make_active=True, backend=remote_login.BACKEND_BROWSERBASE)
-    except Exception as ex:  # a running login for this email, the Browserbase env, a bad value
+    except Exception as ex:
         e.state, e.message = remote_login.STATE_ERROR, remote_login.scrub(str(ex), password)
         await _notice(q, e)
         return
@@ -179,7 +153,7 @@ async def _one(q: Queue, e: Entry) -> None:
         if job.is_terminal():
             break
         if not timed_out and time.monotonic() > deadline:
-            remote_login.cancel(job)  # then wait for its real end: it may still log in, or wind down
+            remote_login.cancel(job)
             timed_out, deadline = True, time.monotonic() + SETTLE_S
         elif timed_out and time.monotonic() > deadline:
             break
@@ -193,7 +167,7 @@ async def _one(q: Queue, e: Entry) -> None:
 async def _notice(q: Queue, e: Entry, timed_out: bool = False) -> None:
     text = (NOT_LOGGED_IN_TIMEOUT if timed_out else NOT_LOGGED_IN).format(email=e.email)
     try:
-        from notifications_api import Notice, notify  # lazy: notifications_api imports settings
+        from notifications_api import Notice, notify
         await notify(q.owner, [Notice("ultra_needs_you", text,
                                       data={"href": f"{LOGINS_PAGE}?queue={q.id}"},
                                       dedupe=f"login_queue:{q.id}:{e.email.lower()}")])

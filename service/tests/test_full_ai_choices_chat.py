@@ -27,7 +27,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_choices_chat.py  (exit 0 = pas
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 from _jev_fixtures import mapped  # noqa: E402
 
 _harness.bootstrap()
@@ -57,7 +57,6 @@ T0 = datetime(2026, 7, 1)
 
 @contextlib.contextmanager
 def _spy(name: str):
-    """`full_ai_sell.<name>` spied: one (args, result) per call."""
     real, got = getattr(full_ai_sell, name), []
 
     def spy(*a, **k):
@@ -79,7 +78,6 @@ SELL = _hot(wants_content=0.9)
 
 def _post(pair: str, text: str = PICS, *, side: str = "draft", choices: dict | None = None,
           jev=None):
-    """One test turn under the invariants: (response json, pick calls, pool calls, Jev fake)."""
     fake_j = FakeJev(jev or (SELL, 1.0, choices or {}))
     fake_w = FakeWriterHTTP({NANO: LINE})
     body = {"account_id": A, "pair": pair, "side": side, "n": 1, "text": text}
@@ -93,7 +91,6 @@ def _ppv(got: dict) -> dict | None:
     return next((p["ppv"] for p in got["parts"] if "ppv" in p), None)
 
 
-# ── Config + vault ────────────────────────────────────────────────────
 
 def _rev() -> int:
     return OWNER_A.get(CONFIG, params={"account_id": A}).json()["rev"]
@@ -112,8 +109,6 @@ def _save() -> None:
 
 @contextlib.contextmanager
 def _sides(checkpoint: dict | None, draft: dict):
-    """A's config for the block, set through the API (`checkpoint` saved first, None = DEFAULTS);
-    then both sides back to DEFAULTS."""
     if checkpoint is not None:
         _put_draft({**DEFAULTS, **checkpoint})
         _save()
@@ -133,7 +128,6 @@ DRESSED = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none
 
 
 def _jev(kind: str) -> dict:
-    """A current $10-lane Jev blob (a clip also `vv` and `frames`, test_full_ai_sell.py's)."""
     j = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": "$10", "state": {}, "kind": kind,
          "breasts_bare": "n", "crotch_bare": "n", "penetration": "n", "tags": {}}
     if kind == "video":
@@ -143,8 +137,6 @@ def _jev(kind: str) -> dict:
 
 @contextlib.contextmanager
 def _vault(items: dict[int, str], folders: dict[str, tuple[tuple[int, ...], bool]]):
-    """A's vault for the block: media id -> kind, all $10 DRESSED; `folders`: name -> (members,
-    deleted). Yields name -> `vf:<id>`; everything removed after."""
     refs: dict[str, str] = {}
 
     async def add():
@@ -174,7 +166,6 @@ def _vault(items: dict[int, str], folders: dict[str, tuple[tuple[int, ...], bool
         _db(drop)
 
 
-# ── Choices ───────────────────────────────────────────────────────────
 
 FEET, OTHER, CLIP_ID = (501, 502), (511, 512), 601
 FEET_VAULT = {501: "photo", 502: "photo", 511: "photo", 512: "photo", 601: "video"}
@@ -182,7 +173,7 @@ FEET_VAULT = {501: "photo", 502: "photo", 511: "photo", 512: "photo", 601: "vide
 
 def case_choices_drive_the_pick():
     with _sides(None, {"sell_on": True}), _vault(FEET_VAULT, {"feet-nude": (FEET, False)}):
-        for i in range(4):          # four pairs, four seeds: anything/any would reach 511/512/601
+        for i in range(4):
             got, picks, _pools, _j = _post(f"p-feet-{i}", choices={"asks_subject": "feet",
                                                                    "asks_format": "photo"})
             assert (got["route"], got["route_row"]) == ("sell_now", "sell"), got
@@ -232,10 +223,9 @@ def case_test_request_holds_new_ids():
     assert jev["choices"] == {"asks_subject": {"anything": 0.9},
                               "asks_format": {"video": 0.6, "photo": 0.4}}, jev["choices"]
     assert jev["answers"] == {**QUIET_TEST, "wants_content": 0.9, "counter_offer": 0.7}, jev["answers"]
-    assert "test_nouls" not in jev, sorted(jev)   # the TEST_NOULS live in `answers`, like gif_fits
+    assert "test_nouls" not in jev, sorted(jev)
 
 
-# ── Folders ───────────────────────────────────────────────────────────
 
 IN_A, SHARED, IN_B, LOOSE = 801, 802, 901, 1001
 FOLDER_VAULT = {IN_A: "photo", SHARED: "photo", IN_B: "photo", LOOSE: "photo"}

@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""_full_ai_chat_helpers — shared setup for the Full AI Test chat suites (phase 03a).
-
-Imported by test_full_ai_test_chat.py (tickets 32/33/36), test_full_ai_routes_chat.py (34),
-test_full_ai_info_chat.py (35), test_full_ai_config_chat.py (37), test_full_ai_choices_chat.py (43)
-and test_full_ai_applied_draft_chat.py (57; Do mode's OF fake `_OF` / `_of_fake`); defines no `case_*`.
-Importing it bootstraps the temp DB, seeds the two-Agency world and logs both owners in, once per
-process. A test file imports `_harness` first, then this module, before any db import.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -63,10 +55,8 @@ def _db(fn):
 
 
 async def _seed_world() -> None:
-    """Each Agency's (fake) NanoGPT key, per-account caps far above any test spend, and one existing row in every table the
-    invariant snapshots, so an UPDATE would show as well as an INSERT."""
     t = datetime(2026, 11, 1, 12, 0)
-    for owner in ("agency_a_owner", "agency_b_owner"):   # fake keys: the Writer wire is faked
+    for owner in ("agency_a_owner", "agency_b_owner"):
         await tenant_keys.set_keys(IDS[owner], {"nanogpt": "test-nanogpt-agency-key"})
     async with get_session() as s:
         for aid in (A, B):
@@ -77,7 +67,7 @@ async def _seed_world() -> None:
         s.add(VaultSend(account_id=A, fan_id=5, media_id=9, price_cents=0))
         s.add(FanLease(account_id=A, fan_id=5, automation_kind="autoreply",
                        leased_until=t + timedelta(minutes=5)))
-        item = CatalogItem(account_id=A)       # content_offers' row hangs off a catalog item
+        item = CatalogItem(account_id=A)
         s.add(item)
         await s.flush()
         s.add(ContentOffer(account_id=A, fan_id=5, item_id=item.id, price_cents=1000))
@@ -86,10 +76,7 @@ async def _seed_world() -> None:
 _db(_seed_world)
 
 
-# ── Invariants ────────────────────────────────────────────────────────
 
-# Every send path at each binding a sender looks it up by (test_full_ai_shadow.py `_SEND_PATHS`),
-# plus the DM rate test skips, the Sell executor's ownership stamp (03b) and the pooled OF client lookup.
 _SEND_PATHS = ((ax, "_make_client"), (of_client.OFClient, "request"),
                (of_client.OFClient, "_http_call"), (of_client.OFClient, "_proxy_retry"),
                (fan_lease, "acquire_fan_lease"), (fan_lease, "start_fan_cooldown"),
@@ -113,7 +100,6 @@ async def _snapshot() -> dict[str, list]:
 
 @contextlib.contextmanager
 def _guarded():
-    """Every send path records its hit and raises; the hit list is the proof."""
     hits: list[str] = []
     saved = [(o, n, getattr(o, n)) for o, n in _SEND_PATHS]
     for o, n, real in saved:
@@ -194,7 +180,6 @@ def _store_config(aid: str, stored: dict) -> None:
 
 
 
-# ── Writer chain hosts and fakes (ticket 33; the info and config suites use them too) ──
 
 OPENROUTER, ZAI, DEEPSEEK = "openrouter.ai", "api.z.ai", "api.deepseek.com"
 OK_LINE = "ok:haha stop it, what are u doing later tonight"
@@ -202,7 +187,6 @@ OK_LINE = "ok:haha stop it, what are u doing later tonight"
 
 @contextlib.contextmanager
 def _agency_keys(values: dict):
-    """Creator A's Agency keys set for the block (fake values: the wire is faked), then restored."""
     owner = IDS["agency_a_owner"]
     before = {p: _db(lambda p=p: tenant_keys.get_key(owner, p)) for p in values}
     _db(lambda: tenant_keys.set_keys(owner, values))
@@ -217,8 +201,6 @@ _CHAIN_KEYS = {"openrouter": "test-openrouter-agency-key", "zai": "test-zai-agen
 
 
 def _chain_post(body: dict, script: dict, *, jev=(QUIET, 1.0), fake_w=None, fake_j=None):
-    """One test turn under the invariants with every Writer host scripted (a host left out
-    answers OK_LINE): (response, Writer fake)."""
     full = {NANO: OK_LINE, OPENROUTER: OK_LINE, ZAI: OK_LINE, DEEPSEEK: OK_LINE, **script}
     fake_w = fake_w or FakeWriterHTTP(full)
     with _agency_keys(_CHAIN_KEYS), _guarded(), fake_w.on(), _fake_jev(fake_j or FakeJev(jev)):
@@ -229,7 +211,6 @@ def _chain_post(body: dict, script: dict, *, jev=(QUIET, 1.0), fake_w=None, fake
 
 
 class _Clock:
-    """The Turn's monotonic clock, advanced only by the slow fakes below."""
 
     def __init__(self):
         self.t = 1000.0
@@ -248,15 +229,11 @@ class _SlowJev(FakeJev):
         return await super().system_one(state, questions, model)
 
 
-# The GIF the Routes and config suites' GIF Turns name (ticket 34).
 _GIF_TAG = "laugh"
 
 
-# ── OF for Do mode (03c: test_full_ai_assistant_config.py, test_full_ai_applied_draft_chat.py) ──
 
 class _OF:
-    """client_pool.get's recording fake: `get_lists` → [] is the one allowed read; anything else
-    (any send) raises and is recorded (Do mode's `_read_lists` swallows exceptions: the record is the proof)."""
 
     def __init__(self):
         self.calls: list[str] = []

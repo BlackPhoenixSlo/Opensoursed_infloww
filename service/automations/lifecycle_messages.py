@@ -32,6 +32,7 @@ from db.engine import get_session
 from db.models import (
     AutomationRule, Blacklist, Fan, LifecycleMessageClaim, SubscriberSnapshot,
 )
+from side_effect_gate import refusal
 
 log = logging.getLogger("of-relay.automation.lifecycle_messages")
 
@@ -588,6 +589,11 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
     follows: Counter = Counter()
     if plans and client is None:
         client = await asyncio.to_thread(ax._make_client, account_id)
+    lacks_discount = 0
+    if plans and kind in DISCOUNT_KINDS and refusal(client, "set_subscription_discount"):
+        plain = [p for p in plans if messages[p[2]]["discount"] is None]
+        lacks_discount, plans = len(plans) - len(plain), plain
+        skipped += lacks_discount
     for i, (fid, key, idx, template) in enumerate(plans):
         if attempted >= _LIMIT:
             capped = len(plans) - i
@@ -692,6 +698,8 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                    follow_errors=follow_errors)
     if kind in DISCOUNT_KINDS:
         out["discounted"] = discounted
+    if lacks_discount:
+        out["discount_skipped"] = "platform_lacks:set_subscription_discount"
     return out
 
 

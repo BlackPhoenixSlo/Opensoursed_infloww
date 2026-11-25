@@ -1,96 +1,7 @@
 #!/usr/bin/env python3
-"""
-Creator deactivate — `POST /admin/accounts/{id}/active` and every loop that
-must stop for a deactivated Creator (service/account_health.py "Deactivation").
-
-  case_chatter_cannot_toggle:
-      a chatter session is refused (403): the switch is owner-only.
-  case_foreign_owner_cannot_toggle:
-      an owner toggling another owner's Creator is refused (403).
-  case_owner_deactivates:
-      200; the Creator's pump is stopped and its OF client dropped; the default
-      account is left alone (its file is shared); GET /admin/accounts and
-      /chatter/me/accounts still list it, stamped is_active=false, beside an
-      active Creator.
-  case_of_write_to_deactivated_creator_is_409:
-      a POST under /api/of/ for the deactivated Creator answers 409 before any
-      handler runs, named explicitly or reached through the default-account
-      fallback; a read for it, and a write for an active Creator, pass.
-  case_of_client_refuses_every_write_for_a_deactivated_creator:
-      OFClient._http_call refuses every write for the deactivated Creator
-      before anything is sent (so /admin/* routes and jobs are covered too);
-      its GET and an active Creator's writes reach the wire; the refusal is
-      transient to the automations' fan classifiers.
-  case_carrier_removal_is_the_one_write_let_through:
-      remove_carrier deletes a carrier for the deactivated Creator (that call
-      only), and the vault sweep deletes a dead import's carrier for it.
-  case_a_refused_write_through_proxy_is_the_guards_409:
-      `_proxy` answers the refusal with the hook's 409 account_deactivated.
-  case_write_gate_loads_once_and_follows_the_switch:
-      deactivated_ids() only reads; load_write_gate() fills the gate, and
-      activate/deactivate open and shut it.
-  case_link_prewarm_skips:
-      the hourly tracking-link prewarm (reads plus add-to-list writes) skips it.
-  case_of_stats_daily_skips:
-      the daily OF statistics fetch skips it.
-  case_pump_never_starts_for_a_deactivated_creator:
-      the pump coroutine itself (what _restart_account_pump spawns) returns
-      before loading a client for a deactivated Creator.
-  case_health_all_accounts_skips:
-      the Creators page's all-accounts probe answers a deactivated Creator off
-      the flag, without an OF call.
-  case_pump_supervisor_skips_and_reaps:
-      one supervisor pass starts no pump for the deactivated Creator and stops
-      the one it had.
-  case_chat_sweep_cadence_skips:
-      the full chat sweep cadence (sweep_cadence) enqueues for the active Creator only.
-  case_ledger_polls_skip:
-      the 5-min ledger supervisor and the 30s fast poll tick the active
-      Creator only.
-  case_executor_skips:
-      _due_job_pairs leaves the deactivated Creator's due job unspawned (still
-      pending), and a direct run_once returns skipped/account_deactivated
-      without running the automation.
-  case_dead_session_probe_skips:
-      a deactivated Creator whose session is flagged dead gets no recovery
-      probe (an OF call).
-  case_reactivate_after_long_gap_backfills:
-      activating a Creator off for longer than the 7-day refresh window asks
-      for a backfill from the deactivation on; a short gap asks for none.
-  case_reactivate_cancels_jobs_missed_while_off:
-      activating cancels the pending jobs that fell due while the Creator was
-      off; one due before the deactivation, one due later, and a cleanup
-      (unsend_messages) job that fell due while off stay pending.
-  case_trigger_backfill_reopens_the_window:
-      on an account already fully backfilled, trigger_backfill's next backfill
-      window runs from now down to `since` (it used to sit wholly below it).
-
-  case_deactivate_keeps_proxy_for_carrier_cleanup:
-      a deactivated pool Creator keeps its route for the carrier DELETE.
-  case_toggle_preserves_direct_and_manual_routing:
-      toggling preserves direct and manual routing with and without a pool.
-  case_empty_pool_skips_rebind:
-      an empty pool leaves the Creator unbound without probing.
-  case_rebind_preserves_legacy_session_proxy:
-      a session-bound manual proxy survives rebind.
-  case_attach_ignores_deactivated_pool_occupancy:
-      a new binding prefers the proxy whose only Creator is deactivated.
-  case_failover_ignores_deactivated_pool_occupancy:
-      failover prefers that same destination and moves deactivated bindings too.
-  case_startup_rebinds_before_sweep_without_blocking_boot:
-      startup finishes while the probe is held, then the first sweep sees the binding.
-  case_startup_retries_failed_rebind:
-      a failed rebind is retried before the next vault sweep.
-  case_startup_gate_failure_skips_rebind:
-      the sweep still runs after a write-gate load failure without probing the pool.
-
-No network: the registry, pumps and OF calls are all stubbed.
-
-Run: ./venv/bin/python service/tests/test_creator_deactivate.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -129,15 +40,13 @@ from db.models import (  # noqa: E402
     TransactionScanHistory, User, UserAccount,
 )
 
-_harness.make_client()  # neutralises the startup spawns before `server` serves
+_harness.make_client()
 import server  # noqa: E402
 
 OFF, ON, FOREIGN = "acc_off", "acc_on", "acc_foreign"
 _ACCOUNTS = (OFF, ON, FOREIGN)
 
-# ── Registry + side effects, in memory ───────────────────────────────
 account_registry.get_account = lambda aid: {"id": aid} if aid in _ACCOUNTS else None
-# Watchers (`role` "watcher") exist only for `include_watchers=True`, as in accounts.list_accounts.
 _WATCHERS: list[str] = []
 account_registry.list_accounts = lambda include_watchers=False: [
     {"id": a, "has_session": True} for a in _ACCOUNTS] + ([
@@ -146,7 +55,6 @@ account_registry.list_accounts = lambda include_watchers=False: [
 account_registry.is_account = lambda aid: aid in _ACCOUNTS
 _ACTIVE: dict[str, str | None] = {"id": OFF}
 account_registry.get_active_account_id = lambda: _ACTIVE["id"]
-# As accounts.set_active_account_id: a watcher is refused (False, nothing written).
 account_registry.set_active_account_id = lambda aid: (aid is None or not account_registry.is_watcher(aid)) \
     and (_ACTIVE.__setitem__("id", aid) or True)
 
@@ -201,7 +109,6 @@ async def _backdate_deactivation(aid: str, ago: timedelta) -> None:
 
 
 async def _run_briefly(coro) -> None:
-    """One pass of a `while True` supervisor: let it reach its first sleep."""
     task = asyncio.create_task(coro)
     await asyncio.sleep(0.3)
     task.cancel()
@@ -211,7 +118,6 @@ async def _run_briefly(coro) -> None:
         pass
 
 
-# ── Cases ────────────────────────────────────────────────────────────
 
 def case_chatter_cannot_toggle() -> None:
     r = _login("/chatter/login", "chat").post(f"/admin/accounts/{OFF}/active", json={"active": False})
@@ -241,9 +147,6 @@ async def case_owner_deactivates() -> None:
 
 
 async def case_watchers_listed_apart_from_accounts() -> None:
-    """`GET /admin/accounts`' `watchers`: the caller's watcher accounts, never in `accounts`,
-    with a Creator's fields (Manage creators edits one, OF Manager browses as it); a watcher
-    is never `active_account_id`; another owner's watcher is in neither; anonymous is refused (401)."""
     watch, foreign_watch = "acc_watch", "acc_watch_foreign"
     async with get_session() as s:
         s.add_all([Account(id=watch, nickname=watch), Account(id=foreign_watch, nickname=foreign_watch)])
@@ -261,7 +164,6 @@ async def case_watchers_listed_apart_from_accounts() -> None:
                                      "has_session": True, "role": "watcher",
                                      "session_dead_at": None, "session_dead_reason": None,
                                      "is_active": True, "proxy_down": False}], body["watchers"]
-        # Make default refuses a watcher (a route without X-Account-Id would act as it).
         saved_get, saved_is = account_registry.get_account, account_registry.is_watcher
         account_registry.get_account = lambda aid: {"id": aid} if aid in _ACCOUNTS or aid == watch else None
         account_registry.is_watcher = lambda aid: aid == watch
@@ -270,7 +172,6 @@ async def case_watchers_listed_apart_from_accounts() -> None:
             assert r.status_code == 400 and _ACTIVE["id"] != watch, (r.status_code, r.text, _ACTIVE)
         finally:
             account_registry.get_account, account_registry.is_watcher = saved_get, saved_is
-        # The shared default pointing at a watcher: clamped to a Creator, never the watcher.
         saved_active = _ACTIVE["id"]
         _ACTIVE["id"] = watch
         try:
@@ -280,7 +181,6 @@ async def case_watchers_listed_apart_from_accounts() -> None:
             _ACTIVE["id"] = saved_active
         other_body = _login("/auth/login", "other").get("/admin/accounts").json()
         assert [w["id"] for w in other_body["watchers"]] == [foreign_watch], other_body["watchers"]
-        # Anonymous: the auth gate refuses before the handler, so no watcher (nor account) leaks.
         anon = TestClient(server.app).get("/admin/accounts")
         assert anon.status_code == 401 and "acc_watch" not in anon.text, (anon.status_code, anon.text[:200])
     finally:
@@ -296,8 +196,6 @@ async def case_of_write_to_deactivated_creator_is_409() -> None:
     r = owner.post("/api/of/v2/chats/123/mark-as-read", headers={"X-Account-Id": OFF})
     assert r.status_code == 409, f"write to a deactivated Creator: {r.status_code} {r.text}"
     assert r.json()["detail"]["error"] == "account_deactivated"
-    # No explicit id: the route would fall back to the default account, which is
-    # still the deactivated Creator.
     assert _ACTIVE["id"] == OFF
     r = owner.post("/api/of/v2/chats/123/mark-as-read")
     assert r.status_code == 409, f"fallback write to a deactivated Creator: {r.status_code} {r.text}"
@@ -305,7 +203,6 @@ async def case_of_write_to_deactivated_creator_is_409() -> None:
     foreign_default = other.post("/api/of/v2/chats/123/mark-as-read")
     assert foreign_default.status_code != 409, foreign_default.text
 
-    # The guard passes everything else through to the handler.
     class _Req:
         def __init__(self, method: str, aid: str | None) -> None:
             self.method = method
@@ -331,16 +228,13 @@ async def case_of_write_to_deactivated_creator_is_409() -> None:
 
 
 class _Wired:
-    """An OFClient with no session whose transport records what would have gone
-    out (`sent`, "METHOD /path") and answers 204: every gate in _http_call runs."""
 
     def __init__(self) -> None:
         self.sent: list[str] = []
 
     def client(self, aid: str) -> OFClient:
-        c = object.__new__(OFClient)  # no session, no curl handle
+        c = object.__new__(OFClient)
         c.account_id, c.proxy_label = aid, None
-        # No curl handle: _proxy_retry below intercepts all I/O.
         fake_wire(c, object())
         c._ensure_x_hash = lambda **_k: "h"
         c._persist_cf_cookies = lambda r: None
@@ -371,8 +265,6 @@ async def case_of_client_refuses_every_write_for_a_deactivated_creator() -> None
     assert wire.sent == ["GET /api2/v2/vault/lists", "POST /api2/v2/vault/lists",
                          "DELETE /api2/v2/posts/7"], wire.sent
 
-    # Transient for the automations: no fan is skip-listed or quarantined over it,
-    # and the account is not flagged session-dead.
     from automations._common import is_media_rejected_error, is_unreachable_fan_error
     e = OFDeactivatedError("refused: POST /api2/v2/messages (Creator deactivated)")
     assert not is_unreachable_fan_error(e) and not is_media_rejected_error(e)
@@ -384,7 +276,6 @@ async def case_carrier_removal_is_the_one_write_let_through() -> None:
     off = wire.client(OFF)
     of_client.remove_carrier(off, 9001)
     assert wire.sent == ["DELETE /api2/v2/posts/9001"], wire.sent
-    # The flag covers that one call, not what follows it.
     try:
         off.delete_post(9002)
     except OFDeactivatedError:
@@ -392,8 +283,6 @@ async def case_carrier_removal_is_the_one_write_let_through() -> None:
     else:
         raise AssertionError("the carrier exemption leaked past remove_carrier")
 
-    # The hourly sweep finds a dead import's carrier on the deactivated
-    # Creator and deletes it: left alone it would publish on the feed.
     saved = vault_upload.SPOOL_ROOT, vault_upload.LOCK_DIR, vault_upload.STAGE_ROOT
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -509,7 +398,7 @@ async def case_health_all_accounts_skips() -> None:
 async def case_pump_supervisor_skips_and_reaps() -> None:
     STARTED.clear()
     STOPPED.clear()
-    server._account_pumps[OFF] = asyncio.get_running_loop().create_future()  # a "running" pump
+    server._account_pumps[OFF] = asyncio.get_running_loop().create_future()
     try:
         await _run_briefly(server._pump_supervisor())
     finally:
@@ -646,7 +535,7 @@ async def case_reactivate_cancels_jobs_missed_while_off() -> None:
     now = datetime.utcnow()
     async with get_session() as s:
         await s.execute(update(ScheduledJob).where(ScheduledJob.account_id == OFF)
-                        .values(status="done"))  # earlier cases' rows
+                        .values(status="done"))
         jobs = {
             "before": ScheduledJob(account_id=OFF, kind="t_deact_noop", payload_json="{}",
                                    status="pending", run_at=now - timedelta(days=4)),

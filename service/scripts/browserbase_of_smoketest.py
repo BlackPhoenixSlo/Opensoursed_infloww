@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""SMOKE TEST — does OnlyFans' login page render in a Browserbase Chromium
-on Browserbase's managed proxies, driven over CDP, or does Cloudflare block
-it? Touches no DB, writes nothing.
-
-  1. Reads BROWSERBASE_API_KEY / BROWSERBASE_PROJECT_ID from the env.
-  2. Creates the session the served login creates (remote_login._bb_create_session:
-     managed proxies, solveCaptchas false).
-  3. connect_over_cdp, opens https://onlyfans.com/, prints the browser's
-     egress IP, and PASS (login form) / BLOCKED (challenge or blank body) /
-     INCONCLUSIVE. Exit 0 only on PASS; a refused session-create exits 2, a
-     failed load of OnlyFans is NAVIGATION FAILED (exit 1).
-
-USAGE
-  BROWSERBASE_API_KEY=... BROWSERBASE_PROJECT_ID=... \\
-    ./venv/bin/python service/scripts/browserbase_of_smoketest.py
-"""
 from __future__ import annotations
 
 import sys

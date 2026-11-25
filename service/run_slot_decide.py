@@ -1,36 +1,3 @@
-"""
-The run slot pool's who-goes-next rules as a pure transition (docs/reducer-scan.md
-"Non-React" 6; the rules in words: run_slot.py's module docstring):
-
-    decide(pool, event) -> (pool', effects)
-
-`pool` is a frozen `Pool`: the shared permits (`n`, `free`), the operator-only
-reserve (`reserve`, `reserve_free`) and three FIFO queues of waiter ids, served
-in this order: `op` (a run an operator started), `back` (a run taking its slot
-back), `fresh` (a new run). No futures, no loop, no clock here: the shell
-(`run_slot.SlotPool`) numbers each waiter, calls decide, keeps pool', and
-performs the effects in order (resolves the waiter's future, or parks it).
-
-Events (one per SlotPool entry point):
-
-  Acquire(waiter, tier)   a run asks for a permit (tier: OP / BACK / FRESH)
-  Release(reserve)        a run hands its permit back (to the reserve or shared); also
-                          a waiter granted one as it was cancelled, passing it on
-  Resize(n)               the shared permits change live
-  Cancelled(waiter, tier) a queued waiter's task was cancelled: it leaves its tier's queue
-
-Effect: Grant(waiter, reserve) (resolve its future with `reserve`); an Acquire with no
-Grant parked the waiter in its tier. A waiter cancelled before its task ran its handler
-is still queued and may be granted: the shell then feeds that permit straight back as a
-Release (asyncio.Semaphore's pattern), so it goes to the next waiter in the same order.
-
-Invariant (every reachable state; the tests' seeded walk asserts it): a free shared
-permit means no queue holds anyone, and a free reserve permit means no operator waits.
-So "straight in" needs only the free count: queued runs are never passed.
-
-Importable without side effects (stdlib only).
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -44,11 +11,11 @@ FRESH: Tier = "fresh"
 
 @dataclass(frozen=True)
 class Pool:
-    n: int                        # shared permits (automation and operators)
-    free: int                     # shared permits not held; < 0 after a shrink until runs end
-    reserve: int = 0              # operator-only permits
+    n: int
+    free: int
+    reserve: int = 0
     reserve_free: int = 0
-    op: tuple[int, ...] = ()      # queued waiters, FIFO per tier
+    op: tuple[int, ...] = ()
     back: tuple[int, ...] = ()
     fresh: tuple[int, ...] = ()
 
@@ -57,7 +24,6 @@ def new_pool(n: int, reserve: int = 0) -> Pool:
     return Pool(n=n, free=n, reserve=reserve, reserve_free=reserve)
 
 
-# ── events ──
 @dataclass(frozen=True)
 class Acquire:
     waiter: int
@@ -77,17 +43,16 @@ class Resize:
 @dataclass(frozen=True)
 class Cancelled:
     waiter: int
-    tier: Tier                    # the queue it parked in (its Acquire's)
+    tier: Tier
 
 
 Event = Union[Acquire, Release, Resize, Cancelled]
 
 
-# ── effect ──
 @dataclass(frozen=True)
 class Grant:
     waiter: int
-    reserve: bool                 # the permit came from the reserve (it goes back there)
+    reserve: bool
 
 
 def _queue(p: Pool, tier: Tier) -> tuple[int, ...]:
@@ -115,7 +80,6 @@ def _with_queue(p: Pool, tier: Tier, q: tuple[int, ...]) -> Pool:
 
 
 def _drain(p: Pool) -> tuple[Pool, list[Grant]]:
-    """Hand the free shared permits to waiters: operators, then take-backs, then fresh runs."""
     out: list[Grant] = []
     while p.free > 0 and (p.op or p.back or p.fresh):
         tier: Tier = OP if p.op else BACK if p.back else FRESH
@@ -128,13 +92,13 @@ def _drain(p: Pool) -> tuple[Pool, list[Grant]]:
 def decide(p: Pool, ev: Event) -> tuple[Pool, list[Grant]]:
     match ev:
         case Acquire(waiter=w, tier=tier):
-            if tier == OP and p.reserve_free > 0:     # only operators use the reserve
+            if tier == OP and p.reserve_free > 0:
                 return replace(p, reserve_free=p.reserve_free - 1), [Grant(w, True)]
-            if p.free > 0:                            # free => nobody queued (the invariant)
+            if p.free > 0:
                 return replace(p, free=p.free - 1), [Grant(w, False)]
             return _with_queue(p, tier, _queue(p, tier) + (w,)), []
 
-        case Release(reserve=True):             # a reserve permit goes to an operator run, or back
+        case Release(reserve=True):
             if p.op:
                 return replace(p, op=p.op[1:]), [Grant(p.op[0], True)]
             return replace(p, reserve_free=p.reserve_free + 1), []
@@ -142,10 +106,10 @@ def decide(p: Pool, ev: Event) -> tuple[Pool, list[Grant]]:
         case Release():
             return _drain(replace(p, free=p.free + 1))
 
-        case Resize(n=n):                       # the reserve is unchanged
+        case Resize(n=n):
             return _drain(replace(p, free=p.free + n - p.n, n=n))
 
-        case Cancelled(waiter=w, tier=tier):    # gone already (granted, or never parked): no-op
+        case Cancelled(waiter=w, tier=tier):
             return _with_queue(p, tier, tuple(x for x in _queue(p, tier) if x != w)), []
 
         case _:

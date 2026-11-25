@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""POST /api/of/v2/messages/queue holds the account's `broadcast_lock` from the
-Auto_Exclude sync through the OF POST (W24), as automation sends do.
-
-  case_lock_held_through_send_now / case_lock_held_through_scheduled:
-      a list blast with excluded ids: the lock is held when OF's send / schedule
-      call runs, and free once the route returns.
-  case_explicit_ids_never_lock:
-      an explicit-ids blast needs no list, so never takes the lock.
-  case_failed_post_releases_the_lock:
-      OF raising on the POST still frees the lock.
-  case_a_may_have_sent_post_refuses_the_same_retry:
-      a timed-out POST (OF may have taken it): the identical payload is a 409,
-      no second POST; another payload, or a retry after OF's 400, sends.
-  case_an_identical_send_while_the_first_is_in_flight_is_refused:
-      a twin of a send whose POST is still out (queued behind the lock, or an
-      explicit-ids one with no lock) is a 409 with no POST; after the first
-      times out the key stays held; a send that went through frees it.
-  case_concurrent_rewrite_waits_for_the_post:
-      a task that takes the lock and clears Auto_Exclude (another blast's sync,
-      a refresh) cannot run between this blast's sync and OF reading the list.
-
-Run: ./venv/bin/python service/tests/test_mass_queue_lock.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -45,8 +22,6 @@ AUTO_LID = 555_001
 
 
 class FakeOF:
-    """Auto_Exclude list API plus the broadcast surface; records whether the
-    account's broadcast lock was held at each POST and the list OF read."""
 
     def __init__(self, aid: str, *, fail: bool = False, read_after_s: float = 0.0):
         self.aid, self.fail, self.read_after_s = aid, fail, read_after_s
@@ -74,7 +49,7 @@ class FakeOF:
 
     def _post(self, kind: str) -> dict:
         held = broadcast_lock(self.aid).locked()
-        time.sleep(self.read_after_s)  # OF reads `excludedLists` while the POST is in flight
+        time.sleep(self.read_after_s)
         self.posts.append((kind, held, set(self.members.get(AUTO_LID, set()))))
         if self.fail:
             raise RuntimeError("OF 500")
@@ -88,8 +63,6 @@ class FakeOF:
 
 
 class _Patch:
-    """Swap server seams for one route call: the account, the OF client and the
-    mass_runs bookkeeping (covered by test_send_mass)."""
 
     def __init__(self, fake: FakeOF):
         self.fake = fake
@@ -220,7 +193,7 @@ async def case_concurrent_rewrite_waits_for_the_post():
         while not broadcast_lock(aid).locked():
             await asyncio.sleep(0)
 
-    async def rewrite():  # another sync / refresh: waits for the lock, then clears the list
+    async def rewrite():
         await asyncio.wait_for(taken(), timeout=5)
         async with broadcast_lock(aid):
             fake.members.get(AUTO_LID, set()).clear()
@@ -232,9 +205,6 @@ async def case_concurrent_rewrite_waits_for_the_post():
 
 
 async def case_a_may_have_sent_post_refuses_the_same_retry():
-    """OF may have taken a timed-out POST (the run stays 'running'): the same
-    payload again on that account is a 409 with no OF call; a different payload
-    still sends. A POST OF surely refused (400) leaves the retry free."""
     aid = "acc_lock_retry"
     await _account(aid)
     fake = FakeOF(aid)
@@ -280,10 +250,6 @@ async def case_a_may_have_sent_post_refuses_the_same_retry():
 
 
 async def case_an_identical_send_while_the_first_is_in_flight_is_refused():
-    """The first POST hangs then times out. Its twin, started while it is out,
-    is a 409 at once and never POSTs, whether it would have waited on the
-    broadcast lock (list blast) or not (explicit ids); a later twin is a 409
-    too (may have sent). A send OF answered frees the payload at once."""
     import threading
     for aid, mk in (("acc_inflight_list", _list_blast),
                     ("acc_inflight_ids",

@@ -1,27 +1,3 @@
-"""shifts — Shifts, Shift assignments and Clock events, each scoped to its Agency
-
-Backs the `/admin/shifts` router (service/shifts_api.py,
-docs/spec/phase-02-shifts-time-tracking.md):
-
-  shifts             — one planned interval per row: first occurrence in UTC,
-                       its IANA `tz`, an optional weekly repeat, and a soft
-                       `status` ('scheduled' | 'cancelled').
-  shift_assignments  — one row per (Employee, Creator) pair of a Shift.
-  clock_events       — one clock-in and its clock-out for one Employee on one
-                       Creator; the partial unique index keeps at most one
-                       open event (out_utc IS NULL) per Employee.
-
-The ORM models in db/models.py declare the same tables and indexes, so
-`init_db()`'s create_all brings them to a booting box; this revision keeps the
-alembic chain canonical. Idempotent (inspector-guarded, house convention).
-
-Downgrade drops the three tables in reverse order and loses only shift and
-clock data; nothing else reads it.
-
-Revision ID: 0067_shifts
-Revises: 0066_split_inbox
-Create Date: 2026-10-16
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -112,6 +88,7 @@ def upgrade() -> None:
         op.create_index("ix_clock_events_account_in", "clock_events", ["account_id", "in_utc"])
 
 
+# Drops the three tables: loses only shift and clock data; nothing else reads it.
 def downgrade() -> None:
     tables = set(sa.inspect(op.get_bind()).get_table_names())
     if "clock_events" in tables:

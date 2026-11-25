@@ -1,13 +1,3 @@
-"""scrape_history.gap_after_id / gap_before_id — the unread middle a capped scrape left
-
-A cursor walk that hit its cap before the last-seen id used to jump the cursor to the newest id,
-losing the middle for good. These two nullable columns keep that middle; the next scrape walks it.
-Inspector-guarded + idempotent; init_db's additive-column catch-up adds them on boot too.
-
-Revision ID: 0135_scrape_history_gap
-Revises: 0134_audit_credential_scrub
-Create Date: 2026-11-23
-"""
 from __future__ import annotations
 
 from typing import Sequence

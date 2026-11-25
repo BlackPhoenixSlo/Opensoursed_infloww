@@ -1,61 +1,7 @@
 #!/usr/bin/env python3
-"""Keep running's Pre-emption (docs/spec/phase-01-promo-preempt.md, Slice B): `run_once`
-against a fake OF whose live promo is re-created before it ends. No network.
-
-  case_fill_preempts_at_trusted_count  a Kept promo watched from 0 is re-created at ceil(0.9 x
-                                 cap) while live (auto_fill); OF ends the old one at the POST;
-                                 the memo restarts for the new id.
-  case_switch_off_or_preempt_off_after_end  PROMO_PREEMPT_ENABLED off, or the campaign's tick
-                                 off: no Fill at the threshold; After-end as in Slice A.
-  case_mn01_lagging_or_nonzero_new_count_waits  a first read above 0 (OF lagging the old count,
-                                 or a new promo not starting at 0) never fills: waits, with
-                                 keep_wait count_untrusted.
-  case_mn04_failed_preempt_falls_back_after_backoff  a refused Fill warns "no promo may be
-                                 live" (run + notice); OF ended the old one anyway; After-end
-                                 re-creates once the back-off passes.
-  case_mn04_no_recovery_slot_no_preempt  a Fill that would use the hour's last automatic
-                                 create waits (no_recovery_slot), After-end still has it.
-  case_switch_off_at_the_sending_cas  the switch turned off between the decision and the
-                                 POST: no POST.
-  case_timed_preempts_before_of_end  OF's finishedAt read twice unchanged, within
-                                 TIMED_LEAD_S, clock within 30 s of our own create: auto_timed.
-  case_rvb_c7_guessed_end_only_its_expiry_check  no OF finishedAt: our expires_at guess keeps
-                                 its one expiry check, no timed one; a real finishedAt with no
-                                 known clock plans none either; with one, OF's end + skew.
-  case_mn08_finished_at_changed_waits  OF's end time moved between reads: waits.
-  case_mn08_skew_waits           our create's createdAt 45 s off our clock: waits, keep_wait clock.
-  case_mn08_cap9_never_timed     cap 9 is never pre-empted, end time or not.
-  case_toast_burst_reads         toast bursts through the transcoder: far from the threshold
-                                 no promo run (0 list reads), near it one run.
-  case_rvb_r1_replaced_still_live_stands_down  a Fill whose old promo OF keeps listing live:
-                                 no further create (switch on or off, After-end too), keep_wait
-                                 second_live, promo_keep_second_live logged once past
-                                 NOT_LISTED_S (the lag), never inside it.
-  case_rvb_r2_refused_fill_keeps_running  an OF 400 on a Fill: Keep running stays on, the
-                                 early tick goes off, After-end recovers after the back-off.
-  case_rvb_c5_failed_fill_queues_one_recovery  a 429 on a Fill drops the toast gate's entry and
-                                 queues one recovery Re-check at the back-off's end; a run
-                                 inside the back-off stacks none.
-  case_f4_recovery_moves_a_distant_recheck_earlier  the Re-check slot held by a job +40 min
-                                 out: a failed Fill's recovery moves that one job to the
-                                 back-off's end; a later deadline never pushes it back.
-  case_f5_dead_session_fill_promises_no_wait  a Fill refused for a dead session queues no
-                                 recovery and its notice says it resumes once logged in again.
-  case_f7_early_returns_clear_wait_reason  fenced, OF unreachable or nothing managed: the
-                                 waiting line is cleared (not in a dry run).
-  case_rvb_c6_racing_observe_keeps_drop  two racing folds of one memo: the drop wins, each run
-                                 decides on the committed memo.
-  case_rvb_r3_timed_in_of_time   130 s left on our clock but 105 s on OF's (OF 25 s ahead):
-                                 auto_timed, its window re-checked at the reservation.
-  case_f1_fill_fires_on_own_create  a promo Keep running made itself gets one first_read
-                                 Re-check FIRST_READ_S out: its first count is 0, so Fill fires
-                                 at the threshold later; an answer above 0 never trusts it.
-
-Run: ./venv/bin/python service/tests/test_promo_preempt.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -88,12 +34,6 @@ def _iso(dt: datetime) -> str:
 
 
 class FakeOF:
-    """OF's promo endpoints ({items} on read, a LIST on create), with Pre-emption's modes:
-    `ends_old_on_create` (OF ends the live promo when a new one is made, default yes),
-    `ends_old_on_failed_create`, `claims_lag` (the new promo's first read shows the old
-    promo's count), `new_starts_at` (the new promo's first count), `finished_at` (seconds
-    from now OF echoes as the new promo's finishedAt; None = null), `created_at_skew`
-    (seconds OF's createdAt runs ahead of our clock)."""
     ends_old_on_create = True
     ends_old_on_failed_create = False
     claims_lag = False
@@ -107,7 +47,7 @@ class FakeOF:
         self.store: dict[int, dict] = {}
         self.created: list[dict] = []
         self.reads = 0
-        self._lag: dict[int, int] = {}      # new id -> the count its first read shows
+        self._lag: dict[int, int] = {}
 
     def seed(self, pid, *, counts=10, claims=0, finished=False, finished_at=None):
         self.store[pid] = {"id": pid, "message": "Promo", "price": 3, "type": "all",
@@ -124,7 +64,7 @@ class FakeOF:
             for p in items:
                 if p["id"] in self._lag:
                     p["claimsCount"] = self._lag.pop(p["id"])
-        items.sort(key=lambda p: -p["id"])     # newest first, like OF
+        items.sort(key=lambda p: -p["id"])
         return {"hasMore": True, "items": items[offset:offset + limit]}
 
     def _end_live(self):
@@ -204,7 +144,6 @@ async def _notices(aid) -> list[str]:
 
 
 async def _age_all(aid, seconds) -> None:
-    """The Creator's create history `seconds` into the past."""
     back = timedelta(seconds=seconds)
     async with get_session() as s:
         for (r,) in await s.execute(select(PromoCreateReservation).where(
@@ -237,7 +176,6 @@ class _Resp:
         self.status_code, self.text, self.headers = status, text, {}
 
 
-# ── Fill ────────────────────────────────────────────────────────────────────
 
 async def case_fill_preempts_at_trusted_count():
     aid = "pp_fill"
@@ -247,7 +185,7 @@ async def case_fill_preempts_at_trusted_count():
     assert res["skipped"] == "promo_already_live" and "wait_reason" not in res, res
     f.claims(501, 8)
     res = await run_once(aid, KIND, payload=GO)
-    assert res["skipped"] == "promo_already_live" and f.created == [], res     # 8 < 9
+    assert res["skipped"] == "promo_already_live" and f.created == [], res
     f.claims(501, 9)
     res = await run_once(aid, KIND, payload=GO)
     assert res["reactivated"] == 1 and res["source"] == "auto_fill", res
@@ -258,14 +196,13 @@ async def case_fill_preempts_at_trusted_count():
     (r,) = await _reservations(aid)
     assert (r.source, r.state, r.claims_seen, r.first_claims) == ("auto_fill", "created", 9, 0), r
     assert any("after the last promo filled" in t for t in await _notices(aid)), await _notices(aid)
-    # the memo restarts for the new id: its first read is 0, then it fills again
     res = await run_once(aid, KIND, payload=GO)
     st = await _state(aid)
     assert (st.kept_of_promo_id, st.first_claims) == (new_id, 0), (st.kept_of_promo_id, st.first_claims)
     assert st.skew_s is not None and abs(st.skew_s) <= 1, st.skew_s
     f.claims(new_id, 9)
     res = await run_once(aid, KIND, payload=GO)
-    assert res["wait_reason"] == "cooldown" and len(f.created) == 1, res   # 2 min since the last
+    assert res["wait_reason"] == "cooldown" and len(f.created) == 1, res
     await _age_all(aid, 121)
     res = await run_once(aid, KIND, payload=GO)
     assert res["reactivated"] == 1 and res["source"] == "auto_fill", res
@@ -281,8 +218,8 @@ async def case_switch_off_or_preempt_off_after_end():
             f.claims(pid, 9)
             res = await run_once(aid, KIND, payload=GO)
             assert res["skipped"] == "promo_already_live" and f.created == [], (aid, res)
-            assert "wait_reason" not in res, res        # no Pre-emption: no waiting line
-            f.claims(pid, 10)                           # full: After-end on the watched-from-0 count
+            assert "wait_reason" not in res, res
+            f.claims(pid, 10)
             res = await run_once(aid, KIND, payload=GO)
             assert res["reactivated"] == 1 and "source" not in res, (aid, res)
         (r,) = await _reservations(aid)
@@ -290,7 +227,6 @@ async def case_switch_off_or_preempt_off_after_end():
 
 
 async def case_mn01_lagging_or_nonzero_new_count_waits():
-    # first read of the Kept promo above 0
     aid = "pp_mn01_first"
     await _seed(aid, of_id=701)
     f = _use_fake(); f.seed(701, claims=3)
@@ -299,7 +235,6 @@ async def case_mn01_lagging_or_nonzero_new_count_waits():
     res = await run_once(aid, KIND, payload=GO)
     assert res["wait_reason"] == "count_untrusted" and f.created == [], res
     assert (await _state(aid)).wait_reason == "count_untrusted"
-    # after a Fill, OF lags: the new promo's first read shows the old count
     for aid, mode in (("pp_mn01_lag", {"claims_lag": True}), ("pp_mn01_start", {"new_starts_at": 2})):
         cid = await _seed(aid, of_id=702 if mode.get("claims_lag") else 703)
         f = _use_fake()
@@ -312,7 +247,7 @@ async def case_mn01_lagging_or_nonzero_new_count_waits():
         res = await run_once(aid, KIND, payload=GO)
         assert res["source"] == "auto_fill", (aid, res)
         new_id = (await _campaign(cid)).of_promo_id
-        res = await run_once(aid, KIND, payload=GO)          # first read of the new promo: not 0
+        res = await run_once(aid, KIND, payload=GO)
         assert res["wait_reason"] == "count_untrusted", (aid, res)
         f.claims(new_id, 9)
         res = await run_once(aid, KIND, payload=GO)
@@ -336,7 +271,7 @@ async def case_mn04_failed_preempt_falls_back_after_backoff():
     assert res["skipped"] == "backoff" and len(f.created) == 1, res
     await _age_all(aid, 121)
     res = await run_once(aid, KIND, payload=GO)
-    assert res["reactivated"] == 1 and "source" not in res, res       # After-end recovers
+    assert res["reactivated"] == 1 and "source" not in res, res
     assert [r.source for r in await _reservations(aid)] == ["auto_fill", "auto_ended"]
     assert (await _campaign(cid)).auto_reactivate
 
@@ -347,7 +282,7 @@ async def case_mn04_no_recovery_slot_no_preempt():
     f = _use_fake(); f.seed(901, claims=0)
     now = datetime.utcnow()
     async with get_session() as s:
-        for m in (10, 20):     # two automatic creates this hour: a Fill would use the last
+        for m in (10, 20):
             s.add(PromoCreateReservation(
                 account_id=aid, source="auto_ended", state="cleared", terms_json="{}",
                 created_at=now - timedelta(minutes=m)))
@@ -356,7 +291,7 @@ async def case_mn04_no_recovery_slot_no_preempt():
     res = await run_once(aid, KIND, payload=GO)
     assert res["wait_reason"] == "no_recovery_slot" and f.created == [], res
     assert (await _state(aid)).wait_reason == "no_recovery_slot"
-    f.claims(901, 10)          # full: After-end may use the last create
+    f.claims(901, 10)
     res = await run_once(aid, KIND, payload=GO)
     assert res["reactivated"] == 1 and "source" not in res, res
     assert (await _state(aid)).wait_reason is None
@@ -371,7 +306,7 @@ async def case_switch_off_at_the_sending_cas():
     real_mark = promo_create_guard.mark_sending
 
     async def flip_then_mark(res, recheck):
-        os.environ[SWITCH] = "0"        # the owner flips the kill switch mid-run
+        os.environ[SWITCH] = "0"
         return await real_mark(res, recheck)
     promo_create_guard.mark_sending = flip_then_mark
     try:
@@ -384,11 +319,8 @@ async def case_switch_off_at_the_sending_cas():
     assert (r.state, r.error_class) == ("failed", "not_sent"), (r.state, r.error_class)
 
 
-# ── Timed ───────────────────────────────────────────────────────────────────
 
 async def _timed_setup(aid, *, counts=10, finished_at=100.0, skew=0.0):
-    """A first After-end create measures the clock (skew) and leaves the new promo live with
-    OF's finishedAt `finished_at` s ahead. Returns (fake, campaign id, new promo id)."""
     cid = await _seed(aid, of_id=1100, counts=counts)
     f = _use_fake(); f.seed(1100, counts=counts, finished=True)
     f.finished_at, f.created_at_skew = finished_at, skew
@@ -400,10 +332,10 @@ async def _timed_setup(aid, *, counts=10, finished_at=100.0, skew=0.0):
 async def case_timed_preempts_before_of_end():
     aid = "pp_timed"
     f, cid, pid = await _timed_setup(aid)
-    await _age_all(aid, 700)           # past the breaker's not-listed hold and the cooldown
-    res = await run_once(aid, KIND, payload=GO)    # first read of its end time: not confirmed
+    await _age_all(aid, 700)
+    res = await run_once(aid, KIND, payload=GO)
     assert res["wait_reason"] == "end_unconfirmed" and len(f.created) == 1, res
-    res = await run_once(aid, KIND, payload=GO)    # read twice unchanged, clock known
+    res = await run_once(aid, KIND, payload=GO)
     assert res["reactivated"] == 1 and res["source"] == "auto_timed", res
     assert f.store[pid]["isFinished"]
     assert [r.source for r in await _reservations(aid)] == ["auto_ended", "auto_timed"]
@@ -418,17 +350,14 @@ async def case_rvb_c7_guessed_end_only_its_expiry_check():
     async with get_session() as s:
         s.add(PromoKeepState(account_id=aid, skew_s=0))
     res = await run_once(aid, KIND, payload=GO)
-    # the guess keeps its one expiry check, no early timed one
     assert res["recheck"]["reason"] == "expiry" and f.created == [], res
     at = datetime.fromisoformat(res["recheck"]["at"])
     assert abs((at - (exp + timedelta(seconds=30))).total_seconds()) < 2, at
-    # OF's own end time, but no known clock: Timed cannot happen, no timed check
     aid = "pp_c7_noclock"
     await _seed(aid, of_id=1210)
     f = _use_fake(); f.seed(1210, claims=0, finished_at=_iso(datetime.utcnow() + timedelta(seconds=600)))
     res = await run_once(aid, KIND, payload=GO)
     assert "recheck" not in res and f.created == [], res
-    # ... with one: just inside the lead on OF's clock (OF 20 s behind ours)
     aid = "pp_c7_clock"
     end = datetime.utcnow() + timedelta(seconds=600)
     await _seed(aid, of_id=1220)
@@ -472,11 +401,8 @@ async def case_mn08_cap9_never_timed():
     assert len(f.created) == 1
 
 
-# ── Toast gate: list reads per toast burst ───────────────────────────────────
 
 async def _burst_reads(aid, f: FakeOF, frames: list[int]) -> int:
-    """List reads the burst costs: each frame of n subscribed toasts goes through the
-    transcoder; the rule (fired before, past the Poke floor) runs only if poked."""
     async with get_session() as s:
         rid = (await s.execute(select(AutomationRule.id).where(
             AutomationRule.account_id == aid, AutomationRule.kind == KIND))).scalar_one()
@@ -498,15 +424,14 @@ async def case_toast_burst_reads():
     await _seed(aid, of_id=1301, counts=50)
     f = _use_fake(); f.seed(1301, counts=50, claims=2)
     await run_once(aid, KIND, payload=GO)
-    assert await _burst_reads(aid, f, [1, 1, 3, 1]) == 0      # 2 + 6 claims, far from 45
+    assert await _burst_reads(aid, f, [1, 1, 3, 1]) == 0
     aid = "pp_toast_near"
     await _seed(aid, of_id=1302, counts=50)
     f = _use_fake(); f.seed(1302, counts=50, claims=40)
     await run_once(aid, KIND, payload=GO)
-    assert await _burst_reads(aid, f, [1, 1, 1, 1]) == 1      # 40 + 4 = threshold 45 - 1
+    assert await _burst_reads(aid, f, [1, 1, 1, 1]) == 1
 
 
-# ── Review round B ──────────────────────────────────────────────────────────
 
 class _Logs(logging.Handler):
     def __init__(self):
@@ -528,7 +453,7 @@ async def case_rvb_r1_replaced_still_live_stands_down():
     aid = "pp_r1"
     cid = await _seed(aid, of_id=1401)
     f = _use_fake(); f.seed(1401, claims=0)
-    f.ends_old_on_create = False               # OF keeps listing the replaced promo live
+    f.ends_old_on_create = False
     await run_once(aid, KIND, payload=GO)
     f.claims(1401, 9)
     res = await run_once(aid, KIND, payload=GO)
@@ -538,7 +463,7 @@ async def case_rvb_r1_replaced_still_live_stands_down():
     with _Logs() as logs:
         res = await run_once(aid, KIND, payload=GO)
         assert res["skipped"] == "promo_already_live" and res["wait_reason"] == "second_live", res
-        assert len(f.created) == 1 and second(logs) == [], (f.created, logs.lines)   # inside the lag
+        assert len(f.created) == 1 and second(logs) == [], (f.created, logs.lines)
     await _age_all(aid, 601)
     f.claims(new_id, 9)
     for switch in ("1", "0"):
@@ -546,7 +471,6 @@ async def case_rvb_r1_replaced_still_live_stands_down():
             res = await run_once(aid, KIND, payload=GO)
             assert res["skipped"] == "promo_already_live" and len(f.created) == 1, (switch, res)
             assert len(second(logs)) == 1 and str(new_id) in second(logs)[0], (switch, logs.lines)
-    # the new promo ends, the replaced one is still listed live: After-end stands down too
     f.store[new_id]["isFinished"] = True
     res = await run_once(aid, KIND, payload=GO)
     assert res["skipped"] == "promo_already_live" and res["live_of_promo_id"] == 1401, res
@@ -570,7 +494,7 @@ async def case_rvb_r2_refused_fill_keeps_running():
     f.fail_with = None
     await _age_all(aid, 121)
     res = await run_once(aid, KIND, payload=GO)
-    assert res["reactivated"] == 1 and "source" not in res, res       # After-end recovers
+    assert res["reactivated"] == 1 and "source" not in res, res
     assert [r.source for r in await _reservations(aid)] == ["auto_fill", "auto_ended"]
 
 
@@ -597,16 +521,13 @@ async def case_rvb_c5_failed_fill_queues_one_recovery():
     assert abs((at - (r.not_before + timedelta(seconds=5))).total_seconds()) < 1, (at, r.not_before)
     assert pr._gate.get(aid) is None, "the toast gate forgets the promo OF may have ended"
     f.fail_with = None
-    res = await run_once(aid, KIND, payload=GO)          # inside the back-off
+    res = await run_once(aid, KIND, payload=GO)
     assert res["skipped"] == "backoff" and "recheck" not in res, res
     jobs = await _pending_rechecks(aid)
     assert [j.get("_recheck") for j in jobs] == ["recovery"], jobs
 
 
 async def case_f4_recovery_moves_a_distant_recheck_earlier():
-    """F4: the Re-check slot held by a job far out (a Timed/expiry look at +40 min) never
-    delays a failed Fill's recovery: that same job moves to the back-off's end (one job,
-    one slot); a later deadline never pushes it back out."""
     from automations import promo_reactivate as pr
     aid = "pp_f4"
     await _seed(aid, of_id=1611)
@@ -633,13 +554,11 @@ async def case_f4_recovery_moves_a_distant_recheck_earlier():
     assert (body.get("_recheck"), body.get("dry_run")) == ("recovery", False), body
     st = await _state(aid)
     assert (st.recheck_job_id, st.recheck_at) == (jid, jobs[0].run_at), (st.recheck_job_id, st.recheck_at)
-    assert await pr._queue_recheck(aid, GO, "expiry", far) is None   # later: never pushed back
+    assert await pr._queue_recheck(aid, GO, "expiry", far) is None
     assert (await _state(aid)).recheck_at == jobs[0].run_at
 
 
 async def case_f5_dead_session_fill_promises_no_wait():
-    """F5: a Fill refused for a dead session queues no recovery (run_once skips the account
-    until it is logged in again), so its notice never promises a short wait."""
     aid = "pp_f5"
     await _seed(aid, of_id=1621)
     f = _use_fake(); f.seed(1621, claims=0)
@@ -656,8 +575,6 @@ async def case_f5_dead_session_fill_promises_no_wait():
 
 
 async def case_f7_early_returns_clear_wait_reason():
-    """F7: a run that stops before deciding (fenced, OF unreachable, nothing managed) clears
-    the card's waiting line: a stale reason never stays up."""
     aid = "pp_f7_clear"
     cid = await _seed(aid, of_id=1631)
     f = _use_fake(); f.seed(1631, claims=0)
@@ -685,7 +602,7 @@ async def case_f7_early_returns_clear_wait_reason():
     res = await run_once(aid, KIND, payload=GO)
     assert res["managed"] == 0 and (await _state(aid)).wait_reason is None, res
     await stale()
-    res = await run_once(aid, KIND, payload={})                  # a dry run writes nothing
+    res = await run_once(aid, KIND, payload={})
     assert (await _state(aid)).wait_reason == "count_untrusted", res
 
 
@@ -707,7 +624,6 @@ async def case_rvb_c6_racing_observe_keeps_drop():
                                                 pr._observe(aid, read(9), {1701}, now))
     st = await _state(aid)
     assert st.first_claims is None, (st.first_claims, st.last_claims)
-    # Order is the loop's: the 9-read may commit first (then it rightly saw 8 -> 9); the drop is never erased.
     assert a.first_claims is None, (a, b)
 
 
@@ -722,11 +638,8 @@ async def case_rvb_r3_timed_in_of_time():
     assert res["reactivated"] == 1 and res["source"] == "auto_timed", res
 
 
-# ── rwl fixes ───────────────────────────────────────────────────────────────
 
 async def _run_due(aid, within_s=30) -> list[dict]:
-    """Run the Creator's pending jobs due within `within_s` (the supervisor would, that soon);
-    a job they queue is left for later."""
     async with get_session() as s:
         await s.execute(update(ScheduledJob).where(
             ScheduledJob.account_id == aid, ScheduledJob.kind == KIND, ScheduledJob.status == "pending",
@@ -746,18 +659,17 @@ async def case_f1_fill_fires_on_own_create():
     cid = await _seed(aid, of_id=1801)
     f = _use_fake(); f.seed(1801, finished=True)
     res = await run_once(aid, KIND, payload=GO)
-    assert res["reactivated"] == 1, res                  # After-end: Keep running's own promo
+    assert res["reactivated"] == 1, res
     new_id = (await _campaign(cid)).of_promo_id
-    ran = await _run_due(aid)                            # its first read, before any claim
+    ran = await _run_due(aid)
     assert [r.get("skipped") for r in ran] == ["promo_already_live"], ran
     f.claims(new_id, 5)
-    res = await run_once(aid, KIND, payload=GO)          # a toast's run
+    res = await run_once(aid, KIND, payload=GO)
     assert res["skipped"] == "promo_already_live" and "wait_reason" not in res, res
     f.claims(new_id, 9)
     await _age_all(aid, 121)
     res = await run_once(aid, KIND, payload=GO)
     assert res["reactivated"] == 1 and res["source"] == "auto_fill", res
-    # an answer above 0 is never trusted, whatever the first read says
     aid = "pp_f1_answer"
     cid = await _seed(aid, of_id=1802)
     f = _use_fake(); f.seed(1802, finished=True)

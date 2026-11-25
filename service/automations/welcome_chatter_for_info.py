@@ -161,6 +161,14 @@ class _Candidate:
         self.last_dir = ""
         self.last_body = ""
         self.last_in_body = ""
+        # send_welcome's turn handoff — his newest WORDED inbound (distinct from
+        # `last_in_body`, his newest inbound of ANY kind) and whether anything
+        # but a welcome bubble has answered him since. The whole seam is
+        # `_inbound.TurnHandoff`; this lane only feeds it rows and asks `admit`.
+        # Every non-welcome outbound narrows the window, blasts included — this
+        # lane's turn gate is already blast-blind, so a handoff cancelled by a
+        # mass send just degrades to today's behaviour (he waits for his own
+        # next message). Errs toward silence, the safe direction for a rescue.
         self.turn = TurnHandoff()
         self.messages: list[tuple[str, str]] = []
         self.closing_cut = False
@@ -176,6 +184,8 @@ async def _gather(account_id: str,
         rows = (await s.execute(
             select(Message.fan_id, Message.direction, Message.body,
                    Message.image_desc,
+                   # Read for two things: `out_since_in_all_welcome` (the guard on
+                   # the turn handoff) and the turn-neutral rule below.
                    Message.automation_kind)
             .where(*where)
             .order_by(Message.fan_id, Message.created_at, Message.message_id)
@@ -196,6 +206,11 @@ async def _gather(account_id: str,
             c.last_body = text
         if direction == "in":
             c.last_in_body = text
+            # …and the handoff seam. ⚠️ `_strip_html(body)`, NOT `text`: `text`
+            # is this lane's HISTORY LINE and carries "[he sent: …]" for any
+            # described row — our own synthesis, not him speaking — and the seam
+            # installs this string as the model's "his line". The describe is not
+            # lost: it is in `c.messages` via `_history_text`.
             c.turn.on_inbound(body, _strip_html(body))
         else:
             c.turn.on_outbound(took_the_turn=answers_him,
@@ -245,6 +260,10 @@ def _questions_still_needed(f: Fan, asked: set[str]) -> list[tuple[str, str]]:
     return q
 
 
+# Colorful, job-specific riffs for the grounded occupation example (flavor B):
+# keyed on a lowercased occupation, generic fallback otherwise. Every riff rides
+# on his REAL job — nothing invented — so "a chef? bet u cook fire" only ever
+# reaches a fan we actually know is a chef.
 _JOB_RIFFS = {
     "chef": "bet u cook fire, fave dish?",
     "cook": "bet u cook fire, fave dish?",
@@ -719,6 +738,10 @@ async def _load_rule_settings(account_id: str, payload: dict) -> dict:
 
 async def _send_closing_ppv(client, account_id: str, fan_id: int,
                             ppv: _ClosingPPV, *, dry_run: bool) -> str:
+    """Send the closing PPV to one fan. The caller holds the fan lease. Returns
+    "sent", "dry_run" (would send), "already" (he had it — once per fan, stamped
+    on `fans.gather_close_at`), "owned" (he owns some of the media) or "failed".
+    Never raises: a failure must not block the graduation that follows."""
     try:
         async with get_session() as s:
             stamped = (await s.execute(
@@ -1101,7 +1124,7 @@ async def _turn_fill_facts(t: _Turn) -> None:
 async def _turn_finish_lane(t: _Turn) -> None:
     if await _close_with_ppv(t):
         t.out.kind = "closing_preview"
-        return
+        return  # dry-run preview: he stays in the lane
     await _graduate(t.client, t.cfg.account_id, t.c.fan_id, t.f)
     t.out.kind = "graduated"
     t.out.newly_skiplisted += 1
@@ -1333,6 +1356,7 @@ async def _turn(cfg: _RunConfig, c: _Candidate, fan_row: Fan | None,
     account_id, fan_id = cfg.account_id, c.fan_id
     t = _Turn(cfg, c, client, profile, now, TurnOutcome(),
               fan_row or Fan(account_id=str(account_id), fan_id=fan_id))
+    # Another automation messaged this fan recently → rest it (W3 cooldown).
     if await ax.fan_on_cooldown(account_id, fan_id):
         t.out.kind, t.out.skipped_cooldown = "cooldown", 1
         return t.out

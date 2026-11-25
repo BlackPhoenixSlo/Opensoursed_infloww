@@ -1,22 +1,6 @@
-"""A run hands its concurrency slot back while it only waits (run_slot).
-
-The supervisor's `_one` takes its permit through `run_slot.hold(pool)`; the
-typing hold (`_common.hold_with_typing`) wraps its sleep in
-`run_slot.released()`. The OF write spacing (`of_write_paced`) does not: it
-can run under `broadcast_lock`. These cases pin that the permit is really free
-during the wait, comes back after and ahead of fresh runs, within the run's budget or
-not at all (SlotLost), is never released by a task that does not own it, nor
-for a short hold, nor with the knob off, and that the
-pool count stays exact when a run is cancelled or raises mid-wait. The
-`case_the_pool_*` cases drive SlotPool alone: a permit granted to a waiter
-cancelled before it resumes passes on, a timeout leaves no waiter, a reserve
-permit goes to the next operator or back.
-
-Run: ./venv/bin/python service/tests/test_run_slot.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB + TEST_MODE
+import _harness
 import asyncio
 import os
 
@@ -26,11 +10,10 @@ from automations import _common
 
 _harness.bootstrap()
 
-B = 120.0   # the budget hold_with_typing passes (rhythm.INLINE_MAX_S)
+B = 120.0
 
 
 async def _free(pool: run_slot.SlotPool) -> bool:
-    """Can another (fresh) run take a permit right now?"""
     try:
         await asyncio.wait_for(pool.acquire(), 0.05)
     except TimeoutError:
@@ -40,17 +23,17 @@ async def _free(pool: run_slot.SlotPool) -> bool:
 
 
 def _released(seconds: float = 5.0, budget_s: float = B):
-    return run_slot.released(seconds, budget_s=budget_s)   # the knob's default floor: 3 s
+    return run_slot.released(seconds, budget_s=budget_s)
 
 
 async def case_released_frees_the_slot_and_takes_it_back():
     pool = run_slot.SlotPool(1)
     seen: list[bool] = []
     async with run_slot.hold(pool):
-        seen.append(await _free(pool))          # held: nobody else gets in
+        seen.append(await _free(pool))
         async with _released():
-            seen.append(await _free(pool))      # waiting: the slot is free
-        seen.append(await _free(pool))          # back to work: held again
+            seen.append(await _free(pool))
+        seen.append(await _free(pool))
     assert seen == [False, True, False], seen
     assert pool.free == 1
 
@@ -76,9 +59,6 @@ async def case_the_freed_slot_serves_another_run():
 
 
 async def case_a_reacquirer_beats_a_fresh_run_queued_first():
-    """The hog holds the only slot; a fresh run queues for it, THEN the typing
-    run finishes its hold and queues to take its slot back. The hog leaves:
-    the run mid-reply (fan lease, run lock) must get the slot first."""
     pool = run_slot.SlotPool(2)
     order: list[str] = []
     hog_in, hog_go, typing_go = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -87,9 +67,9 @@ async def case_a_reacquirer_beats_a_fresh_run_queued_first():
         async with run_slot.hold(pool):
             async with _released():
                 await hog_in.wait()
-                await asyncio.sleep(0.02)       # the fresh run queues meanwhile
+                await asyncio.sleep(0.02)
             order.append("typing:back")
-            await typing_go.wait()              # holds its slot until the check below
+            await typing_go.wait()
         order.append("typing:done")
 
     async def hog():
@@ -101,14 +81,14 @@ async def case_a_reacquirer_beats_a_fresh_run_queued_first():
         await hog_in.wait()
         async with run_slot.hold(pool):
             order.append("fresh:ran")
-    async with run_slot.hold(pool):             # a third run: 2 slots, both taken
+    async with run_slot.hold(pool):
         tasks = [asyncio.create_task(c()) for c in (typing_run, hog, fresh)]
         await asyncio.sleep(0.05)
         assert pool.queued() == (1, 1), pool.queued()
         hog_go.set()
         await asyncio.gather(*tasks[1:2])
         await asyncio.sleep(0.005)
-        assert order == ["typing:back"], order  # fresh still waits behind it
+        assert order == ["typing:back"], order
         typing_go.set()
     await asyncio.gather(*tasks)
     assert order[0] == "typing:back" and "fresh:ran" in order, order
@@ -116,8 +96,6 @@ async def case_a_reacquirer_beats_a_fresh_run_queued_first():
 
 
 async def case_take_back_past_the_budget_loses_the_slot():
-    """Hold + wait > budget: SlotLost after the sleep, the count stays exact,
-    and every later hold of that run raises before it can send."""
     pool = run_slot.SlotPool(1)
     sent: list[int] = []
     hog_go = asyncio.Event()
@@ -137,19 +115,16 @@ async def case_take_back_past_the_budget_loses_the_slot():
                     continue
                 sent.append(i)
     r = asyncio.create_task(run())
-    await asyncio.sleep(0.005)                  # run() released; the hog takes the slot
+    await asyncio.sleep(0.005)
     h = asyncio.create_task(hog())
     await r
-    assert sent == [-1, -1, -1], sent           # nothing after the timeout
+    assert sent == [-1, -1, -1], sent
     hog_go.set()
     await h
     assert pool.free == 1, pool.free
 
 
 async def case_the_take_back_budget_is_per_run_not_per_hold():
-    """Each take-back waits ~40 ms, well inside a 100 ms budget, but the run's
-    waits add up: the third crosses it and raises, so many holds of one reply
-    (or one run's several replies) cannot stretch past the fan lease."""
     pool = run_slot.SlotPool(1)
     sent: list[int] = []
 
@@ -161,7 +136,7 @@ async def case_the_take_back_budget_is_per_run_not_per_hold():
             for i in range(5):
                 async with _released(5.0, budget_s=0.1):
                     h = asyncio.create_task(hog())
-                    await asyncio.sleep(0.005)          # the hog has the slot now
+                    await asyncio.sleep(0.005)
                 sent.append(i)
         except run_slot.SlotLost:
             pass
@@ -204,7 +179,7 @@ async def case_a_child_task_never_releases_the_parents_slot():
     seen: list[bool] = []
 
     async def child():
-        async with _released():                 # inherits the context, not the slot
+        async with _released():
             seen.append(await _free(pool))
     async with run_slot.hold(pool):
         await asyncio.create_task(child())
@@ -213,9 +188,6 @@ async def case_a_child_task_never_releases_the_parents_slot():
 
 
 async def case_a_lent_slot_is_free_only_while_every_child_waits():
-    """send_welcome's paced pool (run_paced): the children share the run's
-    permit. It is held while one of them works and handed back while all of
-    them sit in a hold; the run has it again after the pool."""
     pool = run_slot.SlotPool(1)
     seen: dict[str, bool] = {}
     a_hold, b_hold, a_back = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -247,8 +219,6 @@ async def case_a_lent_slot_is_free_only_while_every_child_waits():
 
 
 async def case_lent_children_take_back_ahead_of_fresh_runs_once():
-    """Two children leave their holds while a hog has the slot and a fresh run
-    queued first: one take-back (not two permits), served before the fresh run."""
     pool = run_slot.SlotPool(1)
     order: list[str] = []
     hog_in, hog_go = asyncio.Event(), asyncio.Event()
@@ -277,10 +247,10 @@ async def case_lent_children_take_back_ahead_of_fresh_runs_once():
         async with run_slot.lend(budget_s=B):
             kids = asyncio.gather(child("a"), child("b"))
             await holding.acquire()
-            await holding.acquire()                    # both children are in their holds
+            await holding.acquire()
             h, f = asyncio.create_task(hog()), asyncio.create_task(fresh())
             await asyncio.sleep(0.05)
-            assert pool.queued() == (1, 1), pool.queued()   # ONE take-back for both
+            assert pool.queued() == (1, 1), pool.queued()
             hog_go.set()
             await kids
         assert "fresh" not in order, order
@@ -309,7 +279,7 @@ async def case_a_lent_slot_past_the_budget_stops_every_child_and_the_run():
             async with run_slot.lend(budget_s=0.05):
                 kids = [asyncio.create_task(child(n)) for n in "ab"]
                 await asyncio.sleep(0.005)
-                h = asyncio.create_task(hog())          # takes the freed permit
+                h = asyncio.create_task(hog())
                 res = await asyncio.gather(*kids, return_exceptions=True)
                 assert all(isinstance(r, run_slot.SlotLost) for r in res), res
         raise AssertionError("the run took its slot back past the budget")
@@ -343,14 +313,10 @@ async def case_a_child_cancelled_mid_hold_leaves_its_siblings_and_the_count():
 
 
 async def case_the_switch_turns_release_off_and_on_at_once():
-    """AUTOMATION_RELEASE_SLOT_ON_HOLD (ADR 0025 fix 5): saved 0 from the
-    panel, a hold keeps its slot and a run lends nothing; saved 1, the very
-    next hold of the same run hands it back. An env "off" beats a stored 1.
-    The row is a switch, live, never pending."""
     import lane_config
     knob = "AUTOMATION_RELEASE_SLOT_ON_HOLD"
     assert "tmp" in lane_config.path() or "/T/" in lane_config.path(), lane_config.path()
-    assert run_slot.release_on()                        # default on; registers the switch
+    assert run_slot.release_on()
     pool = run_slot.SlotPool(1)
     seen: list[bool] = []
     try:
@@ -402,8 +368,6 @@ async def case_the_kill_switch_turns_lending_off():
 
 
 async def case_run_paced_hands_the_slot_back_while_its_bursts_type():
-    """The real pool with the real typing hold: while every burst types, a
-    fresh run gets the slot; the bursts' sends wait for it to come back."""
     from automations import _run_pool
     pool = run_slot.SlotPool(1)
     seen: list[bool] = []
@@ -433,10 +397,6 @@ async def case_run_paced_hands_the_slot_back_while_its_bursts_type():
 
 
 async def case_an_operator_run_starts_at_once_with_every_slot_taken():
-    """ADR 0025 fix 2: automation holds every shared slot and more queue; an
-    operator's run starts at once on the reserve. A second operator, with the
-    reserve busy, goes ahead of every queued automation run (fresh or taking
-    back) for the next shared slot."""
     pool = run_slot.SlotPool(2, reserve=1)
     order: list[str] = []
     go = asyncio.Event()
@@ -457,7 +417,7 @@ async def case_an_operator_run_starts_at_once_with_every_slot_taken():
     op2 = asyncio.create_task(run("op2", operator=True))
     await asyncio.sleep(0.01)
     assert pool.queued_operator() == 1 and pool.queued() == (0, 1), (pool.queued_operator(), pool.queued())
-    hogs[0].cancel()                                  # one shared slot frees
+    hogs[0].cancel()
     await asyncio.sleep(0.01)
     assert order[-1] == "op2", ("the freed slot went to automation", order)
     go.set()
@@ -475,9 +435,6 @@ async def case_automation_never_takes_a_reserve_slot():
 
 
 async def case_an_operator_run_takes_its_slot_back_in_its_tier():
-    """An operator's run gives its slot back while it types; automation fills
-    every shared slot meanwhile. It takes its slot back at once (the reserve),
-    and its permit returns to the right side of the pool."""
     pool = run_slot.SlotPool(1, reserve=1)
     hog_in, hog_go = asyncio.Event(), asyncio.Event()
 
@@ -499,8 +456,6 @@ async def case_an_operator_run_takes_its_slot_back_in_its_tier():
 
 
 async def case_an_operator_cancelled_in_the_queue_keeps_both_counts():
-    """Cancelled while queued, and cancelled in the same turn a reserve permit
-    was handed to it: neither permit is lost or doubled."""
     pool = run_slot.SlotPool(1, reserve=1)
     go = asyncio.Event()
 
@@ -509,18 +464,18 @@ async def case_an_operator_cancelled_in_the_queue_keeps_both_counts():
             await go.wait()
 
     a = asyncio.create_task(run(False))
-    b = asyncio.create_task(run(True))                # the reserve
+    b = asyncio.create_task(run(True))
     await asyncio.sleep(0.01)
-    c = asyncio.create_task(run(True))                # queued
+    c = asyncio.create_task(run(True))
     await asyncio.sleep(0.01)
     c.cancel()
     await asyncio.gather(c, return_exceptions=True)
     assert pool.queued_operator() == 0
-    d = asyncio.create_task(run(True))                # queued again
+    d = asyncio.create_task(run(True))
     await asyncio.sleep(0.01)
-    b.cancel()                                        # its reserve permit goes to d…
+    b.cancel()
     await asyncio.sleep(0)
-    d.cancel()                                        # …which is cancelled before it runs
+    d.cancel()
     await asyncio.gather(b, d, return_exceptions=True)
     go.set()
     await a
@@ -528,7 +483,6 @@ async def case_an_operator_cancelled_in_the_queue_keeps_both_counts():
 
 
 async def _parked(pool: run_slot.SlotPool, **kw) -> asyncio.Task:
-    """A task parked in `pool.acquire(**kw)` (the pool is full)."""
     t = asyncio.create_task(pool.acquire(**kw))
     await asyncio.sleep(0)
     assert not t.done()
@@ -536,30 +490,25 @@ async def _parked(pool: run_slot.SlotPool, **kw) -> asyncio.Task:
 
 
 async def case_the_pool_granted_then_cancelled_before_resuming_passes_it_on():
-    """SlotPool alone: a parked waiter is granted, then cancelled before its task
-    resumes. Its acquire hands the permit to the next waiter; none is lost."""
     pool = run_slot.SlotPool(1)
     assert await pool.acquire() is False
     a, b = await _parked(pool), await _parked(pool)
-    pool.release()                       # a's future resolved, a has not resumed
+    pool.release()
     a.cancel()
     await asyncio.gather(a, return_exceptions=True)
     assert a.cancelled()
-    assert await asyncio.wait_for(b, 1.0) is False      # b got a's permit
+    assert await asyncio.wait_for(b, 1.0) is False
     assert pool.queued() == (0, 0) and not pool._wait, (pool.queued(), pool._wait)
     pool.release()
     assert pool.free == 1, pool.free
 
 
 async def case_the_pool_cancelled_while_parked_then_released_serves_the_next():
-    """A parked waiter is cancelled, and a permit is released in the same turn,
-    before its handler runs: decide grants the dead waiter, the shell feeds the
-    permit straight back, and the next waiter gets it. Counts stay exact."""
     pool = run_slot.SlotPool(1)
     await pool.acquire()
     a, b, c = await _parked(pool), await _parked(pool), await _parked(pool)
     a.cancel()
-    pool.release()                       # a is still queued: its grant passes to b
+    pool.release()
     await asyncio.gather(a, return_exceptions=True)
     assert await asyncio.wait_for(b, 1.0) is False
     assert not c.done() and pool.queued() == (0, 1), pool.queued()
@@ -570,8 +519,6 @@ async def case_the_pool_cancelled_while_parked_then_released_serves_the_next():
 
 
 async def case_the_pool_timeouts_leave_no_waiter():
-    """`wait_for(acquire(), 0)` and a short timeout on a full pool: no waiter is
-    left queued, and the permit count is untouched."""
     pool = run_slot.SlotPool(1)
     await pool.acquire()
     for timeout in (0, 0.01):
@@ -583,25 +530,23 @@ async def case_the_pool_timeouts_leave_no_waiter():
         assert (pool.free, pool.queued(), len(pool._wait)) == (0, (0, 0), 0), timeout
     pool.release()
     assert pool.free == 1
-    assert await asyncio.wait_for(pool.acquire(), 0.01) is False   # straight in
+    assert await asyncio.wait_for(pool.acquire(), 0.01) is False
     pool.release()
 
 
 async def case_the_pool_reserve_goes_to_the_next_operator_or_back():
-    """A reserve permit handed back goes to a queued operator (as a reserve one),
-    past a dead one granted it first, else back to the reserve."""
     pool = run_slot.SlotPool(1, reserve=1)
-    await pool.acquire()                                  # the shared permit
-    assert await pool.acquire(operator=True) is True      # the reserve
+    await pool.acquire()
+    assert await pool.acquire(operator=True) is True
     fresh = await _parked(pool)
     dead, op = await _parked(pool, operator=True), await _parked(pool, operator=True)
     dead.cancel()
     pool.release(reserve=True)
     await asyncio.gather(dead, return_exceptions=True)
-    assert await asyncio.wait_for(op, 1.0) is True        # a reserve permit, not fresh's
+    assert await asyncio.wait_for(op, 1.0) is True
     assert not fresh.done() and pool.reserve_free == 0
     pool.release(reserve=True)
-    assert pool.reserve_free == 1 and not fresh.done()   # automation never takes it
+    assert pool.reserve_free == 1 and not fresh.done()
     pool.release()
     assert await asyncio.wait_for(fresh, 1.0) is False
     pool.release()
@@ -609,7 +554,6 @@ async def case_the_pool_reserve_goes_to_the_next_operator_or_back():
 
 
 async def case_a_double_release_is_a_no_op():
-    """A RunSlot released twice (and again at the hold's exit) returns ONE permit."""
     pool = run_slot.SlotPool(2, reserve=1)
     for operator in (False, True):
         async with run_slot.hold(pool, operator=operator) as slot:
@@ -619,15 +563,11 @@ async def case_a_double_release_is_a_no_op():
 
 
 def case_auto_runs_follows_the_sweep():
-    """ADR 0025 fix 4: the busy sweep's recommendation, 4 up to 20 models and
-    one more per 15 after, clamped."""
     got = {n: run_slot.auto_runs(n) for n in (0, 1, 5, 10, 20, 21, 35, 36, 50, 51, 500)}
     assert got == {0: 4, 1: 4, 5: 4, 10: 4, 20: 4, 21: 5, 35: 5, 36: 6, 50: 6, 51: 7, 500: 16}, got
 
 
 def case_auto_bulk_follows_the_sweep_cost():
-    """Bulk slots: 2 up to 10 models, one more per started 10 after, clamped
-    to 2..8 (~5k sweep slot-s/day per creator keeps the lane <= ~50% busy)."""
     got = {n: run_slot.auto_bulk(n) for n in (0, 1, 10, 11, 13, 20, 21, 30, 50, 51, 70, 71, 500)}
     assert got == {0: 2, 1: 2, 10: 2, 11: 3, 13: 3, 20: 3, 21: 4, 30: 4, 50: 6, 51: 7,
                    70: 8, 71: 8, 500: 8}, got
@@ -665,7 +605,7 @@ async def case_a_shrunk_pool_admits_nobody_until_runs_end():
     held = [asyncio.create_task(run(i)) for i in range(3)]
     await asyncio.sleep(0.01)
     pool.resize(1)
-    late = asyncio.create_task(run(3))           # waits on go[0]
+    late = asyncio.create_task(run(3))
     await asyncio.sleep(0.01)
     go[1].set()
     await asyncio.sleep(0.01)
@@ -702,7 +642,7 @@ async def case_cancelled_while_taking_the_slot_back():
     async def run():
         async with run_slot.hold(pool):
             async with _released():
-                await hog_go.wait()             # the hog takes the slot meanwhile
+                await hog_go.wait()
 
     async def hog():
         async with run_slot.hold(pool):
@@ -710,7 +650,7 @@ async def case_cancelled_while_taking_the_slot_back():
             await asyncio.sleep(0.05)
     t = asyncio.create_task(run())
     h = asyncio.create_task(hog())
-    await asyncio.sleep(0.02)                   # run() is now queued to re-acquire
+    await asyncio.sleep(0.02)
     t.cancel()
     try:
         await t
@@ -721,8 +661,6 @@ async def case_cancelled_while_taking_the_slot_back():
 
 
 async def case_a_raise_mid_wait_does_not_queue_and_ends_slot_work():
-    """No take-back just to drop the slot again; a run that swallowed the
-    error still cannot send (its next hold raises SlotLost)."""
     pool = run_slot.SlotPool(1)
     async with run_slot.hold(pool) as slot:
         try:
@@ -747,9 +685,9 @@ async def case_typing_hold_releases_the_slot_write_spacing_keeps_it():
         await asyncio.sleep(0.02)
         seen.append(await _free(pool))
 
-    os.environ["AUTOMATION_RELEASE_SLOT_MIN_HOLD_S"] = "1"   # the floor is whole seconds
+    os.environ["AUTOMATION_RELEASE_SLOT_MIN_HOLD_S"] = "1"
     try:
-        async with run_slot.hold(pool):             # the waits run IN the run's task
+        async with run_slot.hold(pool):
             w = asyncio.create_task(watch())
             await _common.hold_with_typing("acc", 1, 1.0)
             await w
@@ -766,10 +704,6 @@ async def case_typing_hold_releases_the_slot_write_spacing_keeps_it():
 
 
 async def case_an_alias_run_does_not_queue_on_the_run_lock():
-    """`of_ai_chat` and `welcome_chatter_for_info` are two in-flight pairs but
-    one run lock. Both pass the first `lock.locked()` check (the session checks
-    await); the loser must come back `in_flight`, not wait on the lock with a
-    slot pinned (automation_executor.run_once)."""
     gate = asyncio.Event()
     calls: list[str] = []
 
@@ -799,24 +733,22 @@ async def case_an_alias_run_does_not_queue_on_the_run_lock():
         ax.get_automation, ax.account_health.is_session_dead, ax.account_health.is_deactivated = saved
 
 
-# ── freed(): a provider wait (an LLM / Jev answer) off the slot ──────
 
 async def case_freed_frees_the_slot_for_the_await_and_returns_its_value():
     pool = run_slot.SlotPool(1)
     seen: list[bool] = []
 
     async def provider():
-        seen.append(await _free(pool))          # the model is answering: the slot is free
+        seen.append(await _free(pool))
         return "reply"
     async with run_slot.hold(pool):
         assert await run_slot.freed(provider(), budget_s=B) == "reply"
-        seen.append(await _free(pool))          # back to work: held again
+        seen.append(await _free(pool))
     assert seen == [True, False], seen
     assert pool.free == 1
 
 
 async def case_freed_reraises_after_the_take_back_and_keeps_the_slot():
-    """A provider error / timeout the caller handles does not end the run's slot."""
     pool = run_slot.SlotPool(1)
 
     async def provider():
@@ -828,7 +760,7 @@ async def case_freed_reraises_after_the_take_back_and_keeps_the_slot():
         except TimeoutError:
             pass
         assert slot.held and not slot.lost
-        assert not await _free(pool)            # held again for the handler's work
+        assert not await _free(pool)
         assert await run_slot.freed(asyncio.sleep(0, "next"), budget_s=B) == "next"
     assert pool.free == 1
 
@@ -854,7 +786,7 @@ async def case_freed_take_back_past_the_budget_is_slot_lost_after_the_await():
     done: list[str] = []
 
     async def provider():
-        await pool.acquire()                    # another run takes the freed slot and keeps it
+        await pool.acquire()
         done.append("answered")
     async with run_slot.hold(pool):
         try:
@@ -881,7 +813,7 @@ async def case_freed_ignores_the_floor_but_obeys_the_kill_switch():
                 await run_slot.freed(provider(), budget_s=B)
         finally:
             os.environ.pop(env, None) if old is None else os.environ.__setitem__(env, old)
-    assert seen == [True, False], seen          # a 60 s floor: still freed; switch off: kept
+    assert seen == [True, False], seen
 
 
 async def case_freed_outside_a_run_is_a_plain_await():

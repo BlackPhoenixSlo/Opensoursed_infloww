@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager > Collections list writes: bulk add (POST /lists/users) and Clear list
-(DELETE /lists/{id}/users), plus the client calls behind create, rename, delete and the
-single add/remove the collections pages use; a list's Posts tab read
-(GET /lists/{id}/posts, its query as OF's web client sends it, captured live); and
-Search users (GET /lists/{id}/users `query`, OF's web client's param).
-
-Each route passes its body to the fake client as is, and each client method sends
-OF's own method, path and body (read from OF's web client, module 138255). An OF
-rejection surfaces as the usual structured 502. Plain-assert, OF faked.
-
-  case_routes_are_registered
-  case_bulk_add_passes_through
-  case_bulk_add_needs_users
-  case_clear_list_passes_through
-  case_client_requests
-  case_list_posts_passes_through
-  case_list_posts_request
-  case_list_users_search
-  case_list_id_is_validated
-  case_of_error_is_502
-
-Run: ./venv/bin/python service/tests/test_collections_lists.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -160,8 +137,6 @@ def case_list_posts_request():
 
 
 def case_list_users_search():
-    """Search users: the route passes `query` on (an empty one as none) and the client sends it as OF's own
-    `query` param (module 138255); with no search the request is as before. Over 100 characters is a 422."""
     fake = _Fake()
     _with(fake, lambda: server.of_list_users_in("7", limit=50, offset=0, query="alpha"))
     _with(fake, lambda: server.of_list_users_in("7", limit=50, offset=0, query=""))
@@ -179,7 +154,7 @@ def case_list_users_search():
     import os
     client = _harness.make_client()
     was = os.environ.get("ALLOW_ANONYMOUS_ADMIN")
-    os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
+    os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # the route's validation, not the sign-in gate (read per call)
     try:
         fake = _Fake()
         r = _with(fake, lambda: client.get("/api/of/v2/lists/7/users?limit=50&query=" + "a" * 101))
@@ -195,14 +170,12 @@ def case_list_users_search():
 
 
 def case_list_id_is_validated():
-    """A list's id reaches OF's path only as a number or a built-in name: anything else is a 422, OF not called."""
     import os
     fake = _Fake()
     client = _harness.make_client()
     was = os.environ.get("ALLOW_ANONYMOUS_ADMIN")
-    os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # the route's validation, not the sign-in gate (read per call)
+    os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
     try:
-        # Every /lists/{list_id} route: reads, rename, delete, add/remove one user, Clear list.
         routes = [("GET", "{}", None), ("GET", "{}/posts", None), ("GET", "{}/users", None),
                   ("PATCH", "{}", {"name": "Renamed list"}), ("DELETE", "{}", None),
                   ("POST", "{}/users/901", None), ("DELETE", "{}/users/901", None), ("DELETE", "{}/users", None)]

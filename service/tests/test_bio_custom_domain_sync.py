@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""deploy/bio/sync-custom-domains.py over a fixture SQLite DB: only pending_cert/live + valid hostnames get a router,
-at most --max-new new ones per run, no write when unchanged, the old file kept on a DB failure, the DB opened
-read-only, and a domain whose A record misses BIO_SERVER_IP for --drop-after-s dropped (and back once it resolves).
-
-Run: ./venv/bin/python service/tests/test_bio_custom_domain_sync.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 import importlib.util  # noqa: E402
 import json  # noqa: E402
@@ -57,12 +51,10 @@ def case_hostname_rule_matches_the_bio_app():
 
 
 def case_verified_statuses_match_the_bio_app():
-    """The routed statuses are the ones the bio app serves and the admin API keeps to one row per domain."""
     assert sync.VERIFIED == decide.VERIFIED, (sync.VERIFIED, decide.VERIFIED)
 
 
 def case_upstream_is_the_readme_bio_port():
-    """The unit (and the script's default) route to the bio host port the README's override publishes (BIO_PORT)."""
     import re
     import shlex
     readme = (SCRIPT.parent / "README.md").read_text()
@@ -162,13 +154,13 @@ def case_dns_miss_for_a_day_drops_then_returns():
     t = 1000.0
     sync.run(args, now=t, resolve=res)
     answers["b.example"] = {"198.51.100.1"}
-    for step in range(1, 26):  # hourly re-resolves; the first miss at step 1, under 24 h of misses it stays
+    for step in range(1, 26):
         t += 3600
         sync.run(args, now=t, resolve=res)
         if step < 25:
             assert len(_routers(args)) == 2, step
     assert [v["rule"] for v in _routers(args).values()] == ["Host(`a.example`)"], "a day of misses: dropped"
-    answers["b.example"] = None  # resolver can't say: no change
+    answers["b.example"] = None
     t += 3600
     sync.run(args, now=t, resolve=res)
     assert len(_routers(args)) == 1

@@ -1,42 +1,12 @@
 #!/usr/bin/env python3
-"""Prepare content (docs/spec/phase-03b-full-ai-selling-test-chat.md › full_ai_prepare): one
-owner-pressed chain of harvest → describe + Jev flags → AI folders, only what is missing,
-nothing written to OF.
-
-The chain runs the REAL job coroutines (`vault_ai_api._run_collect`,
-`vault_ai_vision._run_describe_all` / `_run_flags_all`, the folder-plan apply) on the
-_harness temp DB. Fakes only at their edges, the house way: the OF client at
-`ax._make_client` (it records every call, `test_vault_manual_collect_order.py`), the
-stills/storyboard fetch, the vision frames + vision model call and the Jev pass
-(`test_vault_ai_describe.py`); `llm_client.httpx.AsyncClient` raises, so nothing reaches
-a real LLM.
-
-  case_facts_harvested_table            never walked / hot-only collector run → not harvested;
-                                        capped walk / collector walk → harvested; counts; AI- folder
-  case_steps_for_table                  the pure decision table
-  case_first_click_runs_missing_steps   harvest → describe → folders in order, each `done`
-  case_second_click_skips_everything    all `skipped`, the fake client records 0 calls
-  case_click_while_running_same_run     a second press returns the running run_id
-  case_walk_error_fails_harvest         a raise mid-walk → harvest `failed` from the run's error; stops
-  case_vision_cap_fails_describe        cap → describe `failed` with the budget sentence; folders runs
-  case_ai_folder_exists_skips_folders   folders `skipped`, the apply never called, no OF folder write
-  case_held_guard_is_busy               a running Collect → harvest `busy`, chain stops
-  case_cap_mid_sweep_fails_describe     the cap trips during the sweep → the same budget sentence
-  case_no_key_refuses_flags             described, unflagged, no vision key → failed, no Jev call (flags_all's rule)
-  case_all_items_failed_fails_describe  every vision call errors → describe `failed` "2 of 2 items failed", not done
-  case_describe_walks_in_chunks         CHUNK=2: sweeps of 2, left count rechecked between, done
-  case_turn_path_never_imports_prepare  import isolation (no-send scan)
-
-Run: ./venv/bin/python service/tests/test_full_ai_prepare.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 _harness.bootstrap()
 
 import os  # noqa: E402
 
-os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"   # feature logic here; the gate is test_role_enforcement's
+os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 import ast  # noqa: E402
 import asyncio  # noqa: E402
@@ -65,7 +35,6 @@ from db.models import (Account, AccountAiConfig, GrokDailyCost, VaultCacheRun,  
 
 SERVICE = Path(__file__).resolve().parents[1]
 
-# ── Edges ────────────────────────────────────────────────────────────
 
 vault_ai_api._PAGE_SLEEP_S = 0.0
 _tmp = Path(tempfile.mkdtemp(prefix="fap_"))
@@ -76,7 +45,6 @@ vault_frames.warm_one_sync = lambda client, url, dur: None
 
 
 class _NoLLM:
-    """`llm_client.httpx.AsyncClient`: any real LLM HTTP call is a failure."""
 
     def __init__(self, *_a, **_k):
         raise AssertionError("a real LLM HTTP call was attempted")
@@ -93,8 +61,6 @@ llm_client.llm_key_available = _key_ok
 
 
 class FakeOF:
-    """A vault of clips 1..n (newer = higher id). Records EVERY call, so a folder
-    create / push (`_mirror_ai_folders_to_of`, `_push_folder_to_of`) shows up too."""
 
     def __init__(self, aid: str, n: int, fail_at_offset: int | None = None):
         self.aid, self.n, self.fail_at_offset = aid, n, fail_at_offset
@@ -123,7 +89,7 @@ class FakeOF:
                 "videoSources": {"240": f"https://cdn.example/{self.aid}/v{i}.mp4"},
                 "listStates": []}
 
-    def __getattr__(self, name):   # anything else (a folder create, a push) is recorded
+    def __getattr__(self, name):
         def _call(*a, **k):
             self.calls.append((name,))
             return {}
@@ -133,8 +99,6 @@ class FakeOF:
 _CLIENTS: dict[str, FakeOF] = {}
 ax._make_client = lambda aid: _CLIENTS[aid]
 
-# The vision edge: frames + the vision model call (as test_vault_ai_describe does) and
-# the Jev pass, which stamps a current clip `_jev` and its flags.
 _described: list[int] = []
 _jevved: list[int] = []
 
@@ -193,7 +157,6 @@ async def _plan_spy(account_id, **kw):
 vault_scripts.plan_ai_folders = _plan_spy
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
 
 _N = 0
 
@@ -210,7 +173,6 @@ async def _account(*, cap_cents: int = 1000) -> str:
 
 
 async def _seed_vault(aid: str, ids: list[int], *, described: bool = False) -> None:
-    """A walked vault (one finished manual Collect) of clips."""
     async with get_session() as s:
         s.add(VaultCacheRun(account_id=aid, status="done", phase="done", pages_done=1,
                             finished_at=datetime.utcnow()))
@@ -243,7 +205,6 @@ def _reset_spies() -> None:
     _applied.clear()
 
 
-# ── Facts + steps_for ────────────────────────────────────────────────
 
 async def case_facts_harvested_table():
     async def _harvested(*runs: dict) -> bool:
@@ -285,14 +246,12 @@ async def case_steps_for_table():
 
     P, S = "pending", "skipped"
     table = [
-        # never harvested: describe can't be judged on an empty mirror yet
         ((False, 0, 0, False), [("harvest", P), ("describe", P), ("folders", P), ("feet", P)]),
         ((True, 0, 0, False), [("harvest", S), ("describe", S), ("folders", P), ("feet", P)]),
         ((True, 5, 0, False), [("harvest", S), ("describe", P), ("folders", P), ("feet", P)]),
         ((True, 0, 2, False), [("harvest", S), ("describe", P), ("folders", P), ("feet", P)]),
         ((True, 0, 0, True), [("harvest", S), ("describe", S), ("folders", S), ("feet", P)]),
         ((False, 0, 0, True), [("harvest", P), ("describe", P), ("folders", S), ("feet", P)]),
-        # a Feet pack already there is the operator's: never filed twice
         ((True, 0, 0, True, True), [("harvest", S), ("describe", S), ("folders", S), ("feet", S)]),
         ((True, 0, 0, False, True), [("harvest", S), ("describe", S), ("folders", P), ("feet", S)]),
     ]
@@ -304,7 +263,6 @@ async def case_steps_for_table():
 
 
 def _feet_jev(lane5: str = "free", score: float = 0.9, detail: str = "socks", **body) -> dict:
-    """A photo `_jev` as the Feet pack reads it (test_vault_pack_picker `_jev_blob`)."""
     return {"v": "v8+nn.10", "status": "ok", "lane5": lane5,
             **{"breasts_bare": "n", "crotch_bare": "n", "penetration": "n", **body},
             "feet_subject": score,
@@ -313,17 +271,15 @@ def _feet_jev(lane5: str = "free", score: float = 0.9, detail: str = "socks", **
 
 
 async def case_feet_step_files_preselected_only():
-    """The feet step = the picker's "File N preselected": confident photos on their rung, the possible
-    ones, clips and non-feet left alone; then the pack exists and the step is skipped."""
     aid = await _account()
     rows = [
-        (1, "photo", _feet_jev()),                                  # .9, socks, free  -> tease
-        (2, "photo", _feet_jev(detail="bare")),                     # .9, bare, free   -> nude
-        (3, "photo", _feet_jev(lane5="$50", crotch_bare="y")),      # .9, paid body    -> nude-body
-        (4, "photo", _feet_jev(score=0.4)),                         # possible: stays in the picker
-        (5, "photo", _feet_jev(breasts_bare="unsure")),             # confident, no safe rung: not filed
-        (6, "video", _feet_jev()),                                  # a pack is photos only
-        (7, "photo", None),                                         # Jev never saw it
+        (1, "photo", _feet_jev()),
+        (2, "photo", _feet_jev(detail="bare")),
+        (3, "photo", _feet_jev(lane5="$50", crotch_bare="y")),
+        (4, "photo", _feet_jev(score=0.4)),
+        (5, "photo", _feet_jev(breasts_bare="unsure")),
+        (6, "video", _feet_jev()),
+        (7, "photo", None),
     ]
     async with get_session() as s:
         for mid, kind, jev in rows:
@@ -341,7 +297,6 @@ async def case_feet_step_files_preselected_only():
         made = {f.name: f.created_by for f in (await s.execute(
             select(VaultFolder).where(VaultFolder.account_id == aid))).scalars()}
     assert got == {("feet-tease", 1), ("feet-nude", 2), ("feet-nude-body", 3)}, got
-    # the operator's folders (the AI- reaper never touches them), all three rungs
     assert made == {"feet-tease": "operator", "feet-nude": "operator", "feet-nude-body": "operator"}, made
     facts = await prep.read_facts(aid)
     assert facts["feet_pack"] is True
@@ -349,7 +304,6 @@ async def case_feet_step_files_preselected_only():
                                         "counts": {}}
 
 
-# ── The chain ────────────────────────────────────────────────────────
 
 async def case_first_click_runs_missing_steps():
     aid = await _account()
@@ -359,23 +313,18 @@ async def case_first_click_runs_missing_steps():
     assert started["run_id"] and len(started["steps"]) == 4, started
     run = await _settle(aid)
     assert _states(run) == [("harvest", "done"), ("describe", "done"), ("folders", "done"), ("feet", "done")], run
-    # clips only: no feet photo, so nothing filed and no feet-* folder made
     assert run["steps"][3]["counts"] == {"filed": 0, "to_check": 0}, run["steps"][3]
     assert run["run_id"] == started["run_id"] and run["started_at"], run
-    # harvest walked the fake vault: folder list, then the newest page (OF: no more)
     assert of.calls[:2] == [("lists", 0), ("media", 0, "desc")], of.calls
     assert run["steps"][0]["counts"]["seen"] == 3, run["steps"][0]
-    # describe + Jev ran on all three, then folders applied once
     assert sorted(_jevved) == [1, 2, 3] and len(_described) == 3, (_jevved, _described)
     assert run["steps"][1]["counts"]["described"] == 3, run["steps"][1]
     assert _applied == [aid], _applied
-    # the folder step asks for the vault's own script count (10), as the Build AI folders modal does; a
-    # literal 2 here once left prepare content with 2 script folders
+    # The folder step asks for the vault's own script count (10); a literal 2 once left prepare content with 2 script folders.
     assert _planned[-1] == {"keep": vault_scripts.DEFAULT_KEEP_SCRIPTS, "solo": False, "topics": [],
                             "split": True} and _planned[-1]["keep"] == 10, _planned
     assert (await prep.read_facts(aid)) == {"harvested": True, "undescribed": 0, "unflagged": 0,
                                             "ai_folders": True, "feet_pack": False}
-    # never mirrored: no OF call beyond the walk's reads
     assert {c[0] for c in of.calls} <= {"media", "lists"}, of.calls
 
 
@@ -391,7 +340,7 @@ async def case_second_click_skips_everything():
     assert again["run_id"] != first["run_id"], "a finished run is not re-returned"
     run = await _settle(aid)
     assert _states(run) == [("harvest", "skipped"), ("describe", "skipped"), ("folders", "skipped"),
-                            ("feet", "done")], run   # no feet-* folder yet, so it looks again: filed 0
+                            ("feet", "done")], run
     assert of.calls == [], of.calls
     assert (_jevved, _described, _applied) == ([], [], []), (_jevved, _described, _applied)
 
@@ -407,7 +356,7 @@ async def case_click_while_running_same_run():
 
 async def case_walk_error_fails_harvest():
     aid = await _account()
-    _CLIENTS[aid] = FakeOF(aid, 250, fail_at_offset=99)   # the second All page (cursors step 99)
+    _CLIENTS[aid] = FakeOF(aid, 250, fail_at_offset=99)
     _reset_spies()
     await full_ai_api.prepare_content_start({"account_id": aid})
     run = await _settle(aid)
@@ -421,7 +370,7 @@ async def case_walk_error_fails_harvest():
 
 
 async def case_vision_cap_fails_describe():
-    aid = await _account(cap_cents=100)   # $1.00 = 10,000 mc
+    aid = await _account(cap_cents=100)
     await _seed_vault(aid, [1, 2])
     async with get_session() as s:
         s.add(GrokDailyCost(day=datetime.utcnow().strftime("%Y-%m-%d"), account_id=aid,
@@ -452,14 +401,14 @@ async def case_ai_folder_exists_skips_folders():
     await full_ai_api.prepare_content_start({"account_id": aid})
     run = await _settle(aid)
     assert _states(run) == [("harvest", "skipped"), ("describe", "skipped"), ("folders", "skipped"),
-                            ("feet", "done")], run   # no feet-* folder yet, so it looks again: filed 0
+                            ("feet", "done")], run
     assert _applied == [] and of.calls == [], (_applied, of.calls)
 
 
 async def case_held_guard_is_busy():
     aid = await _account()
     _CLIENTS[aid] = FakeOF(aid, 2)
-    vault_runs.manual_running.add(aid)   # a Collect press already sweeping
+    vault_runs.manual_running.add(aid)
     _reset_spies()
     try:
         await full_ai_api.prepare_content_start({"account_id": aid})
@@ -472,8 +421,6 @@ async def case_held_guard_is_busy():
 
 
 async def case_cap_mid_sweep_fails_describe():
-    """The budget is fine at the claim; the first vision call spends it, so every later one is
-    refused (`LLMCapExceeded`, what llm_client raises): the sweep stops `capped`."""
     aid = await _account(cap_cents=100)
     idle = await full_ai_api.prepare_content_status(account_id=aid)
     assert idle == {"run_id": None, "steps": [], "started_at": None, "finished_at": None}, idle
@@ -539,8 +486,6 @@ async def case_no_key_refuses_flags():
 
 
 async def case_all_items_failed_fails_describe():
-    """Every vision call errors: the sweep runs through recording each item failed, so describe is
-    `failed` with the count, never a green `done`; folders still runs (as on a cap)."""
     aid = await _account()
     await _seed_vault(aid, [1, 2])
     _CLIENTS[aid] = FakeOF(aid, 2)
@@ -560,22 +505,16 @@ async def case_all_items_failed_fails_describe():
     assert step["counts"] == {"described": 0, "failed": 2, "total": 2}, step
     assert step["detail"].startswith("2 of 2 items failed"), step
     assert run["steps"][2]["state"] == "done", run["steps"][2]
-    # The pure rule: any failed item fails the step; a clean run is None.
     assert await prep._sweep_failure(aid, {"done": 3, "failed": 1, "total": 3, "error": "x"}) == "1 of 3 items failed: x"
     assert await prep._sweep_failure(aid, {"done": 3, "failed": 0, "total": 3}) is None
-    # A stop reads the relay's own sentences (what is wrong + the fix), ahead of the failed count.
     stop = {"message": "Stopped: 25 items in a row failed.", "fix": "First error: 401. Fix it, then press again."}
     assert await prep._sweep_failure(aid, {"done": 25, "failed": 25, "total": 99, "stop": stop}) == \
         "Stopped: 25 items in a row failed. First error: 401. Fix it, then press again."
 
 
-# ── Import isolation (no-send scan) ──────────────────────────────────
 
-# The Turn path, the Sell executor and the Writer/LLM modules that exist today.
 TURN_PATH = ["automations.full_ai_sell", "automations.full_ai_chat", "automations.full_ai_decide",
              "llm_client", "llm_providers", "llm_models"]
-# Named by the spec (03a/03b) but not in this checkout yet (test transport, Turn
-# pipeline, Writers): checked once they land, skipped while their file is missing.
 TURN_PATH_PENDING = ["automations.full_ai_test", "automations.full_ai_turn",
                      "automations.full_ai_writers", "automations.full_ai_config",
                      "automations._info_jev"]
@@ -590,7 +529,6 @@ def _file(mod: str) -> Path | None:
 
 
 def _imports(src: str, mod: str) -> set[str]:
-    """Every module `src` (module `mod`) imports, anywhere in it (lazy imports included)."""
     pkg = mod.split(".")[:-1]
     out: set[str] = set()
     for node in ast.walk(ast.parse(src)):
@@ -598,7 +536,7 @@ def _imports(src: str, mod: str) -> set[str]:
             out |= {a.name for a in node.names}
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
-            if node.level:   # `from ..x import y` in a.b.c → a.x (level 1 = own package)
+            if node.level:
                 base = ".".join(filter(None, [*pkg[:len(pkg) - node.level + 1], base]))
             out.add(base)
             out |= {".".join(filter(None, [base, a.name])) for a in node.names}
@@ -606,16 +544,11 @@ def _imports(src: str, mod: str) -> set[str]:
 
 
 def importers(mods: list[str], target: str = "full_ai_prepare") -> list[str]:
-    """The `mods` whose own source imports `target` (the house scan reads each module's
-    own source, `test_full_ai_shadow.case_no_send_a_import_scan`; a transitive closure
-    is meaningless here, since `server` imports every module). Missing files skipped."""
     return [m for m in mods if (p := _file(m)) is not None
             and target in _imports(p.read_text(encoding="utf-8"), m)]
 
 
 async def case_describe_walks_in_chunks():
-    """CHUNK=2 over 5 clips: describe sweeps 2+2+1, the running step shows the rechecked left
-    count between chunks, then done with every clip described and flagged."""
     aid = await _account()
     await _seed_vault(aid, [1, 2, 3, 4, 5])
     _reset_spies()
@@ -644,7 +577,6 @@ async def case_turn_path_never_imports_prepare():
     missing = [m for m in TURN_PATH if _file(m) is None]
     assert missing == [], f"a scanned module moved: {missing}"
     assert importers(TURN_PATH + TURN_PATH_PENDING) == [], importers(TURN_PATH + TURN_PATH_PENDING)
-    # The scan sees what it must: the API module imports it; so would a mutant, lazily or relatively.
     assert importers(["full_ai_api"]) == ["full_ai_api"]
     assert _imports("def f():\n    import full_ai_prepare\n", "automations.x") >= {"full_ai_prepare"}
     assert "full_ai_prepare" in _imports("from .. import full_ai_prepare\n", "automations.full_ai_turn")

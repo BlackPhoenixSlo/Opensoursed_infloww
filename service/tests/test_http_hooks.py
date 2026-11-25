@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""The relay's HTTP hooks run in ONE middleware layer (`http_hooks.HookChain`)
-instead of one `BaseHTTPMiddleware` each (roadmap W2 2.3).
-
-Pins two things. The chain itself: hooks run in Starlette's order (last added
-is outermost), an answering hook stops the request, an error still reaches
-every outer hook, and a body a hook read still reaches the route. And the
-relay's own stack, end to end over HTTP with real session cookies: the hook
-order, a chatter refused by role before the audit writer, a repeated
-`?account_id=` naming a denied Creator, the share gate's cookie on an inner
-reply, GZip still applied, an unhandled error persisted, and the access log
-written by its background writer without the share token.
-
-No network: the OnlyFans client is a recording fake.
-
-Run: ./venv/bin/python service/tests/test_http_hooks.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -60,8 +44,7 @@ OWNER_B = fx.login_owner("agency_b_owner")
 CHATTER_A = fx.login_chatter("chatter_a")
 CHATTER_AB = fx.login_chatter("chatter_ab")
 
-# Test-only routes on the real app, so a request crosses the whole chain.
-_BIG = {"rows": ["x" * 40] * 100}                     # ~4.5 KB of JSON
+_BIG = {"rows": ["x" * 40] * 100}
 server.app.get("/admin/__hooks_big")(lambda: _BIG)
 
 
@@ -70,8 +53,6 @@ def _boom():
     raise RuntimeError("hooks-boom-7c1")
 
 
-# The SSE route's generator waits on this after its first frame: the frame must
-# reach the client while the route is still running (see the SSE case).
 _SSE_GATE: dict[str, asyncio.Event] = {}
 
 
@@ -127,10 +108,8 @@ class _FakeOF:
         return _call
 
 
-# ── The chain on its own ────────────────────────────────────────────────────
 
 def _mini(*hooks) -> tuple[FastAPI, list[str]]:
-    """A bare app whose hooks run through one HookChain; `trail` records the path."""
     trail: list[str] = []
     chain = HookChain()
     for hook in hooks:
@@ -201,9 +180,6 @@ def case_a_route_error_propagates_through_every_outer_hook():
 
 
 def case_a_body_a_hook_read_still_reaches_the_route_and_a_contextvar_it_set_too():
-    """The audit hook's pattern: read the body before `call_next`, then the
-    route parses it again; and `_account_context`'s: a ContextVar set by a hook
-    is what the route reads."""
     seen: ContextVar[str | None] = ContextVar("seen", default=None)
 
     def reader(trail):
@@ -227,37 +203,35 @@ def case_a_body_a_hook_read_still_reaches_the_route_and_a_contextvar_it_set_too(
     assert trail == ['{"a":1}'], trail
 
 
-# ── The relay's own stack ───────────────────────────────────────────────────
 
 def case_the_relay_registers_every_hook_in_one_layer_in_the_documented_order():
     names = [h.__name__ for h in server._http_hooks.hooks]
     assert names == [
         "_cap_vault_batch_body",
         "_persist_unhandled_errors",
-        "_no_store_by_default",          # a CDN in front never keeps a relay answer
+        "_no_store_by_default",
         "_api_access_log",
         "_share_token_gate",
         "_account_context",
-        "session_middleware",            # auth (owner) session
-        "chatter_session_middleware",    # chatter session
+        "session_middleware",
+        "chatter_session_middleware",
         "_account_isolation_middleware",
-        "_bg_admission_route",           # background reads wait before per-request role DB reads
+        "_bg_admission_route",
         "role_enforcement_middleware",
         "_deactivated_write_guard",
         "audit_middleware",
-        "label_request_calls",           # of_call_counter: labels the request's OF calls
-        "label_request_writes",          # db/write_telemetry: innermost, labels the request's writes
+        "label_request_calls",
+        "label_request_writes",
     ], names
     layers = server.app.user_middleware
     assert [m.cls.__name__ for m in layers] == [
         "_CutShortStreams", "RequestLog", "_DbBusy503",
-        "StripCookieIdentities",  # token_auth: a bearer request reaches every hook with no cookie
+        "StripCookieIdentities",
         "BaseHTTPMiddleware", "GZipMiddleware"], layers
     assert layers[4].kwargs["dispatch"] == server._http_hooks.dispatch
 
 
 def case_queued_background_read_checks_the_current_role_when_admitted():
-    """A role revocation while the read waits must take effect before its route."""
     entered, release = threading.Event(), threading.Event()
     original = server._bg_admission
     original_client = server._get_client
@@ -299,7 +273,6 @@ def case_a_chatter_denied_by_role_is_refused_before_the_route_and_the_audit_writ
     fake = _FakeOF()
     original = server._get_client
     server._get_client = lambda *_a, **_k: fake
-    # Only this PUT's rows: the role PUTs around it are audited too.
     actions = (select(func.count()).select_from(Action)
                .where(Action.action == "PUT /api/of/v2/subscriptions/42/note"))
     try:
@@ -355,8 +328,6 @@ def case_the_share_gate_sets_its_cookie_on_the_reply_an_inner_hook_built():
         r = anon.get("/admin/accounts")
         assert r.status_code == 401 and r.text.startswith("unauthorized"), r.text
         assert r.headers.get("cache-control") == "no-store", dict(r.headers)
-        # Past the gate the tenant gate refuses the cookieless caller — and the
-        # share gate still stamps its cookie on THAT reply on the way out.
         r = anon.get("/admin/accounts?t=tok-hooks-1")
         assert r.status_code == 401 and r.text == "sign in required", r.text
         assert "share_token=tok-hooks-1" in r.headers.get("set-cookie", ""), dict(r.headers)
@@ -365,9 +336,6 @@ def case_the_share_gate_sets_its_cookie_on_the_reply_an_inner_hook_built():
 
 
 def case_sse_streams_frame_by_frame_through_the_chain_and_gzip():
-    """The first frame must reach the client while the route is still running:
-    the generator will not yield the second until the test has RECEIVED the
-    first, so a chain (or GZip) that buffered the body would deadlock here."""
     async def run():
         _SSE_GATE["first_seen"] = asyncio.Event()
         got: list[bytes] = []
@@ -379,7 +347,7 @@ def case_sse_streams_frame_by_frame_through_the_chain_and_gzip():
             if not sent_request:
                 sent_request = True
                 return {"type": "http.request", "body": b"", "more_body": False}
-            await asyncio.Event().wait()       # the client never disconnects
+            await asyncio.Event().wait()
 
         async def send(message):
             if message["type"] == "http.response.start":
@@ -412,7 +380,7 @@ def case_a_background_task_runs_after_the_reply_crosses_the_chain():
         r = TestClient(server.app).get("/__hooks_bg")
         assert r.status_code == 200 and r.json() == {"ok": True}, r.text
         assert _BG_RAN == ["ran"], _BG_RAN
-        assert len(_log_lines(log_path, "/__hooks_bg")) == 1   # the outer hooks saw it
+        assert len(_log_lines(log_path, "/__hooks_bg")) == 1
     finally:
         server._API_LOG_PATH = original
 

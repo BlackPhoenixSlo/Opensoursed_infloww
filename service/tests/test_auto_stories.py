@@ -1,42 +1,7 @@
 #!/usr/bin/env python3
-"""
-auto_stories — scheduled "stories from a vault folder".
-
-Cases:
-  case_post_and_schedule_delete (the acceptance):
-      per_run=2 with hours_to_live → post_story_from_url called twice with two
-      DISTINCT folder photo urls, and ONE `unsend_messages` job per story is
-      enqueued at ~now+hours carrying a {story_id} target.
-  case_keep_no_delete:
-      hours_to_live absent → stories post but NO delete job (kept).
-  case_dry_run_plans_nothing:
-      dry_run reports the picks, posts nothing, enqueues nothing.
-  case_no_usable_photos_skips:
-      a folder whose photos are all DRM/urlless → skipped, nothing posted.
-  case_media_files_pool:
-      an explicit `media_files` pool (no folder) resolves id→url and posts.
-  case_folder_plus_explicit_pool:
-      a folder pool ∪ explicit ids combine into one sampled pool.
-  case_no_media_source_skips:
-      neither folder nor media_files → skipped (reason no_media_source).
-  case_story_unsend_leg:
-      unsend_messages with a {story_id} target calls delete_story.
-  case_dupe_hide_with_ttl:
-      remove_vault_dupe (default ON) + TTL → the ONE cleanup job carries BOTH a
-      {story_id} and a {hide_upload:{md5,size,exclude_ids:[src]}} target.
-  case_dupe_hide_no_ttl_keep:
-      story kept (no TTL) but dupe removal ON → a hide-only job at ~now+15min.
-  case_remove_dupe_off_with_ttl:
-      remove_vault_dupe=false → cleanup job carries ONLY the story delete.
-  case_hide_upload_unsend_leg:
-      unsend_messages {hide_upload} resolves the vault dupe by hash and hides it;
-      an exclude_ids match (the source id) and a hash miss both hide nothing.
-
-Run: ./venv/bin/python service/tests/test_auto_stories.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
@@ -63,7 +28,6 @@ def _photo(mid: int, *, drm: bool = False, url: str | None = "x") -> dict:
 
 
 class FakeClient:
-    """Serves a fixed folder page; records story posts + deletes."""
 
     def __init__(self, photos: list[dict], start_id: int = 700000,
                  *, lookup: dict | None = None):
@@ -73,8 +37,7 @@ class FakeClient:
         self.posted_urls: list[str] = []
         self.posted_mentions: list[str | None] = []
         self.deleted: list[int] = []
-        self.hidden: list[int] = []          # ids passed to hide_vault_media
-        # (md5, size) → vault item dict served by vault_media_lookup_hash.
+        self.hidden: list[int] = []
         self._lookup = lookup or {}
         self._next = start_id
 
@@ -82,8 +45,6 @@ class FakeClient:
         return {"list": self._photos}
 
     def vault_media_by_id(self, media_id):
-        # Folder photos resolve from the seeded page; explicit ids the test never
-        # seeded are synthesized (a plain usable photo), mirroring a real vault.
         mid = int(media_id)
         return self._by_id.get(mid) or _photo(mid)
 
@@ -94,7 +55,6 @@ class FakeClient:
         self.posted_mentions.append(kw.get("mention"))
         story = {"id": self._next, "isReady": False}
         if return_upload:
-            # deterministic per-post upload identity (mirrors upload_media's md5)
             return {"story": story,
                     "upload": {"md5": f"md5-{self._next}", "size": 1000 + self._next}}
         return story
@@ -132,7 +92,6 @@ async def _jobs(aid: str, kind: str) -> list[ScheduledJob]:
         )).scalars().all()
 
 
-# ── Acceptance: post N + schedule each auto-delete ───────────────────
 
 async def case_post_and_schedule_delete():
     aid = "acc_as_one"
@@ -156,14 +115,12 @@ async def case_post_and_schedule_delete():
         assert 5.5 < delta_h < 6.5, delta_h
 
 
-# ── keep: no hours_to_live → no delete job ───────────────────────────
 
 async def case_keep_no_delete():
     aid = "acc_as_keep"
     await _seed_account(aid)
     fake = _use_fake([_photo(1)])
 
-    # remove_vault_dupe off + no TTL → NO cleanup job of any kind.
     res = await run_once(aid, KIND, payload={
         "folder_id": 42, "per_run": 1, "remove_vault_dupe": False,
     })
@@ -171,7 +128,6 @@ async def case_keep_no_delete():
     assert await _jobs(aid, "unsend_messages") == []
 
 
-# ── dry_run: plan only ───────────────────────────────────────────────
 
 async def case_dry_run_plans_nothing():
     aid = "acc_as_dry"
@@ -187,7 +143,6 @@ async def case_dry_run_plans_nothing():
     assert await _jobs(aid, "unsend_messages") == []
 
 
-# ── no usable photos → skip ──────────────────────────────────────────
 
 async def case_no_usable_photos_skips():
     aid = "acc_as_empty"
@@ -199,14 +154,11 @@ async def case_no_usable_photos_skips():
     assert fake.posted_urls == []
 
 
-# ── item 6: an explicit media_files pool (no folder) posts as stories ─
 
 async def case_media_files_pool():
-    """`media_files` ids with no folder are resolved id→url and posted; a
-    `media_count` under the pool size samples that many distinct picks."""
     aid = "acc_as_pool"
     await _seed_account(aid)
-    fake = _use_fake([])  # no folder page — ids resolve via vault_media_by_id
+    fake = _use_fake([])
     res = await run_once(aid, KIND, payload={
         "media_files": [501, 502, 503], "media_count": 2, "hours_to_live": 3,
     })
@@ -216,12 +168,11 @@ async def case_media_files_pool():
     assert len(await _jobs(aid, "unsend_messages")) == 2
 
 
-# ── item 6: a folder pool + explicit ids combine into one pool ────────
 
 async def case_folder_plus_explicit_pool():
     aid = "acc_as_combo"
     await _seed_account(aid)
-    fake = _use_fake([_photo(1), _photo(2)])   # folder holds 1, 2
+    fake = _use_fake([_photo(1), _photo(2)])
     res = await run_once(aid, KIND, payload={
         "folder_id": 42, "media_files": [3, 4], "media_count": 4,
     })
@@ -229,18 +180,16 @@ async def case_folder_plus_explicit_pool():
     assert len(set(fake.posted_urls)) == 4, "folder ∪ explicit, all distinct"
 
 
-# ── item 6: nothing to draw from → skipped ───────────────────────────
 
 async def case_no_media_source_skips():
     aid = "acc_as_nosrc"
     await _seed_account(aid)
     fake = _use_fake([_photo(1)])
-    res = await run_once(aid, KIND, payload={"per_run": 1})  # no folder, no ids
+    res = await run_once(aid, KIND, payload={"per_run": 1})
     assert res["status"] == "skipped" and res["reason"] == "no_media_source", res
     assert fake.posted_urls == []
 
 
-# ── the story_id unsend leg deletes ──────────────────────────────────
 
 async def case_story_unsend_leg():
     aid = "acc_as_del"
@@ -254,7 +203,6 @@ async def case_story_unsend_leg():
     assert fake.deleted == [12345], fake.deleted
 
 
-# ── dupe removal: TTL set → ONE job deletes story AND hides the dupe ──
 
 async def case_dupe_hide_with_ttl():
     aid = "acc_as_dupe_ttl"
@@ -262,7 +210,7 @@ async def case_dupe_hide_with_ttl():
     fake = _use_fake([_photo(11)])
 
     res = await run_once(aid, KIND, payload={
-        "folder_id": 42, "per_run": 1, "hours_to_live": 6,  # remove_vault_dupe default ON
+        "folder_id": 42, "per_run": 1, "hours_to_live": 6,
     })
     assert res["status"] == "ok" and res["posted"] == 1, res
 
@@ -273,10 +221,9 @@ async def case_dupe_hide_with_ttl():
     assert "story_id" in kinds and "hide_upload" in kinds, targets
     hide = next(t["hide_upload"] for t in targets if "hide_upload" in t)
     assert hide["md5"] and hide["size"], hide
-    assert hide["exclude_ids"] == [11], hide  # source id guarded
+    assert hide["exclude_ids"] == [11], hide
 
 
-# ── dupe removal: story KEPT (no TTL) → a hide-only job at ~now+15min ──
 
 async def case_dupe_hide_no_ttl_keep():
     aid = "acc_as_dupe_keep"
@@ -292,10 +239,9 @@ async def case_dupe_hide_no_ttl_keep():
     assert len(targets) == 1 and "hide_upload" in targets[0], targets
     assert "story_id" not in targets[0], "kept story → no delete leg"
     delta_min = (jobs[0].run_at - datetime.utcnow()).total_seconds() / 60
-    assert 10 < delta_min < 20, delta_min  # short transcode delay
+    assert 10 < delta_min < 20, delta_min
 
 
-# ── dupe removal OFF → cleanup job carries ONLY the story delete ──────
 
 async def case_remove_dupe_off_with_ttl():
     aid = "acc_as_dupe_off"
@@ -314,13 +260,10 @@ async def case_remove_dupe_off_with_ttl():
     assert all("hide_upload" not in t for t in targets), targets
 
 
-# ── the hide_upload unsend leg: resolve by hash + exclude-guard ───────
 
 async def case_hide_upload_unsend_leg():
     aid = "acc_as_hide_leg"
     await _seed_account(aid)
-    # (md5,size)→item: one resolves to a NEW dupe (id 900), one resolves to the
-    # SOURCE id (id 55) which must be guarded out by exclude_ids.
     fake = FakeClient([], lookup={
         ("md5-new", 2000): {"id": 900},
         ("md5-src", 2001): {"id": 55},
@@ -332,21 +275,12 @@ async def case_hide_upload_unsend_leg():
         {"hide_upload": {"md5": "md5-src", "size": 2001, "exclude_ids": [55]}},
         {"hide_upload": {"md5": "md5-miss", "size": 9999, "exclude_ids": []}},
     ]})
-    # all three targets are "processed" (none fail), but only the real dupe hides.
     assert res["failed"] == 0, res
     assert fake.hidden == [900], fake.hidden
 
 
-# ── Release-form @mention on non-solo media ──────────────────────────
-#
-# A story is the one send of_client cannot auto-tag: OF re-uploads the media, so
-# the wire body carries a convert claim with no vault id. auto_stories makes the
-# call at its own layer, off the SOURCE id, and rides it in as the @mention
-# overlay OF's story editor emits.
 
 async def case_story_mentions_cotag_on_unknown_media():
-    """No describe row → we cannot prove she's alone → tag (on an account with
-    a co-creator to tag; nobody is tagged by default since ticket 85)."""
     aid = "acc_as_cotag"
     await _seed_account(aid)
     async with get_session() as s:

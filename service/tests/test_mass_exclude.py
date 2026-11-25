@@ -1,52 +1,10 @@
 #!/usr/bin/env python3
-"""Mass exclude (MASSDMEXCLUDE) — tests.
-
-One per-account exclude list: a fan on MASSDMEXCLUDE is skipped from EVERY mass
-send, priced or not. It used to have a PPV-only twin, MASSppvEXCLUDE, merged
-into it 2026-10-21; the /admin/do-not-mass endpoints still accept kind=ppv from
-an old client and land it on the DM list.
-
-  case_one_list_roundtrip:     kind=dm (default) and kind=ppv both hit the one
-                               DM list, local + OF; get reflects, remove clears.
-  case_ppv_never_recreated:    a kind=ppv add mints no MASSppvEXCLUDE row or OF list.
-  case_every_send_reads_dm:    priced and unpriced priority_mass runs, and
-                               resolve_mass_audience, all drop the DM member.
-  case_legacy_migrates_to_dm:  a legacy "Do Not Mass" system list is renamed to
-                               MASSDMEXCLUDE on access (members preserved).
-  case_merge_folds_ppv_into_dm: the boot merge copies PPV members onto the DM
-                               list (minting it if absent), deletes the PPV rows,
-                               leaves OF alone, and is a no-op the second time.
-
-OF mirror:
-  case_first_add_mints_dm:     a fresh account's first add mints the pinned DM
-                               OF list and persists its of_list_id.
-  case_sync_heals_stranded:    POST /admin/mass-exclude/sync creates+backfills the
-                               OF list for a stranded account (local member,
-                               of_list_id NULL, no OF list) with no re-toggle.
-  case_paged_find_no_duplicate: an existing OF list past the first page is found,
-                               not duplicated.
-  case_get_lists_error_no_create: a failed OF list read must NOT fall through to
-                               create (the old duplicate-mint bug); of_synced=False,
-                               local change kept.
-  case_read_never_creates_of:  GET do-not-mass on a fresh account touches OF zero
-                               times (no-spam invariant).
-  case_backfill_fail_reports_unsynced: a stranded heal whose member adds all fail
-                               reports of_synced=False (not a silent success).
-  case_remove_propagates:      a remove drops the fan from the mirrored OF list.
-
-Run: ./venv/bin/python service/tests/test_mass_exclude.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 from _of_fixtures import UNLISTABLE_403, of_error  # noqa: E402
 
@@ -62,7 +20,7 @@ from automations import priority_mass  # noqa: E402
 from db.engine import get_session, merge_ppv_exclude_into_dm  # noqa: E402
 from db.models import Account, List, ListMember  # noqa: E402
 
-PPV = "MASSppvEXCLUDE"  # the retired twin, as it still sits in an unmerged DB
+PPV = "MASSppvEXCLUDE"
 
 class FakeOFClient:
     _next_id = 7000
@@ -74,9 +32,6 @@ class FakeOFClient:
         self.create_calls = 0
 
     def get_lists(self, limit: int = 100, offset: int = 0):
-        # Envelope shape ({list, hasMore}) with REAL offset/limit paging, so the
-        # exhaustive _page_all in lists.py terminates and a >1-page account is
-        # exercised (the old bare-list-ignoring-offset fake would loop forever).
         items = [{"id": lid, "name": n} for lid, n in self.lists.items()]
         page = items[offset:offset + limit]
         return {"list": page, "hasMore": offset + limit < len(items)}
@@ -99,7 +54,6 @@ class FakeOFClient:
         self.members.get(int(list_id), set()).discard(int(user_id))
 
     def seed_list(self, name: str) -> int:
-        """Pre-existing OF list (as if minted earlier / by another relay)."""
         return int(self.create_list(name)["id"])
 
     def names(self) -> list[str]:
@@ -110,14 +64,11 @@ class FakeOFClient:
 
 
 class ReadFailOFClient(FakeOFClient):
-    """get_lists raises — the transient OF read failure the old code swallowed and
-    then created a duplicate over."""
     def get_lists(self, limit: int = 100, offset: int = 0):
         raise RuntimeError("OF /lists read boom (429/proxy)")
 
 
 class AddFailOFClient(FakeOFClient):
-    """create/pin/find work but every member add raises (systemic per-user 403)."""
     def add_user_to_list(self, list_id, user_id):
         raise of_error(403, UNLISTABLE_403)
 
@@ -192,7 +143,6 @@ async def case_every_send_reads_dm():
 async def case_legacy_migrates_to_dm():
     aid = "acc_me4"
     await _seed_account(aid)
-    # A pre-split single system exclude list named "Do Not Mass" with a member.
     await _seed_list(aid, "Do Not Mass", [999])
     assert (await lists.get_do_not_mass(account_id=aid, fan_id=999, kind="dm"))["do_not_mass"] is True
     assert await _row(aid, "Do Not Mass") is None, "legacy list renamed"
@@ -240,8 +190,6 @@ async def case_first_add_mints_dm():
 
 
 async def case_sync_heals_stranded():
-    """POST /admin/mass-exclude/sync heals a stranded account (local member,
-    of_list_id NULL, no OF list) with no re-toggle — the deploy repair path."""
     aid = "acc_stranded"
     await _seed_account(aid)
     await _seed_list(aid, MASSDMEXCLUDE_LIST, [501])
@@ -255,12 +203,10 @@ async def case_sync_heals_stranded():
 
 
 async def case_paged_find_no_duplicate():
-    """An existing OF list beyond the first page is FOUND (paged read), not minted
-    twice — the single-page-50 read this fix replaces would have duplicated it."""
     aid = "acc_paged"
     await _seed_account(aid)
     fake = _fakes.setdefault(aid, FakeOFClient())
-    for i in range(60):                                   # push MASS* past offset 50
+    for i in range(60):
         fake.seed_list(f"filler {i}")
     fake.seed_list(MASSDMEXCLUDE_LIST)
     r = await lists.add_do_not_mass(account_id=aid, fan_id=71, kind="dm")
@@ -269,8 +215,6 @@ async def case_paged_find_no_duplicate():
 
 
 async def case_get_lists_error_no_create():
-    """A failed OF /lists read must NOT fall through to create_list (old duplicate
-    bug). of_synced=False, but the local exclusion still lands."""
     aid = "acc_readfail"
     await _seed_account(aid)
     _fakes[aid] = ReadFailOFClient()
@@ -281,8 +225,6 @@ async def case_get_lists_error_no_create():
 
 
 async def case_read_never_creates_of():
-    """No-spam invariant: merely READING do-not-mass state on a fresh account never
-    creates an OF list (the picker/drawer open must be free)."""
     aid = "acc_readonly"
     await _seed_account(aid)
     got = await lists.get_do_not_mass(account_id=aid, fan_id=1, kind="dm")
@@ -291,8 +233,6 @@ async def case_read_never_creates_of():
 
 
 async def case_backfill_fail_reports_unsynced():
-    """A heal whose member adds ALL fail reports of_synced=False — not a silent
-    success that hides an empty OF list."""
     aid = "acc_addfail"
     await _seed_account(aid)
     _fakes[aid] = AddFailOFClient()
@@ -303,7 +243,6 @@ async def case_backfill_fail_reports_unsynced():
 
 
 async def case_remove_propagates():
-    """A remove drops the fan from the mirrored OF list."""
     aid = "acc_remove"
     await _seed_account(aid)
     fake = _fakes.setdefault(aid, FakeOFClient())

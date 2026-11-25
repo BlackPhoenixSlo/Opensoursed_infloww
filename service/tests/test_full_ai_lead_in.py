@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_lead_in — Full AI lead-in asks (config `lead_in`, test Mode), pure, plain assert.
-
-  case_flag_off_snapshot      flag off (and Shadow with it on): 18 chat prompts byte-identical to
-                              origin/main's builder, NEW-168's ask ids + ASKED: line taken out
-  case_lead_lines_table       Jev's pick -> LEAD_HEAD + `[pick]` + its LEAD_LINES line ({city} / {country}
-                              filled), no wcfi ask line, SELF_GIVE for SELF_BAN
-  case_fetishes_never_led     a fetishes pick asks nothing; every other fact known -> know enough
-  case_lead_examples_table    the "- GOOD:" line: <=2 wcfi riffs then <=2 leads; empty fallback
-  case_scene_turn_unchanged   a scene Turn's prompt is the same with the flag on or off
-  case_style_draw             the lead draw never returns wcfi's "straight to your next question"
-  case_info_jev_wording       the lead flag picks NEXT_QUESTION_LEAD; her_last_line in the state;
-                              only the lead wording moves the digest
-  case_config_key             `lead_in` default on, bool-checked, labelled
-  case_constants_in_catalog   every new constant is in docs/prompts/new/current-repo.md
-
-Run: ./venv/bin/python service/tests/test_full_ai_lead_in.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 import hashlib  # noqa: E402
 import json  # noqa: E402
@@ -30,7 +13,6 @@ from automations import full_ai_writers as wr  # noqa: E402
 from automations.full_ai_config import DEFAULTS, validate  # noqa: E402
 
 _DOCS = Path(__file__).resolve().parents[2] / "docs" / "prompts"
-# `_info_jev.INFO_VERSION` on origin/main (dacd91707): the flag-off / Shadow digest must not move.
 MAIN_INFO_VERSION = "66b043f3a87e"
 # sha256 of `_snapshot(lead_in=False)` as origin/main (dacd91707) built it.
 FLAG_OFF_SHA = "9d937ec8d923c0037057adca5decf680e89252aef34d8ec5df758ef9fbad85eb"
@@ -57,8 +39,6 @@ _FANS = ({}, {"his_age": "31", "occupation": "chef"}, {"home_city": "Madrid", "h
 
 
 def _snapshot(**cfg) -> list:
-    """18 prompts: chat over four folds x (no pick, a pick) x two anchors, plus sext and
-    make_right."""
     out = []
     for fi in _FANS:
         for nq in (None, ij.missing(DEFAULTS, fi)[0]):
@@ -74,8 +54,6 @@ def _sha(prompts) -> str:
 
 
 def _old_twins(prompts):
-    """Test Mode composes SEXT_HOT_TEST / SELL_STEP_TEST / ESCALATION_TEST where Shadow composes
-    the old three (off-path wording PR); put back, the prompts are the pinned builder's."""
     s = json.dumps(prompts)
     fmt = {"close": wr.CLOSE_BY_ID, "example": wr._voice.HER.sell_caption_example}
     for new, old in ((wr.SEXT_HOT_TEST, wr.SEXT_HOT),
@@ -86,14 +64,10 @@ def _old_twins(prompts):
 
 
 def _nqs() -> list:
-    """The pick behind each `_snapshot` prompt, in its order (None: no pick, sext, make_right)."""
     return [nq for fi in _FANS for nq in (None, ij.missing(DEFAULTS, fi)[0]) for _ in range(2)] + [None] * 2
 
 
 def _old_asks(prompts, nqs):
-    """NEW-168 prints the pick's `[nq]` before its ask line and ends the contract on
-    ASKED_EXCEPTION, only on a prompt holding an ask head; taken out, the prompts are the pinned
-    builder's."""
     out = []
     for p, nq in zip(prompts, nqs, strict=True):
         sys_ = p[0]["content"]
@@ -104,19 +78,16 @@ def _old_asks(prompts, nqs):
 
 
 def case_flag_off_snapshot():
-    # Selling off in test Mode puts SELL_OFF_LINE in NO_SELL_OFFERS' place (sell_nearest PR); put
-    # back, the snapshot is byte-identical to the pinned one.
     snap = json.loads(json.dumps(_old_asks(_old_twins(_snapshot(lead_in=False)), _nqs())).replace(
         json.dumps(wr.SELL_OFF_LINE)[1:-1], json.dumps(wr.NO_SELL_OFFERS)[1:-1]))
     assert _sha(snap) == FLAG_OFF_SHA
-    # Shadow never leads, flag on or off.
     shadow = []
     for fi in _FANS:
         for nq in (None, ij.missing(DEFAULTS, fi)[0]):
             for key in ("test:s:1", "test:s:7"):
                 shadow.append(wr.messages_for("chat", "otherwise", 2,
                                               _turn(fan_info=fi, nq=nq, key=key, mode="shadow"), None))
-    assert _old_asks(shadow, _nqs()[:16]) == snap[:16]          # Shadow keeps NO_SELL_OFFERS, byte-identical
+    assert _old_asks(shadow, _nqs()[:16]) == snap[:16]
     assert _snapshot(lead_in=True) != _snapshot(lead_in=False)
 
 
@@ -138,7 +109,6 @@ def case_lead_lines_table():
         assert wr.LEAD_HEAD + f"[{nq}] " + line in s, (nq, s)
         assert wr.ASK_HEAD not in s and "You DON'T know" not in s and ij.question_line(nq, fi) not in s, nq
         assert wr.SELF_GIVE in s and wr.SELF_BAN not in s, nq
-    # No pick: no lead head, SELF_GIVE still there.
     s = _sys()
     assert wr.LEAD_HEAD not in s and wr.SELF_GIVE in s, s
 
@@ -150,7 +120,7 @@ def case_fetishes_never_led():
     known = dict(real_name="Sam", his_age="31", home_country="Spain", home_city="Madrid",
                  hobbies="surfing", occupation="chef")
     assert wr.KNOW_ENOUGH in _sys(fan_info=known), "fetishes empty must not block know-enough"
-    assert wr.KNOW_ENOUGH not in _sys(fan_info=known, lead_in=False)    # flag off: still waits
+    assert wr.KNOW_ENOUGH not in _sys(fan_info=known, lead_in=False)
     for fi, lead, want in ((known, True, []), (known, False, ["fetishes"]),
                            ({}, True, [f for f in DEFAULTS["info_fields"] if f != "fetishes"])):
         assert ij.askable(DEFAULTS, fi, lead) == want, (fi, lead)
@@ -172,7 +142,6 @@ def case_lead_examples_table():
     ]
     for fi, durable, want in table:
         assert wr.lead_examples(wr._fan(fi), durable) == want, (fi, wr.lead_examples(wr._fan(fi), durable))
-    # wcfi's empty fallback stays its own; a fan with no facts still gets leads, not it.
     empty = SimpleNamespace(**{k: None for k in wr._FAN_FIELDS})
     fallback = wr._good_examples(empty, set(wr._ALL_ASKED), True)
     assert fallback.startswith('- GOOD: "mmm tell me more"'), fallback

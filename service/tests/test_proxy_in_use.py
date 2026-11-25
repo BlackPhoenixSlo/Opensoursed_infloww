@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
-"""
-Deleting a proxy a Creator uses (DELETE /admin/proxies/{label}): Infloww's
-"Proxy already in use". The proxy and account registries are repointed at
-temp files; no network.
-
-  case_unbound_proxy_deletes:
-      a proxy no account is bound to is removed, as before.
-  case_bound_proxy_is_409_naming_creators:
-      a proxy bound to a live account is refused 409, its detail a message
-      naming the Creators that use it, and stays in the registry.
-  case_deleted_account_binding_does_not_count:
-      a binding left by an account that no longer exists does not block.
-  case_signed_in_user_counts_only_own_creators:
-      a signed-in owner's 409 names only their own Creators; a binding to one
-      they cannot see does not block, and is removed with the proxy.
-
-Run: ./venv/bin/python service/tests/test_proxy_in_use.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -107,7 +89,6 @@ def case_signed_in_user_counts_only_own_creators() -> None:
     e = _refused(_U("u1", ["mine"]), "hu-1")
     assert e.status_code == 409
     assert e.detail == "Proxy already in use by Mine. Unbind it first.", e.detail
-    # A binding the caller cannot see (GET /admin/proxies hides it) does not block, and goes with the proxy.
     proxy_registry.unbind_account("hu-1", "mine")
     assert as_user(_U("u1", ["mine"]), proxies_admin_api.admin_proxies_remove, "hu-1") == {"ok": True}
     assert proxy_registry.get_by_label("hu-1") is None

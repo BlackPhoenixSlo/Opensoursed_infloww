@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""
-`_priority_lane` — the per-account OF concurrency lane in server.py.
-
-Until now it had no tests at all, and its two counters
-(`_priority_total_waits` / `_priority_background_waits`) incremented before
-EVERY acquire rather than only blocked ones — and nothing read them. So the
-question "is this lane actually a queue, and for how long?" had no answer,
-which is exactly the question you must answer before bounding the acquire.
-
-These cases pin the accounting (blocked-only counting, real wait times, a
-strictly paired in-flight gauge) and the two release paths that a timeout
-would later have to get right:
-
-  * case 6 — the body raises: both semaphores come back.
-  * case 7 — the SECOND acquire raises while the background slot is already
-    held: the background cap must not decay 2 → 1 → 0.
-
-Nothing here is bounded or rejected — this is the observe-first half of P5.
-
-Plain-assert standalone script (no pytest), run via:
-
-    ./venv/bin/python service/tests/test_priority_lane_accounting.py
-
-Exit 0 = all pass.
-"""
 from __future__ import annotations
 
 import json
@@ -36,8 +11,6 @@ import time
 import uuid
 from pathlib import Path
 
-# ── Hard-bind a throwaway DB BEFORE importing any service module (same
-# PROD-fallback guard as the other service tests).
 _TMP_DB = Path(tempfile.gettempdir()) / f"chatterly_lane_{uuid.uuid4().hex}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB}"
 os.environ["CHATTERLY_DB_URL"] = f"sqlite:///{_TMP_DB}"
@@ -57,7 +30,6 @@ CAP_BG = server._ACCOUNT_LANE_BACKGROUND
 
 
 def _aid(tag: str) -> str:
-    """A fresh account id per case, so each case reads its own counters."""
     return f"lane-{tag}-{uuid.uuid4().hex[:8]}"
 
 
@@ -67,7 +39,6 @@ def _stat(account_id: str) -> dict:
 
 
 def _drain(sem: threading.BoundedSemaphore) -> int:
-    """How many slots are free right now (leaves the semaphore as found)."""
     got = 0
     while sem.acquire(blocking=False):
         got += 1
@@ -77,7 +48,6 @@ def _drain(sem: threading.BoundedSemaphore) -> int:
 
 
 def _assert_lane_whole(account_id: str, label: str) -> None:
-    """Both semaphores back at full and the gauge back at zero."""
     total, background = server._lanes_for(account_id)
     assert _drain(total) == CAP, f"{label}: total not fully released ({_drain(total)}/{CAP})"
     assert _drain(background) == CAP_BG, f"{label}: background not fully released"
@@ -87,14 +57,11 @@ def _assert_lane_whole(account_id: str, label: str) -> None:
 
 
 def _child(stats_path: str | None, body: str) -> dict:
-    """Run `body` in a FRESH interpreter that imports server.py — the only
-    honest way to test "survives a restart", since a restart is a new process
-    with empty module state. Returns whatever the child prints as JSON."""
     env = dict(os.environ)
     env["DATABASE_URL"] = os.environ["DATABASE_URL"]
     env["CHATTERLY_DB_URL"] = os.environ["CHATTERLY_DB_URL"]
     if stats_path is None:
-        env["PRIORITY_LANE_STATS_PATH"] = ""      # explicit: persistence off
+        env["PRIORITY_LANE_STATS_PATH"] = ""
     else:
         env["PRIORITY_LANE_STATS_PATH"] = stats_path
     code = (
@@ -109,9 +76,6 @@ def _child(stats_path: str | None, body: str) -> dict:
 
 
 def main() -> None:
-    # ── Case 1: a free slot is NOT a wait.
-    # The old counters incremented here, which is why they could never
-    # prove queueing. `calls` moves, `blocked_*` must not.
     a = free_aid = _aid("free")
     with server._priority_lane(a):
         st = _stat(a)
@@ -123,9 +87,6 @@ def main() -> None:
     assert st["in_flight_peak"] == 1, f"case1 peak: {st}"
     _assert_lane_whole(a, "case1")
 
-    # ── Case 2: user saturation — the (CAP+1)th caller queues, is counted
-    # as blocked exactly once, and the wait it records is real. It also
-    # eventually gets in: the acquire is still unbounded, not a timeout.
     a = sat_aid = _aid("sat")
     total, _bg = server._lanes_for(a)
     for _ in range(CAP):
@@ -143,7 +104,7 @@ def main() -> None:
     assert not entered.wait(0.2), "case2: entered a full lane"
     held = 0.25
     time.sleep(held)
-    total.release()                       # free one slot
+    total.release()
     assert entered.wait(2.0), "case2: never acquired after a slot freed"
     assert done.wait(2.0), "case2: never exited"
     t.join(2.0)
@@ -158,10 +119,6 @@ def main() -> None:
         total.release()
     _assert_lane_whole(a, "case2")
 
-    # ── Case 3: background sub-cap — a 3rd background caller queues on the
-    # BACKGROUND semaphore while `total` still has free slots. The two
-    # waits must not be conflated: blocked_background moves, blocked_total
-    # does not. That distinction is the whole point of the sub-cap.
     a = _aid("bgsat")
     total, background = server._lanes_for(a)
     for _ in range(CAP_BG):
@@ -189,7 +146,6 @@ def main() -> None:
         background.release()
     _assert_lane_whole(a, "case3")
 
-    # ── Case 4: no account id → no lane, no accounting, no acquire.
     before = dict(server._lane_stats_all)
     lanes_before = len(server._account_lanes)
     with server._priority_lane(None):
@@ -199,8 +155,6 @@ def main() -> None:
     assert len(server._account_lanes) == lanes_before, "case4: created a lane for a falsy id"
     assert server._lane_stats_all["calls"] == before["calls"], "case4: counted a non-entry"
 
-    # ── Case 5: concurrent users never exceed the cap, and the peak gauge
-    # sees the saturation. CAP+3 threads, each holding briefly.
     a = _aid("conc")
     n = CAP + 3
     start = threading.Barrier(n)
@@ -230,8 +184,6 @@ def main() -> None:
     assert st["blocked_total"] >= 1, f"case5 expected queueing: {st}"
     _assert_lane_whole(a, "case5")
 
-    # ── Case 6: the body raises → both semaphores come back and the gauge
-    # unwinds. A lane that leaks on the error path decays to zero capacity.
     a = _aid("boom")
     try:
         with server._priority_lane(a, priority="background"):
@@ -242,9 +194,6 @@ def main() -> None:
         raise AssertionError("case6: exception swallowed")
     _assert_lane_whole(a, "case6")
 
-    # ── Case 7: THE LEAK. A background caller holds `background`, then the
-    # `total` acquire raises. Without an unwind the background cap decays
-    # 2 → 1 → 0 permanently for that account and bulk work silently dies.
     a = _aid("leak")
     real_acquire = server._lane_acquire
 
@@ -262,9 +211,6 @@ def main() -> None:
 
     server._lane_acquire = _explode
     try:
-        # Run each attempt in a thread with a bounded join: a leak drains the
-        # sub-cap to zero and the (CAP_BG+1)th attempt then blocks FOREVER on
-        # `background.acquire()`. Assert the decay, don't hang on it.
         for i in range(CAP_BG + 1):
             box: list = []
             t = threading.Thread(target=_attempt, args=(box,), daemon=True)
@@ -281,26 +227,19 @@ def main() -> None:
     st = _stat(a)
     assert st["calls"] == 0, f"case7: a failed entry must not count as a call: {st}"
 
-    # ── Case 8: the stats endpoint reports blocked-only counts in a shape
-    # you can read without a decoder ring, and survives a zero-call lane.
     out = server.admin_priority_lane_stats()
     assert out["cap_total"] == CAP and out["cap_background"] == CAP_BG, f"case8 caps: {out}"
     assert out["rejections"] == 0, "case8: observe-first rejects nothing"
     assert "saturated" not in out["overall"], "case8: fleet row has no per-account cap"
-    row = out["accounts"][sat_aid]          # the case-2 lane: 1 call, 1 block
+    row = out["accounts"][sat_aid]
     assert row["blocked"] == 1 and row["blocked_rate"] == 1.0, f"case8 row: {row}"
     assert row["wait_s_avg_blocked"] >= 0.2, f"case8 avg wait: {row}"
     assert row["in_flight"] == 0 and row["saturated"] is False, f"case8 gauge: {row}"
-    free = out["accounts"][free_aid]        # the case-1 lane: 1 call, no block
+    free = out["accounts"][free_aid]
     assert free["blocked"] == 0 and free["blocked_rate"] == 0.0, f"case8 free row: {free}"
     assert free["wait_s_avg_blocked"] == 0.0, f"case8 free avg: {free}"
     assert out["overall"]["calls"] >= 1 and out["lanes"] >= 5, f"case8 overall: {out}"
 
-    # ── Case 9: THE RESTART. Cumulative counters must cross process death —
-    # an observe-first window that resets on every relay recreate reads as
-    # "no queueing", which is the one wrong answer that looks like a result.
-    # Gauges must NOT cross it: nothing is in flight in a process that just
-    # booted, and a restored gauge would be wrong forever.
     stats_file = str(Path(tempfile.gettempdir()) / f"lane_stats_{uuid.uuid4().hex}.json")
     drive = (
         "aid = 'acct-restart'\n"
@@ -308,7 +247,7 @@ def main() -> None:
         "    with server._priority_lane(aid):\n"
         "        pass\n"
         "total, bg = server._lanes_for(aid)\n"
-        "total.acquire()\n"                     # leave a slot held at exit
+        "total.acquire()\n"
         "server._lane_stats_flush(force=True)\n"
         "print(json.dumps(server.admin_priority_lane_stats()))\n"
     )
@@ -331,8 +270,6 @@ def main() -> None:
     assert third["overall"]["calls"] == 6, f"case9: totals must ADD, not replace: {third['overall']}"
     assert third["boots"] == 3, f"case9 boots: {third['boots']}"
 
-    # ── Case 10: a corrupt stats file must not take the relay down with it.
-    # Start a fresh window, say so in `persist_error`, keep serving.
     bad = Path(tempfile.gettempdir()) / f"lane_bad_{uuid.uuid4().hex}.json"
     bad.write_text("{not json at all", encoding="utf-8")
     out = _child(str(bad), drive)
@@ -340,16 +277,10 @@ def main() -> None:
     assert out["persist_error"], "case10: a corrupt file must be reported, not hidden"
     assert out["boots"] == 1, f"case10: a fresh window starts at boot 1: {out['boots']}"
 
-    # ── Case 11: persistence off is a supported state, not a crash.
     out = _child(None, drive)
     assert out["persisted_to"] is None, f"case11: {out['persisted_to']}"
     assert out["overall"]["calls"] == 3, f"case11: {out['overall']}"
 
-    # ── Case 12: loop-side admission (2026-11-05). A background slot taken on the
-    # loop is borrowed by the worker (no thread blocks), the count is shared with
-    # thread callers (exact cap, FIFO), a cancelled loop waiter gives its slot on,
-    # and a lease closed while its worker is on OF frees the slot only when the
-    # worker is done.
     import asyncio
     import contextvars
 
@@ -364,7 +295,7 @@ def main() -> None:
         await asyncio.sleep(0.01)
         cancelled.cancel()
         await asyncio.sleep(0.01)
-        bg.release()  # FIFO: the first waiter gets it, the cancelled one is skipped
+        bg.release()
         assert await asyncio.wait_for(waiter, 1) is True, "case12: the queued admit never woke"
         lease = server.BgLease(a, bg, 0.0)
         ctx = contextvars.copy_context()
@@ -380,12 +311,12 @@ def main() -> None:
         assert entered.wait(2), "case12: a worker with the loop's slot blocked in the lane"
         st = _stat(a)
         assert st["threads_waiting_background"] == 0 and st["bg_in_flight"] == 1, f"case12 gauges: {st}"
-        lease.close()  # the owner left while its worker is still on OF: slot kept
+        lease.close()
         assert bg.held == CAP_BG, f"case12: slot freed under a running worker: {bg.held}"
         go.set()
         t.join(5)
         assert bg.held == CAP_BG - 1, f"case12: slot not freed after the worker: {bg.held}"
-        bg.release()  # the first admit's slot (the lease held the waiter's)
+        bg.release()
         assert bg.held == 0 and not bg._waiters, f"case12: lane not whole: {bg.held} {bg._waiters}"
         st = _stat(a)
         assert st["calls_background"] == 1 and st["blocked_background"] == 0, f"case12 counters: {st}"

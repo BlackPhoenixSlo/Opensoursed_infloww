@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""Fan reports (roadmap W5 5.6): `/admin/stats/fan-report` over a window, per Creator.
-
-  top     each fan's window spend split into tips / PPV / subscriptions, pending counted, a refund not, ranked
-          by the asked metric; net is OF's net, else 80% of gross (net_or_80); the fan's name and his roster
-          subscription start ride along.
-  csv     `format=csv` streams the whole ranking (`limit` aside) with FAN_REPORT_FIELDS as the header, under the
-          shared CSV cap.
-  traffic the window's spend by the trial link or promotion each spender claimed (his earliest claim by OF's
-          subscribe_at, else first sighting, then id), named by the trial mirror and the promotion's campaign (through
-          link_meta.campaign_id); the rest as no link.
-  growth  new fans per report-zone day (a subscription sale or the roster's subscribe_at, each fan once) and
-          renewed fans (a rebill), each per Creator and day raised to OF's own stored count when larger; a
-          Creator with OF days in the window has its own rows on UTC days too (OF's), so one fan counts once.
-  scope   another Agency's Creator is 403.
-
-Seeded straight into the temp DB; no network.
-
-Run: ./venv/bin/python service/tests/test_fan_reports.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -83,12 +64,13 @@ def case_top_fans_split_spend_by_kind_and_rank_by_the_asked_metric():
          SubscriberSnapshot(account_id=C1, fan_id=1, subscribe_at=datetime(2026, 1, 5), seen_at=at))
     _sale(C1, 1, "ppv_message", 5000, at, net=4000)
     _sale(C1, 1, "subscription", 1000, at, net=800)
-    _sale(C1, 1, "tip", 500, at, status="pending")                 # pending counts; no net yet: 80%
-    _sale(C1, 1, "tip", 9999, at, status="refunded")               # a refund does not
-    _sale(C1, 1, "tip", 7777, datetime(2026, 4, 2))                # outside the window
+    # pending counts (no net yet: 80%); a refund does not
+    _sale(C1, 1, "tip", 500, at, status="pending")
+    _sale(C1, 1, "tip", 9999, at, status="refunded")
+    _sale(C1, 1, "tip", 7777, datetime(2026, 4, 2))
     _sale(C1, 2, "tip", 3000, at)
-    _sale(C1, 2, "custom", 100, at)                                # total only
-    _sale(C2, 3, "tip", 99_000, at)                                # another Creator
+    _sale(C1, 2, "custom", 100, at)
+    _sale(C2, 3, "tip", 99_000, at)
 
     body = _get(f"/admin/stats/fan-report?account_id={C1}&{MARCH}").json()
     top = body["top_fans"]
@@ -126,13 +108,12 @@ def case_traffic_groups_spend_by_each_fans_earliest_claimed_link():
     _add(TrialLinkMirror(account_id=C3, of_trial_id=71, name="Reddit trial"),
          PromoCampaign(id=900, account_id=C3, of_promo_id=82, name="Spring promo"),
          LinkMeta(account_id=C3, kind="trial", of_id=71, source="Reddit"),
-         LinkMeta(account_id=C3, kind="promo", of_id=81, campaign_id=900))   # an earlier OF id of the re-armed promo
+         LinkMeta(account_id=C3, kind="promo", of_id=81, campaign_id=900))
     _add(LinkClaimer(account_id=C3, kind="trial", of_id=71, fan_id=10, first_seen_at=seen),
          LinkClaimer(account_id=C3, kind="trial", of_id=71, fan_id=14, first_seen_at=seen))
-    # Recorded after the trial claim, but OF dates fan 10's promo subscription earlier: the promo is his first.
     _add(LinkClaimer(account_id=C3, kind="promo", of_id=81, fan_id=10, first_seen_at=seen, subscribe_at=feb),
          LinkClaimer(account_id=C3, kind="promo", of_id=81, fan_id=11, first_seen_at=seen),
-         LinkClaimer(account_id=C3, kind="promo", of_id=81, fan_id=13, first_seen_at=seen))  # spent nothing
+         LinkClaimer(account_id=C3, kind="promo", of_id=81, fan_id=13, first_seen_at=seen))
     _sale(C3, 10, "tip", 1000, at)
     _sale(C3, 10, "ppv_message", 500, at)
     _sale(C3, 11, "tip", 200, at)
@@ -151,8 +132,6 @@ def case_traffic_groups_spend_by_each_fans_earliest_claimed_link():
 
 
 def case_traffic_earliest_claim_ties_break_on_id():
-    # Fan 20's three claims, in insert (id) order: by coalesce(subscribe_at, first_seen_at), the first
-    # two tie on Mar 2, so the lower id (the trial) takes his spend.
     _add(LinkClaimer(account_id=C5, kind="trial", of_id=72, fan_id=20, first_seen_at=datetime(2026, 3, 2)),
          LinkClaimer(account_id=C5, kind="promo", of_id=83, fan_id=20, subscribe_at=datetime(2026, 3, 2),
                      first_seen_at=datetime(2026, 3, 1)),
@@ -170,7 +149,7 @@ def case_growth_counts_new_and_renewed_fans_per_report_zone_day():
          SubscriberSnapshot(account_id=C4, fan_id=2, subscribe_at=datetime(2026, 3, 5, 11, 0), seen_at=seen),
          SubscriberSnapshot(account_id=C4, fan_id=3, subscribe_at=datetime(2026, 3, 7, 3, 0), seen_at=seen))
     _sale(C4, 4, "rebill", 1000, datetime(2026, 3, 6, 12, 0))
-    _sale(C4, 4, "rebill", 1000, datetime(2026, 3, 6, 13, 0))       # the same fan twice that day
+    _sale(C4, 4, "rebill", 1000, datetime(2026, 3, 6, 13, 0))
     _sale(C4, 5, "rebill", 1000, datetime(2026, 3, 6, 14, 0), status="chargedback")
     window = f"account_id={C4}&from=2026-03-01&to=2026-03-10"
 
@@ -179,7 +158,6 @@ def case_growth_counts_new_and_renewed_fans_per_report_zone_day():
                       {"day": "2026-03-06", "new_fans": 0, "renewed_fans": 1},
                       {"day": "2026-03-07", "new_fans": 1, "renewed_fans": 0}], growth
 
-    # New York: fan 3's 03:00 UTC start is 22:00 on the 6th.
     assert OWNER_A.put("/admin/settings/preferences", json={"report_tz": "America/New_York"}).status_code == 200
     try:
         growth = _get(f"/admin/stats/fan-report?{window}").json()["growth"]
@@ -190,24 +168,21 @@ def case_growth_counts_new_and_renewed_fans_per_report_zone_day():
 
 
 def case_growth_takes_ofs_daily_counts_when_larger():
-    # A free Creator: OF counts 155 new subs on the 12th and we saw one; no sale, no roster otherwise.
     _add(SubscriberSnapshot(account_id=C6, fan_id=1, subscribe_at=datetime(2026, 3, 12, 10, 0),
                             seen_at=datetime(2026, 3, 20)),
          SubscriberSnapshot(account_id=C6, fan_id=2, subscribe_at=datetime(2026, 3, 13, 10, 0),
                             seen_at=datetime(2026, 3, 20)),
          OfStatsDaily(account_id=C6, day="2026-03-12", new_subs=155, renewals=3),
          OfStatsDaily(account_id=C6, day="2026-03-13", new_subs=0, renewals=None),
-         OfStatsDaily(account_id=C6, day="2026-03-14", visitors=40),          # no subscriber reading: no row
-         OfStatsDaily(account_id=C6, day="2026-04-02", new_subs=9))           # outside the window
+         OfStatsDaily(account_id=C6, day="2026-03-14", visitors=40),
+         OfStatsDaily(account_id=C6, day="2026-04-02", new_subs=9))
     growth = _get(f"/admin/stats/fan-report?account_id={C6}&from=2026-03-01&to=2026-03-31").json()["growth"]
     assert growth == [{"day": "2026-03-12", "new_fans": 155, "renewed_fans": 3},
                       {"day": "2026-03-13", "new_fans": 1, "renewed_fans": 0}], growth
 
 
 def case_growth_with_of_days_buckets_local_rows_by_utc_day_not_twice():
-    # New York report zone. Both Creators gain one fan at 03:00 UTC on the 12th (22:00 on the 11th in New York).
-    # with_of has OF's own day for it (UTC days): its local row goes on that UTC day, one fan, not one per side.
-    # no_of has no OF days: its local row stays on the report-zone day.
+    # OF days are UTC: a local row goes on its UTC day, one fan, not one per side
     with_of, no_of = _creator("5600017"), _creator("5600018")
     at = datetime(2026, 3, 12, 3, 0)
     _sale(with_of, 1, "subscription", 1000, at)
@@ -224,9 +199,6 @@ def case_growth_with_of_days_buckets_local_rows_by_utc_day_not_twice():
 
 
 def case_growth_edge_row_whose_utc_day_is_off_the_report_stays_on_its_report_day():
-    # Ljubljana report of Mar 12 only. A fan subs and renews at 00:30 local on the 12th (23:30 UTC on the 11th), on a
-    # Creator OF covers (its Mar 12 day: 1 new, 0 renewals). The rows' UTC day (Mar 11) is off the report's days, so
-    # they stay on the report-zone day: Mar 12, per-day max with OF's, nothing on Mar 11, no double count.
     aid = _creator("5600019")
     at = datetime(2026, 3, 11, 23, 30)
     _sale(aid, 1, "subscription", 1000, at)
@@ -246,8 +218,6 @@ def case_another_agencys_creator_is_refused():
 
 
 def case_json_spend_materialized_once_with_two_reads_and_indexed_claims():
-    # A real request must do one aggregation, not two independently executed queries.
-    # This fails on the old runtime even though its figures are correct.
     import sqlite3
     import sys
     from sqlalchemy import event
@@ -272,7 +242,6 @@ def case_json_spend_materialized_once_with_two_reads_and_indexed_claims():
     assert any("ix_link_claimers_account_fan" in p for p in plan), plan
     assert "FROM (SELECT" in sql and "LIMIT" in sql.split("UNION ALL")[0], sql
     assert "ORDER BY fan_report_rows.branch" in sql, sql
-    # CSV must retain its independent streaming query, without materialization or UNION.
     calls.clear()
     event.listen(engine, "before_cursor_execute", capture)
     try:
@@ -286,10 +255,10 @@ def case_signed_zero_net_and_cutoff_ties_preserve_membership_and_order():
     a, b = _creator("5600006"), _creator("5600007")
     at = datetime(2026, 3, 10)
     _sale(a, 1, "tip", 101, at)
-    _sale(a, 1, "custom", -101, at)  # signed floor: 80 + (-81), total zero still a spender
+    _sale(a, 1, "custom", -101, at)
     _sale(a, 2, "tip", 1000, at, net=0)
     _sale(a, 3, "ppv_message", 500, at)
-    _sale(b, 3, "ppv_message", 500, at)  # every existing ordering key ties across accounts
+    _sale(b, 3, "ppv_message", 500, at)
     _sale(a, 4, "subscription", 500, at)
     _sale(a, 5, "rebill", -3, at)
     _sale(a, 11, "custom", -1, at, status="pending")
@@ -312,7 +281,6 @@ def case_signed_zero_net_and_cutoff_ties_preserve_membership_and_order():
             assert len(keys) == len(set(keys)), rows
             assert all(tuple(r[f] for f in fields) == expected[k] for k, r in zip(keys, rows)), rows
             assert [(-r[fields[col]], -r["total_cents"], r["fan_id"]) for r in rows] == ordered_keys[:limit], rows
-            # Existing order deliberately leaves account ties unspecified, including cutoff ties.
             assert sum(t["fans"] for t in body["traffic"]) == len(expected), body
             assert sum(t["total_cents"] for t in body["traffic"]) == sum(v[0] for v in expected.values()), body
             assert [t["total_cents"] for t in body["traffic"]] == sorted(

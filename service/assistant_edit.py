@@ -1,24 +1,3 @@
-"""service/assistant_edit.py — do-mode's `mass_edit`: change settings on EXISTING Auto mass rules.
-
-Spec D11 (owner 2026-11-12, overrides the pilot's "never edit an existing rule /
-never touch another account"): the help bot may bulk-edit the asker's existing
-Auto mass rules — here, or on every model the session owns — but never turns a
-rule ON. The LLM only says WHAT changes (`Edit`); everything else is here:
-
-  • `clean_changes` — the change spec, whitelisted + clamped (the draft's
-    output AND the apply route's input go through it; never trust either).
-  • `apply_changes(kind, payload, every_seconds, is_enabled, changes)` — pure,
-    keyed by kind (`APPLIERS`, mass_premade only). Raises `Skip(reason)` when a
-    rule would become invalid (price without media, online-only without a list).
-  • `plan_rules` — pure: which rules match, their before→after diffs, the ones
-    already matching and the ones skipped. `resolve_rules` is its DB read.
-  • `apply_one` — the apply route's per-rule write: reload the row the session
-    owns, compare `rule_version`, re-apply the change spec to the FRESH row
-    (never a client payload), validate as the editor's PATCH does, write only
-    if the row is still the one read (conditional UPDATE), cancel queued jobs
-    when it was switched off, log the old steps hash. Any failure = that
-    rule's skip.
-"""
 from __future__ import annotations
 
 import copy
@@ -40,12 +19,13 @@ log = logging.getLogger("of-relay.assistant_edit")
 
 EDIT_FLOW = "mass_edit"
 KIND = "mass_premade"
-MIN_EVERY_S, MAX_EVERY_S = 5 * 60, 168 * 3600      # the draft's interval range
+MIN_EVERY_S, MAX_EVERY_S = 5 * 60, 168 * 3600
 MIN_UNSEND_H, MAX_UNSEND_H = 0.08, 168.0
 MAX_SKIP_H = 168.0
-PRICE_MIN, PRICE_MAX = 3, 200                       # priority_mass _PRICE_MIN/_PRICE_MAX ($)
-MEDIA_MAX = 40                                      # MediaPool MEDIA_MAX
-ONE_MODEL_ONLY = ("price", "media_count")           # never on scope "all"
+# Mirrors priority_mass _PRICE_MIN/_PRICE_MAX.
+PRICE_MIN, PRICE_MAX = 3, 200
+MEDIA_MAX = 40
+ONE_MODEL_ONLY = ("price", "media_count")
 MAX_RULES = 500
 
 LABELS = {
@@ -62,10 +42,9 @@ CHANGED_SINCE = "changed since you saw it"
 
 
 class Skip(Exception):
-    """This rule can't take the change; `str(e)` is the reason the user reads."""
+    pass
 
 
-# ── What the LLM may say ──────────────────────────────────────────────
 
 class EditEvery(BaseModel):
     value: float | None = Field(None, allow_inf_nan=False)
@@ -73,10 +52,10 @@ class EditEvery(BaseModel):
 
 
 class EditChanges(BaseModel):
-    unsend_after_hours: float | None = Field(None, allow_inf_nan=False)   # 0 = off
+    unsend_after_hours: float | None = Field(None, allow_inf_nan=False)
     online_only: bool | None = None
     every: EditEvery | None = None
-    exclude_last_chat_hours: float | None = Field(None, allow_inf_nan=False)  # 0 = off
+    exclude_last_chat_hours: float | None = Field(None, allow_inf_nan=False)
     price: float | None = Field(None, allow_inf_nan=False)
     media_count: float | None = Field(None, allow_inf_nan=False)
     disable_rule: bool = False
@@ -102,7 +81,6 @@ class Edit(BaseModel):
         return v
 
 
-# ── The change spec (pure) ────────────────────────────────────────────
 
 def _num(v: Any) -> float | None:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
@@ -116,10 +94,6 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 def clean_changes(raw: Any) -> dict[str, Any]:
-    """Whitelist + clamp a change spec. Keys: unsend_after_hours (0 = off),
-    online_only, every_seconds, exclude_last_chat_hours (0 = off), price
-    (0 = free), media_count, disable_rule (only True is kept — nothing here
-    turns a rule on). Anything else, or a wrong type, is dropped."""
     raw = raw if isinstance(raw, dict) else {}
     out: dict[str, Any] = {}
     if (u := _num(raw.get("unsend_after_hours"))) is not None:
@@ -135,12 +109,12 @@ def clean_changes(raw: Any) -> dict[str, Any]:
     if (m := _num(raw.get("media_count"))) is not None and m > 0:
         out["media_count"] = int(_clamp(round(m), 1, MEDIA_MAX))
     if raw.get("disable_rule") is True:
+        # Only True is kept: nothing here ever turns a rule on.
         out["disable_rule"] = True
     return out
 
 
 def changes_of(c: EditChanges) -> dict[str, Any]:
-    """The LLM's changes → the raw (unclamped) change spec `clean_changes` takes."""
     out: dict[str, Any] = {}
     for k in ("unsend_after_hours", "online_only", "exclude_last_chat_hours", "price", "media_count"):
         if getattr(c, k) is not None:
@@ -153,7 +127,6 @@ def changes_of(c: EditChanges) -> dict[str, Any]:
     return out
 
 
-# ── Appliers (pure) ───────────────────────────────────────────────────
 
 def _int_ids(v: Any) -> list:
     return [x for x in v if isinstance(x, int) and not isinstance(x, bool)
@@ -161,7 +134,6 @@ def _int_ids(v: Any) -> list:
 
 
 def _has_media(it: dict) -> bool:
-    """mass_premade `has_media_source`: an int-able media id or a folder."""
     return bool(_int_ids(it.get("media_files"))) or it.get("media_folder_id") is not None
 
 
@@ -182,13 +154,10 @@ def _set_or_pop(it: dict, key: str, value: Any) -> None:
         it[key] = value
 
 
-Befores = list[tuple[Any, int]]      # each distinct prior value, with how many messages had it
+Befores = list[tuple[Any, int]]
 
 
 def _apply_mass_premade(payload: dict, ch: dict[str, Any]) -> list[tuple[str, Befores, Any]]:
-    """Mutates `payload["messages"]` items; returns (field, befores, after) per
-    changed field — every distinct prior value across the messages, with its
-    count (rwl W30 F7: $5 and $50 both show, never only the first)."""
     msgs = payload.get("messages")
     items = [m for m in msgs if isinstance(m, dict)] if isinstance(msgs, list) else []
     if not items:
@@ -211,7 +180,7 @@ def _apply_mass_premade(payload: dict, ch: dict[str, Any]) -> list[tuple[str, Be
             _set_or_pop(it, "unsend_after_hours", after)
             note("unsend_after_hours", before, after)
         if "online_only" in ch:
-            # The sender also reads `filters.online` as online-only (send_mass_decide, readyMadeContent filtersOf).
+            # The sender also reads `filters.online` as online-only.
             filters = it.get("filters") if isinstance(it.get("filters"), dict) else None
             before = bool(it.get("online_only")) or _truthy((filters or {}).get("online"))
             if ch["online_only"] and not it.get("user_lists"):
@@ -252,10 +221,6 @@ APPLIERS: dict[str, Callable[[dict, dict[str, Any]], list[tuple[str, Befores, An
 
 def apply_changes(kind: str, payload: dict, every_seconds: int | None, is_enabled: bool,
                   changes: dict[str, Any]) -> tuple[dict, int | None, bool, list[dict]]:
-    """Pure: the rule after the change → (payload, every_seconds,
-    is_enabled, diffs[{field, label, before, after}]). `every_seconds` None =
-    the rule runs at set times (an `every` change is then a Skip). Never
-    turns a rule on. Raises Skip."""
     fn = APPLIERS.get(kind)
     if fn is None:
         raise Skip("not an Auto mass rule")
@@ -277,9 +242,6 @@ def apply_changes(kind: str, payload: dict, every_seconds: int | None, is_enable
 
 
 def _sends_more(key: str, befores: Befores, after: Any) -> bool:
-    """The change makes SOME message send more (or charge differently) right away — every prior value read, not
-    only the first message's: a shorter interval, fewer skip-recent hours, online-only off, a price change, more
-    media."""
     a, priors = _num(after), [_num(v) if key != "online_only" else v for v, _ in befores]
     if key == "every_seconds":
         return a is not None and any(b is not None and a < b for b in priors)
@@ -295,7 +257,6 @@ def _sends_more(key: str, befores: Befores, after: Any) -> bool:
 
 
 def _diff(key: str, befores: Befores, after: Any, enabled: bool) -> dict[str, Any]:
-    """`live` (rwl W30 S1): decided here, over every prior value, for a rule that stays on — the card only shows it."""
     d = {"field": key, "label": LABELS[key], "before": befores[0][0], "after": after,
          "text": diff_text(key, befores, after), "live": bool(enabled) and _sends_more(key, befores, after)}
     if len(befores) > 1:
@@ -303,7 +264,6 @@ def _diff(key: str, befores: Befores, after: Any, enabled: bool) -> dict[str, An
     return d
 
 
-# ── Wording (pure): the ONE formatter the plan card and the summary read (rwl W30 F12) ──
 
 def _fmt_num(x: float) -> str:
     x = round(float(x), 2)
@@ -315,7 +275,6 @@ def _hours_text(h: float) -> str:
 
 
 def value_text(key: str, v: Any) -> str:
-    """A value in plain words: "8h", "never", "every 90s", "$15", "on"."""
     n = _num(v)
     if key == "unsend_after_hours":
         return _hours_text(n) if n and n > 0 else "never"
@@ -334,7 +293,6 @@ def value_text(key: str, v: Any) -> str:
 
 
 def diff_text(key: str, befores: Befores, after: Any) -> str:
-    """"Unsend after 8h → never"; several prior values: "Price $5 (1 message), $50 (2 messages) → $10"."""
     if len(befores) > 1:
         before = ", ".join(f"{value_text(key, v)} ({c} message{'s' if c != 1 else ''})" for v, c in befores)
     else:
@@ -347,22 +305,19 @@ _CHANGE_ORDER = ("unsend_after_hours", "every_seconds", "online_only", "exclude_
 
 
 def change_lines(changes: dict[str, Any]) -> list[str]:
-    """The change spec's lines: "Unsend after → never", …, "Switch off" last."""
     out = [f"{LABELS[k]} → {value_text(k, changes[k])}" for k in _CHANGE_ORDER if k in changes]
     if changes.get("disable_rule"):
         out.append("Switch off")
     return out
 
 
+# Includes account_id so a deleted rule's reused id on another model never passes as the planned rule.
 def rule_version(account_id: str, steps_json: str | None, trigger_json: str | None, is_enabled: Any) -> str:
-    """What the plan card saw: a changed payload, schedule or switch since → a skip. The model is in it
-    (rwl W30 C1): a deleted rule's reused id on another model never passes as the planned rule."""
     raw = f"{account_id}|{steps_json or ''}|{trigger_json or ''}|{int(bool(is_enabled))}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
 def every_of(trigger_json: str | None) -> tuple[dict, int | None]:
-    """(trigger dict, its every_seconds or None for a clock / missing trigger)."""
     try:
         t = json.loads(trigger_json or "{}")
     except (TypeError, ValueError):
@@ -381,10 +336,8 @@ def payload_of(steps_json: str | None) -> dict:
     return p if isinstance(p, dict) else {}
 
 
-# ── Matching + plan (pure) ────────────────────────────────────────────
 
 def _norm(s: str | None) -> str:
-    """Letters and digits in any script, casefolded (rwl W30 F6: "夜" stays "夜", never "")."""
     return "".join(ch for ch in (s or "").casefold() if ch.isalnum())
 
 
@@ -394,8 +347,6 @@ _GENERIC = {"automass", "automasses", "mass", "masses", "all", "allautomasses", 
 
 
 def name_matches(match: str | None, name: str | None) -> bool:
-    """Case/space-insensitive contains; no match or a generic one ("auto masses")
-    = every rule. A supplied name that normalises to nothing selects none."""
     if match is None:
         return True
     m, n = _norm(match), _norm(name)
@@ -423,14 +374,12 @@ class EditPlan:
     already: int = 0
     skipped: list[dict] = field(default_factory=list)
     matched: int = 0
-    overflow: int = 0          # rules that would change but are past MAX_RULES: not on the card (said)
-    left_out: int = 0          # "all": managed models the opt-in gate dropped (said, rule names never read)
+    overflow: int = 0
+    left_out: int = 0
 
 
 def plan_rules(rows: Iterable[RuleRow], changes: dict[str, Any], match: str | None,
                names: dict[str, str]) -> EditPlan:
-    """Which rules change and how. `rows`: the Auto mass rules in scope;
-    `names`: account id → display name."""
     plan = EditPlan()
     for r in sorted(rows, key=lambda r: ((names.get(r.account_id) or r.account_id).lower(),
                                          (r.name or "").lower(), r.id)):
@@ -457,17 +406,12 @@ def plan_rules(rows: Iterable[RuleRow], changes: dict[str, Any], match: str | No
     return plan
 
 
-# ── DB: the rules in scope, and the per-rule write ────────────────────
 
 Allowed = Callable[[str], Awaitable[bool]]
 
 
+# No clamp (unauthed dev hatch) never widens "all" beyond the focused account.
 async def scope_accounts(scope: str, account_id: str, allowed: Allowed) -> tuple[list[str], int]:
-    """(accounts, left out). "this" = the focused account; "all" = every account
-    the session owns (`clamp_account_filter`) that passes `allowed` (the opt-in
-    gate), and how many it dropped (rwl W30 C2: said, never silent). No clamp
-    (unauthed dev hatch) never widens to every account in the DB (rwl W30 M14):
-    "all" reads as the focused account only."""
     if scope != "all":
         return [account_id], 0
     ids = clamp_account_filter(None)
@@ -491,7 +435,6 @@ async def resolve_rules(scope: str, account_id: str, changes: dict[str, Any], ma
         accts = (await s.execute(select(Account.id, Account.nickname).where(
             Account.id.in_(accounts)))).all()
     names = {a: (nick or a) for a, nick in accts}
-    # Match over every rule, THEN cap the card (rwl W30 F3): the cut is counted, never silent.
     plan = plan_rules(rows, changes, match, names)
     plan.left_out = left_out
     if len(plan.rules) > MAX_RULES:
@@ -501,7 +444,6 @@ async def resolve_rules(scope: str, account_id: str, changes: dict[str, Any], ma
 
 
 def left_out_note(n: int) -> str:
-    """Models the opt-in gate dropped from "every model" (rwl W30 C2); no rule names."""
     return (f"{n} model{'s' if n != 1 else ''} left out — your role can't edit "
             f"{'their' if n != 1 else 'its'} Auto mass.")
 
@@ -511,13 +453,9 @@ def overflow_note(n: int) -> str:
             "narrow the request (a rule name or one model).")
 
 
+# Write is conditional on the row still being the one read: a concurrent edit -> CHANGED_SINCE. A 401 re-raises; any other failure is this rule's skip so earlier commits are always reported.
 async def apply_one(rule_id: int, version: str, changes: dict[str, Any], *, home: str,
                     allowed: Allowed) -> dict[str, Any]:
-    """One rule of an approved plan → {id, ok, reason?, diffs?}. A 401 is
-    re-raised (session gone); any other refusal or failure is this rule's skip
-    (rwl W30 F4: the response always lists every rule, never an error after
-    earlier rules committed). The write is conditional on the row still being
-    the one this call read (F5): a concurrent edit in between → CHANGED_SINCE."""
     from automation_registry import canonical_kind
     from automation_rules_api import _cancel_queued, _load_owned, _validate_payload_for_kind
 

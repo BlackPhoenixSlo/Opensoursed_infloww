@@ -1,17 +1,3 @@
-"""invite_setup — an invite carries the Employee's role, Creators and group
-
-`chatters_invites.setup_json` (TEXT, NULL): the Employee setup the owner chose
-on "+ Add employee" (employees.EmployeeSetup as JSON), applied when the invite
-is accepted. NULL for invites minted before this and for bare invites.
-
-The ORM model declares the same column, so `init_db()`'s ADD-COLUMN catch-up
-brings it to a booting box; this revision keeps the alembic chain canonical.
-Idempotent (inspector-guarded, house convention). Downgrade drops the column.
-
-Revision ID: 0071_invite_setup
-Revises: 0070_employee_groups
-Create Date: 2026-10-18
-"""
 from __future__ import annotations
 
 from typing import Sequence

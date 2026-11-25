@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_offer_last_look — the last look drops a PPV he came to own, or a second Offer
-behind an unconfirmed one (phase 05 ticket 89, full_ai_live `offer_valid`).
-
-The live Turn through `full_ai_live.run` (OF faked, Jev + Writers faked, temp DB). Every Turn rides
-a Pick on its last bubble; a `ppv` bubble sender over `full_ai_ppv.send_priced` stands in for
-ticket 90's. His purchases land through the fake OF's send hook (between bubbles).
-
-  case_owned_after_bubble_1    he buys the Pick's media from another lane's PPV after bubble 1: the PPV is not
-                               sent, Offer columns NULL, offer_dropped owned, exactly one OF send
-  case_unrelated_purchase      he buys other media: the PPV is sent
-  case_preview_owned           a preview id of the Pick becomes owned: dropped owned
-  case_unconfirmed_100s        an unconfirmed priced row 100 s old: the PPV dropped unconfirmed, the text
-                               bubbles before it sent
-  case_unconfirmed_1000s       1000 s old: the PPV is sent
-  case_unconfirmed_lands       its message lands first (settle links it): not blocking, PPV sent, its
-                               media in `sent`
-  case_free_item               a Free item: never blocked by unconfirmed; dropped by owned
-  case_next_turn_clean         after a drop: the next Turn has no open Offer, Pending offer "none"
-  case_ppv_only_loader         the loader reads nothing for a text bubble (0 settle pulls)
-
-Run: ./venv/bin/python service/tests/test_full_ai_offer_last_look.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -61,7 +39,6 @@ def _patched(obj, name, value):
 
 
 async def _send_ppv(client, look) -> dict:
-    """Ticket 90's stand-in: the priced bubble through `send_priced` (it writes its own row)."""
     b = look.bubble
     got = await full_ai_ppv.send_priced(client, row_id=look.row["id"], account_id=look.account_id,
                                         fan_id=look.fan_id, text=b["text"], ppv=b["ppv"],
@@ -73,7 +50,6 @@ async def _send_ppv(client, look) -> dict:
 
 @contextlib.contextmanager
 def _selling(pick: Pick = PICK, n: int = 2):
-    """Every Turn: her last `n` bubbles, the last carrying `pick`; the `ppv` sender registered."""
     real = full_ai_test.send
 
     def send(row, parts, _pick=None, **kw):
@@ -98,7 +74,6 @@ def _reply(row) -> dict:
 
 
 async def _bought(aid, fan, media) -> None:
-    """Another lane's PPV he paid for (a paid outbound with its media)."""
     async with get_session() as s:
         s.add(Message(account_id=aid, fan_id=fan, message_id=next(_ids), direction="out", body="funnel ppv",
                       created_at=datetime.utcnow() - timedelta(minutes=1), price_cents=2000, is_paid=True,
@@ -110,7 +85,8 @@ def _buys_after_first(aid, fan, media) -> LiveOF:
     loop = asyncio.get_running_loop()
 
     def after(n, _text):
-        if n == 1:              # OF's send runs in a worker thread: write on the test's loop
+        # OF's send runs in a worker thread: write on the test's loop
+        if n == 1:
             asyncio.run_coroutine_threadsafe(_bought(aid, fan, media), loop).result()
     return LiveOF(after=after)
 
@@ -151,7 +127,6 @@ async def case_preview_owned():
 
 
 async def _unconfirmed(aid, fan, age_s: float, *, price=900) -> int:
-    """A priced Offer row of ours with no OF id yet (sent maybe), `age_s` old."""
     async with get_session() as s:
         r = AiDecision(account_id=aid, fan_id=fan, mode="live", trigger_kind="inbound", trigger_key=f"u{fan}",
                        created_at=datetime.utcnow() - timedelta(seconds=age_s), route="sell_now", heat=2,
@@ -187,8 +162,6 @@ async def case_unconfirmed_lands():
     rid = await seed_live(aid)
     uid = await _unconfirmed(aid, fan, 100)
     landed = next(_ids)
-    # its PPV, as the scrape finds it on OF: ours, same price and media (W30 F3: settle links an exact
-    # media match only), no tag
     async with get_session() as s:
         s.add(Message(account_id=aid, fan_id=fan, message_id=landed, direction="out", body="just for u",
                       created_at=datetime.utcnow() - timedelta(seconds=95), price_cents=900,
@@ -221,7 +194,6 @@ async def case_next_turn_clean():
     assert full_ai_owned.open_offer_live(await live_rows(aid, fan), datetime.utcnow()) is None
     await clear_pause(aid, fan)
     await dm(aid, fan, mid + 1, "ok what now", ago_s=0)
-    # A new line: the first Turn's, sent again, is her own line repeated (floor `repeat`).
     with world(line="ok:mm nothing much babe, just lying in bed thinking about u") as w2:
         res = await full_ai_live.run(aid, payload(fan, mid + 1, await full_ai_live.live_rule(aid)), run_id=0)
     assert res.get("row_status") == "sent", res
@@ -242,11 +214,11 @@ async def case_ppv_only_loader():
     with _patched(full_ai_settle, "settle_pull", pull), world() as w:
         await full_ai_live.run(aid, payload(fan, mid, rid), run_id=0)
     (row,) = await live_rows(aid)
-    assert row.status == "sent" and pulls == [(aid, fan)], pulls      # Turn start only (90)
+    assert row.status == "sent" and pulls == [(aid, fan)], pulls
     pulls.clear()
     with _patched(full_ai_settle, "settle_pull", pull):
         await _turn("fa_ol_text2", 1111, 12101)
-    assert len(pulls) == 2, pulls                                       # Turn start + the ppv loader
+    assert len(pulls) == 2, pulls
 
 
 _harness.run()

@@ -1,34 +1,4 @@
-"""
-transactions.py — read-only admin endpoints for the /messages > Tips tab.
-
-Two endpoints, both backed by raw `transactions` reads (no view dependency
-— per Phase E.3 v2 synthesis §2.9 the per_employee_revenue_with_attribution
-CTE is ~10× more expensive than the direct table scan and we only need
-chat-linked attribution here):
-
-  GET /admin/tips-list   → keyset-paginated list of tip transactions with
-                           per-row attribution + tip_note from
-                           `messages.body` when the tip is chat-linked.
-
-  GET /admin/top-tippers → leaderboard of fans by SUM(amount_cents) over
-                           the window. Optional employee_id scopes to
-                           tips on that op's outbound messages (inner
-                           join messages).
-
-Both take `format=csv` (roadmap 1.16): the whole filtered set streamed as
-CSV through csv_export.py, the /admin/paid-messages precedent — every tip
-for the list (paging ignored), every tipper for the leaderboard (`limit`
-ignored), each capped at `csv_export.CSV_MAX_ROWS`.
-
-Both count `TRACKED_STATUSES` (cleared AND pending), like every earnings
-read: a tip is written pending and clears ~7 days later, so a cleared-only
-filter hid every tip of the last week (owner rule: pending always counts).
-Chargebacks and refunds stay out.
-
-Read-only — no writes, no FK side-effects. The share-token gate (server.py)
-fronts both routes; we don't repeat the auth check here.
-"""
-
+# Counts cleared AND pending: a tip is written pending and clears ~7 days later (owner rule).
 from __future__ import annotations
 
 import itertools
@@ -50,7 +20,6 @@ from auth import assert_employee_filter_owned, clamp_account_filter
 log = logging.getLogger("of-relay.transactions")
 router = APIRouter()
 
-# CSV export columns: the JSON rows' fields, flattened (`fan.*` → `fan_*`).
 _TIPS_CSV_HEADER = (
     "transaction_id", "occurred_at", "account_id", "fan_id", "fan_username", "fan_display_name",
     "amount_cents", "message_id", "tip_note", "attributed_employee_id", "attributed_employee_name",
@@ -63,18 +32,13 @@ _TOP_TIPPERS_CSV_HEADER = (
 
 
 def _csv_filename(name: str, from_: str, to: str) -> str:
-    """The download's name, after the window as typed."""
     return f"{name}_{csv_export.safe_filename_part(from_)}_to_{csv_export.safe_filename_part(to)}.csv"
 
 
 def _attribution_source(r: Any) -> str | None:
-    """"tip_message" only when both the message link AND the message's
-    sent_by_employee_id are present. A linked message with NULL
-    attribution is still treated as unattributed for this surface."""
     return "tip_message" if r.message_id is not None and r.attributed_employee_id is not None else None
 
 
-# ── /admin/tips-list ────────────────────────────────────────────────
 
 @router.get("/admin/tips-list", response_model=None)
 async def tips_list(
@@ -103,9 +67,7 @@ async def tips_list(
     start = _parse_date(from_, field="from")
     end = _parse_date(to, field="to")
     account_ids = clamp_account_filter(account_id)
-    # Cross-employee leak guard: an arbitrary employee_id used to slip
-    # past the account gate and pull tips attributed to someone the
-    # caller has no business reading. See audit notes.
+    # Cross-employee leak guard: an arbitrary employee_id must not pull tips attributed to someone the caller cannot read.
     await assert_employee_filter_owned(employee_id)
 
     fan_q_pattern: str | None = None
@@ -116,8 +78,6 @@ async def tips_list(
                 status_code=400,
                 detail="fan_query must be at least 2 characters",
             )
-        # LIKE pattern — case-insensitive on SQLite (default NOCASE
-        # collation for LIKE on ASCII), good enough for username search.
         fan_q_pattern = f"%{fq}%"
 
     q = (
@@ -140,8 +100,7 @@ async def tips_list(
             Message,
             and_(
                 Message.account_id == Transaction.account_id,
-                # The full messages PK: one seek per tip. Every writer of a tip's message_id
-                # sets its fan_id too; a NULL-fan tip gets no note / Employee.
+                # Full messages PK: one seek per tip. A NULL-fan tip gets no note / Employee.
                 Message.fan_id == Transaction.fan_id,
                 Message.message_id == Transaction.message_id,
             ),
@@ -222,7 +181,6 @@ async def tips_list(
     }
 
 
-# ── /admin/top-tippers ──────────────────────────────────────────────
 
 @router.get("/admin/top-tippers", response_model=None)
 async def top_tippers(
@@ -276,7 +234,7 @@ async def top_tippers(
                 status_code=400,
                 detail="employee_id must be positive",
             )
-        # Same cross-employee leak guard as /admin/tips-list above.
+        # Same cross-employee leak guard as /admin/tips-list.
         await assert_employee_filter_owned(emp_filter)
 
     q = (
@@ -299,9 +257,6 @@ async def top_tippers(
         q = q.where(Transaction.account_id.in_(account_ids))
 
     if emp_filter is not None:
-        # Inner-join messages on (account_id, message_id). Standalone
-        # tips (message_id=NULL) drop out automatically — they can't
-        # have an employee.
         q = q.join(
             Message,
             and_(
@@ -310,9 +265,6 @@ async def top_tippers(
             ),
         ).where(Message.sent_by_employee_id == emp_filter)
 
-    # The fan's names ride the aggregate as an outer join: at most one Fan per
-    # (account_id, fan_id), so the sums are untouched. JSON and CSV read the
-    # same query; only JSON is cut to `limit`.
     q = (
         q.outerjoin(Fan, and_(Fan.account_id == Transaction.account_id, Fan.fan_id == Transaction.fan_id))
         .add_columns(
@@ -325,8 +277,6 @@ async def top_tippers(
     )
 
     if format == "csv":
-        # stream_csv hands to_row one row at a time, in rank order, so the
-        # rank is a running count.
         rank = itertools.count(1)
         return csv_export.download(
             _csv_filename("top-tippers", from_, to), lambda s: csv_export.query_rows(s, q),

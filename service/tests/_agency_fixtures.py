@@ -1,21 +1,3 @@
-"""service/tests/_agency_fixtures.py — the shared two-Agency bench.
-
-Seeds Agency A and Agency B, each with an owner, a chatter linked only to its
-own Agency, and a Creator (an `accounts` row, its `user_accounts` link and an
-on-disk account directory in a temp sessions tree, so the account isolation
-middleware's `is_account` check does a real stat). Plus `chatter_ab`, linked
-to both Agencies, and a Master (`users.is_admin`).
-
-Later Phases import this for their cross-agency 403/404 cases instead of
-seeding their own two Agencies (docs/spec/phase-01, Testing Decisions).
-
-Every name and id is neutral and obviously fake; the mapping key of each
-principal IS its username, so `login_owner("agency_a_owner")` reads the way
-the mapping does.
-
-NOT a test file: no `case_*`, no `_harness.run()`. Importers bootstrap
-`_harness` FIRST (the temp-DB footgun), then import this.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -48,13 +30,8 @@ _CHATTERS = {"chatter_a": ("agency_a_owner",),
 _IDS: dict[str, str] | None = None
 
 
-# ASSUMPTION: all four path settings in accounts.py (SESSIONS_DIR, ACCOUNTS_DIR,
-# ACTIVE_FILE, MIGRATED_MARKER) are redirected, not just ACCOUNTS_DIR, so no
-# code path can fall back to service/sessions. Overturned if accounts.py grows
-# another module-level path, which must then be redirected here too.
+# All four accounts.py path settings must be redirected so nothing falls back to service/sessions.
 def _sandbox_sessions_tree() -> Path:
-    """Point the account registry at a throwaway sessions tree, so the seeded
-    Creator directories are real and nothing touches service/sessions."""
     root = Path(tempfile.mkdtemp(prefix="agency_fixture_sessions_"))
     account_registry.SESSIONS_DIR = root
     account_registry.ACCOUNTS_DIR = root / "accounts"
@@ -90,17 +67,7 @@ async def _seed() -> dict[str, str]:
     return ids
 
 
-# ASSUMPTION: seed_two_agencies is sync and seeds once per process (asyncio.run
-# inside), matching how _harness tests seed at module level. Overturned if a
-# caller needs it from inside a running event loop or a fresh seed per case.
 def seed_two_agencies() -> dict[str, str]:
-    """Seed both Agencies once and return a plain mapping of ids.
-
-    Keys: `agency_a_owner`, `agency_b_owner`, `agency_master` (users.id);
-    `creator_a`, `creator_b` (digit-only account ids); `chatter_a`,
-    `chatter_b`, `chatter_ab` (chatters.id). A second call returns the same
-    mapping without seeding again. Call it outside a running event loop
-    (module level or a sync case)."""
     global _IDS
     if _IDS is None:
         _sandbox_sessions_tree()
@@ -118,28 +85,20 @@ def _login(path: str, name: str):
 
 
 def login_owner(name: str):
-    """A test client carrying `name`'s real owner session cookie (the Master
-    logs in here too)."""
     return _login("/auth/login", name)
 
 
 def login_chatter(name: str):
-    """A test client carrying `name`'s real chatter session cookie."""
     return _login("/chatter/login", name)
 
 
 def mint_token(client) -> str:
-    """A fresh owner access token (`ifw_…`) for the owner signed in on `client` (POST /admin/owner-tokens)."""
     r = client.post("/admin/owner-tokens", json={"name": "mcp"})
     assert r.status_code == 200, r.text
     return r.json()["token"]
 
 
 def store_blob(user_id: str, tab: str, blob: dict) -> None:
-    """Write a Settings blob straight into `user_settings`, bypassing the PUT
-    and its schema: a value stored before Phase 4's validation existed. A
-    versioned tab's (`sales`, `time-tracking`) becomes its only version, in
-    effect since before versioning (SETTINGS_EPOCH)."""
     async def _write():
         async with get_session() as s:
             if tab in VERSIONED_SETTINGS_TABS:

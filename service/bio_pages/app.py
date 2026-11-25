@@ -1,16 +1,3 @@
-"""The public bio app (ofl.ink's pages, ported): a standalone ASGI app served by uvicorn on BIO_PORT.
-
-One catch-all endpoint dispatches every method and path in ofl.ink v2's Hono order (server.js), on Hono's view of
-the path (hono.url_path / route_path). FileResponse adds ETag, Last-Modified and Accept-Ranges headers and
-supports Range (206) beyond v2's file response. It mounts nothing of the
-relay's: no /admin, /auth, /t/, SSE or session middleware exists on this port. It never logs a request, a row or an
-error's message: a Link holds its destination.
-
-Path mode (BIO_PATH_PREFIX, e.g. `/p`): a request under the prefix is dispatched with it cut, and its page, assets
-and Profile JSON name prefixed URLs, so `<app host>/p/<username>` works through the Next app's rewrite with no DNS
-of its own; requests outside it are host mode, unchanged. A Link with bot_check needs a passing Turnstile token on
-Reveal (`x-turnstile-token`) while TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY are set (turnstile.py).
-"""
 from __future__ import annotations
 
 import logging
@@ -29,6 +16,7 @@ from bio_pages.config import BioConfig
 from client_addr import client_address, from_edge, trusted_peer
 
 log = logging.getLogger("of-relay.bio")
+# Never log a request, row or error message: a Link holds its destination.
 
 MR = "public, max-age=0, must-revalidate"
 IMM = "public, max-age=31536000, immutable"
@@ -63,7 +51,6 @@ def _json(status: int, value, cc: str | None = None) -> Response:
 
 
 def _under(prefix: str, path: str) -> bool:
-    """Hono's `/x/*`, which also matches `/x`."""
     return path == prefix or path.startswith(prefix + "/")
 
 
@@ -74,7 +61,7 @@ class _Req:
         raw = request.scope.get("raw_path") or request.scope["path"].encode("utf-8")
         if len(raw) + len(request.scope.get("query_string", b"")) > 16 * 1024:
             raise _LongTarget
-        self.full_path = hono.url_path(raw.split(b"?", 1)[0])  # some servers keep the query in raw_path
+        self.full_path = hono.url_path(raw.split(b"?", 1)[0])
         cut = decide.cut_prefix(PATH_PREFIX, self.full_path)
         self.prefix = PATH_PREFIX if cut is not None else ""
         self.url_path = cut if cut is not None else self.full_path
@@ -83,18 +70,15 @@ class _Req:
         self._own_id: str | None = None
 
     async def site(self) -> tuple[decide.HostKind, str | None]:
-        """(kind, custom username) of the Host, resolved once per request."""
         if self._site is None:
             self._site = await _resolve(self.hdr("host"))
         return self._site
 
     async def foreign(self, username: str | None) -> bool:
-        """A live Custom Domain is its one Profile's: any other Username is not served here (prefixed or not)."""
         kind, own = await self.site()
         return kind == "custom" and username != own
 
     async def foreign_owner(self, profile_id: str | None) -> bool:
-        """As `foreign`, by the owning Profile's id (a Link's or file's)."""
         kind, own = await self.site()
         if kind != "custom":
             return False
@@ -109,7 +93,7 @@ class _Req:
 
     def query(self, key: str) -> str | None:
         vals = self.request.query_params.getlist(key)
-        return vals[0] if vals else None  # Hono: first occurrence wins
+        return vals[0] if vals else None
 
 
 async def _resolve(host: str | None) -> tuple[decide.HostKind, str | None]:
@@ -139,9 +123,7 @@ def _no_header(_name: str) -> None:
 
 
 def _geo(q: _Req) -> decide.Header:
-    """The headers the location is read from (CF-IPCountry, X-Country, the region ones): the request's only from an
-    EDGE_PROXIES hop, as client_addr.edge's country; any other request's are the client's own, so none is read
-    (event country XX, visitor_location's default)."""
+    # Location headers are trusted only from an EDGE_PROXIES hop; a client's own are never read.
     return q.hdr if from_edge(q.request) else _no_header
 
 
@@ -169,10 +151,10 @@ async def _reveal(q: _Req) -> Response:
     link_id = q.query("id")
     link = await store.link_by_link_id(link_id) if link_id and decide.LINK_ID.fullmatch(link_id) else None
     if link and await q.foreign_owner(link["profile_id"]):
-        link = None  # another Profile's Link: "Link not found", no bot check, no click
+        link = None
     if decide.gated(link, _site_key()):
         verdict = await turnstile.check(q.hdr("x-turnstile-token"), str(client_address(q.request)))
-        if verdict is None:  # Cloudflare unreachable/busy: tracking_links_api's 503, the page offers Retry
+        if verdict is None:
             return _json(503, {"error": "Bot check unavailable"}, cc)
         if not verdict:
             return _json(403, {"error": "Bot check failed"}, cc)
@@ -196,9 +178,6 @@ async def _file(q: _Req, collection: str, record_id: str, filename: str) -> Resp
 
 
 async def _tls_ask(q: _Req) -> Response:
-    """v2's on-demand-TLS ask endpoint (200 = a host this service serves), kept for the v2 contract
-    (scripts/bio-contract-diff/corpus.py's tls-ask cases). No caller here: Traefik's route file
-    (deploy/bio/sync-custom-domains.py) decides which hosts get a certificate."""
     cc = {"cache-control": "no-store"}
     domain = q.query("domain")
     if not domain or not decide.is_askable(domain, PRIMARY):
@@ -215,7 +194,6 @@ def _landing(status: int) -> Response:
 
 
 async def _meta_profile(req: dict | None) -> dict | None:
-    """The Profile a page names, for its preview tags; a DB hiccup only costs the tags, never the page."""
     if not req or not req.get("username"):
         return None
     try:
@@ -225,7 +203,6 @@ async def _meta_profile(req: dict | None) -> dict | None:
 
 
 def _origin(q: _Req) -> str:
-    """scheme://host the visitor used: X-Forwarded-Host/Proto from a trusted proxy (path mode via Next), else Host."""
     trusted = trusted_peer(q.request)
     host = (q.hdr("x-forwarded-host") if trusted else None) or q.hdr("host") or ""
     host = host.split(",")[0].strip()
@@ -239,8 +216,8 @@ async def _page(q: _Req) -> Response:
         return _r(200, ASSETS[key],
                   {"content-type": TYPES.get(Path(key).suffix, "application/octet-stream"),
                                         "cache-control": MR})
-    kind, custom = await q.site()
     # A Custom Domain is one Profile's: `/p/<other>` there stays two segments (no page), never another Profile.
+    kind, custom = await q.site()
     prefix = q.prefix if kind != "custom" else ""
     req = decide.resolve_profile_request(kind, custom, q.url_path if prefix else q.full_path, prefix)
     if req is not None and req["username"] == "" and req["trackingCode"] is None:
@@ -266,7 +243,7 @@ async def _dispatch(q: _Req) -> Response:
     if _under("/api", p):
         return _json(404, {"error": "Not found"})
     if get and _under("/edit", p):
-        return _landing(404)  # the editor moved into inflowwww (PR2); never a link to it
+        return _landing(404)
     if get and p == "/internal/healthz":
         return _r(200, b"", {"cache-control": "no-store"})
     if get and p == "/internal/tls-ask":
@@ -306,12 +283,11 @@ async def endpoint(request: Request) -> Response:
     return resp
 
 
+# 5s uvicorn graceful phase + 35s drain < 45s compose/Stack stop grace.
 SHUTDOWN_DRAIN_SECONDS = 35
 
 
 async def app(scope, receive, send) -> None:
-    """The ASGI app: every method and path to `endpoint` (a Starlette Route would answer 405, fold slashes and decode
-    `%2F` before we see the path)."""
     if scope["type"] == "lifespan":
         task = None
         stop = asyncio.Event()
@@ -326,7 +302,6 @@ async def app(scope, receive, send) -> None:
                     await task
                 if store._flush_task:
                     await store._flush_task
-                # 5s uvicorn graceful phase + 35s drain < 45s compose/Stack stop grace.
                 deadline = asyncio.get_running_loop().time() + SHUTDOWN_DRAIN_SECONDS
                 while not await store.flush() and asyncio.get_running_loop().time() < deadline:
                     await asyncio.sleep(0.2)

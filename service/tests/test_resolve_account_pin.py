@@ -1,9 +1,3 @@
-"""A headerless request resolves ONE account for its whole life (W30 #1).
-
-Cached/coalesced reads key by `_current_aid()` and fetch through `_get_client()`, which
-re-resolves. The default (active) account flipping A -> B between the two calls cached B's
-body under A. The active-account fallback is now read once per request (request.scope).
-"""
 import _harness  # noqa: F401  (first: temp DB)
 
 _harness.bootstrap()
@@ -18,6 +12,7 @@ def _req() -> Request:
                     "query_string": b"", "headers": []})
 
 
+# The active-account fallback flipping between cache-key and client resolution cached B's body under A.
 def case_cache_key_account_equals_client_account_when_active_flips():
     flips = iter(["acct-A", "acct-B", "acct-B", "acct-B"])
     loaded = []

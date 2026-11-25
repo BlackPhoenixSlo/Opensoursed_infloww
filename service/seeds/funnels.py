@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""service/seeds/funnels.py — port the V1 JSON funnels into the DB.
-
-The legacy chatter loaded funnel definitions from
-`OF_AUTOMATIONV1/mass_message_funnels/*.json`. In this backend world a funnel is a
-row in `mass_message_funnels` (opening_message + steps_json), consumed by A10
-send_mass_message (the opener) and A11 reply_mass_funnel (the reply steps).
-
-This script upserts those funnels by `name` (idempotent — re-running just refreshes
-the text). Add new funnels to `FUNNELS` below or load them from the V1 JSON dir.
-
-Relay startup calls `seed_defaults_once()`, which pre-adds DEFAULT_FUNNELS
-("strokes") once per box without ever overwriting or resurrecting it.
-
-Run:  ./venv/bin/python service/seeds/funnels.py            # seed all FUNNELS
-      ./venv/bin/python service/seeds/funnels.py --list     # show what's in DB
-"""
 from __future__ import annotations
 
 import argparse
@@ -34,15 +18,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert  # noqa: E402
 from db.engine import get_session                               # noqa: E402
 from db.models import MassMessageFunnel                         # noqa: E402
 
-# ── Funnel definitions (ported verbatim from OF_AUTOMATIONV1/mass_message_funnels) ──
 FUNNELS: list[dict] = [
     {
-        # The DEFAULT funnel (auto-added once per box — see `seed_defaults_once`).
-        # Text is the canonical JSON verbatim, MINUS step 4's `media_files`: those
-        # are vault ids, and a vault id only exists in ONE model's vault. The PPV
-        # media is bound per model in funnel_account_media (the funnel's 🖼 Media
-        # pane); until it is, the walker's pre-send guard holds step 4 rather than
-        # send a blank paywall.
         "name": "strokes",
         "opening_message": "How many strokes does it take to get you off? 😈",
         "description": ("Strokes engagement funnel — opens with a spicy question, "
@@ -63,6 +40,7 @@ FUNNELS: list[dict] = [
                  "strokes it will take you to bust?",
                  "if you last long enough, I promise to praise you and reward "
                  "your hard work"]},
+            # no media_files: vault ids exist in one model's vault only; media is bound per model in funnel_account_media and step 4 is held until then
             {"step": 4, "type": "paid_ppv", "price": 24,
              "messages": [
                  "if it wasn't obvious already, i love to be in control. not just "
@@ -121,7 +99,6 @@ def _row(f: dict, now: datetime) -> dict:
 
 
 async def seed() -> list[tuple[int, str]]:
-    """Manual (re)seed of every FUNNELS entry — OVERWRITES text by name."""
     now = datetime.utcnow()
     for f in FUNNELS:
         vals = _row(f, now)
@@ -135,23 +112,12 @@ async def seed() -> list[tuple[int, str]]:
     return await _list()
 
 
-# The funnel(s) every box starts with, and the one-shot marker that records the
-# box already got them (the `data_migrations` table db.engine keeps for exactly
-# this: a step that must never re-run — e.g. never re-create a row the operator
-# later deleted).
 DEFAULT_FUNNELS = ("strokes",)
+# marker makes seeding once-only so a default the operator deleted is not resurrected
 DEFAULTS_MARKER = "20261018_default_funnel_strokes"
 
 
 async def seed_defaults_once() -> list[str]:
-    """Pre-add the DEFAULT_FUNNELS, once per box. Called from relay startup.
-
-    Insert-if-missing BY NAME (ON CONFLICT DO NOTHING): a funnel already called
-    "strokes" — hand-seeded earlier, or edited since — is left exactly as it is.
-    The marker makes it once-only, so a default the operator DELETES stays
-    deleted across restarts instead of coming back. Text only: the PPV media is
-    per model (funnel_account_media), so no model gets another model's vault ids.
-    Returns the names actually inserted ([] on every later boot)."""
     from sqlalchemy import text
     from db.engine import _DATA_MIGRATIONS_DDL
 

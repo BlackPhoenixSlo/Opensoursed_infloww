@@ -1,15 +1,3 @@
-"""service/report_recipe.py — runs a report recipe (`report_recipe_decide`)
-for one Agency: `run(ctx, recipe)` (json) or `build_file(ctx, recipe, fmt)`.
-
-Scoping is structural (docs/plans/ultra-mode/issues/01-report-recipe.md):
-`ctx` comes from `owner_context`, never from the recipe; the Creators are
-the Agency's own links (`agency_account_ids`, a Master's own too), checked
-here, not by the tenant middleware; every engine gets a non-empty list of
-Creator ids (none owned = an empty table, no read); the Employee dimension
-is the Agency's own Employees only; `employee_sales` refuses a Creator
-another Agency co-owns (a Master's oversight link beside an Agency's is no
-co-owner: `tenant_keys.billable_owners`). One run at a time per Agency.
-"""
 from __future__ import annotations
 
 import csv
@@ -40,12 +28,11 @@ from tenant_keys import billable_owners
 
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-_running: set[str] = set()  # Agencies with a run in flight
-MAX_FILE_BYTES = report_files.MAX_BYTES_PER_USER  # one built file, both routes (export + held link): else 413
+_running: set[str] = set()
+MAX_FILE_BYTES = report_files.MAX_BYTES_PER_USER
 
 
 class RecipeError(Exception):
-    """A refused recipe: one reason per field (`report_recipe_decide.parse_recipe`'s shape)."""
 
     def __init__(self, errors: dict[str, str], status: int = 400):
         super().__init__("; ".join(f"{k}: {v}" for k, v in errors.items()))
@@ -61,16 +48,11 @@ class Table:
     to: date
     tz: str
     dataset: str
-    notes: list[str]  # caveats the engine reported (credited_sales' fallback line, sales' history gaps)
+    notes: list[str]
 
 
 @dataclass(frozen=True)
 class AgencyScope:
-    """What one Agency's reports may read and how they read it: its own
-    Creators (`agency_account_ids`, a Master's own links too) → their
-    nicknames (the keys are the owned set), the ones another Agency co-owns (`billable_owners`), its own Employees (named, a
-    blank name as "Employee <id>"), its report zone (None = UTC), week start
-    and today there. The one read `table` and the Do-mode export draft share."""
     nicknames: dict[str, str]
     co_owned: frozenset[str]
     employees: dict[int, str]
@@ -81,13 +63,12 @@ class AgencyScope:
 
 @dataclass
 class _Scope:
-    """What one run may read, all of it the Agency's."""
     ids: list[str]
     start: datetime
     end: datetime
     zone: ZoneInfo | None
     week_start: str
-    employees: dict[int, str]  # the Agency's own Employees
+    employees: dict[int, str]
 
 
 def _zone(name: Any) -> ZoneInfo | None:
@@ -98,7 +79,6 @@ def _zone(name: Any) -> ZoneInfo | None:
 
 
 async def agency_scope(s: AsyncSession, user_id: str, now: datetime) -> AgencyScope:
-    """The Agency of `user_id`'s report scope (see AgencyScope); `now` naive UTC."""
     from settings_api import applied_blob
     prefs = await applied_blob(s, user_id, "preferences")
     owned = sorted(await agency_account_ids(s, user_id))
@@ -108,8 +88,6 @@ async def agency_scope(s: AsyncSession, user_id: str, now: datetime) -> AgencySc
                 select(UserAccount.account_id, UserAccount.user_id, User.is_admin)
                 .join(User, User.id == UserAccount.user_id).where(UserAccount.account_id.in_(owned)))).all():
             links.setdefault(aid, []).append((uid, bool(is_admin)))
-    # co-owned = another Agency owns it by the attribution's own rule (`billable_owners`:
-    # a Master's oversight link is no owner beside an Agency's), so credited_sales reads that Agency's rules
     co_owned = frozenset(a for a, ls in links.items() if any(o != user_id for o in billable_owners(ls)))
     nick = dict((await s.execute(
         select(Account.id, Account.nickname).where(Account.id.in_(owned)))).all()) if owned else {}
@@ -120,20 +98,15 @@ async def agency_scope(s: AsyncSession, user_id: str, now: datetime) -> AgencySc
                        week_start=prefs.get("week_start") or "monday", today=rd.today_in(zone, now))
 
 
-Cells = tuple[list[dict[str, Any]], dict[str, dict[Any, str]], list[str]]  # cells, extra labels {dim: …}, notes
+Cells = tuple[list[dict[str, Any]], dict[str, dict[Any, str]], list[str]]
 
 
 def history_note(gaps: int) -> str:
-    """`sales`' note for earnings_window's gaps: Creator-days whose totals are the ledger's alone."""
     return (f"{gaps} Creator-day{'' if gaps == 1 else 's'} before a Creator was added have no OnlyFans figure "
             "stored: totals there are our ledger's only and may be low")
 
 
 async def _sales(r: rd.Recipe, sc: _Scope) -> Cells:
-    """The Creator reports' path: the ledger per local day and kind
-    (`stats._day_sums`) plus OnlyFans' own figure where it is over the
-    ledger's (`stats._of_top_ups`, the UTC day on the same-date report day); its
-    gaps (days before a Creator was added, no OF figure stored) are a note."""
     import stats
     of_cells, gaps = await of_stats_daily.earnings_window(sc.ids, sc.start, sc.end)
     async with get_session() as s:
@@ -156,9 +129,6 @@ async def _sales(r: rd.Recipe, sc: _Scope) -> Cells:
 
 
 async def _employee_sales(r: rd.Recipe, sc: _Scope) -> Cells:
-    """`credited_sales`, always bucketed (whole hours, or minutes for a zone
-    off by a fraction of an hour), each share on its local day/week/month;
-    its fallback line (Shift schedule without Time tracking) is a note."""
     from sales_attribution import credited_sales
     bucket = "hour" if tx_rollup.whole_hours(sc.zone, sc.start, sc.end) else "minute"
     sales, fallback = await credited_sales(sc.ids, sc.start, sc.end, grouped=True, bucket=bucket)
@@ -166,7 +136,7 @@ async def _employee_sales(r: rd.Recipe, sc: _Scope) -> Cells:
     edges = bucket_edges(unit, sc.start, sc.end, sc.zone, sc.week_start) if unit else []
     out = []
     for c in sales:
-        eid = c.employee_id or None  # NO_ONE (0) is nobody
+        eid = c.employee_id or None
         if eid is not None and eid not in sc.employees:
             continue
         if r.employees and eid not in r.employees:
@@ -185,7 +155,6 @@ async def _employee_sales(r: rd.Recipe, sc: _Scope) -> Cells:
 
 
 async def _chat_activity(r: rd.Recipe, sc: _Scope) -> Cells:
-    """`msg_stats.send_stats`: the Employees' own sends, by send date."""
     unit = rd.time_unit(r.group_by)
     edges = bucket_edges(unit, sc.start, sc.end, sc.zone, sc.week_start) if unit else None
     async with get_session() as s:
@@ -203,9 +172,6 @@ async def _chat_activity(r: rd.Recipe, sc: _Scope) -> Cells:
 
 
 async def _fan_spend(r: rd.Recipe, sc: _Scope) -> Cells:
-    """`stats_fans.fan_spend_q`, sorted by `rd.sort_key` (a metric: `shape`
-    sorts the same way) and cut in SQL (one past the CSV cap at most, so the
-    file can say it was truncated), with each fan's label."""
     from stats_fans import fan_spend_q
     ds = rd.CATALOGUE["fan_spend"]
     spend = fan_spend_q(sc.ids, sc.start, sc.end,
@@ -232,7 +198,6 @@ ENGINES: dict[str, Callable[[rd.Recipe, _Scope], Awaitable[Cells]]] = {
 
 
 async def table(ctx: AgencyContext, raw: Any, *, now: datetime | None = None) -> Table:
-    """The recipe's table for the Agency of `ctx`; RecipeError when refused."""
     recipe, errors = rd.parse_recipe(raw)
     if recipe is None:
         raise RecipeError(errors)
@@ -254,7 +219,7 @@ async def table(ctx: AgencyContext, raw: Any, *, now: datetime | None = None) ->
     names: dict[str, dict[Any, str]] = {"creator": dict(ag.nicknames), "employee": dict(ag.employees)}
     cells: list[dict[str, Any]] = []
     notes: list[str] = []
-    if ids:  # none owned: an empty table, no engine read
+    if ids:
         cells, more, notes = await ENGINES[recipe.dataset](recipe, sc)
         names.update(more)
     cols, rows = rd.shape(recipe, cells, names)
@@ -272,20 +237,17 @@ def _cell(v: Any) -> Any:
 
 
 def _note_rows(t: Table) -> list[list[Any]]:
-    """The table's notes as last lines of a file ("# …", like the TRUNCATED line)."""
     return [[f"# {n}"] + [""] * (len(t.columns) - 1) for n in t.notes]
 
 
 @dataclass(frozen=True)
 class ReportFile:
-    """A built report file: what the download route answers and report_files holds."""
     filename: str
     media_type: str
     body: bytes
 
 
 async def _guarded_table(ctx: AgencyContext, recipe: Any, now: datetime | None) -> Table:
-    """`table`, one run at a time per Agency (429 RecipeError while another is in flight)."""
     if ctx.agency_user_id in _running:
         raise RecipeError({"run": "a report is already running for your Agency; try again when it ends"}, 429)
     _running.add(ctx.agency_user_id)
@@ -296,17 +258,14 @@ async def _guarded_table(ctx: AgencyContext, recipe: Any, now: datetime | None) 
 
 
 async def build_file(ctx: AgencyContext, recipe: Any, fmt: str, *, now: datetime | None = None) -> ReportFile:
-    """The recipe's report as a csv or xlsx file (`fmt`; the route's body type enforces it); RecipeError 413 past
-    MAX_FILE_BYTES (a csv stops serializing there)."""
     t = await _guarded_table(ctx, recipe, now)
     name = rd.filename(t.dataset, t.frm, t.to, fmt)
     if fmt == "csv":
-        # The rows are in memory already; a POST's StreamingResponse trips the
-        # middleware stack (it listens for a disconnect on a consumed body).
+        # A POST's StreamingResponse trips the middleware stack (it listens for a disconnect on a consumed body).
         chunks, size = [], 0
         async for c in csv_export.stream_csv(_aiter(t.rows), t.columns, lambda r: [_cell(v) for v in r]):
             size += len(c)
-            if size > MAX_FILE_BYTES:  # stop serializing at the cap
+            if size > MAX_FILE_BYTES:
                 raise _too_large()
             chunks.append(c)
         body = b"".join(chunks)

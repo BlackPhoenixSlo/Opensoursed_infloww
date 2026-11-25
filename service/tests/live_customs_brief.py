@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""live_customs_brief — the customs work order against the REAL model. OPT-IN.
-
-Replays a captured Blake1 thread (scratchpad JSON: fan_id, direction,
-created_at, is_tip, price_cents, body) into the harness DB and calls
-`customs_brief` unpatched, then prints the handoff exactly as CustomsTab
-copies it. Spends one DeepSeek call per fan.
-
-Run: ./venv/bin/python service/tests/live_customs_brief.py <fixture.json> [fan_id ...]
-"""
 from __future__ import annotations
 
 import os, pathlib, sys
@@ -75,7 +66,6 @@ async def main():
     rows = json.load(open(sys.argv[1]))
     fans = [int(x) for x in sys.argv[2:]] or sorted({r["fan_id"] for r in rows})
     await seed(rows)
-    # Mark them owed so the queue row (and its DB total) exists.
     async with get_session() as s:
         for fid in fans:
             f = await s.get(Fan, (AID, fid))

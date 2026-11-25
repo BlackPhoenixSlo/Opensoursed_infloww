@@ -1,8 +1,25 @@
 #!/usr/bin/env bash
+# Reload BOTH dev servers — the FastAPI relay (uvicorn :8787) AND the Next
+# dev server (:3001) — without tearing down their supervisors.
 #
+# Why this exists: the relay runs WITHOUT uvicorn --reload (the supervisor
+# wraps a plain `uvicorn service.server:app`), so edits to server.py /
+# of_client.py / any service/*.py are NOT picked up until the uvicorn child
+# is restarted. Next hot-reloads most code on its own, but next.config.ts
+# changes (and wedged fast-refresh) need a real restart too.
 #
+# How it works: both supervisors (uvicorn-supervisor.sh / next-supervisor.sh)
+# run a `while true` loop that relaunches their child the instant it dies. So
+# we just kill the PORT LISTENER (the child) — NOT the supervisor — and the
+# supervisor reaps + relaunches it in ~2s with the new code.
 #
+# Usage:
+#   ./scripts/reload.sh              # bounce relay + next   (default)
+#   ./scripts/reload.sh --relay      # bounce ONLY the relay (:8787)
+#   ./scripts/reload.sh --next       # bounce ONLY next      (:3001)
+#   ./scripts/reload.sh --no-wait    # don't wait for them to come back
 #
+# Run ./scripts/start.sh first if the supervisors aren't up yet.
 
 set -u
 cd "$(dirname "$0")/.."

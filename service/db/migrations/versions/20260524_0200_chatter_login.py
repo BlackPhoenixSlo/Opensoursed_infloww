@@ -1,29 +1,3 @@
-"""chatters + chatter_users + chatters_invites + employees.chatter_id
-
-Revision ID: 0024_chatter_login
-Revises: 0023_employees_per_user
-Create Date: 2026-05-24
-
-Step 8 of plan: a chatter signs in once and sees the union of every
-owner's UserAccount rows. Three new tables and one Employee column.
-
-  chatters            — auth row (username + plaintext password, friends-scale)
-  chatter_users       — many-to-many: which Users (owners) each Chatter is
-                        linked to. Account_ids per request is the SET UNION
-                        across all linked owners.
-  chatters_invites    — owner-issued single-use tokens that grant
-                        /chatter/register access + auto-link the new
-                        Chatter to the issuing owner on first login.
-  employees.chatter_id — when a per-owner Employee row exists for a given
-                        Chatter, the audit pipeline resolves to that row.
-
-Both the table creates and the column add use idempotent guards (inspector
-check before each DDL) so re-running on a partially-migrated copy is a
-no-op. SQLite ALTER TABLE ADD COLUMN cannot carry an inline FK reference,
-so `employees.chatter_id` is added without the FK constraint — ownership
-enforcement lives at the application layer, same convention as
-0023_employees_per_user.user_id.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -84,8 +58,6 @@ def upgrade() -> None:
                 nullable=False, server_default=sa.text("CURRENT_TIMESTAMP"),
             ),
         )
-        # Reverse lookup: "every chatter linked to this owner" — read by
-        # GET /admin/chatters on every owner-side render.
         op.create_index(
             "ix_chatter_users_user_id", "chatter_users", ["user_id"],
         )
@@ -113,28 +85,19 @@ def upgrade() -> None:
             "ix_chatters_invites_user_id", "chatters_invites", ["user_id"],
         )
 
-    # Employee.chatter_id — when set, the audit pipeline resolves
-    # (chatter_id, account_owner_id) → this Employee.id and stamps
-    # actions.employee_id with it. NULL = label-only Employee (legacy /
-    # owner-only role), unchanged behavior.
     emp_cols = {c["name"] for c in inspector.get_columns("employees")}
     if "chatter_id" not in emp_cols:
         op.add_column(
             "employees",
+            # SQLite ADD COLUMN can't carry an inline FK; ownership enforced in the app layer
             sa.Column("chatter_id", sa.String, nullable=True),
         )
         op.create_index(
             "ix_employees_chatter_id", "employees", ["chatter_id"],
         )
-    # Partial UNIQUE index: at most one Employee row per (chatter, owner)
-    # pair. Legacy / label-only Employees (chatter_id IS NULL) are
-    # excluded so the existing roster keeps coexisting with chatter
-    # mirrors. The audit pipeline relies on this for its ON CONFLICT DO
-    # NOTHING + SELECT-after-insert auto-create pattern under a chatter
-    # session — without it, two simultaneous messages on two new owners
-    # would race-insert duplicate mirror rows.
     emp_indexes = {ix["name"] for ix in inspector.get_indexes("employees")}
     if "uq_employees_chatter_owner" not in emp_indexes:
+        # partial unique: audit's ON CONFLICT DO NOTHING auto-create would race-insert duplicate mirror rows without it
         op.create_index(
             "uq_employees_chatter_owner",
             "employees",

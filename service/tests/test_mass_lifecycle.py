@@ -1,32 +1,7 @@
 #!/usr/bin/env python3
-"""mass-lifecycle — answered-once dedup + discovery-close (R1/R2/R4).
-
-Covers the seams added for the funnel mass-message lifecycle feature:
-
-  case_ledger_written_at_discovery:
-      reply_mass_funnel writes a funnel_responders row when it discovers a
-      replier (idempotent across ticks).
-  case_funnel_responder_ids_union:
-      the dedup helper returns the ledger ∪ funnel_state fans, per-funnel; a
-      random inbound-only fan is NOT included, and another funnel's answerer
-      is NOT included.
-  case_resolver_drops_responders:
-      resolve_mass_audience(exclude_funnel_responders=fid) removes responders
-      from the include set and reports skipped (∩ includes) + total.
-  case_close_by_mass_run_id / case_close_by_queue_id:
-      close_funnel_discovery_for_queue stamps discovery_closed_at both ways.
-  case_close_idempotent_and_unresolved:
-      a second close is a no-op; an unknown queue resolves to None (no throw).
-  case_discovery_closed_gates_enrollment:
-      with discovery_closed_at set, a PRE-cutoff reply enrolls, a POST-cutoff
-      reply is ledger'd but NOT enrolled, and an already-tracked fan still
-      advances (walker never gated).
-
-Run: ./venv/bin/python service/tests/test_mass_lifecycle.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -38,7 +13,7 @@ from sqlalchemy import select  # noqa: E402
 import automation_executor as ax  # noqa: E402
 import automations.reply_mass_funnel as a11  # noqa: E402
 
-a11._STEP_GAP_S = 0  # skip the human typing pause in tests
+a11._STEP_GAP_S = 0
 from audiences import (  # noqa: E402
     close_funnel_discovery_for_queue, funnel_responder_ids, resolve_mass_audience,
 )
@@ -48,15 +23,8 @@ from db.models import (  # noqa: E402
     Account, Fan, FunnelResponder, FunnelState, MassMessageFunnel, MassRun, Message,
 )
 
-# A pinned broadcast date ages out of reply_mass_funnel's discovery window
-# (`DISCOVERY_WINDOW_DAYS`, added in 945a9e0) and turns this file red on a day
-# nobody touched it — the failure reads as a walker regression rather than as an
-# expired fixture. Anchoring to `utcnow()` keeps every ORDERING the cases below
-# depend on while staying inside the window forever. Same reasoning and same
-# shape as test_reply_mass_funnel.py's clock.
-T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)  # broadcast time
-# The fake stamps its sends two hours after T0, preserving the original fixture's
-# ordering: every outbound lands after the replies seeded at T0 + minutes.
+# Relative to now: a pinned date ages out of DISCOVERY_WINDOW_DAYS and the file turns red untouched.
+T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)
 SEND_AT = (T0 + timedelta(hours=2)).isoformat() + "+00:00"
 
 
@@ -136,7 +104,6 @@ async def _run_closed(mr) -> datetime | None:
         return (await s.get(MassRun, mr)).discovery_closed_at
 
 
-# ── Discovery writes the responder ledger ─────────────────────────────
 
 async def case_ledger_written_at_discovery():
     aid = "ml_a"
@@ -152,7 +119,6 @@ async def case_ledger_written_at_discovery():
     row = await _responder(aid, fid, 1001)
     assert row is not None and row.mass_run_id == mr, row
 
-    # Idempotent — a second tick doesn't error / duplicate.
     await run_once(aid, "reply_mass_funnel", payload={})
     async with get_session() as s:
         n = len((await s.execute(
@@ -162,7 +128,6 @@ async def case_ledger_written_at_discovery():
     assert n == 1, n
 
 
-# ── The dedup helper: ledger ∪ state, per-funnel ──────────────────────
 
 async def case_funnel_responder_ids_union():
     aid = "ml_b"
@@ -170,7 +135,6 @@ async def case_funnel_responder_ids_union():
     fid = await _seed_funnel("ml_f2")
     other = await _seed_funnel("ml_other")
     mr = await _seed_run(aid, fid)
-    # 2001 via ledger, 2002 via funnel_state, 2003 answered a DIFFERENT funnel.
     async with get_session() as s:
         s.add(FunnelResponder(account_id=aid, funnel_id=fid, fan_id=2001,
                               mass_run_id=mr, first_replied_at=T0))
@@ -184,10 +148,9 @@ async def case_funnel_responder_ids_union():
                               mass_run_id=int(omr.id), first_replied_at=T0))
 
     got = await funnel_responder_ids(aid, fid)
-    assert got == {2001, 2002}, got  # 2003 (other funnel) excluded
+    assert got == {2001, 2002}, got
 
 
-# ── resolve_mass_audience subtracts responders + reports counts ───────
 
 async def case_resolver_drops_responders():
     aid = "ml_c"
@@ -204,13 +167,11 @@ async def case_resolver_drops_responders():
     assert set(r["included_users"]) == {3002, 3003}, r
     assert r["skipped_funnel_responders"] == [3001], r
     assert r["funnel_responders_total"] == 1, r
-    # No funnel id → no dedup.
     r2 = await resolve_mass_audience(aid, included_users=[3001, 3002])
     assert set(r2["included_users"]) == {3001, 3002}, r2
     assert r2["skipped_funnel_responders"] == [], r2
 
 
-# ── close_funnel_discovery_for_queue ──────────────────────────────────
 
 async def case_close_by_mass_run_id():
     aid = "ml_d"
@@ -243,19 +204,16 @@ async def case_close_idempotent_and_unresolved():
     stamp2 = await _run_closed(mr)
     assert first == mr and again == mr, (first, again)
     assert stamp1 == stamp2, "idempotent — stamp unchanged"
-    # Unknown queue → None, no throw.
     assert await close_funnel_discovery_for_queue(aid, queue_id=999999) is None
 
 
-# ── discovery_closed_at gates NEW enrollment (not the walker) ─────────
 
 async def case_discovery_closed_gates_enrollment():
     aid = "ml_g"
     await _seed_account(aid)
     fid = await _seed_funnel("ml_f7")
-    cutoff = T0 + timedelta(minutes=30)          # first mass unsent at 10:30
+    cutoff = T0 + timedelta(minutes=30)
     mr = await _seed_run(aid, fid, discovery_closed_at=cutoff)
-    # PRE-cutoff replier (10:20) → enrolls; POST-cutoff replier (10:40) → not.
     await _broadcast(aid, mr, 4001)
     await _msg(aid, 4001, 7401, "in", T0 + timedelta(minutes=20), body="pre")
     await _broadcast(aid, mr, 4002)
@@ -263,11 +221,10 @@ async def case_discovery_closed_gates_enrollment():
     _use_fake()
 
     res = await run_once(aid, "reply_mass_funnel", payload={})
-    assert res["discovered"] == 1, res  # only the pre-cutoff fan enrolled
+    assert res["discovered"] == 1, res
 
     assert await _state(mr, 4001) is not None, "pre-cutoff reply must enroll"
     assert await _state(mr, 4002) is None, "post-cutoff reply must NOT enroll"
-    # BOTH answered → both are in the durable dedup ledger regardless of cutoff.
     assert await _responder(aid, fid, 4001) is not None, "pre-cutoff ledger'd"
     assert await _responder(aid, fid, 4002) is not None, "post-cutoff still ledger'd"
 

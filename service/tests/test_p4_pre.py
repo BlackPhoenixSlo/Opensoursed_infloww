@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""P4 PRE — the two one-time prerequisites for the P4 automation wave.
-
-A. llm_client cost accounting after migration 0026:
-   - grok_daily_cost PK is (day, account_id, provider): the atomic ON CONFLICT
-     reservation must target all three, so providers roll up independently and
-     the reserve no longer raises on a PK/conflict-target mismatch.
-   - grok_calls now records provider + status (+ cache_hit_tokens) directly.
-
-B. The automation registry seam: P4 automations self-register via @register so
-   each lives in its own file (no shared-dict merge collision), and run_once
-   dispatches through the registry.
-
-Run: ./venv/bin/python service/tests/test_p4_pre.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -44,7 +30,6 @@ _NOW = datetime(2026, 6, 4, 12, 0, 0)
 
 
 async def _seed_account(account_id: str) -> None:
-    """grok_daily_cost.account_id FKs accounts.id — the parent must exist."""
     async with get_session() as s:
         if await s.get(Account, account_id) is None:
             s.add(Account(id=account_id))
@@ -61,11 +46,8 @@ async def _daily_rows(account_id: str) -> list[GrokDailyCost]:
         )
 
 
-# ── A. llm_client reserve / provider accounting ──────────────────────────
 
 async def case_reserve_is_provider_keyed():
-    """Two providers, same (day, account) → two independent rows. Before the fix
-    this raised (ON CONFLICT target didn't match the new 3-col PK)."""
     acct = "acc_provider_split"
     await _seed_account(acct)
     await _reserve(_DAY, acct, 10, 100, _NOW, "grok")
@@ -78,7 +60,6 @@ async def case_reserve_is_provider_keyed():
 
 
 async def case_reserve_increments_same_provider():
-    """Two reserves on the SAME (day, account, provider) sum into one row."""
     acct = "acc_increment"
     await _seed_account(acct)
     await _reserve(_DAY, acct, 7, 100, _NOW, "grok")
@@ -90,19 +71,16 @@ async def case_reserve_increments_same_provider():
 
 
 async def case_cap_is_enforced_per_provider():
-    """A reserve that would breach the cap raises and does NOT bump the row; a
-    different provider under the same account is unaffected (independent cap)."""
     acct = "acc_capped"
     await _seed_account(acct)
-    await _reserve(_DAY, acct, 60, 100, _NOW, "grok")  # fits: 60 <= 100
+    await _reserve(_DAY, acct, 60, 100, _NOW, "grok")
     raised = False
     try:
-        await _reserve(_DAY, acct, 60, 100, _NOW, "grok")  # 120 > 100 → capped
+        await _reserve(_DAY, acct, 60, 100, _NOW, "grok")
     except LLMCapExceeded:
         raised = True
     assert raised, "expected LLMCapExceeded on the over-cap grok reserve"
 
-    # deepseek is a separate rollup row → its own headroom.
     await _reserve(_DAY, acct, 60, 100, _NOW, "deepseek")
 
     rows = {r.provider: r.cost_cents for r in await _daily_rows(acct)}
@@ -111,8 +89,6 @@ async def case_cap_is_enforced_per_provider():
 
 
 async def case_grok_call_records_provider_and_status():
-    """The audit row is written with provider + status='pending', then finalized
-    to status='done' with cache_hit_tokens — no response_json stand-in."""
     call_id = await _insert_pending_call(
         purpose="gen_info", provider="deepseek", account_id="acc_audit", fan_id=42,
         model="deepseek-v4-flash", endpoint="/chat/completions", temperature=0.7,
@@ -135,22 +111,17 @@ async def case_grok_call_records_provider_and_status():
         assert row.tokens_in == 100 and row.tokens_out == 20
 
 
-# ── B. Automation registry seam ──────────────────────────────────────────
 
 def case_scrape_chats_self_registered():
-    """Importing automation_executor registers the reference automation via the
-    @register decorator (no central dict)."""
     assert get_automation("scrape_chats") is not None, "scrape_chats not registered"
     assert "scrape_chats" in registered_kinds()
 
 
 def case_load_plugins_is_idempotent():
-    """Auto-loading the (currently empty) plugins package twice is a safe no-op."""
     load_automation_plugins()
-    load_automation_plugins()  # second call must not raise / re-import
+    load_automation_plugins()
 
 
-# A dummy P4-style automation registered the same way a real plugin would be.
 _dummy_calls: list[dict] = []
 
 
@@ -161,7 +132,6 @@ async def _dummy_automation(account_id: str, payload: dict, *, run_id: int) -> d
 
 
 async def case_register_and_dispatch():
-    """run_once dispatches to a registered automation and writes its stats."""
     _dummy_calls.clear()
     res = await run_once("acc_dispatch", "p4pre_dummy", payload={"x": 5})
     assert res["status"] == "ok", res
@@ -171,46 +141,15 @@ async def case_register_and_dispatch():
 
 
 def case_every_registered_kind_is_executor_callable():
-    """THE registry-wide reachability check: every LIVE kind must resolve to a
-    coroutine `run_once` can actually call.
-
-    The executor invokes `fn(account_id, payload, run_id=...)`. A `@register`
-    decorator that slips onto the wrong function inside a large engine file is
-    INVISIBLE to that engine's own suite whenever its cases call
-    `<engine>.run(...)` directly instead of going through `run_once` — all 268
-    of ai_chatter's cases passed green while `@register("ai_chatter")` sat on
-    `_select_candidates` and every executor-driven run raised TypeError. Only
-    two unrelated suites caught it, neither of which names ai_chatter.
-
-    Walking the registry closes that for every engine at once, in the suite
-    that owns the seam. It cannot tell you the kind points at the RIGHT
-    function — an engine that cares should also assert
-    `get_automation("<kind>") is <mod>.run` in its own file — but it does tell
-    you the kind points at something the executor can reach.
-    """
     import inspect
     load_automation_plugins()
     kinds = registered_kinds()
-    # Guard against a vacuous pass: if the plugin walk silently failed, the
-    # registry would hold only the reference automation and the dummy below,
-    # and the loop would assert nothing about the real engines.
     assert len(kinds) >= 10, f"automation plugins did not load: {kinds}"
-    # ...and against the PER-ENGINE vacuous pass, which the count above cannot
-    # see: `load_automation_plugins` catches a per-module import error, records
-    # the basename, and continues (automation_registry.py:126-134). A crashed
-    # engine is therefore simply ABSENT from `registered_kinds()` — the loop
-    # below walks the survivors and goes green. "Its module did not import" is
-    # one of the ways an engine is unreachable from the executor, which is what
-    # this case is named for, and the registry already exports the accessor.
     assert not failed_plugins(), (
         f"automation modules crashed on import: {sorted(failed_plugins())}")
     for kind in kinds:
         fn = get_automation(kind)
         assert callable(fn), f"kind {kind!r} maps to {fn!r}, not a callable"
-        # `automation_executor` does `await fn(...)`, so a @register that lands on
-        # a SYNC helper with the right signature passes the bind below and dies
-        # in production. The docstring says "coroutine"; this is the line that
-        # makes that true. All live kinds already satisfy it.
         assert inspect.iscoroutinefunction(fn), (
             f"kind {kind!r} -> {getattr(fn, '__qualname__', fn)!r} is not a "
             f"coroutine function; the executor awaits it")

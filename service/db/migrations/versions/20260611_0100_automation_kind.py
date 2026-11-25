@@ -1,30 +1,3 @@
-"""automation_kind — per-automation message + broadcast attribution
-
-Revision ID: 0032_automation_kind
-Revises: 0031_style_config
-Create Date: 2026-06-11
-
-Lets the UI tell WHICH automation sent a message, not just the generic
-"Automation" sentinel employee. Three additive changes:
-
-  messages    — + automation_kind TEXT  (of_ai_chat, send_welcome, deep_convo,
-                followup, autoreply, send_mass_message, reply_mass_funnel,
-                nudge_online, mass_nudge, online_blast). NULL = human / legacy.
-                + partial index (account_id, automation_kind, created_at).
-
-  mass_runs   — + queue_id BIGINT  (OF broadcast queue id, so the Mass Messages
-                tab can join mass_broadcast_cache.queue_id → the run)
-                + automation_kind TEXT  (which automation minted the broadcast)
-                + partial index (account_id, queue_id).
-
-  per_employee_revenue_with_attribution — rebuilt to also SELECT
-                m.automation_kind so the new per-automation stats panel can
-                GROUP BY it for earnings. Employee-revenue readers are
-                unaffected (they ignore the extra column).
-
-Additive + nullable + idempotent (inspector-guarded, house convention).
-Backfill: none — new sends onward are tagged; legacy rows stay NULL.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -39,9 +12,6 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-# View rebuilt to expose m.automation_kind in both branches. SELECT shape is a
-# superset of the prior view (extra trailing column) so existing readers that
-# select named columns are unaffected.
 _NEW_VIEW_SQL = """
 CREATE VIEW per_employee_revenue_with_attribution AS
 WITH message_linked AS (
@@ -98,7 +68,6 @@ SELECT sent_by_employee_id, automation_kind, account_id, kind, amount_cents, occ
 """
 
 
-# Prior view (0016_phase_f_attr_view_include_pending) — restored on downgrade.
 _OLD_VIEW_SQL = """
 CREATE VIEW per_employee_revenue_with_attribution AS
 WITH message_linked AS (

@@ -1,39 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_catchup — Full AI Chat's waiting-chats catch-up (automations/full_ai_catchup.py).
-
-OF's chat list faked (`ChatsOF`: `_of_fixtures.FakeOF` + `list_chats`, OF's 10-row pages) behind
-`ax._make_client`, Jev and the Writers faked (`_full_ai_live_helpers.world`); the loop's sleep
-swapped for a recorder. Temp DB only; no OF, no paid call.
-
-  case_schedule_offsets            defaults: passes at 0, +5, +15, then every 15 min (offset_s / gap_s table); a
-                                   custom `catchup_minutes` is followed; a missing / invalid one reads the defaults
-  case_start_passes_now_then_sleeps   start: a pass at once, then 300, 600, 900, 900 s waits
-  case_config_change_next_wait     a checkpoint saved while the loop waits sets the next wait (no restart); an
-                                   after_live not starting at 0 delays the first pass
-  case_unsaved_dm_saved_one_turn   his DM not in `messages`: saved, one-Fan scrape queued, one Turn job
-                                   (no sooner than the scrape grace); the scrape done, the job replies once, row `sent`
-  case_turn_waits_for_queued_scrape   the grace over, his scrape still queued / running: the Turn waits (no
-                                   send, requeued); the scrape done, it replies once
-  case_stuck_scrape_turn_not_lost  his scrape queued past the 3 busy runs: each Turn (also a 2-day-old DM) still
-                                   queued, one job each, no try spent; a scrape row older than SCRAPE_WAIT_S no
-                                   longer holds him: both reply once
-  case_skips                       answered (row on the key) / she wrote last / a funnel walk owns him /
-                                   8 days old: nothing queued, nothing saved for her chat
-  case_unhealthy_creator_skipped   deactivated / Dead session: a skip, no OF read, no job; the loop goes on
-  case_more_than_twenty_cap_40     45 waiting chats: 40 read, 40 queued in one pass (the sweep's 20 cap
-                                   not applied)
-  case_second_pass_no_double       two passes: one job; after his reply, a third pass queues none
-  case_running_fan_skipped         a Fan whose job runs in this process (`full_ai_live._running`): not queued
-  case_off_stops                   stop cancels the loop; a rule no longer live ends it after its pass
-  case_boot_starts_live_only       relay start: only the Live Creator's loop starts; it waits BOOT_DELAY_S, then passes
-  case_race_with_inbound_hook_one_send  catch-up and the inbound hook both queue one Fan (two jobs, both
-                                   naming him for the per-Fan dispatch): run together, one Turn, one send
-
-Run: ./venv/bin/python service/tests/test_full_ai_catchup.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -55,12 +23,11 @@ from db.models import AccountAiConfig, AiDecision, AutomationRule, FunnelState, 
 
 
 class ChatsOF(FakeOF):
-    """FakeOF with OF's chat list: `chats` in order, at most 10 rows a page (OF's cap)."""
 
     def __init__(self, chats: list[dict]):
         super().__init__()
         self.chats = chats
-        self.pages: list[int] = []          # each list_chats offset
+        self.pages: list[int] = []
 
     def list_chats(self, *, limit=10, offset=0, **_kw) -> dict:
         self.pages.append(offset)
@@ -101,8 +68,6 @@ async def _pass(aid: str, chats: list[dict]) -> tuple[dict, ChatsOF]:
 
 
 class Sleeps:
-    """The loop's sleep: records each wait; the `n`-th call runs `then` (if set) and, unless it
-    returns True, parks forever (the test stops the loop)."""
 
     def __init__(self, n: int, then=None):
         self.n, self.then, self.calls, self.hit = n, then, [], asyncio.Event()
@@ -124,7 +89,7 @@ def case_schedule_offsets():
     assert custom == ((0, 120), 3600), custom
     assert [cu.gap_s(i, custom) for i in range(3)] == [120, 3600, 3600]
     for bad in ({"after_live": [5, 0], "then_every": 25}, {"after_live": [0], "then_every": 1}, None, "x"):
-        assert cu.schedule({"catchup_minutes": bad}) == cu.DEFAULT_SCHEDULE, bad   # a bad stored side never stalls
+        assert cu.schedule({"catchup_minutes": bad}) == cu.DEFAULT_SCHEDULE, bad
 
 
 async def case_start_passes_now_then_sleeps():
@@ -135,7 +100,7 @@ async def case_start_passes_now_then_sleeps():
     real_pass, real_sleep = cu.run_pass, cu._sleep
 
     async def counting(a):
-        passes.append(len(sleeps.calls))       # sleeps before this pass
+        passes.append(len(sleeps.calls))
         return await real_pass(a)
     sleeps = Sleeps(4)
     cu.run_pass, cu._sleep = counting, sleeps
@@ -147,14 +112,13 @@ async def case_start_passes_now_then_sleeps():
             await asyncio.gather(task, return_exceptions=True)
     finally:
         cu.run_pass, cu._sleep = real_pass, real_sleep
-    assert passes == [0, 1, 2, 3], passes            # the first pass before any wait
+    assert passes == [0, 1, 2, 3], passes
     assert sleeps.calls == [300, 600, 900, 900], sleeps.calls
     assert task.cancelled() and aid not in cu._tasks
-    assert len(await _jobs(aid)) == 1                 # four passes, one Turn
+    assert len(await _jobs(aid)) == 1
 
 
 async def _store_checkpoint(aid: str, catchup_minutes: dict) -> None:
-    """The page's checkpoint write (`put_checkpoint`) with `catchup_minutes`, stored for `aid`."""
     async with get_session() as s:
         row = await s.get(AccountAiConfig, aid)
         if row is None:
@@ -175,7 +139,7 @@ async def case_config_change_next_wait():
 
     async def sleep(secs):
         calls.append(secs)
-        if change:                             # saved while the loop waits after its first pass
+        if change:
             await _store_checkpoint(aid, change.pop())
         if len(calls) >= 3:
             hit.set()
@@ -187,8 +151,7 @@ async def case_config_change_next_wait():
             await asyncio.wait_for(hit.wait(), 30)
             cu.stop(aid)
             await asyncio.gather(task, return_exceptions=True)
-        assert calls == [300, 1500, 3600], calls    # old first wait; then 30 - 5 min, then every 60 min
-        # after_live not starting at 0: the first pass waits it (after the boot delay).
+        assert calls == [300, 1500, 3600], calls
         await _store_checkpoint(aid, {"after_live": [2, 7], "then_every": 25})
         calls.clear()
         hit.clear()
@@ -200,7 +163,7 @@ async def case_config_change_next_wait():
         assert calls == [60, 120, 300], calls
     finally:
         cu._sleep = real_sleep
-        await _store_checkpoint(aid, DEFAULTS["catchup_minutes"])    # boot's case runs every Live Creator
+        await _store_checkpoint(aid, DEFAULTS["catchup_minutes"])
 
 
 async def case_unsaved_dm_saved_one_turn():
@@ -216,7 +179,7 @@ async def case_unsaved_dm_saved_one_turn():
     assert json.loads(job.payload_json) == {"only_fan_ids": [fan], "anchor": mid, "_rule_id": rid, "tries": 0}
     assert job.run_at >= t0 + timedelta(seconds=cu.SCRAPE_GRACE_S), job.run_at   # the scrape first
     assert await _payloads(aid, "scrape_fan") == [{"fan_ids": [fan], "source": cu.SOURCE}]
-    assert fake.sent == [] and fake.read == []        # sends nothing, marks nothing read
+    assert fake.sent == [] and fake.read == []
     await _scrape_status(aid, "done")
     async with get_session() as s:
         await s.execute(update(ScheduledJob).where(ScheduledJob.id == job.id)
@@ -242,8 +205,6 @@ async def _turn_due(aid: str) -> None:
 
 
 async def case_turn_waits_for_queued_scrape():
-    """One-Fan scrapes of one Creator run one at a time: after a pass, a later Fan's Turn can come due
-    (+SCRAPE_GRACE_S) with his scrape still queued. It must not load the chat before the scrape lands."""
     aid, fan, mid = "fa_cu_wait", 1211, 71211
     await seed_live(aid)
     assert (await _pass(aid, [_chat(fan, mid, _ago(45))]))[0]["queued"] == 1
@@ -254,7 +215,7 @@ async def case_turn_waits_for_queued_scrape():
             assert (await run_once(aid, KIND))["status"] == "ok"
         assert of.sent == [] and await _rows(aid) == [], (status, of.sent)
         (p,) = await _payloads(aid)
-        assert p["anchor"] == mid, p                                           # requeued, not lost
+        assert p["anchor"] == mid, p
     await _scrape_status(aid, "done")
     await _turn_due(aid)
     with world() as (of, *_):
@@ -265,23 +226,20 @@ async def case_turn_waits_for_queued_scrape():
 
 
 async def case_stuck_scrape_turn_not_lost():
-    """The scrape wait spends no busy try: past BUSY_RUNS runs each Turn is still queued (a 2-day-old DM is
-    outside the sweep's 24 h and may drop out of catch-up's newest 40: nothing else would queue it again)."""
     from automations import full_ai_live
     aid, new, old = "fa_cu_stuck", 1221, 1222
     await seed_live(aid)
     chats = [_chat(new, 71221, _ago(45)), _chat(old, 71222, _ago(2 * 24 * 60))]
     assert (await _pass(aid, chats))[0]["queued"] == 2
-    for _ in range(full_ai_live.BUSY_RUNS + 2):                                # the scrapes never run
+    for _ in range(full_ai_live.BUSY_RUNS + 2):
         await _turn_due(aid)
         with world() as (of, *_):
             for _ in range(len(await _jobs(aid))):
                 await run_once(aid, KIND)
         assert of.sent == [] and await _rows(aid) == [], of.sent
         ps = await _payloads(aid)
-        assert sorted(p["only_fan_ids"][0] for p in ps) == [new, old], ps        # one job each, still queued
-        assert all(p["tries"] == 0 for p in ps), ps                            # no busy try spent
-    # A scrape row stuck past SCRAPE_WAIT_S no longer holds either Turn.
+        assert sorted(p["only_fan_ids"][0] for p in ps) == [new, old], ps
+        assert all(p["tries"] == 0 for p in ps), ps
     await _scrape_status(aid, "pending", created_at=datetime.utcnow() - timedelta(seconds=full_ai_live.SCRAPE_WAIT_S + 5))
     await _turn_due(aid)
     with world() as (of, *_):
@@ -296,19 +254,19 @@ async def case_stuck_scrape_turn_not_lost():
 async def case_skips():
     aid = "fa_cu_skip"
     await seed_live(aid)
-    await _msg(aid, 1301, 71301, "in", "hey", _ago(20))                       # answered: a row on its key
+    await _msg(aid, 1301, 71301, "in", "hey", _ago(20))
     async with get_session() as s:
         s.add(AiDecision(account_id=aid, fan_id=1301, mode="live", trigger_kind="inbound", trigger_key="71301",
                          route="chat", heat=1, route_row="chat", question_version="x", status="sent",
                          created_at=datetime.utcnow()))
-        run = MassRun(account_id=aid)                                         # a funnel walk owns 1303
+        run = MassRun(account_id=aid)
         s.add(run)
         await s.flush()
         s.add(FunnelState(mass_run_id=run.id, fan_id=1303, status="pending"))
     chats = [_chat(1301, 71301, _ago(20)),
-             _chat(1302, 71302, _ago(20), sender=aid),                        # she wrote last
+             _chat(1302, 71302, _ago(20), sender=aid),
              _chat(1303, 71303, _ago(20)),
-             _chat(1304, 71304, datetime.utcnow() - timedelta(days=8))]       # too old
+             _chat(1304, 71304, datetime.utcnow() - timedelta(days=8))]
     res, _ = await _pass(aid, chats)
     assert (res["chats"], res["waiting"], res["queued"]) == (4, 2, 0), res
     assert await _jobs(aid) == []
@@ -318,8 +276,6 @@ async def case_skips():
 
 
 async def case_unhealthy_creator_skipped():
-    """A deactivated or Dead-session Creator left on Live: the pass skips before any OF read (the
-    dispatcher would never run its jobs), and returns a skip, not None, so the loop keeps its schedule."""
     import account_health
     for aid, sick, want in (("fa_cu_deact", account_health.deactivate, "account_deactivated"),
                             ("fa_cu_dead", lambda a: account_health.mark_session_dead(a, "wrong_user"),
@@ -338,26 +294,26 @@ async def case_more_than_twenty_cap_40():
     res, fake = await _pass(aid, chats)
     assert (res["chats"], res["waiting"], res["saved"], res["queued"]) == (40, 40, 40, 40), res
     assert sorted(p["only_fan_ids"][0] for p in await _payloads(aid)) == list(range(2000, 2040))
-    assert fake.pages == list(range(0, 40, 10)), fake.pages         # 4 paged reads, none past 40
+    assert fake.pages == list(range(0, 40, 10)), fake.pages
 
 
 async def case_second_pass_no_double():
     aid, fan, mid = "fa_cu_twice", 1401, 71401
     await seed_live(aid)
-    await _msg(aid, fan, mid, "in", "hey you", _ago(30))                     # saved, socket date unset
+    await _msg(aid, fan, mid, "in", "hey you", _ago(30))
     chats = [_chat(fan, mid, _ago(30))]
     assert (await _pass(aid, chats))[0]["queued"] == 1
     assert (await _pass(aid, chats))[0]["queued"] == 0
     (job,) = await _jobs(aid)
-    assert job.run_at <= datetime.utcnow(), job.run_at                         # already saved: no grace
+    assert job.run_at <= datetime.utcnow(), job.run_at
     assert await _payloads(aid, "scrape_fan") == []
     with world():
         assert (await run_once(aid, KIND))["status"] == "ok"
     assert len(await _rows(aid)) == 1
-    async with get_session() as s:                                             # his cooldown over
+    async with get_session() as s:
         from db.models import Fan
         await s.execute(update(Fan).where(Fan.account_id == aid).values(automation_paused_until=None))
-    res, _ = await _pass(aid, chats)                                           # OF's list not caught up yet
+    res, _ = await _pass(aid, chats)
     assert res["queued"] == 0 and await _jobs(aid) == [], res
     assert len(await _rows(aid)) == 1
 
@@ -367,7 +323,7 @@ async def case_running_fan_skipped():
     aid, fan, mid = "fa_cu_running", 1701, 71701
     await seed_live(aid)
     await _msg(aid, fan, mid, "in", "you there", _ago(30))
-    full_ai_live._running.add((aid, fan))                                      # his Turn runs here now
+    full_ai_live._running.add((aid, fan))
     try:
         assert (await _pass(aid, [_chat(fan, mid, _ago(30))]))[0]["queued"] == 0
     finally:
@@ -384,7 +340,7 @@ async def case_off_stops():
         with world(fake=ChatsOF([])):
             task = cu.start(aid)
             await asyncio.wait_for(cu._sleep.hit.wait(), 30)
-            cu.stop(aid)                                                       # Mode Off
+            cu.stop(aid)
             await asyncio.gather(task, return_exceptions=True)
         assert task.cancelled() and aid not in cu._tasks
 
@@ -396,7 +352,7 @@ async def case_off_stops():
         fake = ChatsOF([])
         with world(fake=fake):
             task = cu.start(aid)
-            await asyncio.wait_for(task, 30)                                   # ends by itself
+            await asyncio.wait_for(task, 30)
         assert not task.cancelled() and task.exception() is None and aid not in cu._tasks
         assert cu._sleep.calls == [300] and fake.pages == [0], (cu._sleep.calls, fake.pages)
     finally:
@@ -404,18 +360,17 @@ async def case_off_stops():
 
 
 async def case_socket_reconnect_restarts():
-    """A socket drop: a running schedule restarts (first pass after RECONNECT_DELAY_S); none running: nothing."""
     aid = "fa_cu_recon"
     await seed_live(aid)
     real_sleep = cu._sleep
     try:
-        cu.reconnected(aid)                                                    # no schedule: not started
+        cu.reconnected(aid)
         assert aid not in cu._tasks
         cu._sleep = Sleeps(1)
         fake = ChatsOF([])
         with world(fake=fake):
             first = cu.start(aid)
-            await asyncio.wait_for(cu._sleep.hit.wait(), 30)                   # pass 1 done, waiting 5 min
+            await asyncio.wait_for(cu._sleep.hit.wait(), 30)
             cu._sleep = Sleeps(2)
             import full_ai_catchup_wiring  # noqa: F401 — registers the hook
             import relay_hooks
@@ -426,7 +381,7 @@ async def case_socket_reconnect_restarts():
             await asyncio.gather(first, task, return_exceptions=True)
         assert first.cancelled() and task is not first
         assert cu._sleep.calls == [cu.RECONNECT_DELAY_S, 300], cu._sleep.calls
-        assert fake.pages == [0, 0], fake.pages                                # one pass each
+        assert fake.pages == [0, 0], fake.pages
     finally:
         cu._sleep = real_sleep
 
@@ -434,15 +389,15 @@ async def case_socket_reconnect_restarts():
 async def case_boot_starts_live_only():
     live, shadow = "fa_cu_boot_live", "fa_cu_boot_shadow"
     await seed_live(live)
-    await _seed(shadow, rule=True, gate=False)                                 # enabled, no Mode live
+    await _seed(shadow, rule=True, gate=False)
     for aid in list(cu._tasks):
         cu.stop(aid)
     real_sleep, real_pass = cu._sleep, cu.run_pass
-    log: list = []                                                             # (sleep | pass, aid, secs)
+    log: list = []
 
     async def sleep(secs):
         log.append(("sleep", asyncio.current_task().get_name().split(":", 1)[1], secs))
-        if secs != cu.BOOT_DELAY_S:                                            # each loop parks after its pass
+        if secs != cu.BOOT_DELAY_S:
             await asyncio.Event().wait()
 
     async def counting(a):
@@ -452,10 +407,10 @@ async def case_boot_starts_live_only():
     fake = ChatsOF([_chat(1501, 71501, _ago(30))])
     try:
         with world(fake=fake):
-            await cu.boot()                                                    # earlier cases' Creators stay Live
+            await cu.boot()
             assert live in cu._tasks and shadow not in cu._tasks, set(cu._tasks)
             tasks = list(cu._tasks.values())
-            for _ in range(600):                                               # every loop's first pass done
+            for _ in range(600):
                 if sum(e[2] == 300 for e in log) >= len(tasks):
                     break
                 await asyncio.sleep(0.05)
@@ -464,7 +419,7 @@ async def case_boot_starts_live_only():
             await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         cu._sleep, cu.run_pass = real_sleep, real_pass
-    for t in tasks:                                                            # each loop: wait, pass, park
+    for t in tasks:
         a = t.get_name().split(":", 1)[1]
         assert [e for e in log if e[1] == a] == [("sleep", a, cu.BOOT_DELAY_S), ("pass", a, None),
                                                  ("sleep", a, 300)], log
@@ -473,9 +428,6 @@ async def case_boot_starts_live_only():
 
 
 async def case_race_with_inbound_hook_one_send():
-    """The catch-up and the inbound hook queue the same Fan at once (both past the pending-job check
-    before either job lands): two jobs, both naming him (`only_fan_ids`, the per-Fan dispatch's
-    `JOB_FAN`); run together and then the rest: one Turn, one send."""
     import webhook_dispatch as wd
     from job_queue import JOB_FAN
     aid, fan, mid = "fa_cu_race", 1601, 71601
@@ -486,11 +438,11 @@ async def case_race_with_inbound_hook_one_send():
     import webhook_dispatch_decide as wdd
     real_targets = wdd.targets_fan
 
-    async def blind(*_a, **_kw):                                               # the race window
+    async def blind(*_a, **_kw):
         await asyncio.sleep(0)
         return None
     wd._imminent_pending_job = blind
-    wdd.targets_fan = lambda *_a, **_kw: False      # the sweep's one pending-job read (W30 F11) too
+    wdd.targets_fan = lambda *_a, **_kw: False
     try:
         with world(fake=ChatsOF([_chat(fan, mid, _ago(30))])):
             res, _ = await asyncio.gather(cu.run_pass(aid), wd.on_inbound_message(aid, fan, mid))
@@ -513,13 +465,13 @@ async def case_race_with_inbound_hook_one_send():
         await due_now()
         await asyncio.gather(run_once(aid, KIND, fan=fan), run_once(aid, KIND, fan=fan))
         sent = list(of.sent)
-        for _ in range(5):                                                     # a busy job's retries
+        for _ in range(5):
             if not await _jobs(aid):
                 break
             await due_now()
             await run_once(aid, KIND, fan=fan)
         assert await _jobs(aid) == [], "jobs left"
-        assert sent and of.sent == sent, (sent, of.sent)                      # nothing after the one Turn
+        assert sent and of.sent == sent, (sent, of.sent)
     (row,) = await _rows(aid)
     assert (row.status, row.trigger_key) == ("sent", str(mid)), row
 

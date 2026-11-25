@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""events_wire: the SSE bytes of service/events.py as byte-exact tables. Pure: no queue, no clock.
-
-Pins: a single frame is `id:` (when it has one) + `event: <type>` + `data: <json>`; a frame with no
-type is `event: event`; several frames are one `event: batch` whose data is `[{id, type, data}, ...]`
-and whose id is the last member's; a frame that cannot serialize becomes
-`{"error": "serialize_failed", "type": ...}`; a Frame is encoded once however many tabs get it (the
-shell's end of it: test_sse_batching.case_one_encode_per_event); resync / head / ping / connected
-bytes.
-
-Runs under pytest (parametrized tables) or as a script (the repo's convention, no pytest needed):
-    ./venv/bin/python service/tests/test_events_wire.py
-"""
 from __future__ import annotations
 
 import json
@@ -23,10 +11,10 @@ import events_wire as ew  # noqa: E402
 
 try:
     if __name__ == "__main__":
-        raise ImportError  # script mode uses the runner below, even with pytest installed
+        raise ImportError
     import pytest
     table = pytest.mark.parametrize
-except ImportError:  # script mode: the runner below calls each row
+except ImportError:
     def table(names, rows):
         def mark(fn):
             fn.rows = rows
@@ -48,15 +36,15 @@ DM_JSON = '{"api2_chat_message": {"id": 7, "text": "hi"}, "__account_id": "9101"
 @table("frames, wire", [
     ([frame(DM, "e1.5")],
      b'id: e1.5\nevent: api2_chat_message\ndata: ' + DM_JSON.encode() + b'\n\n'),
-    ([frame(DM)],                                                     # no id: no id line
+    ([frame(DM)],
      b'event: api2_chat_message\ndata: ' + DM_JSON.encode() + b'\n\n'),
-    ([{"toasts": {"n": 1}}],                                          # a plain dict, no id
+    ([{"toasts": {"n": 1}}],
      b'event: toasts\ndata: {"toasts": {"n": 1}}\n\n'),
-    ([frame({"__account_id": "9101"}, "e1.6")],                       # no type
+    ([frame({"__account_id": "9101"}, "e1.6")],
      b'id: e1.6\nevent: event\ndata: {"__account_id": "9101"}\n\n'),
-    ([frame({"toasts": {"t": "é"}}, "e1.7")],                         # utf-8 (json escapes it)
+    ([frame({"toasts": {"t": "é"}}, "e1.7")],
      b'id: e1.7\nevent: toasts\ndata: {"toasts": {"t": "\\u00e9"}}\n\n'),
-    ([frame(DM, "e1.5"), frame({"chat_typing": {"fan_id": 3}}, "e1.9")],   # batch: id = last member's
+    ([frame(DM, "e1.5"), frame({"chat_typing": {"fan_id": 3}}, "e1.9")],
      b'id: e1.9\nevent: batch\ndata: [{"id":"e1.5","type":"api2_chat_message","data":' + DM_JSON.encode()
      + b'},{"id":"e1.9","type":"chat_typing","data":{"chat_typing": {"fan_id": 3}}}]\n\n'),
 ])
@@ -101,7 +89,7 @@ def test_one_encode_per_frame_across_tabs():
         tabs = [ew.sse_out([f]) for _ in range(5)] + [ew.sse_out([f, frame(DM, "e1.6")])]
     finally:
         json.dumps = real
-    assert calls == 2, calls                      # f once, the second batch member once
+    assert calls == 2, calls
     assert len(set(tabs[:5])) == 1 and f.json == DM_JSON
 
 

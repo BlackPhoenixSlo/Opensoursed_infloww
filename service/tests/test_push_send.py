@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""push_send end to end in-process: frames enter through events.broadcast / _fanout (the real
-publish path), the push service is an httpx.MockTransport (its wire boundary), keys are real ECDH,
-sessions are real logins. Pins: one push per notice, a re-offered purchase pushes once, push_sent
-survives a restart, 404/410 prune, 403 kept + counted, retry without a sleeping worker, dead
-session prunes, send-time re-check (types off, revoked), unassigned chatter / no-session /
-deactivated Creator get nothing, order kept per sub under jitter, a stalled push service never
-blocks _fanout (inbox drops oldest), the payload decrypts to {v:1,tag,...}, /push/test reasons,
-a failed send un-claims its tag (503 x3 then the re-offer pushes once), only purchase tags persist,
-the scope cache's generation guard, a no-longer-allowed endpoint pruned on start, the VAPID raw-key
-env path, the JWT cache refresh, the worst-case payload under 4 KB. The client is real httpx with
-the transport patched in (no hook in service/).
-Run: venv/bin/python -m pytest service/tests/test_push_send.py -q"""
-import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # pytest: tests/ is a package
+import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _harness  # noqa: E402  (first: temp DB)
 
 import asyncio  # noqa: E402
@@ -52,7 +40,7 @@ IDS = fx.seed_two_agencies()
 A, B = IDS["creator_a"], IDS["creator_b"]
 for _aid in (A, B):
     registry.save_meta(_aid, {"id": _aid, "nickname": f"c{_aid}", "platform": "onlyfans"})
-    (registry.ACCOUNTS_DIR / _aid / "latest.json").write_text("{}")   # a captured session
+    (registry.ACCOUNTS_DIR / _aid / "latest.json").write_text("{}")
 OWNER_A = fx.login_owner("agency_a_owner")
 CHATTER_A = fx.login_chatter("chatter_a")
 CHATTER_B = fx.login_chatter("chatter_b")
@@ -63,7 +51,6 @@ def _b64(b: bytes) -> str:
 
 
 class Browser:
-    """One subscription's client half: its ECDH key + auth secret, and what it received."""
     def __init__(self, client, kind="user", types=("purchases", "tip", "message")):
         self.priv = ec.generate_private_key(ec.SECP256R1())
         self.auth = secrets.token_bytes(16)
@@ -84,7 +71,6 @@ class Browser:
 
 
 class PushService:
-    """The fake push service (MockTransport): routes by endpoint, answers `status(browser, n)`."""
     def __init__(self, browsers, status=lambda b, n: 201, delay=None):
         self.by_ep = {b.endpoint: b for b in browsers}
         self.status, self.delay, self.reqs, self.n = status, delay, [], 0
@@ -109,7 +95,6 @@ async def _db(stmt):
 
 
 async def _start(svc) -> None:
-    """push_send.start() with the fake push service as its httpx transport."""
     real = httpx.AsyncClient
     with mock.patch.object(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(svc), **kw)):
         await push_send.start()
@@ -132,7 +117,6 @@ async def _boot(browsers, svc) -> None:
 
 
 async def _settle(cond=lambda: False, t=3.0) -> None:
-    """Wait until `cond()` or the pipeline is idle for 0.15 s."""
     end, idle = time.monotonic() + t, 0
     while time.monotonic() < end:
         if cond():
@@ -162,9 +146,9 @@ def test_one_push_per_notice_headers_and_payload():
         svc = PushService([b])
         await _boot([b], svc)
         for _ in range(3):
-            await events.broadcast(purchase(9001))          # the 2 h purchase re-offer
+            await events.broadcast(purchase(9001))
         await events.broadcast(dm(777, tip=True))
-        await events.broadcast(purchase(9002, aid=B))       # not owner A's Creator
+        await events.broadcast(purchase(9002, aid=B))
         await events.broadcast({"chat_responded": {}, "__account_id": A})
         await _settle()
         assert [p["tag"] for p in b.got] == [f"{A}:9001", f"{A}:m777"], b.got
@@ -189,13 +173,13 @@ def test_push_sent_survives_restart():
         await events.broadcast(purchase(9100))
         await _settle()
         await push_send.stop()
-        await _start(svc)   # restart, same DB
+        await _start(svc)
         assert push_send._subs[b.id].seen.has(f"{A}:9100", time.monotonic())
-        await events.broadcast(purchase(9100))      # the feed re-walk after a restart
+        await events.broadcast(purchase(9100))
         await events.broadcast(purchase(9101))
         await _settle()
         assert [p["tag"] for p in b.got] == [f"{A}:9100", f"{A}:9101"], b.got
-        async with get_session() as s:                # rows past 24 h are pruned on start
+        async with get_session() as s:
             await s.execute(update(PushSent).values(sent_at=datetime.utcnow() - timedelta(hours=25)))
         await push_send.stop()
         await _start(svc)
@@ -228,7 +212,6 @@ def test_retry_is_a_task_not_a_sleeping_worker():
             flaky, ok = Browser(OWNER_A), Browser(OWNER_A)
             svc = PushService([flaky, ok], status=lambda b, n: 503 if b is flaky and len(flaky.got) == 0
                               and sum(r.url == flaky.endpoint for r in svc.reqs) == 1 else 201)
-            # every sub on ONE worker: a sleeping retry would hold `ok` back
             push_send.N_WORKERS, n_old = 1, push_send.N_WORKERS
             await _boot([flaky, ok], svc)
             await events.broadcast(purchase(9300))
@@ -251,7 +234,7 @@ def test_dead_session_prunes():
         async with get_session() as s:
             await s.execute(update(User).where(User.id == IDS["agency_a_owner"])
                             .values(sessions_valid_after=datetime.utcnow() + timedelta(seconds=5)))
-        await events.broadcast({"sessions_revoked": {}, "__account_id": A})   # clears the scope cache
+        await events.broadcast({"sessions_revoked": {}, "__account_id": A})
         await events.broadcast(purchase(9400))
         await _settle()
         assert b.got == [] and b.id not in push_send._subs and await _db(select(PushSubscription)) == []
@@ -271,13 +254,13 @@ def test_send_time_recheck():
         b = Browser(OWNER_A)
         svc = PushService([b], delay=hold)
         await _boot([b], svc)
-        await events.broadcast(dm(1))      # in flight, held
-        await events.broadcast(dm(2))      # queued behind it on the same worker
+        await events.broadcast(dm(1))
+        await events.broadcast(dm(2))
         await events.broadcast(purchase(9500))
         await _settle(lambda: svc.n == 1)
         cur = push_send._subs[b.id]
         push_send.upsert(push_send.Sub(cur.id, cur.endpoint, cur.p256dh, cur.auth, cur.kind, cur.principal_id,
-                                       cur.issued_ms, frozenset({"purchases"}), {}))   # PUT: messages off
+                                       cur.issued_ms, frozenset({"purchases"}), {}))
         gate.set()
         await _settle()
         assert [p["tag"] for p in b.got] == [f"{A}:m1", f"{A}:9500"], b.got
@@ -294,7 +277,7 @@ def test_chatter_scope_and_unassign():
         await events.broadcast(purchase(9600))
         await _settle()
         assert [p["tag"] for p in ca.got] == [f"{A}:9600"] and cb.got == []
-        async with get_session() as s:      # owner A unlinks chatter_a
+        async with get_session() as s:
             await s.execute(delete(ChatterUser).where(ChatterUser.chatter_id == IDS["chatter_a"]))
         chatter_identity_cache.invalidate()
         await events.broadcast({"assignment_changed": {}, "__agency": IDS["agency_a_owner"]})
@@ -366,11 +349,11 @@ def test_stalled_push_service_never_blocks_fanout():
         frames = [dm(50_000 + i) for i in range(N)]
         t = time.perf_counter()
         for f in frames:
-            events._fanout(f)                 # no await between: the inbox fills
+            events._fanout(f)
         dt = time.perf_counter() - t
         assert push_send.stats()["dropped"] == 5000 and push_send._inbox.qsize() == push_send.INBOX_MAX
         assert dt < 5.0, f"{N} fan-outs took {dt:.2f}s"
-        await push_send.stop()               # cancels the hung POST
+        await push_send.stop()
         return dt
     asyncio.run(go())
 
@@ -393,7 +376,6 @@ def test_send_test_reasons():
 
 
 def test_failed_send_unclaims_tag():
-    """503 x3 (retries exhausted): the tag is not left claimed, so the 2 h re-offer pushes once."""
     async def go():
         old = pd.RETRY_DELAYS_S
         pd.RETRY_DELAYS_S = (0.05, 0.05)
@@ -406,7 +388,7 @@ def test_failed_send_unclaims_tag():
             await _settle()
             assert svc.n == 3 and b.got == [] and push_send.stats()["failed"] == 1
             for _ in range(2):
-                await events.broadcast(purchase(9800))          # the re-offer, twice
+                await events.broadcast(purchase(9800))
             await _settle()
             assert [p["tag"] for p in b.got] == [f"{A}:9800"], b.got
         finally:
@@ -427,13 +409,13 @@ def test_dropped_worker_item_unclaims_tag():
         push_send.WORKER_MAX, w_old = 1, push_send.WORKER_MAX
         try:
             await _boot([b], svc)
-            for nid in (9900, 9901, 9902):          # 9900 in flight, 9901 queued then dropped by 9902
+            for nid in (9900, 9901, 9902):
                 await events.broadcast(purchase(nid))
-                await asyncio.sleep(0.1)                # dispatched (the worker is held)
+                await asyncio.sleep(0.1)
             assert push_send.stats()["dropped"] == 1
             stall.set()
             await _settle()
-            await events.broadcast(purchase(9901))      # its re-offer
+            await events.broadcast(purchase(9901))
             await _settle()
             assert sorted(p["tag"] for p in b.got) == [f"{A}:9900", f"{A}:9901", f"{A}:9902"], b.got
         finally:
@@ -443,7 +425,6 @@ def test_dropped_worker_item_unclaims_tag():
 
 
 def test_scope_cache_generation_guard():
-    """A scope read racing a clear() (assignment_changed) must not cache the pre-clear scope."""
     async def go():
         push_scope.clear()
         entered, gate = asyncio.Event(), asyncio.Event()
@@ -470,8 +451,6 @@ def test_scope_cache_generation_guard():
 
 
 def test_start_skips_but_keeps_off_host_endpoint():
-    """PUSH_ENDPOINT_HOSTS replaces the default list: a host it leaves out is skipped in memory,
-    never deleted (adding one host must not wipe every FCM sub); back in the list, it sends."""
     async def go():
         ok, apple = Browser(OWNER_A), Browser(OWNER_A)
         apple.row.endpoint = apple.endpoint = f"https://web.push.apple.com/{apple.id}"
@@ -483,7 +462,7 @@ def test_start_skips_but_keeps_off_host_endpoint():
             st = push_send.stats()
             assert (st["off_hosts"], st["pruned"]) == (1, 0), st
             await push_send.stop()
-        await _start(svc)                                   # default hosts again
+        await _start(svc)
         assert set(push_send._subs) == {ok.id, apple.id} and push_send.stats()["off_hosts"] == 0
         await events.broadcast(purchase(9950))
         await _settle()
@@ -493,7 +472,6 @@ def test_start_skips_but_keeps_off_host_endpoint():
 
 
 def test_live_accounts_single_flight():
-    """9 concurrent misses right after a clear(): one disk walk."""
     async def go():
         walks = [0]
         real = registry.list_accounts
@@ -507,7 +485,7 @@ def test_live_accounts_single_flight():
             got = await asyncio.gather(*(push_scope.live_accounts() for _ in range(9)))
             assert walks[0] == 1, walks
             assert all(g == got[0] for g in got) and A in got[0]
-            await push_scope.live_accounts()                # cached now
+            await push_scope.live_accounts()
             assert walks[0] == 1
             push_scope.clear()
             await push_scope.live_accounts()
@@ -517,7 +495,7 @@ def test_live_accounts_single_flight():
 
 def test_vapid_raw_env_key_and_jwt_refresh():
     priv = ec.generate_private_key(ec.SECP256R1())
-    raw = _b64(priv.private_numbers().private_value.to_bytes(32, "big"))   # deploy's old format
+    raw = _b64(priv.private_numbers().private_value.to_bytes(32, "big"))
     pub = _b64(priv.public_key().public_bytes(serialization.Encoding.X962,
                                               serialization.PublicFormat.UncompressedPoint))
     saved = push_send._vapid
@@ -532,7 +510,7 @@ def test_vapid_raw_env_key_and_jwt_refresh():
             assert push_send.vapid_headers(ep) is h1, "cached within JWT_CACHE_S"
             aud = "https://fcm.googleapis.com"
             at, _ = push_send._jwt[aud]
-            push_send._jwt[aud] = (at - push_send.JWT_CACHE_S - 1, h1)   # age the entry past the TTL
+            push_send._jwt[aud] = (at - push_send.JWT_CACHE_S - 1, h1)
             h2 = push_send.vapid_headers(ep)
             assert h2 is not h1 and h2["Authorization"] != h1["Authorization"]
             claims = json.loads(push_send.b64d(h2["Authorization"].split("t=")[1].split(",")[0].split(".")[1]))

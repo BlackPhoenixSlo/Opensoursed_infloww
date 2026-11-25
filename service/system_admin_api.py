@@ -1,33 +1,4 @@
-"""service/system_admin_api.py — Settings → System: the master's ops back-office.
-
-Read-only status for the deployment master (users.is_admin) and for an operator
-agent checking on the box:
-
-  GET /admin/system/automations   per account: every automation kind's rule
-                                  state (is_enabled, rule ids, duplicates), its
-                                  config-json `enabled` flag(s), and a mismatch
-                                  flag when the two disagree.
-  GET /admin/system/runs          recent automation_runs across ALL accounts
-                                  (with error_text), plus failed ("error") /
-                                  pending scheduled_jobs with last_error.
-  GET /admin/system/switches      every runtime switch (runtime_switches): env
-                                  value, override, effective value, source,
-                                  and `loaded` (the override table was read).
-  PUT /admin/system/switches/{n}  {"value": bool | int | null, "admin_password"}:
-                                  set the override (null clears it). Applies at
-                                  the consumer's next read, no restart. The audit
-                                  middleware files the `actions` row (password
-                                  redacted).
-
-MASTER ONLY, by construction: the gate is a ROUTER dependency (the
-tenant_keys_api pattern), so a route added here cannot forget it. A non-master
-owner gets 403, nobody signed in gets 401 (`auth.require_master`). Chatter
-sessions are refused earlier still by `chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`.
-The one write here also carries the founder password (`_assert_admin_password`),
-the policy `auth.require_master` writes down for master writes.
-Master's `account_ids` is every account (auth._master_account_ids), so the
-account-isolation middleware lets an `account_id` filter through.
-"""
+# MASTER ONLY by construction: the gate is a ROUTER dependency, so a route added here cannot forget it.
 from __future__ import annotations
 
 import json
@@ -47,9 +18,6 @@ router = APIRouter(prefix="/admin/system", tags=["system-admin"],
                    dependencies=[Depends(require_master)])
 
 
-# (kind, label, config column, [key paths that must ALL be true], absent-key default)
-# Defaults mirror each automation's built-in config, so an account that never
-# saved the blob reads the way the automation itself reads it.
 _CONFIG_GATED: tuple[tuple[str, str, str, tuple[tuple[str, ...], ...], bool], ...] = (
     ("nudge_online", "Nudge online", "nudge_config_json", (("enabled",),), True),
     ("autoreply", "Autoreply", "autoreply_config_json", (("enabled",),), False),
@@ -114,11 +82,7 @@ async def system_automations() -> dict[str, Any]:
             cfg = _config_flag(_parse(getattr(cfg_row, col, None) if cfg_row else None), paths, default)
             rp = rule_part(kind)
             rule_on = bool(rp["rule_enabled"])
-            # Disagree = a rule fires on a config that says off, or the config
-            # says on and no enabled rule will ever schedule it. Only once the
-            # operator has touched it (config stored or a rule row exists): a
-            # house-default-ON kind (nudge_online) on an account that
-            # never saved either is not a disagreement anyone made.
+            # Disagree = a rule fires on a config that says off, or the config says on and no enabled rule will schedule it; only once the operator touched it (a house-default-ON kind on an untouched account is no disagreement).
             touched = cfg["stored"] or bool(rp["rule_ids"])
             mismatch = touched and rule_on != cfg["enabled"]
             rows.append({"kind": kind, "label": label, "source": "rule+config", **rp,
@@ -182,7 +146,6 @@ async def system_runs(
         runs = (await s.execute(q.order_by(AutomationRun.started_at.desc(),
                                            AutomationRun.id.desc()).limit(limit))).scalars().all()
 
-        # The executor marks a failed job "error" (automation_executor._mark_job);
         # "failed" is matched too so an older writer's rows are not hidden.
         job_statuses = ("error", "failed", "pending")
         if status:

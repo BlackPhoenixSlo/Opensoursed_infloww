@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_spacing_chat — the Ask cut-off and Spacing through the Test chat API (phase 03d,
-ticket 59).
-
-`POST /admin/full-ai/test/turn` + `/settle` with the owner's cookies, a seeded vault, the Router
-faked at `_router_jev._client` (`FakeJev`, its calls recorded), the price Jev at `_price_jev._client`
-(fails: the list price stays), the Writers at their wire; every request inside
-`_full_ai_sell_helpers._guarded`.
-
-  case_spacing_on_state_and_wording  `sell_spacing` on: the Router's recorded state and the row's
-                                     `jev_json.state` hold the three keys; the request carries the
-                                     `TEST_SPACING` wording for `offer_moment` and `scene_offer`
-  case_exact_counts                  a scripted session: "no piece yet" -> an `offer_moment` Offer
-                                     (declined) -> 1, 2, 3 lines -> 3 Unasked Offers -> an ask with
-                                     the counts full (fewest lines, 3 unasked) still sells -> the
-                                     `sell` Offer resets the lines, adds a Piece, not an Unasked one
-  case_ask_cut_off                   `wants_content` .67 -> a `sell` row with an Offer; .64 -> none
-  case_switch_off                    `sell_spacing` off: no Spacing keys, today's wording, and the
-                                     request (questions + state keys) is the pre-03d one
-  case_shadow_request_golden         a Shadow Turn's request still equals the golden bytes
-
-Run: ./venv/bin/python service/tests/test_full_ai_spacing_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, NANO, OWNER_A, TURN, _body, _guarded, _put_draft, _rows, _vault,
@@ -63,7 +41,6 @@ FLAG_OFF_TEST_REQUEST_SHA = {
 
 
 class FailedPriceJev:
-    """`_price_jev._client`: every call fails, so the Pick keeps its list price (no network)."""
 
     async def system_one(self, state, questions, model=None):
         raise RuntimeError("no price Jev in this suite")
@@ -82,7 +59,6 @@ def _draft(**cfg):
 
 
 def _turn(pair: str, n: int, text: str, answers: dict, intensity: float = 2.0):
-    """One Turn under the invariants: (response json, the Router's one recorded call, the row)."""
     fj = FakeJev(({**QUIET, **answers}, intensity))
     fw = FakeWriterHTTP({NANO: "ok:mm babe"})
     with _guarded(), fw.on(), _fake_jev(fj):
@@ -113,14 +89,12 @@ def _wording(q) -> dict:
 
 def case_spacing_on_state_and_wording():
     pair = "sp-on"
-    # `he_likes` / `chat_tease` off: their keys would follow the Spacing keys (test_full_ai_he_likes.py,
-    # test_full_ai_chat_tease.py cover them).
     with _draft(draft_questions=True, sext_scene=True, he_likes=False, chat_tease=False), _vault(VAULT):
         g, call, row = _turn(pair, 1, "hey u", {})
     assert DEFAULTS["sell_spacing"] is True
     assert _counts(call["state"]) == (NO, 0, 0), call["state"]
     assert _counts(_saved(row)) == (NO, 0, 0), row.jev_json
-    assert list(call["state"])[-3:] == list(KEYS), list(call["state"])   # after the scene keys
+    assert list(call["state"])[-3:] == list(KEYS), list(call["state"])
     for qid in ("offer_moment", "scene_offer"):
         assert _wording(call["questions"][qid]) == rj.TEST_SPACING[qid], qid
         assert _wording(call["questions"][qid]) != rj.TEST_NOULS[qid], qid
@@ -128,7 +102,6 @@ def case_spacing_on_state_and_wording():
 
 def case_exact_counts():
     pair = "sp-count"
-    # chat_tease off: each offer_moment is a pitched Piece (a Chat tease is test_full_ai_ride's).
     with _draft(draft_questions=True, sext_scene=False, chat_tease=False), _vault(VAULT):
         n = 0
 
@@ -152,10 +125,9 @@ def case_exact_counts():
         _settle(pair, r.id)
         r = step("mm", {"offer_moment": .9}, (1, 2, 2), "offer_moment")
         _settle(pair, r.id)
-        # Counts full (the fewest lines a Turn can read, 3 Unasked): his ask still sells.
         r = step("send me pics", {"wants_content": .9}, (1, 3, 3), "sell")
         _settle(pair, r.id)
-        step("ok", {}, (1, 4, 3))       # the sell reset the lines, added a Piece, not an Unasked one
+        step("ok", {}, (1, 4, 3))
         step("nice", {}, (2, 4, 3))
 
 
@@ -170,7 +142,6 @@ def case_ask_cut_off():
 
 
 def _request_sha(call: dict, scene: bool) -> str:
-    """test_full_ai_spacing.py's flag-off request: the questions as sent plus the state key list."""
     d = {"questions": {q: v.model_dump(mode="json") for q, v in call["questions"].items()},
          "state_keys": list(call["state"])}
     assert scene == ("scene_offer" in call["questions"])
@@ -180,8 +151,6 @@ def _request_sha(call: dict, scene: bool) -> str:
 def case_switch_off():
     for scene in (False, True):
         pair = f"sp-off-{scene}"
-        # `he_likes`, `chat_tease`, `ask_implied` off too: the pin is the pre-03d request (their
-        # wording and keys are not in it).
         with _draft(draft_questions=True, sext_scene=scene, sell_spacing=False, he_likes=False,
                     chat_tease=False, ask_implied=False), _vault(VAULT):
             _, call, row = _turn(pair, 1, "hey u", {})
@@ -194,7 +163,6 @@ def case_switch_off():
 
 
 def _golden_bytes(call: dict) -> bytes:
-    """test_full_ai_router_test_mode.py's `_request_bytes`."""
     return json.dumps(
         {"model": call["model"], "state": call["state"],
          "questions": {qid: q.model_dump(mode="json") for qid, q in call["questions"].items()}},
@@ -202,7 +170,6 @@ def _golden_bytes(call: dict) -> bytes:
 
 
 async def case_shadow_request_golden():
-    """test_full_ai_router_test_mode.py's Shadow Turn, `sell_spacing` at its default (on)."""
     aid, fan = "fa_sp_golden", 91
     await _seed(aid, rule=True, gate=False)
     for i, (d, body) in enumerate((("in", "hey gorgeous"), ("out", "<p>hi babe &amp; welcome</p>"),

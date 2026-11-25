@@ -1,32 +1,3 @@
-"""
-Web Push sender (runtime; push_decide is its pure half, push_notice the frame -> notice port).
-design.md B1 + amendments 1-2: every enabled, in-scope, deduped notice goes to every live
-subscription; the service worker dedupes at display time.
-
-  offer(frame)   events._fanout's hook, on the loop thread: put_nowait on the inbox (INBOX_MAX,
-                 drops oldest). Never awaits, never raises out. `assignment_changed` /
-                 `sessions_revoked` clear push_scope's cache instead.
-  dispatcher     one task: notices_for -> per in-memory sub: types + platform (no I/O), then scope
-                 (dead -> prune), then the tag dedupe -> its worker shard (WORKER_MAX, drops
-                 oldest). The tag is claimed in the sub's Seen here, so a re-offer queued meanwhile
-                 is dropped. It stays only if the push service accepts; every other end (retries
-                 exhausted, RETRY_TASKS full, a dropped queue item, a failed scope read, a send-time
-                 skip) un-claims it, so the next purchase re-offer pushes again. An accepted
-                 purchase-lane tag (the lane a restart re-walks) is persisted in `push_sent`;
-                 start() reloads it, so the re-walk re-pushes nothing.
-  workers        N_WORKERS, a sub always on the same one. Re-check session + scope + types right
-                 before the send, encrypt (aes128gcm), POST with VAPID. 404/410 prune.
-                 429/5xx/transport: a delayed retry task (1 s / 4 s, Retry-After <= 30 s, at most
-                 RETRY_TASKS pending) re-queues it; a worker never sleeps. Order is kept per sub
-                 except around a retry: later notices go out while it waits (queues are not held).
-  vapid()        the P-256 key: env VAPID_PRIVATE_KEY (PEM or b64url raw), else VAPID_KEY_FILE,
-                 else service/secrets/vapid_private.pem (bind-mounted, in ae-backup), written once
-                 (0600). Never rotate it: every subscription is bound to its public half.
-  disabled()     why push is off: no usable VAPID subject host (VAPID_SUBJECT, else SITE_URL;
-                 empty or localhost: Apple refuses it). Logged once; /push/key answers 503.
-
-Counters: stats() -> events.sse_stats()['push'].
-"""
 from __future__ import annotations
 
 import asyncio
@@ -71,7 +42,7 @@ class Sub:
     endpoint: str
     p256dh: str
     auth: str
-    kind: str                       # 'user' | 'chatter'
+    kind: str
     principal_id: str
     issued_ms: int
     types: frozenset
@@ -93,11 +64,8 @@ _n = collections.Counter()
 HOSTS = pd.parse_hosts(os.environ.get("PUSH_ENDPOINT_HOSTS"))
 
 
-# ── hot path ──
 
 def offer(frame: dict) -> None:
-    """events._fanout's one line (always on the loop thread: events.publish hops there first).
-    O(1), no await, never raises."""
     try:
         k = ed.first_key(frame)
         if k in RESCOPE:
@@ -109,7 +77,6 @@ def offer(frame: dict) -> None:
 
 
 def _put(q: asyncio.Queue, item: Any, on_drop: Any = None) -> None:
-    """put_nowait; a full queue drops its oldest item (counted, handed to `on_drop`)."""
     try:
         q.put_nowait(item)
         return
@@ -125,12 +92,11 @@ def _put(q: asyncio.Queue, item: Any, on_drop: Any = None) -> None:
 
 
 class _Job(NamedTuple):
-    """One notice for one sub on a worker queue."""
-    t0: float                       # monotonic, when offer() saw the frame
+    t0: float
     sub_id: str
     notice: pn.Notice
-    attempt: int                    # 0, then each retry
-    durable: bool                   # purchase lane: persist in push_sent once accepted
+    attempt: int
+    durable: bool
 
 
 def _to_worker(job: _Job) -> None:
@@ -138,7 +104,6 @@ def _to_worker(job: _Job) -> None:
 
 
 def _release(job: _Job) -> None:
-    """Un-claim a job's tag: it ended without the push service accepting it."""
     sub = _subs.get(job.sub_id)
     if sub is not None:
         sub.seen.discard(job.notice.tag)
@@ -151,7 +116,6 @@ def _spawn(coro: Any, bag: set) -> asyncio.Task:
     return t
 
 
-# ── dispatcher + workers ──
 
 async def _platform(aid: str) -> str:
     hit = _platforms.get(aid)
@@ -159,7 +123,7 @@ async def _platform(aid: str) -> str:
     if hit is None or now - hit[0] > PLATFORM_TTL_S:
         import accounts
         try:
-            hit = (now, await asyncio.to_thread(accounts.get_platform, aid))     # meta.json read
+            hit = (now, await asyncio.to_thread(accounts.get_platform, aid))
         except Exception:
             hit = (now, "onlyfans")
         _platforms[aid] = hit
@@ -167,7 +131,6 @@ async def _platform(aid: str) -> str:
 
 
 async def _scope(sub: Sub) -> frozenset | None | bool:
-    """push_scope.accounts_for, or False on a read error (skip, never prune)."""
     try:
         return await push_scope.accounts_for(sub.kind, sub.principal_id, sub.issued_ms)
     except Exception:
@@ -176,7 +139,6 @@ async def _scope(sub: Sub) -> frozenset | None | bool:
 
 
 def _in_group(sub: Sub, n: pn.Notice) -> bool:
-    """`n` is about a Fan in `sub`'s Split Inbox group, or `sub` is no group-bound chatter."""
     return n.fan_id is None or sub.kind != "chatter" or split_inbox.allows_cached(
         sub.principal_id, n.account_id, n.fan_id)
 
@@ -189,14 +151,14 @@ async def _dispatch() -> None:
             notices = pn.notices_for(frame)
             if not notices:
                 continue
-            durable = "purchase_notified" in frame       # the lane a restart re-walks
+            durable = "purchase_notified" in frame
             plat = {n.account_id: await _platform(n.account_id) for n in notices}
             if any(n.fan_id is not None for n in notices):
                 await split_inbox.warm({n.account_id for n in notices})
             for sub in list(_subs.values()):
                 mine = [n for n in notices if pd.wanted(sub, n, plat[n.account_id]) and _in_group(sub, n)]
                 if not mine:
-                    continue                             # type / platform off: no scope read
+                    continue
                 accounts = await _scope(sub)
                 if accounts is None:
                     await prune(sub.id, "dead session")
@@ -206,7 +168,7 @@ async def _dispatch() -> None:
                 now = time.monotonic()
                 for n in mine:
                     if pd.should_push(sub, n, accounts, plat[n.account_id], sub.seen, now):
-                        sub.seen.add(n.tag, now)         # claimed while in flight
+                        sub.seen.add(n.tag, now)
                         _to_worker(_Job(t0, sub.id, n, 0, durable))
         except Exception:
             log.exception("push dispatch failed")
@@ -227,7 +189,7 @@ async def _work(q: asyncio.Queue) -> None:
 
 async def _deliver(sub: Sub, job: _Job) -> None:
     n = job.notice
-    accounts = await _scope(sub)                # send-time re-check: session, scope, types
+    accounts = await _scope(sub)
     if accounts is None:
         await prune(sub.id, "dead session")
         return
@@ -258,7 +220,6 @@ async def _retry_later(delay: float, job: _Job) -> None:
 
 
 async def _settle(sub: Sub, status: int | None, verdict: str) -> None:
-    """A send that won't be retried: prune a gone sub, else count and log the failure."""
     if verdict == "prune":
         await prune(sub.id, f"push service {status}")
         return
@@ -274,9 +235,6 @@ def wire(n: pn.Notice) -> bytes:
 
 
 async def _send(sub: Sub, n: pn.Notice) -> tuple[int | None, str | None]:
-    """One encrypted POST of `n` to `sub`: (status | None on transport error, Retry-After).
-    `_client` is set (start() before any worker; send_test checks); endpoints were vetted by
-    PUT and by start()."""
     import httpx
     body = encrypt(sub, wire(n))
     headers = {**vapid_headers(sub.endpoint), "TTL": str(TTL_S), "Urgency": pn.urgency(n),
@@ -300,11 +258,8 @@ def b64d(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-# ── persistence ──
 
 async def _record_sent(sub_id: str, tag: str) -> None:
-    """Persist an accepted purchase-lane tag. Never raises: a locked DB logs once and the
-    in-memory Seen still dedupes until a restart."""
     global _db_warned
     from sqlalchemy.exc import IntegrityError
     from db.engine import get_session
@@ -337,7 +292,6 @@ async def _prune_sent_loop() -> None:
             await _prune_sent()
 
 
-# ── subscriptions (push_api's writes land here after the DB) ──
 
 def sub_from_row(r: Any) -> Sub:
     try:
@@ -360,7 +314,6 @@ def upsert(sub: Sub) -> None:
 
 
 def owned(sub_id: str, kind: str, principal_id: str) -> Sub | None:
-    """The live sub `sub_id` when it belongs to (kind, principal_id), else None."""
     sub = _subs.get(sub_id)
     return sub if sub is not None and (sub.kind, sub.principal_id) == (kind, principal_id) else None
 
@@ -370,7 +323,6 @@ def forget(sub_id: str) -> None:
 
 
 async def prune(sub_id: str, why: str) -> None:
-    """Delete the row and the memory entry."""
     from sqlalchemy import delete
     from db.engine import get_session
     from db.models import PushSubscription
@@ -387,8 +339,6 @@ _TEST_REASONS = {"ok": "accepted", "prune": "subscription gone at the push servi
 
 
 async def send_test(sub_id: str, delay_s: float) -> dict:
-    """One visible test notice to `sub_id` after `delay_s`, past every gate but the sub's own
-    existence; one attempt. -> {status, reason} as the push service answered."""
     from brand import BRAND_NAME
     await asyncio.sleep(max(0.0, delay_s))
     sub = _subs.get(sub_id)
@@ -411,7 +361,6 @@ async def send_test(sub_id: str, delay_s: float) -> dict:
     return {"status": status, "reason": reason}
 
 
-# ── VAPID ──
 
 _vapid: Any = None
 _jwt: dict[str, tuple[float, dict]] = {}
@@ -446,7 +395,6 @@ def vapid() -> Any:
 
 
 def public_key() -> str:
-    """The b64url raw (uncompressed point) public key, the browser's applicationServerKey."""
     import base64
     from cryptography.hazmat.primitives import serialization
     raw = vapid().public_key.public_bytes(serialization.Encoding.X962,
@@ -455,7 +403,7 @@ def public_key() -> str:
 
 
 def subject() -> tuple[str | None, str]:
-    """(the VAPID `sub`, "") or (None, why push is off)."""
+    # Apple refuses an empty or localhost VAPID subject.
     s = os.environ.get("VAPID_SUBJECT", "").strip()
     if s:
         host = s.partition("@")[2] if s.startswith("mailto:") else urlsplit(s).hostname or ""
@@ -487,13 +435,9 @@ def vapid_headers(endpoint: str) -> dict:
     return hit[1]
 
 
-# ── lifecycle + stats ──
 
 async def start() -> None:
-    """server startup: subject check, the key, the HTTP client, the subscriptions + their sent
-    tags, the tasks. A row whose endpoint PUSH_ENDPOINT_HOSTS rejects is skipped in memory and
-    KEPT in the DB (the env replaces the default list: one added host must not wipe every
-    FCM/Apple sub); counted in stats()['off_hosts'], one warning. Idempotent."""
+    # A row whose endpoint host is rejected stays in the DB: the env replaces the default list, so one added host must not wipe every FCM/Apple sub.
     global _inbox, _workers, _client, _disabled
     if _inbox is not None:
         return

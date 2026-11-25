@@ -1,53 +1,4 @@
 #!/usr/bin/env python3
-"""
-Served OnlyFans login in a remote browser, a human solving every challenge.
-
-Built from an earlier direct-login prototype, with its two halves reshaped
-for this repo:
-
-  * The browser runs on Browserbase. The relay creates a Browserbase session,
-    drives it over CDP (Playwright `connect_over_cdp`, so no Chromium on this
-    host), types the creator's email + password into OnlyFans' real form, and
-    hands the operator Browserbase's own LIVE VIEW (an interactive page of the
-    remote browser). When OnlyFans shows Cloudflare / a captcha, a HUMAN solves
-    it there. Browserbase's captcha solver is forced off. A 2FA prompt can be
-    answered either in the live view or by POSTing the code
-    (`RemoteLoginJob.submit_otp`); the job's own thread types it into
-    OnlyFans' code field, since only that thread drives the page.
-  * Capture reuses the paste-curl pipeline. Before OnlyFans loads, the login
-    extension's own interceptor (loginExtensionMulti/interceptor.js) is added
-    as an init script, so the remote page publishes exactly what the extension
-    would put in its "Copy cURL": the signed headers and `x-relay-static-param`.
-    Those, plus the browser's cookies, go through
-    `session_bootstrap.from_request` (paste-curl's own parser output path),
-    then the proxy is bound and `server.post_bootstrap_hooks` runs, the same
-    hooks POST /admin/session/bootstrap runs.
-
-BROWSERBASE'S NETWORK, OUR PROXY AFTERWARDS (owner's call: "we can just use
-their proxies and then we attach ours"). The session is created with
-Browserbase's managed proxies (`proxies: true`); our proxy is never sent to
-Browserbase. The account's proxy is the Add creator flow's Proxy selection,
-bound the way the paste-curl path binds it (`bind_proxy`): the Inflowwww proxy
-through `proxy_health.assign_pool`, a custom proxy through `proxies.assign_account`
-(the registry calls behind POST /admin/proxy-pool/assign and /admin/proxies/
-assign), or nothing for No proxy; the relay's default (no choice sent) keeps a
-custom proxy the account is already on. It is bound BEFORE the session is saved, so
-every later relay call for the account egresses through it. A session that
-can't be created, or an OnlyFans page that won't load, fails loudly.
-
-SECRETS. BROWSERBASE_API_KEY / BROWSERBASE_PROJECT_ID come from the env only.
-The OnlyFans password lives as a local of the worker thread, is never stored
-on the job, and `scrub()` strips it from every job message, error and log line.
-A submitted 2FA code waits in the job's private slot until the worker takes it
-(then only the worker's local holds it); it is never logged and never in the
-status. Every code taken is scrubbed from the job's error, and the job forgets
-them all when it ends.
-
-BACKENDS. `backend` keeps the source's selector, default "local". This repo
-removed the local headless-Chromium capture (cleanup 9a: capture_session_proxy,
-interceptor, extract_rules), so "local" is refused up front with a clear
-error; "browserbase" is the opt-in that works.
-"""
 from __future__ import annotations
 
 import contextvars
@@ -74,18 +25,15 @@ from remote_login_decide import (OTP_ASK, OTP_NOT_TYPED, OTP_REJECTED, OTP_VERIF
 log = logging.getLogger("of-relay.remote-login")
 
 HERE = Path(__file__).resolve().parent
-# The login extension's MAIN-world interceptor, injected unchanged: one source
-# of truth for what a captured session carries.
 INTERCEPTOR_PATH = HERE.parent / "loginExtensionMulti" / "interceptor.js"
 
 BACKEND_LOCAL = "local"
 BACKEND_BROWSERBASE = "browserbase"
 BACKENDS = (BACKEND_LOCAL, BACKEND_BROWSERBASE)
 
-# The Add creator flow's Proxy selection (app: creatorFlow.ProxyChoice).
-PROXY_INFLOWWW = "infloww"   # the relay's env pool (never named to the client)
-PROXY_NONE = "none"          # the relay's own server IP; nothing is bound
-PROXY_CUSTOM = "custom"      # one of the user's proxies, by label
+PROXY_INFLOWWW = "infloww"
+PROXY_NONE = "none"
+PROXY_CUSTOM = "custom"
 PROXY_CHOICES = (PROXY_INFLOWWW, PROXY_NONE, PROXY_CUSTOM)
 
 BROWSERBASE_API = "https://api.browserbase.com/v1"
@@ -97,14 +45,12 @@ OF_HOME = "https://onlyfans.com/"
 OF_CHATS = "https://onlyfans.com/my/chats/"
 NAV_TIMEOUT_MS = 45_000
 
-# Browserbase's default session lifetime is 300 s; stop short of it so the job
-# ends with our own error, not a dropped CDP socket. The login (human included)
-# must land CAPTURE_RESERVE_S before that, leaving the capture its time.
+# Browserbase sessions last 300 s: stop short so the job ends with our own error, not a dropped CDP socket.
 JOB_WINDOW_S = 285
-CAPTURE_WAIT_S = 25       # after login: wait for a signed request + static_param
+CAPTURE_WAIT_S = 25
 CAPTURE_RESERVE_S = 60
 POLL_S = 1.0
-JOB_TTL_S = 600           # a finished job stays readable this long
+JOB_TTL_S = 600
 TIMED_OUT = "login did not complete in time (the Browserbase session window)"
 
 STATE_STARTING = "starting"
@@ -114,35 +60,24 @@ STATE_ERROR = "error"
 STATE_CANCELLED = "cancelled"
 _TERMINAL = {STATE_DONE, STATE_ERROR, STATE_CANCELLED}
 
-# OnlyFans login DOM. The form is rendered by OnlyFans' JS AFTER
-# domcontentloaded (on Browserbase's managed proxies it is often not there yet),
-# so the fields are waited for, never looked up once. The email input is
-# type="text", name="email".
-FORM_WAIT_S = 30          # the login form must show within this
-FIELD_TIMEOUT_MS = 5_000  # one fill / read / click attempt
-FILL_ATTEMPTS = 3         # fill, then retype key by key, verifying each time
+# OF renders the login form via JS after domcontentloaded (often late on BB proxies): wait for the fields, never look up once.
+FORM_WAIT_S = 30
+FIELD_TIMEOUT_MS = 5_000
+FILL_ATTEMPTS = 3
 _EMAIL_FIELD = 'input[name="email"], input[type="email"], input[autocomplete="username"]'
 _PASSWORD_FIELD = 'input[name="password"], input[type="password"]'
 _SUBMIT_BUTTON = 'button[type="submit"]'
-# The 2FA form's own submit button, when it shows one.
 _OTP_SUBMIT_BUTTON = f"{_SUBMIT_BUTTON}:visible"
-# The cookie banner OnlyFans shows some egresses (EU): decline the optional ones.
 _COOKIE_ONLY_NECESSARY = 'button:has-text("Only necessary cookies")'
 _OTP_SELECTORS = (
     'input[name="code"]', 'input[autocomplete="one-time-code"]',
     'input[name="otp"]',
 )
-# The visible one: a stale hidden code input left in the DOM is neither a
-# prompt nor where the code is typed.
 _OTP_FIELD = ", ".join(f"{s}:visible" for s in _OTP_SELECTORS)
 OTP_CODE_RE = re.compile(r"\d{6,8}")
-# OTP_VERIFY_S, the OTP_* wording and the typing/challenge/otp states: remote_login_decide (re-exported here)
-OTP_STEP_TIMEOUT_MS = 2_000  # one fill / read / press on the 2FA field: short, so cancel is seen
+OTP_STEP_TIMEOUT_MS = 2_000
 OTP_CHECKING = "checking the 2FA code"
 
-# Stores the interceptor's postMessage payloads on window.__relayCapture,
-# merging rules the way the extension's bridge.js does (static_param arrives on
-# a later publish than the headers).
 _CAPTURE_LISTENER_JS = r"""
 (function () {
   window.addEventListener("message", function (e) {
@@ -165,15 +100,15 @@ _CAPTURE_LISTENER_JS = r"""
 
 
 class BackendUnavailable(RuntimeError):
-    """The requested backend cannot run in this build (HTTP 501)."""
+    pass
 
 
 class RemoteLoginConflict(RuntimeError):
-    """A live job already exists for this email (HTTP 409)."""
+    pass
 
 
 class RemoteLoginExpired(LookupError):
-    """The job is past its window: it takes no code (HTTP 404, as an expired job)."""
+    pass
 
 
 class _Cancelled(Exception):
@@ -181,15 +116,12 @@ class _Cancelled(Exception):
 
 
 def scrub(text: Any, *secrets: str | None) -> str:
-    """`text` with every non-empty secret replaced by ***, longest first (a
-    code inside another code or the password leaves no part of either)."""
     s = "" if text is None else str(text)
     for secret in sorted({x for x in secrets if x}, key=len, reverse=True):
         s = s.replace(secret, "***")
     return s
 
 
-# ── Job ─────────────────────────────────────────────────────────────────────
 
 @dataclass
 class RemoteLoginJob:
@@ -199,9 +131,7 @@ class RemoteLoginJob:
     created_at: float
     expires_at: float
     proxy: str = PROXY_INFLOWWW
-    proxy_label: str = ""   # PROXY_CUSTOM only
-    # The relay's default, not the caller's pick: never replaces a binding the
-    # account already has (`bind_proxy`).
+    proxy_label: str = ""
     proxy_defaulted: bool = False
     backend: str = BACKEND_BROWSERBASE
     nickname: str | None = None
@@ -215,10 +145,7 @@ class RemoteLoginJob:
     finished_at: float | None = None
     _cancel: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
-    # A 2FA code the operator submitted, until the worker takes it. Request
-    # threads only write it (submit_otp); only the worker touches the page.
-    # _otp_busy: a code is pending or being checked (cleared when the job asks
-    # again or leaves the prompt); _otp_seen: every code taken, for scrub().
+    # Request threads only write the code (submit_otp); only the worker touches the page.
     _otp_code: str | None = field(default=None, repr=False)
     _otp_busy: bool = field(default=False, repr=False)
     _otp_seen: set[str] = field(default_factory=set, repr=False)
@@ -247,12 +174,6 @@ class RemoteLoginJob:
         return self.state in _TERMINAL
 
     def submit_otp(self, code: str) -> None:
-        """Queue a 2FA code for the worker to type; the status says it is being
-        checked. Spaces and dashes ("123 456", "123-456") are dropped first.
-        ValueError: not 6-8 digits; RemoteLoginConflict: the job is not on the
-        2FA prompt, or a code is already pending or being checked;
-        RemoteLoginExpired: past expires_at - CAPTURE_RESERVE_S (the worker types
-        no code then), checked under the lock so a code is never queued late."""
         code = re.sub(r"[\s-]", "", code or "")
         if not OTP_CODE_RE.fullmatch(code):
             raise ValueError("the 2FA code is 6 to 8 digits")
@@ -268,7 +189,6 @@ class RemoteLoginJob:
             self.message = OTP_CHECKING
 
     def otp_retry(self, message: str) -> None:
-        """Still on the 2FA prompt: ask for a code again (worker thread)."""
         with self._lock:
             if self.state in _TERMINAL:
                 return
@@ -276,26 +196,20 @@ class RemoteLoginJob:
             self._otp_code, self._otp_busy = None, False
 
     def otp_codes(self) -> tuple[str, ...]:
-        """Every 2FA code submitted to this job, for scrub()."""
         with self._lock:
             return tuple(self._otp_seen)
 
     def forget_otp(self) -> None:
-        """Drop every code (the job has ended; it stays readable JOB_TTL_S)."""
         with self._lock:
             self._otp_code, self._otp_busy = None, False
             self._otp_seen.clear()
 
     def take_otp(self) -> str | None:
-        """The pending 2FA code, emptying the slot (worker thread only)."""
         with self._lock:
             code, self._otp_code = self._otp_code, None
             return code
 
     def public(self) -> dict[str, Any]:
-        """Status safe to return to the job's own principal: no password, no
-        cookies, no CDP connect URL. The live-view URL is returned only while
-        the job runs (it controls the remote browser)."""
         with self._lock:
             return {
                 "id": self.id,
@@ -340,16 +254,12 @@ def _register(job: RemoteLoginJob) -> None:
         _jobs[job.id] = job
 
 
-# ── Entry points ────────────────────────────────────────────────────────────
 
 def start_login(*, email: str, password: str, principal: str | None,
                 proxy: str = PROXY_INFLOWWW, proxy_label: str = "",
                 proxy_defaulted: bool = False,
                 nickname: str | None = None, make_active: bool = True,
                 backend: str = BACKEND_LOCAL) -> RemoteLoginJob:
-    """Start a served login and return its job. The password goes to the worker
-    thread only. The request's context is copied into the thread so the
-    post-bootstrap hooks link the new account to the signed-in user."""
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r} (expected one of {BACKENDS})")
     if backend == BACKEND_LOCAL:
@@ -362,7 +272,7 @@ def start_login(*, email: str, password: str, principal: str | None,
         raise ValueError(f"unknown proxy choice {proxy!r} (expected one of {PROXY_CHOICES})")
     if proxy == PROXY_CUSTOM and not proxy_label:
         raise ValueError("a custom proxy needs its label")
-    bb_env()  # fail before a job exists when the env is not set
+    bb_env()
     now = time.time()
     job = RemoteLoginJob(
         id=uuid.uuid4().hex, email=email, principal=principal,
@@ -384,10 +294,9 @@ def cancel(job: RemoteLoginJob) -> None:
     job._cancel.set()
 
 
-# ── Worker ──────────────────────────────────────────────────────────────────
 
 def _run_login(job: RemoteLoginJob, password: str) -> None:
-    def _body(page, context) -> None:  # the backend has already loaded OF_HOME
+    def _body(page, context) -> None:
         job.set_state(STATE_TYPING, "entering credentials")
         _type_credentials(page, job.email, password)
         _drive_until_logged_in(job, page, context)
@@ -398,8 +307,6 @@ def _run_login(job: RemoteLoginJob, password: str) -> None:
 
 def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
            body: Callable[[Any, Any], None]) -> None:
-    """Open the backend, run `body(page, context)`, tear down — inside the one
-    scrubbed try/except every job ends through."""
     try:
         with _browserbase_backend(job) as (context, page):
             body(page, context)
@@ -410,16 +317,13 @@ def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
         log.warning("remote login %s failed: %s", job.id, msg)
         job.fail(msg)
     finally:
-        if not job.is_terminal():  # body returned without reaching a final state
+        if not job.is_terminal():
             job.fail("login ended without capturing a session")
-        job.forget_otp()  # the error is scrubbed: the job keeps no code once it ends
+        job.forget_otp()
 
 
 @contextmanager
 def _browserbase_backend(job: RemoteLoginJob):
-    """A Browserbase Chromium on Browserbase's managed proxies, driven over
-    CDP, with OnlyFans already loaded. Yields `(context, page)`; releases the
-    session on the way out."""
     from playwright.sync_api import sync_playwright
 
     session = _bb_create_session()
@@ -434,8 +338,6 @@ def _browserbase_backend(job: RemoteLoginJob):
 
 @contextmanager
 def _bb_connected(job: RemoteLoginJob, p, session: dict[str, Any]):
-    """CDP-connect to `session` with the capture scripts in place, publish its
-    live view on the job; close the browser and release the session on exit."""
     sid = session.get("id")
     try:
         lv = _bb_live_view_url(sid)
@@ -458,8 +360,6 @@ def _bb_connected(job: RemoteLoginJob, p, session: dict[str, Any]):
 
 
 def open_of(page) -> str | None:
-    """Load OnlyFans' home page. None when it loaded, else the navigation
-    error's first line."""
     try:
         page.goto(OF_HOME, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001
@@ -467,7 +367,6 @@ def open_of(page) -> str | None:
     return None
 
 
-# ── Browserbase REST (stdlib; tests fake these symbols) ─────────────────────
 
 def bb_env() -> tuple[str, str]:
     api_key = os.environ.get("BROWSERBASE_API_KEY")
@@ -480,11 +379,7 @@ def bb_env() -> tuple[str, str]:
 
 
 def _bb_session_payload(project_id: str) -> dict[str, Any]:
-    """The create-session body: Browserbase's managed proxies (our proxy is
-    never sent to Browserbase; it is bound to the account afterwards),
-    automated captcha solving OFF (it defaults to on), and a common laptop
-    viewport, so the live view stays readable on a phone (the default is
-    2560x1440)."""
+    # Browserbase managed proxies (ours is never sent, bound to the account afterwards); captcha solving OFF (defaults on); laptop viewport so the live view reads on a phone.
     return {
         "projectId": project_id,
         "proxies": True,
@@ -512,7 +407,6 @@ def _bb_request(path: str, method: str = "GET", body: dict | None = None) -> dic
 
 
 def _bb_create_session() -> dict[str, Any]:
-    """Create a session on Browserbase's managed proxies. Raises on any refusal."""
     _, project_id = bb_env()
     try:
         session = _bb_request("/sessions", "POST", _bb_session_payload(project_id))
@@ -547,7 +441,6 @@ def _bb_release(session_id: str | None) -> None:
         log.info("browserbase release of %s failed: %s", session_id, e)
 
 
-# ── Page driving ────────────────────────────────────────────────────────────
 
 def _goto(page, url: str, wait_until: str = "domcontentloaded") -> None:
     try:
@@ -557,8 +450,7 @@ def _goto(page, url: str, wait_until: str = "domcontentloaded") -> None:
 
 
 class LoginFormError(RuntimeError):
-    """OnlyFans' login form could not be filled. The message never carries
-    the typed values."""
+    pass
 
 
 def _type_credentials(page, email: str, password: str) -> None:
@@ -567,10 +459,6 @@ def _type_credentials(page, email: str, password: str) -> None:
 
 
 def fill_login_form(page, email: str, password: str, *, wait_s: float = FORM_WAIT_S) -> None:
-    """Wait for OnlyFans' login form, decline the optional cookies, type the
-    email and the password, and verify each field holds exactly what was typed
-    (retyping it when not). Raises LoginFormError instead of leaving the job
-    sitting on a half-filled form."""
     em = page.locator(_EMAIL_FIELD).first
     pw = page.locator(_PASSWORD_FIELD).first
     try:
@@ -584,8 +472,6 @@ def fill_login_form(page, email: str, password: str, *, wait_s: float = FORM_WAI
 
 
 def _dismiss_cookie_banner(page) -> None:
-    """Best effort: the banner does not block the form, it only crowds the
-    live view."""
     try:
         btn = page.locator(_COOKIE_ONLY_NECESSARY).first
         if btn.is_visible():
@@ -599,7 +485,7 @@ def _fill_verified(field, value: str, what: str) -> None:
         try:
             if attempt == 0:
                 field.fill(value, timeout=FIELD_TIMEOUT_MS)
-            else:  # the page swallowed the fill: clear and type key by key
+            else:
                 field.click(timeout=FIELD_TIMEOUT_MS)
                 field.fill("", timeout=FIELD_TIMEOUT_MS)
                 field.press_sequentially(value, delay=30, timeout=FIELD_TIMEOUT_MS * 4)
@@ -612,9 +498,6 @@ def _fill_verified(field, value: str, what: str) -> None:
 
 
 def submit_login_form(page) -> None:
-    """Click LOG IN (enabled once both fields hold a value), else press Enter
-    in the password field. A failed submit is left to the human in the live
-    view."""
     try:
         page.locator(_SUBMIT_BUTTON).first.click(timeout=FIELD_TIMEOUT_MS)
         return
@@ -627,10 +510,6 @@ def submit_login_form(page) -> None:
 
 
 def _detect_challenge(page) -> bool:
-    """A human-verification challenge is ON SCREEN: Cloudflare interstitial
-    text / elements, or a Turnstile / reCAPTCHA / hCaptcha / GeeTest frame.
-    Only visible ones count: a hidden widget or frame (reCAPTCHA parks its
-    challenge frame hidden on the page) is nothing for the human to solve."""
     try:
         if page.evaluate(
             """() => {
@@ -657,15 +536,13 @@ def _detect_challenge(page) -> bool:
 
 
 def _frame_on_screen(frame) -> bool:
-    """`frame`'s own <iframe> element, and each one it sits in, is visible
-    (the page's main frame always is). A detached frame is not."""
     try:
         while frame.parent_frame is not None:
             el = frame.frame_element()
             try:
                 if not el.is_visible():
                     return False
-            finally:  # checked every poll: release the handle
+            finally:
                 try:
                     el.dispose()
                 except Exception:  # noqa: BLE001
@@ -677,7 +554,6 @@ def _frame_on_screen(frame) -> bool:
 
 
 def _detect_otp(page) -> bool:
-    """A VISIBLE 2FA code field is on screen (a stale hidden input is no prompt)."""
     try:
         return bool(page.locator(_OTP_FIELD).first.is_visible())
     except Exception:  # noqa: BLE001
@@ -685,7 +561,6 @@ def _detect_otp(page) -> bool:
 
 
 def _auth_id(context) -> str | None:
-    """auth_id is OnlyFans' logged-in cookie."""
     try:
         for c in context.cookies(["https://onlyfans.com"]):
             if c.get("name") == "auth_id" and c.get("value"):
@@ -710,14 +585,6 @@ def _wait(page, seconds: float) -> None:
 
 
 def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
-    """Type `code` into OnlyFans' 2FA field (one attempt, short timeouts, so a
-    cancel is seen within seconds) and send it: click the visible submit
-    button of the field's own form (never the page's first one: that could be
-    the login form), or press Enter in the field when its form shows none or
-    the button won't take the click (covered). A field gone after the fill
-    submitted itself on the last digit: the code is in, and OTP_VERIFY_S
-    decides. False when the field would not take the code, or neither the
-    button nor Enter could send it."""
     field = page.locator(_OTP_FIELD).first
     try:
         field.fill(code, timeout=OTP_STEP_TIMEOUT_MS)
@@ -725,7 +592,7 @@ def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
         log.info("filling OnlyFans' 2FA field failed: %s", type(e).__name__)
         return False
     if not _detect_otp(page):
-        return True  # the form sent itself
+        return True
     try:
         if field.input_value(timeout=OTP_STEP_TIMEOUT_MS) != code:
             return False
@@ -741,8 +608,8 @@ def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
     except Exception as e:  # noqa: BLE001
         log.info("clicking OnlyFans' 2FA submit button failed: %s", type(e).__name__)
     if not _detect_otp(page):
-        return True  # the click went through after all
-    _check(job, CAPTURE_RESERVE_S)  # a cancel or the deadline during the click's wait: no Enter
+        return True
+    _check(job, CAPTURE_RESERVE_S)
     try:
         field.press("Enter", timeout=OTP_STEP_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001
@@ -752,10 +619,6 @@ def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
 
 
 def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
-    """Poll for auth_id, surfacing challenge / 2FA to the human in the live
-    view. Never touches a challenge itself. The rules (a submitted code typed
-    in, OTP_REJECTED / OTP_ASK, a 2FA field winning over a captcha):
-    remote_login_decide.login_step; this loop reads the page and performs."""
     state = decide.Drive()
     while True:
         state, eff = decide.login_step(state, _poll(job, page, context), OTP_VERIFY_S)
@@ -776,9 +639,6 @@ def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
 
 
 def _poll(job: RemoteLoginJob, page, context) -> decide.Poll:
-    """One look at the job and the page, in the order login_step decides
-    (cancel, deadline, auth_id, 2FA field, captcha): a signal an earlier one
-    decides is not read (no page call, no code taken)."""
     now = time.time()
     if job._cancel.is_set():
         return decide.Poll(now, cancel=True)
@@ -800,8 +660,6 @@ def _read_capture(page) -> dict[str, Any] | None:
 
 
 def _wait_for_capture(job: RemoteLoginJob, page) -> dict[str, Any]:
-    """The interceptor's latest signed-request snapshot, waiting for its
-    static_param (published on the first sign() call) up to CAPTURE_WAIT_S."""
     required = ("user-id", "x-bc", "x-of-rev", "sign", "time")
     deadline = time.time() + CAPTURE_WAIT_S
     cap = None
@@ -815,12 +673,10 @@ def _wait_for_capture(job: RemoteLoginJob, page) -> dict[str, Any]:
     hdrs = (cap or {}).get("headers") or {}
     if not all(hdrs.get(k) for k in required):
         raise RuntimeError("logged in, but the chats page never fired a signed request — try again")
-    return cap  # headers only: from_request falls back to a static_param seen at this rev
+    return cap
 
 
 def _request_from_capture(cap: dict[str, Any], cookies: list[dict], user_agent: str) -> dict[str, Any]:
-    """The capture in paste-curl's parsed-request shape, the x-relay-* headers
-    being what the extension's Copy cURL adds."""
     h = cap.get("headers") or {}
     rules = cap.get("rules") or {}
     headers = {k: str(h[k]) for k in ("user-id", "x-bc", "x-of-rev", "sign", "time") if h.get(k)}
@@ -834,21 +690,6 @@ def _request_from_capture(cap: dict[str, Any], cookies: list[dict], user_agent: 
 
 
 def bind_proxy(job: RemoteLoginJob, account_id: str) -> None:
-    """Bind the flow's proxy choice to `account_id` with the registry calls
-    the paste-curl path's attach step makes: POST /admin/proxy-pool/assign
-    (`proxy_health.assign_pool`: kept if already on the pool unless its
-    failover is due, else the least-used that answers, else the least-used
-    not bad, else (every pool proxy bad) the least-used; LookupError only
-    when the pool is empty) and
-    POST /admin/proxies/assign (`assign_account`). No proxy binds nothing, so
-    a re-login keeps whatever the account is on. A defaulted Inflowwww proxy
-    (the caller sent no choice) never replaces a custom binding: an account on
-    one of your proxies keeps it and the job reports that proxy, so a
-    re-sign-in from the header's Add creator never moves an account off its
-    custom proxy. An account already on the pool still goes through
-    `assign_pool` (it keeps its proxy unless that one's failover is due).
-    The same holds when the default was No proxy (the relay has no pool): a
-    custom-bound account is reported on its proxy, never "no proxy"."""
     import proxies as proxy_registry
     import proxy_health
 
@@ -873,9 +714,6 @@ def proxy_text(job: RemoteLoginJob) -> str:
 
 
 def _capture_and_persist(job: RemoteLoginJob, page, context) -> None:
-    """Bind the proxy, persist through paste-curl's pipeline, run the bootstrap
-    endpoint's hooks. The proxy is bound BEFORE anything is persisted: when the
-    bind fails nothing is written (one egress)."""
     import accounts as account_registry
     import platforms
     import session_bootstrap

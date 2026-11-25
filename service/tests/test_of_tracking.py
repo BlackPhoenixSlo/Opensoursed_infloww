@@ -1,50 +1,9 @@
 #!/usr/bin/env python3
-"""OnlyFans-native tracking links (/campaigns). OF is faked — no network.
-
-Locks the contract verified LIVE on 2026-07-23 (Ava):
-  • The share URL is built as onlyfans.com/<username>/c<campaignCode> — the API
-    never returns a URL; OF's own Copy-link builds exactly this, so
-    url_verified rides as True.
-  • CREATE body field is `name` (sending `campaignName` 400s "Name is
-    required"), while the LIST response spells it `campaignName`. The fake
-    enforces that asymmetry so a regression to campaignName fails here.
-  • create -> list -> delete round-trips; a deleted campaign stays in the list
-    with is_deleted:true and its counts (OF keeps it behind with_deleted=1;
-    the UI shows it as Infloww's "Deactivated").
-  • countTransitions = clicks, countSubscribers = subs (the whole point).
-  • /campaigns pages ({list, hasMore}); the list reads every page.
-
-  case_url_is_built_from_username_and_code
-  case_create_uses_name_field_not_campaignname
-  case_create_list_delete_round_trip
-  case_stats_map_clicks_and_subs
-  case_of_unavailable_is_not_a_500
-  case_list_pages_through_has_more
-  case_deleted_rows_come_back_flagged_with_counts
-  case_earnings_sum_claimers_spend_per_link
-  case_earnings_exclude_refunds_and_pre_created_and_post_end
-  case_earnings_net_vs_gross_and_kind_buckets
-  case_fan_claimed_by_two_links_splits_spend_by_time
-  case_claimers_page_and_cache_until_subs_move
-  case_claimers_error_marks_only_that_link
-  case_earnings_of_down_is_unavailable_not_500
-  case_fans_endpoint_details_rows
-  case_link_without_created_at_has_no_earnings
-  case_net_missing_is_counted_not_imputed
-  case_bad_later_campaigns_page_is_unavailable_not_partial
-
-Run: ./venv/bin/python service/tests/test_of_tracking.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -59,17 +18,16 @@ from db.models import Account, Transaction  # noqa: E402
 
 _client = _harness.make_client()
 
-_AID = "of_track_acct"  # assert_account_owned is a no-op for unauthed test calls
+_AID = "of_track_acct"
 
 
 class FakeOF:
-    """OF /campaigns + /users/me, live-accurate."""
 
     def __init__(self, username="testcreator", page_cap=10):
         self._username = username
-        self._page_cap = page_cap        # OF answers at most this many per page
+        self._page_cap = page_cap
         self.calls: list[dict] = []
-        self.claimers: dict[int, list[int]] = {}   # campaign id -> fan ids
+        self.claimers: dict[int, list[int]] = {}
         self.claimer_calls: list[tuple[int, int, int]] = []
         self.claimers_fail: set[int] = set()
         self._code = 4
@@ -92,7 +50,6 @@ class FakeOF:
         return cid
 
     def campaign_claimers(self, campaign_id, *, limit=10, offset=0, query=None):
-        # OF's user-list shape: {list:[user], hasMore}, no money, capped per page.
         self.claimer_calls.append((campaign_id, limit, offset))
         if campaign_id in self.claimers_fail:
             raise RuntimeError("429 Too Many Requests")
@@ -103,18 +60,14 @@ class FakeOF:
                 "hasMore": offset + len(page) < len(ids), "marker": 1792340782}
 
     def tracking_links(self, *, limit=None, offset=0, with_deleted=False):
-        # OF's paged shape, campaignName spelling; deleted ones only on request.
         self.calls.append({"limit": limit, "offset": offset, "with_deleted": with_deleted})
         rows = [c for c in self.store.values() if with_deleted or not c["isDeleted"]]
         n = min(limit or self._page_cap, self._page_cap)
         page = rows[offset:offset + n]
         return {"list": page, "hasMore": offset + len(page) < len(rows)}
 
+    # OF create body field is `name` (campaignName 400s); the list response spells it campaignName.
     def create_tracking_link(self, *, name, code=None):
-        # NOTE: the `name` vs `campaignName` JSON-body bug lives INSIDE the real
-        # of_client.create_tracking_link, which this fake replaces wholesale — so
-        # that specific bug is covered by the LIVE round-trip, not this test.
-        # Here we only assert the route hands the value through intact.
         if not name:
             raise RuntimeError('400 {"error":{"message":"Name is required"}}')
         self._code += 1
@@ -127,7 +80,6 @@ class FakeOF:
         return item
 
     def delete_tracking_link(self, campaign_id):
-        # OF keeps a deleted campaign, its counts and an endDate, behind with_deleted=1.
         c = self.store.get(int(campaign_id))
         if c:
             c.update(isDeleted=True, endDate="2026-10-18 12:00:00")
@@ -141,7 +93,6 @@ def _use(fake):
 
 
 def _fresh():
-    """Forget every cache: claimers, recent failures and the per-account memo."""
     of_tracking_api._CLAIMERS_CACHE.clear()
     of_tracking_api._CLAIMERS_FAILED.clear()
     of_tracking_api._COMPUTED.clear()
@@ -150,7 +101,6 @@ def _fresh():
 of_tracking_api._CLAIMERS_PAGE_SLEEP_S = 0
 
 
-# ── Earnings: a fresh Creator per case so ledgers never mix ──
 
 _n_acct = 0
 
@@ -192,10 +142,9 @@ def _list():
 
 def case_url_is_built_from_username_and_code():
     f = _use(FakeOF(username="peerava"))
-    f.seed(name="IG main")           # gets code 5
+    f.seed(name="IG main")
     d = _list()
     assert d["username"] == "peerava", d
-    # OF's own Copy-link builds onlyfans.com/<username>/c<campaignCode> (statistics-reach-campaigns.js copyLink).
     assert d["url_verified"] is True, d
     row = d["links"][0]
     assert row["url"] == f"https://onlyfans.com/peerava/c{row['code']}", row
@@ -208,7 +157,6 @@ def case_create_uses_name_field_not_campaignname():
     body = r.json()
     assert body["name"] == "Reddit", body
     assert body["url"] and body["url"].endswith(f"/c{body['code']}"), body
-    # empty name is rejected before touching OF
     bad = _client.post("/admin/of-tracking-links", json={"account_id": _AID, "name": "  "})
     assert bad.status_code == 422, bad.text
 
@@ -244,7 +192,6 @@ def case_of_unavailable_is_not_a_500():
 
 
 def case_list_pages_through_has_more():
-    # OF caps each page (10 here); 23 links must all come back, none twice.
     f = _use(FakeOF(page_cap=10))
     for i in range(23):
         f.seed(name=f"L{i}", clicks=i)
@@ -275,13 +222,12 @@ def case_earnings_sum_claimers_spend_per_link():
     _tx(aid, 1, "ppv_message", 1000, "2026-09-10T10:00:00")
     _tx(aid, 2, "tip", 500, "2026-09-11T10:00:00")
     _tx(aid, 3, "ppv_post", 700, "2026-09-12T10:00:00")
-    _tx(aid, 99, "tip", 9999, "2026-09-12T10:00:00")   # not a claimer of any link
+    _tx(aid, 99, "tip", 9999, "2026-09-12T10:00:00")
     d, by = _earnings(aid)
     assert d["available"] is True, d
     assert by[a]["earnings_cents"] == 1500 and by[a]["fans_who_spent"] == 2 and by[a]["fans_counted"] == 2, by[a]
     assert by[b]["earnings_cents"] == 700 and by[b]["fans_who_spent"] == 1, by[b]
     assert by[z]["earnings_cents"] == 0 and by[z]["fans_who_spent"] == 0, by[z]
-    # zero subscribers costs no claimers call
     assert z not in {c[0] for c in f.claimer_calls}, f.claimer_calls
 
 
@@ -290,13 +236,13 @@ def case_earnings_exclude_refunds_and_pre_created_and_post_end():
     f = _use(FakeOF())
     a = f.seed(name="IG", created_at="2026-09-05T12:00:00+00:00", fans=[1])
     f.store[a].update(isDeleted=True, endDate="2026-09-20 00:00:00")
-    _tx(aid, 1, "tip", 100, "2026-09-05T11:59:59")                       # before the link existed
-    _tx(aid, 1, "tip", 200, "2026-09-06T00:00:00")                       # counted
+    _tx(aid, 1, "tip", 100, "2026-09-05T11:59:59")
+    _tx(aid, 1, "tip", 200, "2026-09-06T00:00:00")
     _tx(aid, 1, "tip", 400, "2026-09-07T00:00:00", status="refunded")
     _tx(aid, 1, "tip", 800, "2026-09-07T00:00:00", status="chargedback")
     _tx(aid, 1, "tip", 1600, "2026-09-07T00:00:00", status="failed")
-    _tx(aid, 1, "tip", 3200, "2026-09-08T00:00:00", status="pending")    # pending is revenue (stats.py)
-    _tx(aid, 1, "tip", 6400, "2026-09-21T00:00:00")                      # after it was deactivated
+    _tx(aid, 1, "tip", 3200, "2026-09-08T00:00:00", status="pending")
+    _tx(aid, 1, "tip", 6400, "2026-09-21T00:00:00")
     _d, by = _earnings(aid)
     assert by[a]["earnings_cents"] == 3400, by[a]
 
@@ -311,7 +257,7 @@ def case_earnings_net_vs_gross_and_kind_buckets():
     _tx(aid, 1, "ppv_post", 300, "2026-09-03T00:00:00", net=240)
     _tx(aid, 1, "ppv_stream", 400, "2026-09-03T00:00:00", net=320)
     _tx(aid, 1, "tip_post", 500, "2026-09-03T00:00:00", net=400)
-    _tx(aid, 2, "subscription", 1000, "2026-09-02T00:00:00", net=777)   # subs only: not a "fan who spent"
+    _tx(aid, 2, "subscription", 1000, "2026-09-02T00:00:00", net=777)
     _d, by = _earnings(aid)
     assert by[a]["earnings_cents"] == 6200 and by[a]["earnings_net_cents"] == 4937, by[a]
     assert by[a]["fans_who_spent"] == 1, by[a]
@@ -325,8 +271,6 @@ def case_earnings_net_vs_gross_and_kind_buckets():
 
 
 def case_fan_claimed_by_two_links_splits_spend_by_time():
-    # Fan 1 came via A (Aug 1) and B (Sep 1, deactivated Oct 1). Each tx goes to the newest claiming link open at its
-    # time: Aug 15 is before B existed -> A; Sep 15 -> B; Oct 15 is after B ended -> back to A. Fan 2: A only.
     aid = _acct()
     f = _use(FakeOF())
     a = f.seed(name="A", created_at="2026-08-01T00:00:00+00:00", fans=[1, 2])
@@ -347,7 +291,6 @@ def case_fan_claimed_by_two_links_splits_spend_by_time():
     assert ra[1]["total_cents"] == 2500 and ra[1]["also_claimed_by"] == [b], ra[1]
     assert ra[2]["total_cents"] == 300 and ra[2]["also_claimed_by"] == [], ra[2]
     assert rb[1]["total_cents"] == 1000 and rb[1]["also_claimed_by"] == [a], rb[1]
-    # Details rows add up to each link's Earnings.
     assert sum(r["total_cents"] for r in ra.values()) == by[a]["earnings_cents"]
     assert sum(r["total_cents"] for r in rb.values()) == by[b]["earnings_cents"]
 
@@ -365,7 +308,7 @@ def case_claimers_page_and_cache_until_subs_move():
     _earnings(aid)
     assert len(f.claimer_calls) == 3, "a second read within the TTL must come from cache"
     assert len(f.calls) == list_calls, "within the memo's TTL /campaigns is not re-read either"
-    of_tracking_api._COMPUTED.clear()   # the 60 s memo lapses
+    of_tracking_api._COMPUTED.clear()
     _earnings(aid)
     assert len(f.claimer_calls) == 3 and len(f.calls) > list_calls, "claimers still cached past the memo"
     of_tracking_api._COMPUTED.clear()
@@ -388,7 +331,6 @@ def case_claimers_error_marks_only_that_link():
     assert by[bad]["earnings_cents"] is None and by[bad]["fans_who_spent"] is None, by[bad]
     r = _client.get(f"/admin/of-tracking-links/{bad}/fans?account_id={aid}")
     assert r.status_code == 502, r.text
-    # The failure is remembered: past the memo, OF is not asked about that link again for a while.
     calls = [c for c in f.claimer_calls if c[0] == bad]
     of_tracking_api._COMPUTED.clear()
     _d, by = _earnings(aid)
@@ -413,9 +355,8 @@ def case_fans_endpoint_details_rows():
     r = _client.get(f"/admin/of-tracking-links/{a}/fans?account_id={aid}")
     assert r.status_code == 200, r.text
     rows = r.json()["fans"]
-    assert [x["fan_id"] for x in rows] == [2, 3, 1], rows          # most spent first; a $0 fan still listed
+    assert [x["fan_id"] for x in rows] == [2, 3, 1], rows
     assert rows[0]["name"] == "Fan 2" and rows[0]["username"] == "u2", rows[0]
-    # The honest window: the link was created Sep 1, but the ledger only starts Sep 2.
     assert r.json()["counted_from"] == "2026-09-02T00:00:00Z", r.json()["counted_from"]
     assert _client.get(f"/admin/of-tracking-links/424242/fans?account_id={aid}").status_code == 404
 
@@ -426,7 +367,7 @@ def case_link_without_created_at_has_no_earnings():
     a = f.seed(name="undated", created_at=None, fans=[1])
     _tx(aid, 1, "tip", 100, "2026-09-02T00:00:00")
     _d, by = _earnings(aid)
-    assert by[a]["earnings_cents"] is None, by[a]       # "—", never all-time spend
+    assert by[a]["earnings_cents"] is None, by[a]
     assert not f.claimer_calls, f.claimer_calls
 
 

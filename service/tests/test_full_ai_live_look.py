@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_live_look — the last look and the bubble senders (04a ticket 66, full_ai_live).
-
-OF faked (`LiveOF` behind `ax._make_client`), Jev + Writers faked, temp DB.
-
-  case_last_look_order            shipped names (04b's four, then overtaken); a check inserted at 0 runs first, its reason
-                                  wins over a later check that also answers (whose loader then never runs)
-  case_overtaken_before_bubble_1  his DM lands after the Writer: no OF call, `no_send`, stood_down
-                                  overtaken; his new DM's job answers both on a new Turn key
-  case_inbound_after_bubble_1     his DM after bubble 1: the rest still sends, `sent`
-  case_check_at_index_1           a reason only at index 1: one bubble, `sent`, cut.index 1, rate turn given back
-  case_pre_look_stands_down       reason on the pre-look: no Jev call, no row, no lease, `skipped`
-  case_loader_feeds_check         a loader's result is `look.facts[name]`; loaders run 2n + 1 times (pre-look; look + gate per bubble)
-  case_ppv_unbuilt                a `ppv` last bubble, no `ppv` sender: text bubbles go, the PPV does not,
-                                  cut ppv_unbuilt, Offer columns NULL, offer_dropped stood_down
-  case_ppv_sender_results         fake `ppv` sender: attributed -> no 2nd messages row; unknown -> no
-                                  retry, columns kept, cut ppv_unconfirmed, lone bubble `unconfirmed`;
-                                  offer_dropped media -> copied to reply_json
-  case_look_raises                a raising loader: pre-look `skipped` check:error, no row; index 0 `no_send`
-                                  stood_down error; index 1 one bubble, cut error; SlotLost propagates
-  case_tease_stood_down           a tease row (Offer columns, no ppv part) stood down at 0: columns NULL
-
-Run: ./venv/bin/python service/tests/test_full_ai_live_look.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -61,7 +38,6 @@ def _patched(obj, name, value):
 
 @contextlib.contextmanager
 def _checks(*extra: tuple[int, tuple]):
-    """Insert (index, tuple) entries into LAST_LOOK for the block."""
     saved = list(full_ai_look.LAST_LOOK)
     for at, entry in extra:
         full_ai_look.LAST_LOOK.insert(at, entry)
@@ -73,7 +49,6 @@ def _checks(*extra: tuple[int, tuple]):
 
 @contextlib.contextmanager
 def _with_pick(only: bool = False):
-    """Every live Turn rides `PICK` on its last bubble (`only`: the PPV bubble is the whole reply)."""
     real = full_ai_test.send
 
     def send(row, parts, pick=None, **kw):
@@ -116,11 +91,9 @@ async def case_last_look_order():
         res, w = await _run(aid, fan, mid, rid)
     assert [n for n, _l, _c in full_ai_look.LAST_LOOK] == names
     assert await live_rows(aid) == []
-    # Pre-look: "first" goes, "overtaken" (here: always a reason) stands the Turn down.
     assert res == {"skipped": "overtaken:overtaken"}, res
     assert called == [("first", -1), ("overtaken", -1)], called
     assert w.of.calls == 0
-    # At index 0 both answer: "first" wins; the later slot's loader and check never run there.
     called.clear()
     aid, fan, mid = "fa_lk_order2", 702, 9201
     rid = await seed_live(aid)
@@ -147,7 +120,7 @@ async def case_overtaken_before_bubble_1():
     rid = await seed_live(aid)
     await dm(aid, fan, mid, "hey you, how was your day")
 
-    async def he_writes_again(*_a, **_k):        # bubble 1's typing hold: after the Writer, before OF
+    async def he_writes_again(*_a, **_k):
         if not wrote:
             wrote.append(1)
             await _msg(aid, fan, mid + 1, "in", "also are u free later", datetime.utcnow())
@@ -158,7 +131,6 @@ async def case_overtaken_before_bubble_1():
     assert (row.status, w.of.calls, res["row_status"]) == ("no_send", 0, "no_send"), res
     assert _reply(row)["stood_down"] == {"check": "overtaken", "reason": "overtaken", "index": 0}
     assert await out_rows(aid, fan) == [] and await leases(aid) == []
-    # His new DM's job: a new Turn key, Jev's state holds both lines.
     res, w = await _run(aid, fan, mid + 1, rid)
     old, new = await live_rows(aid)
     assert (new.trigger_key, new.status, res["row_status"]) == (str(mid + 1), "sent", "sent"), res
@@ -171,7 +143,7 @@ async def case_inbound_after_bubble_1():
     aid, fan, mid = "fa_lk_after", 704, 9401
 
     def after_first(call, _text):
-        if call == 1:               # OF's send runs in a worker thread: write on the test's loop
+        if call == 1:
             asyncio.run_coroutine_threadsafe(
                 _msg(aid, fan, mid + 1, "in", "lol", datetime.utcnow()), loop).result()
     rid = await seed_live(aid)
@@ -224,13 +196,11 @@ async def case_loader_feeds_check():
         res, w = await _run(aid, fan, mid, rid)
     (row,) = await live_rows(aid)
     n = len(_reply(row)["parts"])
-    # The pre-look once, then each bubble twice: its look and the write gate's (`gate` runs every slot).
     assert row.status == "sent" and n == w.of.calls and len(loads) == 2 * n + 1, (loads, n)
     assert seen == [{"index": -1, "sent": 0}] + [{"index": i, "sent": i} for i in range(n) for _ in "lg"], seen
 
 
 async def case_ppv_unbuilt():
-    """No `ppv` sender registered (90 registers one: patched out here)."""
     aid, fan, mid = "fa_lk_ppv", 708, 9801
     rid = await seed_live(aid)
     await dm(aid, fan, mid)
@@ -246,7 +216,6 @@ async def case_ppv_unbuilt():
     assert reply["cut"] == {"check": "sender", "reason": "ppv_unbuilt", "index": n - 1}, reply["cut"]
     assert reply["offer_dropped"] == "stood_down"
     assert all(getattr(row, c) is None for c in OFFER_COLS), [getattr(row, c) for c in OFFER_COLS]
-    # A lone PPV bubble: nothing on OF, `no_send`, stood down at 0.
     aid, fan, mid = "fa_lk_ppv1", 709, 9811
     rid = await seed_live(aid)
     await dm(aid, fan, mid)
@@ -266,7 +235,6 @@ def _ppv_sender(result: dict, calls: list):
 
 
 async def case_ppv_sender_results():
-    # attributed: True -> the loop writes no messages row for it.
     aid, fan, mid = "fa_lk_attr", 710, 9901
     rid = await seed_live(aid)
     await dm(aid, fan, mid)
@@ -281,7 +249,6 @@ async def case_ppv_sender_results():
     assert len(calls) == 1 and "ppv" in calls[0] and reply["parts"][-1]["message_id"] == 9_700_000_000_001
     assert (row.status, w.of.calls, len(await out_rows(aid, fan))) == ("sent", n - 1, n - 1)
     assert row.offer_price_cents == 1500 and "offer_dropped" not in reply
-    # attributed: False -> the loop writes it.
     aid, fan, mid = "fa_lk_noattr", 711, 9911
     rid = await seed_live(aid)
     await dm(aid, fan, mid)
@@ -292,7 +259,6 @@ async def case_ppv_sender_results():
     (row,) = await live_rows(aid)
     outs = await out_rows(aid, fan)
     assert len(outs) == len(_reply(row)["parts"]) and outs[-1].message_id == 9_700_000_000_002
-    # unknown, the lone bubble -> `unconfirmed`, no retry, columns kept.
     aid, fan, mid = "fa_lk_unk", 712, 9921
     rid = await seed_live(aid)
     await dm(aid, fan, mid)
@@ -305,7 +271,6 @@ async def case_ppv_sender_results():
     assert (len(calls), row.status, w.of.calls, await out_rows(aid, fan)) == (1, "unconfirmed", 0, []), row.status
     assert _reply(row)["cut"] == {"check": "send_error", "reason": "ppv_unconfirmed", "index": 0}
     assert row.offer_price_cents == 1500 and row.offer_item_ref and "offer_dropped" not in _reply(row)
-    # unknown after text bubbles -> `sent`.
     aid, fan, mid = "fa_lk_unk2", 713, 9931
     rid = await seed_live(aid)
     await dm(aid, fan, mid)
@@ -314,7 +279,6 @@ async def case_ppv_sender_results():
         await _run(aid, fan, mid, rid)
     (row,) = await live_rows(aid)
     assert row.status == "sent" and _reply(row)["cut"]["reason"] == "ppv_unconfirmed" and row.offer_price_cents == 1500
-    # offer_dropped: media (a Free item's text landed, its media refused) -> copied.
     aid, fan, mid = "fa_lk_media", 714, 9941
     rid = await seed_live(aid)
     await dm(aid, fan, mid)

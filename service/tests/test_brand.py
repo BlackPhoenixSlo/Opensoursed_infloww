@@ -1,12 +1,4 @@
-"""BRAND_NAME (service/brand.py) renames the product wherever the relay says it.
-
-Unset: Inflowwww, as before. Set (a deployment's .env, e.g. Acme Desk): the TOTP issuer, the
-help assistant's prompt and the proxy pool's messages say that name instead.
-The override runs in a child process, since the name is read at import.
-
-Run: ./venv/bin/python service/tests/test_brand.py
-"""
-import _harness  # MUST be first: binds a throwaway temp DB
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 import os  # noqa: E402
 import subprocess  # noqa: E402

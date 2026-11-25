@@ -1,41 +1,15 @@
-"""service/geo_timezones.py — city/country → IANA timezone, deterministically.
-
-Lives OUTSIDE `service/automations/` on purpose: nothing in that package calls
-this. It is consumed by `account_config_api`'s enrich endpoint, and a geographic
-gazetteer is not an automation helper — parking 200 lines of it in the module
-every automation imports made them all carry a table none of them touch.
-
-Why it is code and not a model call: six live accounts had a timezone that
-disagreed with their own persona location by 1-4 hours (Argentina on Vancouver
-time, Colombia on Los_Angeles, Florida and Hawaii on a bare -8), and the chat
-prompt's clock block then HARD-instructs the model to defend the wrong hour. On
-800000002 that produced "son las 8 de la mañana acá" at 12:37 Argentine time, and
-the fan replied "En Argentina son las 10 ... ya no confío de verdad". Letting a
-model guess the zone is exactly how that happens, so the enrich flow has the LLM
-author the narrative facts and resolves the zone here instead.
-"""
 from __future__ import annotations
 
 import re
 
 
-# ── City/country → IANA timezone (DETERMINISTIC — never LLM-guessed) ──
-# Six live accounts were 1-4 hours wrong (Argentina on Vancouver time, Colombia on
-# Los_Angeles, Florida and Hawaii on a bare -8), and the prompt clock then HARD-
-# instructs the model to defend the wrong hour. Letting a model guess the zone
-# would reintroduce exactly that bug, so the enrich flow proposes the narrative
-# facts with an LLM and resolves the zone HERE, in code.
-#
-# Returns None when genuinely ambiguous (a big multi-zone country with no city we
-# recognise) — the UI then asks rather than guessing. None is a feature.
+# Deterministic, never LLM-guessed: a wrong zone makes the prompt clock block defend the wrong hour. None = ambiguous, the UI asks.
 _CITY_TZ: dict[str, str] = {
-    # Argentina
     "buenos aires": "America/Argentina/Buenos_Aires",
     "cordoba": "America/Argentina/Cordoba",
     "córdoba": "America/Argentina/Cordoba",
     "mendoza": "America/Argentina/Mendoza",
     "rosario": "America/Argentina/Cordoba",
-    # Latin America
     "bogota": "America/Bogota", "bogotá": "America/Bogota",
     "medellin": "America/Bogota", "medellín": "America/Bogota",
     "cartagena": "America/Bogota",
@@ -49,7 +23,6 @@ _CITY_TZ: dict[str, str] = {
     "cancun": "America/Cancun", "cancún": "America/Cancun",
     "quintana roo": "America/Cancun", "tulum": "America/Cancun",
     "playa del carmen": "America/Cancun", "tijuana": "America/Tijuana",
-    # US
     "new york": "America/New_York", "nyc": "America/New_York",
     "brooklyn": "America/New_York", "manhattan": "America/New_York",
     "miami": "America/New_York", "tampa": "America/New_York",
@@ -64,26 +37,21 @@ _CITY_TZ: dict[str, str] = {
     "kansas city": "America/Chicago", "st louis": "America/Chicago",
     "denver": "America/Denver", "salt lake city": "America/Denver",
     "albuquerque": "America/Denver", "phoenix": "America/Phoenix",
-    # NB: no bare "la" key — it is the Spanish definite article, so "La Plata,
-    # Argentina" would resolve to Los Angeles. An LA-only string stays ambiguous.
     "los angeles": "America/Los_Angeles",
     "san diego": "America/Los_Angeles", "san francisco": "America/Los_Angeles",
     "san jose": "America/Los_Angeles", "sacramento": "America/Los_Angeles",
     "las vegas": "America/Los_Angeles", "seattle": "America/Los_Angeles",
     "portland": "America/Los_Angeles",
-    # Hawaii/Alaska by name — without these the IANA tail scan below would answer
-    # with the DEPRECATED "US/Hawaii" alias instead of canonical Pacific/Honolulu.
+    # Hawaii/Alaska by name: else the IANA tail scan answers with the deprecated US/Hawaii alias.
     "honolulu": "Pacific/Honolulu", "hawaii": "Pacific/Honolulu",
     "maui": "Pacific/Honolulu", "oahu": "Pacific/Honolulu",
     "anchorage": "America/Anchorage", "alaska": "America/Anchorage",
-    # Canada
     "vancouver": "America/Vancouver", "vancouver island": "America/Vancouver",
     "victoria": "America/Vancouver", "toronto": "America/Toronto",
     "ottawa": "America/Toronto", "montreal": "America/Toronto",
     "quebec": "America/Toronto", "calgary": "America/Edmonton",
     "edmonton": "America/Edmonton", "winnipeg": "America/Winnipeg",
     "halifax": "America/Halifax",
-    # Europe
     "london": "Europe/London", "manchester": "Europe/London",
     "dublin": "Europe/Dublin", "paris": "Europe/Paris",
     "madrid": "Europe/Madrid", "barcelona": "Europe/Madrid",
@@ -99,7 +67,6 @@ _CITY_TZ: dict[str, str] = {
     "copenhagen": "Europe/Copenhagen", "helsinki": "Europe/Helsinki",
     "ljubljana": "Europe/Ljubljana", "zagreb": "Europe/Zagreb",
     "belgrade": "Europe/Belgrade", "kyiv": "Europe/Kyiv", "kiev": "Europe/Kyiv",
-    # Rest
     "sydney": "Australia/Sydney", "melbourne": "Australia/Melbourne",
     "brisbane": "Australia/Brisbane", "perth": "Australia/Perth",
     "auckland": "Pacific/Auckland", "tokyo": "Asia/Tokyo",
@@ -112,9 +79,7 @@ _CITY_TZ: dict[str, str] = {
     "lagos": "Africa/Lagos", "cairo": "Africa/Cairo", "nairobi": "Africa/Nairobi",
 }
 
-# Single-zone (or one-obvious-zone) countries. Deliberately EXCLUDES the US,
-# Canada, Australia, Brazil, Mexico, Russia, Indonesia — a country name alone
-# there is not enough, and guessing is how Ellafree ended up on Vancouver time.
+# Single-zone countries only: US, Canada, Australia, Brazil, Mexico, Russia, Indonesia are excluded (a country name alone is not enough).
 _COUNTRY_TZ: dict[str, str] = {
     "argentina": "America/Argentina/Buenos_Aires",
     "colombia": "America/Bogota", "peru": "America/Lima",
@@ -154,8 +119,6 @@ _COUNTRY_TZ: dict[str, str] = {
 
 
 def _norm_place(s: str | None) -> str:
-    """Lowercase, strip punctuation/extra whitespace. 'Quintana Roo, Mexico' and
-    'quintana roo' normalise the same so a free-text location field still hits."""
     t = re.sub(r"[^\w\s]", " ", (s or "").lower())
     return re.sub(r"\s+", " ", t).strip()
 
@@ -163,38 +126,26 @@ def _norm_place(s: str | None) -> str:
 def resolve_timezone_for_place(city: str | None = None,
                                country: str | None = None,
                                free_text: str | None = None) -> str | None:
-    """Best IANA zone for a place, or None when genuinely ambiguous.
-
-    DETERMINISTIC by design — see the note above the tables. Order: exact city →
-    city mentioned anywhere in the free text → IANA zone tail → single-zone
-    country. `free_text` accepts a raw `location` field like "Quintana Roo,
-    Mexico" or "Tampa, Florida"."""
     blobs = [_norm_place(city), _norm_place(free_text), _norm_place(country)]
 
-    # 1. exact city hit on any input
     for b in blobs:
         if b and b in _CITY_TZ:
             return _CITY_TZ[b]
 
-    # 2. a known city named ANYWHERE in the text ("born in tampa, florida").
-    #    Longest key first so "vancouver island" beats "vancouver" and
-    #    "mexico city" beats a bare country match.
     for b in blobs:
         if not b:
             continue
+        # Longest key first so "vancouver island" beats "vancouver".
         for key in sorted(_CITY_TZ, key=len, reverse=True):
             if re.search(rf"\b{re.escape(key)}\b", b):
                 return _CITY_TZ[key]
 
-    # 3. IANA's own zone tails ("Europe/Ljubljana" → "ljubljana"). Legacy alias
-    #    trees are skipped — they'd answer "hawaii" with the deprecated
-    #    "US/Hawaii" and "arizona" with "US/Arizona", and a deprecated zone is
-    #    exactly the kind of thing that quietly drifts an hour later.
     try:
         from zoneinfo import available_timezones
         _LEGACY = ("US/", "Canada/", "Brazil/", "Mexico/", "Chile/", "Australia/",
                    "Etc/", "SystemV/", "Antarctica/")
         tails = {}
+        # Legacy alias trees are skipped: they'd answer "hawaii" with the deprecated US/Hawaii.
         for z in sorted(available_timezones()):
             if z.startswith(_LEGACY) or "/" not in z:
                 continue
@@ -205,7 +156,6 @@ def resolve_timezone_for_place(city: str | None = None,
         if b and b in tails:
             return tails[b]
 
-    # 4. single-zone country (multi-zone countries are deliberately absent)
     for b in blobs:
         if b and b in _COUNTRY_TZ:
             return _COUNTRY_TZ[b]
@@ -216,6 +166,6 @@ def resolve_timezone_for_place(city: str | None = None,
             if re.search(rf"\b{re.escape(key)}\b", b):
                 return _COUNTRY_TZ[key]
 
-    return None  # ambiguous — the UI asks rather than guessing
+    return None
 
 

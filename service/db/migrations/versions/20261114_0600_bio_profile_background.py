@@ -1,13 +1,3 @@
-"""bio_profiles.background_image — a bio page's own backdrop picture (ultra-mode ticket 12)
-
-One String NOT NULL DEFAULT '' (a file name under profiles/<id>, like `avatar`; '' = none, the page as before).
-The relay DB's additive-column catch-up (`db.engine.init_db`) adds it too. Self-contained, inspector-guarded +
-idempotent.
-
-Revision ID: 0122_bio_profile_background
-Revises: 0121_ultra_plans
-Create Date: 2026-11-14
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager reads for Notifications' Tags tab and the Streaming dashboard.
-
-GET /api/of/v2/release-forms/mentions -> OF's GET /api2/v2/release-forms/mentions
-(the Tags tab), GET /api/of/v2/users/{id}/streams -> OF's GET
-/api2/v2/users/{id}/streams (Past live streams). Query as OF's own client sends
-it; an OF rejection surfaces as the usual structured 502. Plain-assert, OF faked.
-
-  case_routes_are_registered
-  case_mentions_route_passes_paging
-  case_streams_route_passes_user_and_paging
-  case_client_mentions_query
-  case_client_streams_query
-  case_of_error_is_502
-
-Run: ./venv/bin/python service/tests/test_of_manager_notifications_streams.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()

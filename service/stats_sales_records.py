@@ -1,16 +1,3 @@
-"""
-stats_sales_records.py — Sales records, split out of stats.py.
-
-  GET /admin/stats/sales-records    → one row per credited share of a sale, as
-                                       Employee reports credit it, with its
-                                       Rule (JSON pages or CSV)
-
-stats.py includes this router where the route stood (route order). The
-report zone is read as `stats._report_zone` at call time (imported in the
-route, no import-time cycle), so a patch on `stats` reaches this route as before
-the split.
-"""
-
 from __future__ import annotations
 
 import json
@@ -31,29 +18,16 @@ from stats_window import parse_date as _parse_date, stats_guard
 
 router = APIRouter(dependencies=[Depends(stats_guard)])
 
-# One Sales record, in order: the JSON row's keys and the CSV header.
 SALES_RECORD_FIELDS = (
     "tx_id", "occurred_at", "employee_id", "employee_name", "account_id", "fan_id", "fan_label",
     "earnings_cents", "gross_cents", "net_cents", "kind", "rule", "assigned_by", "status",
 )
 
 
-# Who a `sales.reassign` action's actor reads as in "Assigned by" (ticket 34).
 _REASSIGN_ACTORS = {"owner": "Owner", "master": "Master"}
 
 
 def _assigned_by(rule: str, reassign_payload: str | None, override_id: int | None) -> str:
-    """"Auto" for rule-based credit; for an override, who set it, read only
-    from the sale's latest `sales.reassign` action (never the audit
-    middleware's generic row) and only while that action's new Employee is
-    still the override (`override_id`, `transactions.attributed_employee_id`),
-    else "Manual": an override set before reassigns were recorded, or since
-    by a writer that recorded none (the former ingest orphan sweep,
-    attribution_backfill's history, filled empty overrides).
-
-    ASSUMPTION: the Master reads as "Master", not by name: the payload names
-    its actor `master:<users.id>`, and the page shows no owner names. Rung 5.
-    Overturned if the Master's username should be shown."""
     if rule != "manual":
         return "Auto"
     if not reassign_payload:
@@ -61,14 +35,10 @@ def _assigned_by(rule: str, reassign_payload: str | None, override_id: int | Non
     entry = json.loads(reassign_payload)
     if entry["after"]["employee_id"] != override_id:
         return "Manual"
-    # The reassign route writes only `owner:<id>` and `master:<id>`.
     return _REASSIGN_ACTORS[entry["actor"].split(":", 1)[0]]
 
 
 def _sales_record(r: Any, employee_id: int | None, cents: int, rule: str) -> dict[str, Any]:
-    """One credited share of sale `r`: the Employee, amount and rule
-    `sales_attribution.credit` gave it (`employee_name` is filled per batch,
-    `_named`)."""
     return {
         "tx_id": int(r.tx_id),
         "occurred_at": r.occurred_at.isoformat() + "Z",
@@ -184,14 +154,6 @@ async def sales_records(
     end = _parse_date(to, field="to", zone=zone)
 
     t = Transaction
-    # The latest `sales.reassign` action for a manual row only; matching on
-    # the sale's Creator lets ix_actions_account_at narrow the audit table.
-    # ASSUMPTION: this per-row subquery scans the Creator's whole audit
-    # history (only (account_id, at) is indexed), once per manual row, so a
-    # 50,000-row CSV of mostly overridden sales may be slow. Rung 5: no
-    # migration for an unmeasured cost. Needs-the-human: if it is slow, the
-    # fix is an index on actions (action, target_id). Overturned by a
-    # measured slow Sales records read or Export.
     reassign = (
         select(Action.payload_json)
         .where(Action.account_id == t.account_id, Action.action == "sales.reassign",
@@ -219,15 +181,13 @@ async def sales_records(
         q = q.where(t.kind.in_(kind))
     q = q.order_by(t.occurred_at.desc(), t.id.desc())
     if format != "csv" and before_id is not None:
-        # The cursor sale must be one of the requested Creators', so another
-        # Agency's id reveals nothing about when its sales happened.
+        # The cursor sale must be one of the requested Creators', so another Agency's id reveals nothing about when its sales happened.
         cursor = aliased(Transaction)
         at = (select(cursor.occurred_at)
               .where(cursor.id == before_id, cursor.account_id.in_(accounts))
               .scalar_subquery())
         q = q.where(or_(t.occurred_at < at, and_(t.occurred_at == at, t.id < before_id)))
 
-    # The Employees a share may credit: every filter naming some, intersected.
     wanted: set[int] | None = None
     async with get_session() as s:
         ctx = await credit_context(s, accounts, start, end)
@@ -237,15 +197,10 @@ async def sales_records(
         if keep is not None:
             wanted = keep if wanted is None else wanted & keep
     if wanted is not None:
-        # A share credits the sale's materialised Employee, its linked
-        # message's sender (Message sender), its converter candidate (a
-        # Converters window other than the default), or under Shift schedule
-        # whoever was on the clock (`credit`).
         q = q.where(or_(t.credit_employee_id.in_(wanted), t.credit_sender_id.in_(wanted),
                         t.credit_converter_id.in_(wanted), t.account_id.in_(ctx.shift_accounts)))
 
     def _records(r: Any) -> list[dict[str, Any]]:
-        """Sale `r`'s shares the filters keep, one record each."""
         return [_sales_record(r, eid, cents, rule) for eid, cents, rule in credit_row(ctx, r)
                 if (wanted is None or eid in wanted)
                 and assigned in ("all", "unassigned" if eid is None else "assigned")]
@@ -253,7 +208,6 @@ async def sales_records(
     names: dict[int, str | None] = {}
 
     async def _named(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """`recs` with their Employees' names, read for the ids not read yet."""
         if new := {r["employee_id"] for r in recs} - names.keys() - {None}:
             names.update(dict.fromkeys(new))
             async with get_session() as ns:

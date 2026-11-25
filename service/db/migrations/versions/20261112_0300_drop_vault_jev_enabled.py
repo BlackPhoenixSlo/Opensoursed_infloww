@@ -1,13 +1,3 @@
-"""drop account_ai_config.vault_jev_enabled — Jev v8 is the default for every vault photo
-
-The per-account opt-in (0113) is gone: the describe / flags sweeps run Jev on every photo (`service/vault_jev.py`).
-No data to keep (the column only gated the pass). The relay DB never runs alembic; a leftover column there is
-unread. Self-contained (no app import), inspector-guarded + idempotent.
-
-Revision ID: 0116_drop_vault_jev_enabled
-Revises: 0115_bio_pages
-Create Date: 2026-11-12
-"""
 from __future__ import annotations
 
 from typing import Sequence

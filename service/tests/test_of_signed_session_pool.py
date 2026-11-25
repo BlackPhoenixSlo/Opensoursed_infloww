@@ -1,14 +1,4 @@
-"""Signed OF calls ride the client's ManagedSession, bounded per account.
-
-Real OFClient + ManagedSession + a private Registry against a local fake OF:
-the per-client SIGNED_SLOTS bound (handles and connections), one connection
-for sequential calls, the idle sweep, the shutdown stop/drain, delta-only
-cookie writes, the busy timeout, and retire-on-evict (signed refused with
-OFSessionRetired at both of _signed_slot's checks, raw ok).
-
-Run: venv/bin/python service/tests/test_of_signed_session_pool.py
-"""
-import _harness  # isolated test DB before any service import
+import _harness
 
 import os
 import sys
@@ -23,9 +13,9 @@ for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy
 os.environ["OF_CALL_STATS_PATH"] = ""
 
 LOCK = threading.Lock()
-WIRE: list[tuple[str, str, int]] = []  # (path, Cookie header, client port)
+WIRE: list[tuple[str, str, int]] = []
 HOLD = {"started": threading.Semaphore(0), "release": threading.Event()}
-SLOTS = 8  # OFClient.SIGNED_SLOTS, spelled out so a reverted build fails on behaviour
+SLOTS = 8
 
 
 class FakeOF(BaseHTTPRequestHandler):
@@ -45,7 +35,7 @@ class FakeOF(BaseHTTPRequestHandler):
             time.sleep(0.02)
         elif path == "/api2/v2/hold":
             HOLD["started"].release()
-            HOLD["release"].wait(5)  # bounded: a broken build fails, never hangs
+            HOLD["release"].wait(5)
         elif path == "/api2/v2/setcf":
             extra.append(("Set-Cookie", "__cf_bm=v2; Path=/"))
         self.send_response(200)
@@ -60,7 +50,7 @@ SRV = ThreadingHTTPServer(("127.0.0.1", 0), FakeOF)
 SRV.daemon_threads = True
 threading.Thread(target=SRV.serve_forever, daemon=True).start()
 URL = f"http://127.0.0.1:{SRV.server_port}"
-os.environ["OF_API_ORIGIN"] = URL  # x-hash warm-up hits the fake too
+os.environ["OF_API_ORIGIN"] = URL
 
 import client_pool  # noqa: E402
 import of_write  # noqa: E402
@@ -78,7 +68,6 @@ def reset():
 
 
 def make_client(reg, cookies=()):
-    """A real OFClient whose ManagedSession registers with `reg`."""
     with patch.object(Registry, "_instance", reg):
         return OFClient(dict(
             headers=dict(user_id="101", x_bc="local", x_of_rev="local", user_agent="local"),
@@ -102,7 +91,7 @@ def hits(path):
 def case_concurrent_signed_calls_bounded_then_swept():
     reset()
     reg = Registry(age=30, interval=0.05)
-    c = make_client(reg)  # cold: the x-hash warm-up races too
+    c = make_client(reg)
     errors = []
 
     def worker(_):
@@ -115,7 +104,7 @@ def case_concurrent_signed_calls_bounded_then_swept():
     try:
         with ThreadPoolExecutor(max_workers=16) as pool:
             list(pool.map(worker, range(16)))
-        assert not errors, errors[:3]  # no Unsupported("reentrant request"), no busy
+        assert not errors, errors[:3]
         assert len(hits("/api2/v2/slow")) == 128
         peers = {w[2] for w in WIRE}
         slots = len(c.http._slots)
@@ -123,13 +112,13 @@ def case_concurrent_signed_calls_bounded_then_swept():
         assert slots <= SLOTS, slots
         assert len(peers) <= SLOTS, len(peers)
         assert slots >= 2, "concurrent calls really used several handles"
-        reg.age = 0.2  # the sweep: every idle handle closes, its record stays EMPTY
+        reg.age = 0.2
         until = time.monotonic() + 5
         while any(s.curl is not None for s in c.http._slots) and time.monotonic() < until:
             time.sleep(0.05)
         assert all(s.curl is None and s.state == "EMPTY" for s in c.http._slots), \
             [(s.state, bool(s.curl)) for s in c.http._slots]
-        assert c.get(URL + "/api2/v2/slow").status_code == 200  # a swept client still calls
+        assert c.get(URL + "/api2/v2/slow").status_code == 200
     finally:
         reg.drain()
 
@@ -141,7 +130,7 @@ def case_sequential_signed_calls_reuse_one_connection():
     try:
         for _ in range(20):
             assert c.get(URL + "/api2/v2/slow").status_code == 200
-        peers = {w[2] for w in WIRE}  # x-hash warm-up + 20 signed GETs
+        peers = {w[2] for w in WIRE}
         print(f"  20 sequential signed: connections={len(peers)} slots={len(c.http._slots)}")
         assert len(peers) == 1, peers
         assert len(c.http._slots) == 1, len(c.http._slots)
@@ -160,7 +149,7 @@ def case_shutdown_refuses_signed_and_drain_waits_for_one():
         assert c.get(URL + "/api2/v2/slow").status_code == 200
         held.start()
         wait_holds(1)
-        reg.stop_admission()  # server.py shutdown, after the business drains
+        reg.stop_admission()
         sent = len(WIRE)
         t0 = time.monotonic()
         try:
@@ -205,7 +194,7 @@ def case_inflight_signed_call_keeps_newer_cf_cookie():
         assert "__cf_bm=v1" in hits("/api2/v2/hold")[0][1]
         assert c.get(URL + "/api2/v2/setcf").status_code == 200
         assert c.http.cookies.get("__cf_bm") == "v2"
-        HOLD["release"].set()  # the call that went out with v1 finishes after v2 landed
+        HOLD["release"].set()
         held.join(5)
         assert slow == [200], slow
         jar = c.http.cookies.get("__cf_bm")
@@ -246,7 +235,7 @@ def case_busy_when_every_slot_held():
         for t in holders:
             t.join(5)
         assert results == [200] * SLOTS, results
-        assert c.get(URL + "/api2/v2/slow").status_code == 200  # no slot leaked by the refusal
+        assert c.get(URL + "/api2/v2/slow").status_code == 200
     finally:
         HOLD["release"].set()
         for t in holders:
@@ -272,19 +261,19 @@ def case_evicted_client_refuses_signed_keeps_raw():
         client_pool.evict("a")
         try:
             a.get(URL + "/api2/v2/slow")
-        except OFSessionRetired as e:  # server._proxy re-runs a GET on it
+        except OFSessionRetired as e:
             assert "retired" in str(e), e
         else:
             raise AssertionError("evicted client admitted a signed call")
-        assert a.http.get(URL + "/raw").status_code == 200  # raw media calls keep working
+        assert a.http.get(URL + "/raw").status_code == 200
         HOLD["release"].set()
         held.join(5)
-        assert inflight == [200], inflight  # in flight at evict: finishes
-        assert b.get(URL + "/api2/v2/slow").status_code == 200  # other account untouched
+        assert inflight == [200], inflight
+        assert b.get(URL + "/api2/v2/slow").status_code == 200
         client_pool.evict()
         try:
             b.get(URL + "/api2/v2/slow")
-        except OFSessionRetired as e:  # server._proxy re-runs a GET on it
+        except OFSessionRetired as e:
             assert "retired" in str(e), e
         else:
             raise AssertionError("evict() left a client admitting signed calls")
@@ -297,7 +286,6 @@ def case_evicted_client_refuses_signed_keeps_raw():
 
 
 def case_evict_refuses_a_slot_waiter_at_once():
-    """Codex review: with every slot held, evict must refuse a waiter now, not after SIGNED_WAIT_S."""
     reset()
     reg = Registry()
     c = make_client(reg)
@@ -334,7 +322,6 @@ def case_evict_refuses_a_slot_waiter_at_once():
 
 
 def case_evict_between_acquire_and_send_refuses():
-    """An evict landing after the slot is taken: OFSessionRetired, and nothing sent."""
     reset()
     reg = Registry()
     c = make_client(reg)

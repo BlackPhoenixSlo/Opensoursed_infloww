@@ -1,23 +1,3 @@
-"""
-Employee CRUD; re-exports the audit middleware (audit_log.py).
-
-The "employee picker" is auth-lite: no passwords, no sessions. The user
-clicks who they are on first page load; the browser stores the chosen id
-in localStorage and sends it as `X-Employee-Id` on every subsequent call.
-The relay treats that header as the actor for audit purposes and refuses
-to mutate state without it (in phase D — phase A only logs).
-
-This module owns:
-  • `GET    /admin/employees`           — list active + inactive
-  • `POST   /admin/employees`           — create
-  • `PATCH  /admin/employees/{id}`      — rename / recolor / disable
-  • `DELETE /admin/employees/{id}`      — soft-delete (sets is_active=false)
-  • `GET    /admin/audit`               — paginated audit log
-
-Why a separate file and not inline in server.py: server.py is already
-~2200 lines. Each new concern that fits cleanly into its own module
-saves us a refactor pain later. Imported once from server.py at startup.
-"""
 from __future__ import annotations
 
 import json
@@ -41,7 +21,6 @@ from db.models import (
 from auth import get_request_user
 import audit_labels
 from agency_scope import agency_account_ids
-# Re-exported for existing `employees.` importers.
 from agency_context import (  # noqa: F401
     AgencyContext, _chatter_agency_for_creator, agency_context, agency_contexts, owner_context,
 )
@@ -55,18 +34,13 @@ log = logging.getLogger("of-relay.employees")
 
 router = APIRouter()
 
-# Per-friend chatter quota. Counts ACTIVE rows only — soft-deleted
-# employees stay around so audit history reads cleanly (see DELETE handler
-# below), and recycling slots after firing someone is normal. 0 / unset
-# disables the cap. The founder raises it from Settings → System (or the env
-# MAX_EMPLOYEES_PER_USER); read through runtime_switches at every use.
+# Counts ACTIVE rows only: soft-deleted employees stay for audit history; 0/unset disables the cap.
 def _max_employees() -> int:
     import runtime_switches
     return int(runtime_switches.value("MAX_EMPLOYEES_PER_USER"))
 
 
 def _employee_limit(active_count: int, message: str) -> HTTPException:
-    """The cap refusal, typed so Manage employees shows its limit dialog (roadmap 6.13)."""
     return HTTPException(status_code=409, detail={
         "code": "employee_limit",
         "message": message,
@@ -74,27 +48,20 @@ def _employee_limit(active_count: int, message: str) -> HTTPException:
         "active": active_count,
     })
 
-# Default colors cycled when an employee is created without one specified.
-# Picked to be distinguishable on the dark UI + colorblind-safe enough.
 _DEFAULT_COLORS = [
-    "#8b5cf6",  # violet
-    "#22d3ee",  # cyan
-    "#f59e0b",  # amber
-    "#ef4444",  # red
-    "#10b981",  # emerald
-    "#ec4899",  # pink
-    "#84cc16",  # lime
-    "#06b6d4",  # sky
+    "#8b5cf6",
+    "#22d3ee",
+    "#f59e0b",
+    "#ef4444",
+    "#10b981",
+    "#ec4899",
+    "#84cc16",
+    "#06b6d4",
 ]
 
 
-# ── Ownership helper ──────────────────────────────────────────────────
 
 async def _load_owned_employee(s, employee_id: int) -> Employee:
-    """Return the Employee row only if owned by the signed-in friend.
-    Raises 404 if missing or not owned. Unauthed callers see every row
-    (back-compat). Centralised so per-employee endpoints stay one-liners.
-    """
     e = await s.get(Employee, employee_id)
     if e is None:
         raise HTTPException(status_code=404, detail=f"no employee with id {employee_id}")
@@ -104,7 +71,6 @@ async def _load_owned_employee(s, employee_id: int) -> Employee:
     return e
 
 
-# ── CRUD endpoints ────────────────────────────────────────────────────
 
 class _EmployeeCreateBody(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=64)
@@ -161,7 +127,7 @@ async def list_employees(include_disabled: bool = Query(True)) -> dict[str, Any]
     if user is not None:
         await _ensure_login_mirrors(user.id)
         await get_owner_employee_id(user)
-        from settings_api import ensure_role_presets  # lazy: settings_api imports this module
+        from settings_api import ensure_role_presets
         await ensure_role_presets(user.id)
     async with get_session() as s:
         stmt = select(Employee).order_by(Employee.created_at)
@@ -170,9 +136,7 @@ async def list_employees(include_disabled: bool = Query(True)) -> dict[str, Any]
         if user is not None and not user.is_admin:
             stmt = stmt.where(Employee.user_id == user.id)
         else:
-            # Admin (master) OR unauthed (reachable only with
-            # ALLOW_ANONYMOUS_ADMIN=1): every owner's roster, minus the
-            # system Automation sentinel (user_id IS NULL).
+            # Master/unauthed (ALLOW_ANONYMOUS_ADMIN=1): every owner's roster minus the system Automation sentinel (user_id IS NULL).
             stmt = stmt.where(Employee.user_id.isnot(None))
         rows = (await s.execute(stmt)).scalars().all()
         access: dict[int, list[str | None]] = {}
@@ -186,10 +150,6 @@ async def list_employees(include_disabled: bool = Query(True)) -> dict[str, Any]
         logins = await _login_facts(s, [e for e in rows if is_login(e)])
         out = []
         for e in rows:
-            # kind: "owner" — the Agency owner's own row (what an Owner session
-            # is credited as); "login" — an Employee with their own login;
-            # "name" — a legacy name-only row from the retired "Who's chatting?"
-            # picker, kept so history still resolves a name.
             kind = "login" if is_login(e) else "owner" if e.chatter_id else "name"
             row = {
                 "id": e.id,
@@ -205,10 +165,6 @@ async def list_employees(include_disabled: bool = Query(True)) -> dict[str, Any]
             }
             if kind == "login":
                 facts = logins.get((e.chatter_id, e.user_id), LoginFacts())
-                # An Employee with a login: Activated means linked to this Agency, and the
-                # Creator access is the enforced one (empty allowlist = every Creator).
-                # `last_login_at` is the login's latest sign-in or request (the session
-                # middleware's ~5-minute `last_seen_at`), `two_factor` whether 2FA is on.
                 row["username"] = facts.username
                 row["last_login_at"] = iso_z(facts.last_seen)
                 row["two_factor"] = facts.two_factor
@@ -221,9 +177,6 @@ async def list_employees(include_disabled: bool = Query(True)) -> dict[str, Any]
 
 
 async def _ensure_login_mirrors(owner_user_id: str) -> None:
-    """Give every login linked to this Agency its Employee row now, not on its
-    first action, so an invited or linked Employee is listed (Manage employees,
-    Role Settings, the Shift schedule) before they have done anything."""
     async with get_session() as s:
         missing = (await s.execute(
             select(Chatter.id, Chatter.username, Chatter.display_name, Chatter.color)
@@ -240,17 +193,14 @@ async def _ensure_login_mirrors(owner_user_id: str) -> None:
 
 
 class LoginFacts(NamedTuple):
-    """What the Employees list shows of an Employee's login at one Agency; the
-    defaults are a login that is gone."""
     username: str | None = None
-    linked: bool = False  # linked to that Agency
-    allowed: tuple[str, ...] = ()  # the enforced Creator allowlist (empty = every Creator)
+    linked: bool = False
+    allowed: tuple[str, ...] = ()
     last_seen: datetime | None = None
     two_factor: bool = False
 
 
 async def _login_facts(s, mirrors: list) -> dict[tuple[str, str], LoginFacts]:
-    """(chatter_id, owner) -> that login's LoginFacts."""
     if not mirrors:
         return {}
     chatter_ids = list({e.chatter_id for e in mirrors})
@@ -277,14 +227,10 @@ async def _login_facts(s, mirrors: list) -> dict[tuple[str, str], LoginFacts]:
 
 
 def _creator_access(ids: list[str | None]) -> list[str] | None:
-    """An Employee's Creator access as the list reports it: None when the
-    wildcard row grants every Creator, else the granted Creator ids ([] for
-    none), as `/admin/employees/{id}/access` stores them."""
     return None if None in ids else [i for i in ids if i is not None]
 
 
 def _brief(e: Employee) -> dict[str, Any]:
-    """The create / update reply: id, display_name, color, is_active."""
     return {
         "id": e.id,
         "display_name": e.display_name,
@@ -294,7 +240,6 @@ def _brief(e: Employee) -> dict[str, Any]:
 
 
 async def _active_count(s, user_id: str) -> int:
-    """How many active Employees `user_id` has (what the employee cap counts)."""
     return (await s.execute(
         select(func.count(Employee.id)).where(
             Employee.user_id == user_id,
@@ -310,9 +255,7 @@ async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, An
     disambiguates by id."""
     user = get_request_user()
     async with get_session() as s:
-        # Quota gate — applies only to authed friends. Unauthed callers
-        # (legacy curl flows / Automation tooling) are exempt because they
-        # can't be one bad actor in a multi-tenant deploy.
+        # Unauthed callers (legacy curl, Automation tooling) are exempt from the quota.
         cap = _max_employees()
         if user is not None and cap > 0:
             active_count = await _active_count(s, user.id)
@@ -322,9 +265,6 @@ async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, An
                     f"Disable an existing chatter or ask the founder to raise "
                     f"the employee seats in Settings → System."
                 ))
-        # Cycle colors when caller didn't pick one. We use the count of
-        # the SIGNED-IN USER's existing employees (or all if unauthed),
-        # so each user's palette is independent.
         if not body.color:
             base_q = select(Employee)
             if user is not None:
@@ -352,9 +292,7 @@ async def update_employee(
     """Rename, recolor, or toggle active. Empty body = no-op."""
     async with get_session() as s:
         e = await _load_owned_employee(s, employee_id)
-        # Re-enabling a disabled chatter is functionally the same as
-        # creating one — enforce the same quota so a user can't dodge it
-        # by toggling is_active.
+        # Re-enabling counts as creating: same quota, so toggling is_active can't dodge it.
         cap = _max_employees()
         if (
             body.is_active is True
@@ -430,7 +368,6 @@ async def set_employee_access(
         if body.wildcard:
             target: list[str | None] = [None]
         else:
-            # De-dupe while preserving the wildcard sentinel.
             seen: set[str | None] = set()
             target = []
             for a in body.account_ids:
@@ -469,28 +406,21 @@ async def delete_employee(employee_id: int) -> dict[str, Any]:
 
 
 async def _unlink_login(s, e: Employee) -> None:
-    """An Employee with a login is deactivated by unlinking it from this
-    Agency: the session can no longer act here (same as the old Unlink).
-    `_relink_login` undoes it."""
     if not (is_login(e) and e.user_id):
         return
     await s.execute(delete(ChatterUser).where(
         ChatterUser.chatter_id == e.chatter_id, ChatterUser.user_id == e.user_id,
     ))
     events.on_commit(s, "assignment_changed", agency=e.user_id)
-    # No Agency left: every session of that login signs out now, and its
-    # next sign-in is told it is deactivated (account_security.ACCOUNT_DEACTIVATED).
     await revoke_if_unlinked(s, e.chatter_id)
 
 
 def _refuse_owner_row(e: Employee, what: str) -> None:
-    """The Owner row is the Agency owner themself, not an Employee to manage."""
     if e.chatter_id and not is_login(e):
         raise HTTPException(status_code=400, detail=f"the owner can't be {what}")
 
 
 async def _relink_login(s, e: Employee) -> None:
-    """Re-activating an Employee with a login links it to this Agency again."""
     chatter = await s.get(Chatter, e.chatter_id)
     if chatter is None:
         raise HTTPException(status_code=409, detail="this employee's login no longer exists")
@@ -498,8 +428,6 @@ async def _relink_login(s, e: Employee) -> None:
 
 
 async def _replace_login_access(s, chatter_id: str, owner_id: str, ids) -> None:
-    """The login's enforced allowlist in this Agency becomes exactly `ids`
-    (none = every Creator)."""
     await s.execute(delete(ChatterAccountAccess).where(
         ChatterAccountAccess.chatter_id == chatter_id, ChatterAccountAccess.user_id == owner_id,
     ))
@@ -510,7 +438,6 @@ async def _replace_login_access(s, chatter_id: str, owner_id: str, ids) -> None:
 
 
 async def _refuse_foreign(s, owner_id: str, ids) -> None:
-    """403 on the first of `ids` that is not one of `owner_id`'s Creators."""
     owned = await agency_account_ids(s, owner_id)
     foreign = [a for a in ids if a not in owned]
     if foreign:
@@ -518,10 +445,7 @@ async def _refuse_foreign(s, owner_id: str, ids) -> None:
 
 
 async def _set_login_access(s, e: Employee, body: "_EmployeeAccessBody") -> dict[str, Any]:
-    """Creator access for an Employee with a login is the enforced allowlist
-    (`chatter_account_access`, per Agency), where no rows means every Creator.
-    So the wildcard clears it, and an empty set is refused rather than stored:
-    it would read back as every Creator. Removing all access is Deactivate."""
+    # Empty set is refused, not stored: an empty allowlist reads back as every Creator.
     wildcard = bool(body.wildcard) or any(not a for a in body.account_ids)
     ids = sorted({a for a in body.account_ids if a})
     if not wildcard and not ids:
@@ -537,17 +461,6 @@ async def _set_login_access(s, e: Employee, body: "_EmployeeAccessBody") -> dict
     return {"employee_id": e.id, "account_ids": [None] if wildcard else ids, "wildcard": wildcard}
 
 
-# ── Employee setup: role, Creators, group (Add / Edit employee) ──────
-#
-# One shape for every way an Employee arrives or is edited: the owner creating
-# the login outright, an invite (stored on the invite, applied when it is
-# accepted), linking an existing login by username, and the Edit modal.
-# Present keys are applied; absent ones are left alone.
-#   display_name  the name this Agency shows
-#   role_id       a role in the Agency's `roles` blob, or a built-in but Owner (settings_schema); null/"" = the
-#                 built-in Chatter (a login always holds a role; settings_api.DEFAULT_LOGIN_ROLE)
-#   account_ids   the Creators they may work; null or [] = every Creator
-#   group_id      their Employee group; null = none
 
 SETUP_KEYS = ("display_name", "role_id", "account_ids", "group_id")
 
@@ -563,7 +476,7 @@ class EmployeeSetup(BaseModel):
 
 
 async def _held_role_ids(owner_id: str) -> set[str]:
-    from settings_api import _read_blob, ensure_role_presets  # lazy: settings_api imports this module
+    from settings_api import _read_blob, ensure_role_presets
     await ensure_role_presets(owner_id)
     async with get_session() as s:
         blob = await _read_blob(s, owner_id, "roles")
@@ -572,8 +485,6 @@ async def _held_role_ids(owner_id: str) -> set[str]:
 
 
 async def validate_employee_setup(owner_id: str, setup: dict[str, Any]) -> dict[str, Any]:
-    """`setup` checked against the Agency (400/403/404 on a role, Creator or
-    group it does not hold) and normalised; safe to store and apply later."""
     out = dict(setup)
     if "display_name" in out:
         out["display_name"] = (out["display_name"] or "").strip()[:64] or None
@@ -597,7 +508,6 @@ async def validate_employee_setup(owner_id: str, setup: dict[str, Any]) -> dict[
 
 
 async def apply_employee_setup(owner_id: str, employee_id: int, setup: dict[str, Any]) -> None:
-    """Apply a validated setup to one of the Agency's Employees."""
     async with get_session() as s:
         e = await s.get(Employee, employee_id)
         if e is None or e.user_id != owner_id:
@@ -614,14 +524,12 @@ async def apply_employee_setup(owner_id: str, employee_id: int, setup: dict[str,
         async with get_session() as s:
             blob = await _read_blob(s, owner_id, "roles")
             assignments = dict(blob.get("assignments") or {})
-            # No role is not an option: none given is the default role (settings_api.DEFAULT_LOGIN_ROLE).
             assignments[str(employee_id)] = setup["role_id"] or "chatter"
             await _write_blob(s, owner_id, "roles", {"version": 1, **blob, "assignments": assignments})
             events.on_commit(s, "permissions_changed", agency=owner_id)
 
 
 async def setup_login_employee(owner_id: str, chatter_id: str, setup: dict[str, Any]) -> int | None:
-    """The login's Employee row in this Agency, made now, with `setup` applied."""
     async with get_session() as s:
         c = await s.get(Chatter, chatter_id)
     if c is None:
@@ -633,7 +541,6 @@ async def setup_login_employee(owner_id: str, chatter_id: str, setup: dict[str, 
     if emp_id is not None and setup:
         await apply_employee_setup(owner_id, emp_id, setup)
     if emp_id is not None:
-        # An existing row (a login linked again) may hold no role: it gets the default one.
         from settings_api import give_role_to_unroled
         await give_role_to_unroled(owner_id, [emp_id])
     return emp_id
@@ -668,7 +575,7 @@ async def create_employee_login(body: _CreateLoginBody = Body(...)) -> dict[str,
     from sqlalchemy.exc import IntegrityError
     async with get_session() as s:
         s.add(Chatter(
-            id=cid, username=username, password=body.password,  # plaintext, as every login here
+            id=cid, username=username, password=body.password,  # plaintext, as every login here (owner decision)
             display_name=setup.get("display_name"), created_at=now, last_seen_at=now,
         ))
         try:
@@ -698,10 +605,7 @@ class _PasswordBody(BaseModel):
 
 
 async def _sole_agency_login(s, employee_id: int, what: str) -> Chatter:
-    """The login of this owner's Employee, refused when it also works for another
-    Agency: its credentials are not this owner's to reset, or a login they linked
-    without asking would hand them another Agency's employee (or weaken that
-    Agency's 2FA)."""
+    # Refuse a login that also works for another Agency: its credentials (and 2FA) are not this owner's to reset.
     e = await _load_owned_employee(s, employee_id)
     if not is_login(e):
         raise HTTPException(status_code=400, detail="this employee has no login")
@@ -752,7 +656,6 @@ async def reset_employee_two_factor(employee_id: int) -> dict[str, Any]:
     return {"ok": True, "employee_id": employee_id}
 
 
-# ── Audit log read endpoint ─────────────────────────────────────────
 
 @router.get("/admin/audit")
 async def list_audit(
@@ -830,7 +733,7 @@ async def list_audit(
                     "target_id": a.target_id,
                     "payload": _safe_loads(a.payload_json),
                     "at": a.at.isoformat() if a.at else None,
-                    "via": a.via,  # "token <name>": an owner access token did it
+                    "via": a.via,
                 }
                 for a in rows
             ],
@@ -840,8 +743,6 @@ async def list_audit(
 
 
 def _audit_bound(value: str, name: str) -> datetime:
-    """`/admin/audit`'s `from` / `to` as naive UTC; a date-only `to` is the
-    next day's midnight, so the day it names is included."""
     try:
         if len(value) == 10:
             day = datetime.fromisoformat(value)
@@ -852,22 +753,12 @@ def _audit_bound(value: str, name: str) -> datetime:
     return at.astimezone(timezone.utc).replace(tzinfo=None) if at.tzinfo else at
 
 
-# ── System "Automation" employee lookup ─────────────────────────────
 
-# Process-local cache of the Automation employee's id. Populated lazily on
-# the first call; reused for the lifetime of the process. Skipped under
-# pytest because fixtures swap DBs between tests and a cached id from
-# the wrong DB would silently misattribute action rows.
+# Skipped under pytest: fixtures swap DBs and a cached id from the wrong DB would misattribute action rows.
 _automation_emp_id_cache: int | None = None
 
-# Guard so the middleware logs the "migration 0011 not run" WARNING at most
-# once per process — without this, a misconfigured deploy would spam the log
-# on every header-less /api/of/* request.
 _automation_missing_warned: bool = False
 
-# Guard so the middleware logs the "X-Employee-Id ignored under chatter
-# session" WARNING at most once per process — a misconfigured client could
-# otherwise spam it on every chatter request.
 _chatter_header_ignored_warned: bool = False
 
 
@@ -886,39 +777,17 @@ async def resolve_outbound_employee_id(
     request: Request,
     account_id: str | None,
 ) -> int | None:
-    """Pick the Employee.id that should be stamped on an outbound message.
-
-    Used by the chat-send, mass-send, and queue-create handlers — anywhere
-    a write needs `sent_by_employee_id` and the audit-middleware path
-    isn't the writer (those handlers explicitly persist a `messages` row
-    via service/attribution.py).
-
-    Resolution order:
-      1. Owner session — the owner's own Owner row (`get_owner_employee_id`);
-         an `X-Employee-Id` naming one of their rows still wins.
-      2. Chatter session — header is empty (chatters don't pick); look
-         up or lazy-create the per-(chatter, account_owner) mirror
-         Employee. Header from a chatter client is dropped (logged once)
-         to keep audit attribution single-sourced.
-      3. None — caller falls through to its Automation fallback.
-    """
     emp_id_raw = request.headers.get("x-employee-id")
     user = get_request_user()
-    # Owner session: the owner is the one acting, so the write is theirs
-    # (their Owner row) — no "who's chatting" pick. A header naming one of
-    # their own rows is still honoured (scripts, older clients); a header
-    # naming someone else's row is a spoof and falls back to the owner.
+    # A header naming someone else's row is a spoof and falls back to the owner.
     if user is not None:
         if emp_id_raw and emp_id_raw.isdigit():
             emp_id = int(emp_id_raw)
             async with get_session() as s:
                 owned = await s.get(Employee, emp_id)
-            # An admin/master sees the full registry, so a cross-owner pick is
-            # legitimate (mirrors the is_admin scoping bypass in list_employees).
             if owned is not None and (owned.user_id == user.id or user.is_admin):
                 return emp_id
         return await get_owner_employee_id(user)
-    # Chatter session: ignore the header (defensive), resolve mirror.
     from chatters import get_request_chatter as _grc
     chatter = _grc()
     if chatter is not None:
@@ -933,11 +802,8 @@ async def resolve_outbound_employee_id(
                 display_name=chatter.display_name or chatter.username,
                 color=chatter.color,
             )
-        # The audit hook runs later in this same request: it stamps the same
-        # Employee without repeating two DB lookups after the send has landed.
         remember_chatter_employee(request, chatter, account_id, employee_id)
         return employee_id
-    # Unauthed (internal curl / cron) — caller's Automation fallback wins.
     if emp_id_raw and emp_id_raw.isdigit():
         return int(emp_id_raw)
     return None
@@ -945,18 +811,12 @@ async def resolve_outbound_employee_id(
 
 def remember_chatter_employee(request: Request, chatter, account_id: str | None,
                               employee_id: int | None) -> None:
-    """Note, for later hooks of THIS request (request.state, never a module or
-    ContextVar cache, so it cannot cross requests), the Mirror Employee
-    `chatter` acts as for `account_id`. A caller whose resolver could pick a
-    different Agency than resolve_chatter_employee_id must not call it (the
-    role hook calls it for a single-Agency chatter only)."""
+    # request.state, never a module or ContextVar cache, so it cannot cross requests.
     if employee_id is not None:
         request.state.chatter_employee = (chatter.id, account_id, employee_id)
 
 
 def remembered_chatter_employee(request: Request, chatter, account_id: str | None) -> int | None:
-    """The Employee `remember_chatter_employee` noted on this request for this
-    chatter and Creator, else None."""
     noted = getattr(request.state, "chatter_employee", None)
     if noted is not None and noted[0] == chatter.id and noted[1] == account_id:
         return noted[2]
@@ -971,14 +831,7 @@ async def resolve_chatter_employee_id(
     display_name: str | None,
     color: str | None,
 ) -> int | None:
-    """Pick the Agency that owns `account_id` among the chatter's linked
-    owners, then hand off to `get_or_create_mirror_employee`. Returns the
-    Employee.id, or None if we can't pin the account to one of the chatter's
-    linked owners.
-
-    If more than one linked owner holds the account (cross-grant edge case),
-    the alphabetically first owner_id wins, for stable attribution.
-    """
+    # Cross-grant edge: alphabetically first owner_id wins, for stable attribution.
     if not account_id:
         log.debug("chatter→emp: no account_id (chatter=%s)", chatter_id)
         return None
@@ -991,7 +844,6 @@ async def resolve_chatter_employee_id(
         return None
     try:
         async with get_session() as s:
-            # Which of the chatter's owners actually holds this account?
             holders = await _sorted_holder_owner_ids(s, account_id, owner_user_ids)
             if not holders:
                 log.warning(
@@ -1016,8 +868,6 @@ async def resolve_chatter_employee_id(
 async def _sorted_holder_owner_ids(
     s, account_id: str, owner_user_ids: set[str] | frozenset[str],
 ) -> list[str]:
-    """The chatter's linked owners that hold `account_id` in
-    `user_accounts`, alphabetically sorted (the stable tie-break)."""
     rows = (await s.execute(
         select(UserAccount.user_id).where(
             UserAccount.account_id == account_id,
@@ -1031,18 +881,10 @@ OWNER_KEY_PREFIX = "owner:"
 
 
 def is_login(e: Employee) -> bool:
-    """True for an Employee with their own login (a per-(chatter, Agency)
-    mirror row) — not the Owner row, not a legacy name-only row."""
     return bool(e.chatter_id) and not e.chatter_id.startswith(OWNER_KEY_PREFIX)
 
 
 async def get_owner_employee_id(user) -> int | None:
-    """The Agency owner's own Employee row, created on first use. Whatever an
-    Owner session sends, flags or unsends is credited to it, so the owner
-    never has to say "who's chatting" and their sends stay counted (as the
-    owner, by username) instead of landing on Automation. Keyed like a mirror
-    row (`chatter_id = "owner:<user id>"`) so the same partial unique index
-    keeps it to one row per Agency."""
     return await get_or_create_mirror_employee(
         f"{OWNER_KEY_PREFIX}{user.id}", user.id,
         display_name=getattr(user, "username", None) or "Owner", color=None,
@@ -1050,17 +892,12 @@ async def get_owner_employee_id(user) -> int | None:
 
 
 async def find_owner_employee_id(s, user) -> int | None:
-    """The owner's own Employee row (`get_owner_employee_id`) if it exists
-    yet, read in the caller's session without creating it."""
     return (await s.execute(select(Employee.id).where(
         Employee.chatter_id == f"{OWNER_KEY_PREFIX}{user.id}", Employee.user_id == user.id,
     ).order_by(Employee.id).limit(1))).scalar_one_or_none()
 
 
 async def mirror_id(s, chatter_id: str, owner_user_id: str) -> int | None:
-    """The Mirror Employee's id for (chatter, Agency) in session `s`, or None.
-    The lowest id when a box without `uq_employees_chatter_owner` raced in a
-    duplicate (see get_or_create_mirror_employee)."""
     return (await s.execute(
         select(Employee.id).where(
             Employee.chatter_id == chatter_id,
@@ -1076,38 +913,13 @@ async def get_or_create_mirror_employee(
     display_name: str | None,
     color: str | None,
 ) -> int | None:
-    """Find — or lazily create — the Mirror Employee for this chatter in
-    this Agency (`owner_user_id`). Returns the Employee.id, or None when the
-    database step fails (logged).
-
-    Uses the classic SELECT → INSERT → catch IntegrityError → SELECT
-    upsert pattern (NOT dialect-specific ON CONFLICT). Previously used
-    sqlite_insert + on_conflict_do_nothing against the partial unique
-    index `uq_employees_chatter_owner`, which only works if that index
-    actually exists on the live DB — and on prod boxes that came up via
-    `init_db()` / `create_all()` rather than `alembic upgrade head`, the
-    partial index isn't always present. Symptom: silent insert failure,
-    SELECT-after-insert returns None, attribution lands as NULL, bubble
-    shows no "Sent by …" label. This rewrite tolerates the missing
-    index AND surfaces every decision point in the relay log.
-
-    Race-safe regardless of index presence: if a sibling request raced
-    us to the insert, we get IntegrityError (when the index IS present)
-    or a duplicate row (when it isn't — friends-scale, acceptable). On
-    IntegrityError we rollback + re-SELECT to capture the sibling's id.
-    """
+    # SELECT/INSERT/catch IntegrityError, not ON CONFLICT: uq_employees_chatter_owner is missing on boxes built via create_all (silent insert failure, NULL attribution).
     try:
         async with get_session() as s:
-            # Fast path: row already exists.
             existing = await mirror_id(s, chatter_id, owner_user_id)
             if existing is not None:
                 return existing
 
-            # Plain INSERT (no dialect-specific ON CONFLICT). Catches
-            # IntegrityError from the partial unique index OR from a
-            # racing sibling that beat us to the same (chatter, owner)
-            # pair — either way the post-rollback SELECT picks up the
-            # canonical id.
             from sqlalchemy.exc import IntegrityError
             new_row = Employee(
                 display_name=(display_name or "Chatter")[:64],
@@ -1128,8 +940,6 @@ async def get_or_create_mirror_employee(
                 )
                 created = new_row.id
             except IntegrityError:
-                # Sibling raced us — roll back the failed insert and
-                # SELECT to capture the canonical id from the winner.
                 await s.rollback()
                 existing = await mirror_id(s, chatter_id, owner_user_id)
                 if existing is None:
@@ -1141,9 +951,8 @@ async def get_or_create_mirror_employee(
                         chatter_id, owner_user_id,
                     )
                 return existing
-        # Committed: a new login joins the Agency holding the default role, never none.
         if not chatter_id.startswith(OWNER_KEY_PREFIX):
-            from settings_api import give_role_to_unroled  # lazy: settings_api imports this module
+            from settings_api import give_role_to_unroled
             try:
                 await give_role_to_unroled(owner_user_id, [created])
             except Exception:
@@ -1159,8 +968,6 @@ async def get_or_create_mirror_employee(
 
 
 async def json_object(request: Request, status_code: int) -> dict[str, Any]:
-    """The request body as a JSON object, else `status_code` "expected a
-    JSON object"."""
     try:
         body = json.loads(await request.body())
     except ValueError:
@@ -1179,16 +986,6 @@ def _warn_automation_missing_once() -> None:
 
 
 async def get_automation_employee_id() -> int:
-    """Returns the id of the system Automation employee row.
-
-    No caching when running under pytest (detected via
-    'PYTEST_CURRENT_TEST' in os.environ) — fixtures may swap DBs.
-    Otherwise cached after first lookup.
-
-    Raises LookupError if the row doesn't exist (migration 0011 hasn't
-    run). Callers should catch this and degrade gracefully (e.g.
-    write NULL instead of crashing the request).
-    """
     global _automation_emp_id_cache
     in_test = "PYTEST_CURRENT_TEST" in os.environ
     if _automation_emp_id_cache is not None and not in_test:
@@ -1220,7 +1017,6 @@ def _safe_loads(s: str | None) -> Any:
 
 
 def _normalize_color(c: str) -> str:
-    """Accept '#ABC', '#AABBCC', or 'abc' / 'aabbcc'; return '#aabbcc'."""
     c = c.strip().lower().lstrip("#")
     if re.fullmatch(r"[0-9a-f]{3}", c):
         c = "".join(ch * 2 for ch in c)

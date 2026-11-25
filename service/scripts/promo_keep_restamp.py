@@ -43,8 +43,6 @@ async def restamp(host: str, apply: bool) -> int:
             print(f"campaign={r.id} account={r.account_id} name={r.name!r} stamp={r.keep_host_id!r} -> {host!r}")
             if apply:
                 r.keep_host_id = host
-        # Stamped or not: a Kept free trial with no Offer limit (unlimited claims) is turned off
-        # (limit_needed) at its next run, so the operator re-ticks it.
         for r in (await s.execute(select(PromoCampaign).where(PromoCampaign.auto_reactivate.is_(True))
                                   .order_by(PromoCampaign.id))).scalars().all():
             if promo_create_guard.trial_unlimited(r):

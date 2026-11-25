@@ -1,17 +1,4 @@
-"""service/ultra_plan.py — in-app Ultra planning: the owner's request → an `awaiting_ok` plan (issues/06).
-
-  start   the owner over today's AI cap → Refused 429; else a `planning` row (source `ui`) + the loop task.
-  _loop   up to MAX_TURNS model calls (ultra_plan_decide), ≤MAX_CALLS tool calls run per reply. A read tool runs through toolbox.call as the owner
-          (cookie held in memory only, like the executor's); any other tool is a tool error, never run;
-          `submit_plan` → ultra_run.submit (the propose_plan check), its PlanError back to the model.
-          Ends `awaiting_ok` | `capped` (turns, spend, daily cap) | `failed` (a short owner text) |
-          `interrupted` (task cancelled: shutdown). The cancel route flips the row to `cancelled`; the next
-          turn's progress write (guarded on `planning`) misses and the loop stops (no task.cancel: it would
-          cut an LLM call mid-reservation).
-
-Until its plan lands the row's plan_json is {summary:"", steps:[], planning:{turns, max_turns, last_tool,
-error?}}: progress, never model text. Billed to the owner (user_id, no account), like the help bot.
-"""
+# No task.cancel: it would cut an LLM call mid-reservation; the cancel route flips the row and the next progress write misses.
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +20,7 @@ from llm_models import MODELS
 
 log = logging.getLogger("of-relay.ultra")
 
-_TASKS: dict[str, asyncio.Task] = {}  # this process's planning loops
+_TASKS: dict[str, asyncio.Task] = {}
 
 CRASHED = "Planning failed — try again."
 IDLE = "The planner gave no plan — rephrase the request and try again."
@@ -46,7 +33,6 @@ def _body(prog: dict[str, Any]) -> str:
 
 
 async def start(request: str, owner_user_id: str, owned: frozenset[str], creds: toolbox.Creds) -> str:
-    """A new `planning` plan's id, its loop started; Refused(429) when today's AI budget is spent."""
     provider = MODELS[upd.MODEL].provider
     if (await llm_client.cap_state(None, provider, upd.MODEL, user_id=owner_user_id))["capped"]:
         raise ultra_run.Refused(429, upd.DAILY_CAPPED)
@@ -71,7 +57,6 @@ async def _read(name: str, raw_args: str, creds: toolbox.Creds) -> str:
 
 
 async def _submit(plan_id: str, raw_args: str, owned: frozenset[str]) -> tuple[str, bool]:
-    """(the tool answer, whether the loop is over: stored, or the row is no longer planning)."""
     args = upd.parse_args(raw_args)
     if args is None:
         return upd.bad_args_text(), False
@@ -93,7 +78,7 @@ async def _loop(plan_id: str, request: str, owner_user_id: str, owned: frozenset
                 status, error = "capped", TURNS_CAPPED if turns >= upd.MAX_TURNS else SPEND_CAPPED
                 break
             if not await ultra_run.flip(plan_id, "planning", {"plan_json": _body(upd.progress(turns, last))}):
-                return  # cancelled (or recovered): the row's end is already written
+                return
             res = await llm_client.chat(model=upd.MODEL, messages=msgs, purpose=upd.PURPOSE, account_id=None,
                                         user_id=owner_user_id, tools=upd.TOOLS, temperature=0.2)
             turns, spent = turns + 1, spent + (res.cost_cents or 0)
@@ -109,14 +94,14 @@ async def _loop(plan_id: str, request: str, owner_user_id: str, owned: frozenset
             idle = 0
             for n, call in enumerate(res.tool_calls):
                 name, raw = call["function"]["name"], call["function"]["arguments"]
-                if n >= upd.MAX_CALLS:  # every call still gets its answer (the API needs one per tool_call_id)
+                if n >= upd.MAX_CALLS:
                     msgs.append({"role": "tool", "tool_call_id": call["id"], "content": upd.too_many_text()})
                     continue
                 last = upd.shown_tool(name)
                 if name == upd.SUBMIT:
                     text, over = await _submit(plan_id, raw, owned)
                     if over:
-                        return  # awaiting_ok written by ultra_run.submit (or the row was cancelled)
+                        return
                 elif name in upd.READ_TOOLS:
                     text = await _read(name, raw, creds)
                 else:
@@ -132,7 +117,7 @@ async def _loop(plan_id: str, request: str, owner_user_id: str, owned: frozenset
             status, error = ("capped" if fail[0] else "failed"), fail[1]
     finally:
         _TASKS.pop(plan_id, None)
-        try:  # guarded: a no-op once the plan landed or the row was cancelled
+        try:
             await asyncio.shield(ultra_run.flip(plan_id, "planning", {
                 "status": status, "finished_at": datetime.utcnow(),
                 "plan_json": _body(upd.progress(turns, last, error))}))

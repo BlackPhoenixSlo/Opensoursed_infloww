@@ -1,28 +1,3 @@
-"""msg_stats — the message side of chatting statistics, read from `messages` at
-query time (roadmap W5 5.1; feeds Employee reports' Chatting statistics, 5.2,
-and the Creator reports' engagement columns, 5.3).
-
-Every figure counts an Employee's own sends (`chatter_sends`): no message of a
-mass message, none an automation sent, none stamped with the Automation
-sentinel, as Infloww's "Does not include priority and OF mass messages or
-automated messages". A message that was later unsent still counts: it was
-sent, and the fan saw it until then.
-
-  send_stats     per Creator and Employee: direct messages, direct PPVs
-                 (priced), the PPVs among them unlocked (by send date: an
-                 unlock today of a PPV sent last month counts last month),
-                 characters, and fans chatted (distinct within the group).
-  creator_sends  per Creator: direct messages, direct PPVs and fans chatted
-                 (each fan once), no body read.
-  reply_stats   per Creator and Employee: the number of replies and their
-                 summed seconds.
-  channel_sales  per Creator and Employee: the sales of direct messages, of
-                 mass messages, of Priority mass messages and the chat tips,
-                 and the fans who spent.
-
-No rollup: sends are read through `ix_messages_chatter_sends`, replies
-through `ix_messages_chat_seq`, which covers them.
-"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -36,9 +11,6 @@ from attribution_backfill import REVENUE_KINDS, TRACKED_STATUSES
 from db.models import Message
 from sales_attribution import rules_at, rules_by_account
 
-# How far before the window a reply's wait may have begun: a fan who wrote at
-# 23:50 and was answered at 00:10 counts in the window that holds 00:10. A wait
-# longer than this is measured from the first inbound inside the lookback.
 REPLY_LOOKBACK = timedelta(hours=24)
 
 
@@ -51,10 +23,6 @@ async def automation_id() -> int | None:
 
 
 async def chatter_sends() -> list[Any]:
-    """Outbound messages an Employee wrote by hand: not part of a mass
-    message, not sent by an automation, not stamped with the Automation
-    sentinel (Infloww's "Messages sent" excludes mass and automated
-    messages; roadmap S4). A box without the sentinel excludes none."""
     out = [Message.direction == "out", Message.sent_by_employee_id.is_not(None),
            Message.mass_run_id.is_(None), Message.automation_kind.is_(None)]
     if (auto := await automation_id()) is not None:
@@ -63,7 +31,6 @@ async def chatter_sends() -> list[Any]:
 
 
 async def _own_sql(p: tx_rollup.Binds) -> str:
-    """`chatter_sends` as SQL over `messages`."""
     auto = await automation_id()
     return ("direction = 'out' AND sent_by_employee_id IS NOT NULL AND mass_run_id IS NULL "
             "AND automation_kind IS NULL" + ("" if auto is None else f" AND sent_by_employee_id != {p.bind(auto)}"))
@@ -71,14 +38,9 @@ async def _own_sql(p: tx_rollup.Binds) -> str:
 
 async def send_stats_sql(*, account_ids: list[str] | None, start: datetime, end: datetime,
                          edges: list[datetime] | None = None) -> tuple[str, tx_rollup.Binds]:
-    """`send_stats`' statement and its binds. The body is not in the index,
-    so each send is read from the table: through the partial index, which
-    holds only hand-written sends, where SQLite's planner would take
-    ix_messages_dir_created and read every outbound message."""
     p = tx_rollup.Binds()
     fmt = tx_rollup.TS_FORMAT
     acct = "" if account_ids is None else f" AND {p.in_('account_id', account_ids)}"
-    # Bucket i holds edges[i] <= created_at < edges[i + 1], the last one to `end`.
     whens = " ".join(f"WHEN created_at < {p.bind(e.strftime(fmt))} THEN {i}" for i, e in enumerate((edges or [])[1:]))
     bucket = f"CASE {whens} ELSE {len(edges) - 1} END" if whens else "0"
     sql = (f"SELECT {bucket + ' AS bucket, ' if edges else ''}account_id, sent_by_employee_id AS employee_id, "
@@ -92,21 +54,12 @@ async def send_stats_sql(*, account_ids: list[str] | None, start: datetime, end:
 
 async def send_stats(s, *, account_ids: list[str] | None, start: datetime, end: datetime,
                      edges: list[datetime] | None = None) -> list[Any]:
-    """Rows of `account_id`, `employee_id` with `messages`, `ppvs`,
-    `unlocked`, `chars` and `fans`, over the sends with `start <= created_at
-    <= end` (naive UTC). With `edges` (the
-    ascending UTC starts of time buckets, the first at or before `start`)
-    each row also carries `bucket`, the index of the edge it falls after:
-    fans are distinct within a bucket then."""
     sql, p = await send_stats_sql(account_ids=account_ids, start=start, end=end, edges=edges)
     return (await s.execute(text(sql), p)).all()
 
 
 async def creator_sends_sql(*, account_ids: list[str] | None, start: datetime,
                             end: datetime) -> tuple[str, tx_rollup.Binds]:
-    """`creator_sends`' statement and its binds: `send_stats`' figures per
-    Creator alone, leaving out its unlocks and characters, so no body is
-    read."""
     p = tx_rollup.Binds()
     fmt = tx_rollup.TS_FORMAT
     acct = "" if account_ids is None else f" AND {p.in_('account_id', account_ids)}"
@@ -118,17 +71,12 @@ async def creator_sends_sql(*, account_ids: list[str] | None, start: datetime,
 
 
 async def creator_sends(s, *, account_ids: list[str] | None, start: datetime, end: datetime) -> list[Any]:
-    """Rows of `account_id` with `messages`, `ppvs` and `fans` (each fan once
-    per Creator, however many Employees chatted it), over the sends with
-    `start <= created_at <= end` (naive UTC): Creator reports' engagement
-    columns (roadmap W5 5.3)."""
     sql, p = await creator_sends_sql(account_ids=account_ids, start=start, end=end)
     return (await s.execute(text(sql), p)).all()
 
 
 async def reply_stats_sql(*, account_ids: list[str] | None, start: datetime, end: datetime,
                           lookback: timedelta = REPLY_LOOKBACK) -> tuple[str, tx_rollup.Binds]:
-    """`reply_stats`' statement and its binds."""
     p = tx_rollup.Binds()
     fmt = tx_rollup.TS_FORMAT
     acct = "" if account_ids is None else f" AND {p.in_('account_id', account_ids)}"
@@ -136,11 +84,6 @@ async def reply_stats_sql(*, account_ids: list[str] | None, start: datetime, end
                     p.bind(end.strftime(fmt)))
     own = await _own_sql(p)
     by_chat = "PARTITION BY account_id, fan_id ORDER BY created_at, message_id"
-    # `seq`: each message of a chat with an Employee's own send in the window
-    # (the rest can hold no reply), with the direction of the one before it.
-    # `edges`: only where a wait begins (a fan's message after ours) or ends
-    # (ours after a fan's); in a chat they alternate, so the edge before an
-    # end is its wait's beginning.
     sql = (
         "WITH seq AS (SELECT account_id, fan_id, message_id, direction, created_at, sent_by_employee_id, "
         f"mass_run_id, automation_kind, LAG(direction) OVER ({by_chat}) AS prev_dir FROM messages "
@@ -157,15 +100,6 @@ async def reply_stats_sql(*, account_ids: list[str] | None, start: datetime, end
 
 async def reply_stats(s, *, account_ids: list[str] | None, start: datetime, end: datetime,
                       lookback: timedelta = REPLY_LOOKBACK) -> list[Any]:
-    """Rows of `account_id`, `employee_id` with `replies` and
-    `reply_seconds` (their sum) over the replies sent in [start, end].
-
-    A wait begins at a fan's message after one of ours (or the first we see)
-    and ends at our next message of any kind; `system` rows are skipped. It
-    counts only when that message is an Employee's own send (`chatter_sends`):
-    a mass message or an automation that answers first ends the wait for
-    nobody. A fan who never got an answer adds nothing (Infloww: "Calculations
-    do not include unreplied messages")."""
     sql, p = await reply_stats_sql(account_ids=account_ids, start=start, end=end, lookback=lookback)
     return (await s.execute(text(sql), p)).all()
 
@@ -181,38 +115,16 @@ class ChannelSales(NamedTuple):
 
 
 _CHANNELS = ("direct", "mass", "priority", "tip")
-# `messages.automation_kind` of a Priority mass message's sends (automations/priority_mass), which a sale of one
-# carries as `transactions.credit_automation_kind`, reassigned by hand or not.
 PRIORITY_MASS_KIND = "priority_mass"
 
 
 async def channel_sales(s, *, account_ids: list[str] | None, start: datetime,
                         end: datetime) -> list[ChannelSales]:
-    """Per Creator and credited Employee (a manual override, else the linked
-    message's sender `transactions.credit_sender_id`, else for a chat tip
-    with no message the stored Converters credit), the cents of the sales in
-    the window by channel — `direct` (a sale of a message, credited by its
-    sender or by hand), `mass` (the same, of a mass message), `priority`
-    (the same, of a Priority mass message: one direct message per fan, sent
-    by `automations/priority_mass` in the name of the Employee who launched
-    it) and `tip` (a chat tip with no message, credited by hand or to the
-    last human chatter within the default 1 h, `transactions.credit_rule`
-    `converters`) — and `spenders`, the fans who paid a
-    direct message or tipped. Not by the Sales Settings rules: Infloww's
-    "Direct message sales" is the sales of the messages an employee sent. A sale of an
-    automation's message, or of an OnlyFans-native mass message (it carries
-    no sender), is in none unless reassigned by hand.
-
-    "Exclude the 20% OnlyFans fee" applies as each sale's Rules
-    (`rules_at`): summed in SQL on a Creator whose Rules hold for the whole
-    window, read sale by sale on one whose Rules change in it (as
-    `sales_attribution.credited_sales`)."""
     rules = await rules_by_account(s, account_ids, start, end)
     per_row = sorted(a for a, tl in rules.items() if len(tl) > 1)
     fee_off = sorted(a for a, tl in rules.items() if len(tl) == 1 and rules_at(tl, None).exclude_of_fee)
     p = tx_rollup.Binds()
     fmt = tx_rollup.TS_FORMAT
-    # Credited by hand, else by the linked message's sender, else (a tip with no message) by Converters.
     emp = ("(CASE WHEN t.credit_rule = 'manual' THEN t.credit_employee_id "
            "WHEN t.message_id IS NOT NULL THEN t.credit_sender_id "
            "WHEN t.credit_rule = 'converters' THEN t.credit_employee_id END)")
@@ -222,8 +134,6 @@ async def channel_sales(s, *, account_ids: list[str] | None, start: datetime,
         conds.append(p.in_("t.account_id", account_ids))
     if (auto := await automation_id()) is not None:
         conds.append(f"{emp} != {p.bind(auto)}")
-    # A linked sale: credited by hand, or to a human (not an automation's send); a Priority mass message's sale
-    # reassigned by hand stays one.
     priority = f"t.credit_automation_kind = {p.bind(PRIORITY_MASS_KIND)}"
     channel = (f"CASE WHEN t.message_id IS NOT NULL THEN (CASE WHEN {priority} THEN 'priority' "
                "WHEN t.credit_rule = 'manual' OR t.credit_automation_kind IS NULL "

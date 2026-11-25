@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""/push/* routes (push_api) on the real app with real owner / chatter logins:
-auth 401 / impersonation 403, key 503 while push is off, PUT upsert + re-bind only with matching
-keys (409), key sizes + SSRF 400, cap 10, 20 PUT/min 429, DELETE + /push/test ownership,
-logout deletes the subs of every principal cookie the request carried (only that session's),
-two racing first PUTs of one endpoint end as one row (IntegrityError retried as the update).
-Run: venv/bin/python -m pytest service/tests/test_push_api.py -q"""
-import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # pytest: tests/ is a package
+import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _harness  # noqa: E402  (first: temp DB)
 
 import asyncio  # noqa: E402
@@ -138,7 +132,6 @@ def test_put_validation():
     for bad in ({"p256dh": k["p256dh"][:-4], "auth": k["auth"]}, {"p256dh": k["p256dh"], "auth": _b64(b"x" * 15)},
                 {"p256dh": "!!!", "auth": k["auth"]}):
         assert a.put("/push/subscription", json=_body(keys=bad)).status_code == 400
-    # userinfo URLs built with {}: a literal user@host reads as an email to the public leak gate
     for ep in ("http://fcm.googleapis.com/x", "https://evil.example.com/x", f"https://{'u'}@fcm.googleapis.com/x",
                "https://fcm.googleapis.com:8443/x", "http://127.0.0.1:9/x"):
         assert a.put("/push/subscription", json=_body(ep=ep)).status_code == 400, ep
@@ -195,7 +188,7 @@ def test_logout_forgets_every_cookie_principal():
     _fresh()
     owner, chatter = fx.login_owner("agency_a_owner"), fx.login_chatter("chatter_a")
     time.sleep(0.01)
-    other = fx.login_owner("agency_a_owner")       # a second session of the same owner
+    other = fx.login_owner("agency_a_owner")
     s_owner = owner.put("/push/subscription", json=_body()).json()["id"]
     s_chat = chatter.put("/push/subscription", json=_body()).json()["id"]
     s_other = other.put("/push/subscription", json=_body()).json()["id"]
@@ -217,8 +210,6 @@ def test_audit_skips_push():
 
 
 def test_concurrent_first_put_one_row():
-    """Both PUTs read "no row" (held at a barrier after their SELECT), both insert: the loser's
-    unique violation is retried as the update, so both answer the same id."""
     _fresh()
     a = fx.login_owner("agency_a_owner")
     pid, issued = auth.parse_cookie_issued(a.cookies.get(auth.COOKIE_NAME))

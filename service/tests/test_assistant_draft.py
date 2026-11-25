@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""
-assistant_draft — POST /admin/assistant/draft, the help bot's "Do it for me"
-form-fill draft (pilot: Auto mass). Spec: docs/spec/assistant-do-mode.md.
-
-Drives the route coroutine against the temp DB with `llm_client.chat` patched
-(never a real completion) and the OF list read patched at `_read_lists` (the one
-OF wire call). Covers: validation + clamps, the SFW folder ranking table, list
-resolution, MASSdmEXCLUDE never stored, flow null, every LLM failure as a 200,
-the role gate as a sentence (not a 403), the turn row, and a byte-stable system
-prompt whose few-shots parse as the intent schema they teach.
-
-Run: ./venv/bin/python service/tests/test_assistant_draft.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 _harness.bootstrap()
 
@@ -23,7 +10,7 @@ import os  # noqa: E402
 import re  # noqa: E402
 from datetime import date, datetime  # noqa: E402
 
-os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # read per call; a case flips it back
+os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 from fastapi import HTTPException  # noqa: E402
 from sqlalchemy import select  # noqa: E402
@@ -35,7 +22,7 @@ import assistant_report  # noqa: E402
 import auth  # noqa: E402
 import llm_client  # noqa: E402
 
-REAL_CHAT = llm_client.chat     # cases spy on `chat`; a few need the real one
+REAL_CHAT = llm_client.chat
 from assistant_draft import (  # noqa: E402
     DraftBody, FolderStat, Intent, draft, do_caps, folder_stats, match_named,
     interpret, pick_sfw, rank_sfw, resolve, vetoed,
@@ -104,7 +91,6 @@ def _resolve(intent: dict, *, lists=LISTS, folders=(), existing=(), request="x")
 
 
 async def _seed():
-    """An account, three folders in the mirror, one existing Auto mass."""
     async with get_session() as s:
         if await s.get(Account, AID) is not None:
             return
@@ -117,13 +103,13 @@ async def _seed():
             s.add(VaultItem(account_id=AID, media_id=mid, kind=kind, explicitness_tier=tier,
                             raw_json=json.dumps(raw), created_at=now))
         mid = 1000
-        for tier in ["sfw"] * 8 + ["suggestive"] * 2 + [None] * 2:     # Daytime: likely SFW
+        for tier in ["sfw"] * 8 + ["suggestive"] * 2 + [None] * 2:
             mid += 1; item(mid, "photo", tier, [(11, "Daytime")])
-        for tier in ["sfw"] * 5 + ["explicit"]:                          # Mixed: one explicit
+        for tier in ["sfw"] * 5 + ["explicit"]:
             mid += 1; item(mid, "photo", tier, [(12, "Mixed")])
-        for tier in [None] * 4:                                          # Fresh: unflagged
+        for tier in [None] * 4:
             mid += 1; item(mid, "photo", tier, [(13, "Fresh")])
-        mid += 1; item(mid, "video", "sfw", [(11, "Daytime")])           # not a photo
+        mid += 1; item(mid, "video", "sfw", [(11, "Daytime")])
         s.add(AutomationRule(account_id=AID, name="Hourly SFW mass", kind="mass_premade",
                              trigger_json="{}", steps_json="{}", is_enabled=False))
 
@@ -132,7 +118,6 @@ async def _draft(request=PILOT, **kw):
     return await draft(DraftBody(request=request, account_id=AID, **kw))
 
 
-# ── Pure: validation / clamps ─────────────────────────────────────────
 
 def case_a_mass_draft_for_another_feature_or_an_existing_rule_is_vetoed():
     v = assistant_draft.vetoed
@@ -144,7 +129,7 @@ def case_a_mass_draft_for_another_feature_or_an_existing_rule_is_vetoed():
                 "auto mass every hour to fans", "make a mass for whales from the beach folder",
                 "update: every 3 hours, to my VIP list"):
         assert not v(req, refine=False), req
-    assert not v("remove whales from my Morning mass", refine=True)       # a refine edits the draft, not a rule
+    assert not v("remove whales from my Morning mass", refine=True)
     o = assistant_draft.interpret(json.dumps(_pilot_intent()), request="set up auto posting from the beach folder",
                                   lists=[], folders=[], existing=[])
     assert (o.flow, o.answer) == (None, assistant_draft.UNSUPPORTED_ANSWER), o
@@ -174,7 +159,6 @@ def case_captions_are_trimmed_capped_and_counted():
     assert all(c.strip() and len(c) <= assistant_draft.CAPTION_MAX for c in caps)
     assert any("capped at 20" in a for a in d.assumptions), d.assumptions
     assert any("over" in u and "characters" in u for u in d.unresolved), d.unresolved
-    # Fewer written than asked: said, not hidden.
     d = _resolve(_pilot_intent(captions={"count": 10, "provided": [], "generated": ["a", "b"]}))
     assert d.slots["captions_ai"] == 2 and any("2 of 10" in a for a in d.assumptions), d.assumptions
     d = _resolve(_pilot_intent(captions={"count": 0, "provided": [], "generated": []}))
@@ -195,7 +179,7 @@ def case_defaults_only_move_when_asked():
     d = _resolve(_pilot_intent(online_only=None, audience={"include": [], "exclude": []}))
     s = d.slots
     assert s["online_only"] is True and s["includes"] == ["fans", "following"], s
-    assert s["exclude_last_chat_hours"] is None, s       # null = keep the form's default
+    assert s["exclude_last_chat_hours"] is None, s
     d = _resolve(_pilot_intent(keep_skip_recent=False))
     assert d.slots["exclude_last_chat_hours"] == 0 and any("NOT skipped" in a for a in d.assumptions)
 
@@ -213,23 +197,21 @@ def case_nulls_from_the_model_are_defaults_not_crashes():
     assert i.audience.include == [] and i.folder.want == "none" and i.keep_skip_recent is True
 
 
-# ── Pure: folder ranking ──────────────────────────────────────────────
 
 def case_sfw_folder_ranking_table():
     rows = [
-        # (folders, expected pick name or None, expected unresolved)
-        ([_f("A", sfw=5, unknown=5), _f("B", sfw=9, unknown=1)], "B", None),       # flagged share
-        ([_f("A", sfw=4), _f("B", sfw=8)], "B", None),                             # tie → sfw count
-        ([_f("b", sfw=3), _f("a", sfw=3)], "a", None),                             # tie → name
-        ([_f("Hot", sfw=9, explicit=1), _f("Ok", sfw=1, unknown=9)], "Ok", None),  # explicit out
+        ([_f("A", sfw=5, unknown=5), _f("B", sfw=9, unknown=1)], "B", None),
+        ([_f("A", sfw=4), _f("B", sfw=8)], "B", None),
+        ([_f("b", sfw=3), _f("a", sfw=3)], "a", None),
+        ([_f("Hot", sfw=9, explicit=1), _f("Ok", sfw=1, unknown=9)], "Ok", None),
         ([_f("Hard", sfw=9, hardcore=1)], None, assistant_draft.NO_SFW_NOTE),
-        ([_f("Tease", suggestive=3)], None, assistant_draft.NO_SFW_NOTE),          # suggestive ≠ SFW
-        ([_f("Spice", suggestive=1), _f("Clean", sfw=59, unknown=1)], "Clean", None),  # SFW share wins
+        ([_f("Tease", suggestive=3)], None, assistant_draft.NO_SFW_NOTE),
+        ([_f("Spice", suggestive=1), _f("Clean", sfw=59, unknown=1)], "Clean", None),
         ([_f("Mostly", sfw=8, suggestive=2), _f("All", sfw=5)], "All", None),
-        ([_f("Posts", fid="p", sfw=9), _f("Mine", sfw=1, unknown=1)], "Mine", None),  # built-in skipped
+        ([_f("Posts", fid="p", sfw=9), _f("Mine", sfw=1, unknown=1)], "Mine", None),
         ([_f("New", unknown=6), _f("Also", unknown=2)], None, assistant_draft.NO_FLAGS_NOTE),
         ([], None, assistant_draft.NO_FLAGS_NOTE),
-        ([_f("Empty"), _f("Real", sfw=1)], "Real", None),                          # photos > 0
+        ([_f("Empty"), _f("Real", sfw=1)], "Real", None),
     ]
     for folders, want, why in rows:
         got, note = pick_sfw(folders)
@@ -242,7 +224,7 @@ def case_named_folder_match_is_fuzzy_but_not_wild():
     fs = [_f("Beach pics", fid="1", sfw=3), _f("Gym", fid="2", sfw=1), _f("Lingerie set", fid="3", sfw=2)]
     assert match_named(fs, "beach").id == "1"
     assert match_named(fs, "BEACH PICS").id == "1"
-    assert match_named(fs, "lingere set").id == "3"          # a typo
+    assert match_named(fs, "lingere set").id == "3"
     assert match_named(fs, "kitchen") is None
     assert match_named(fs, "") is None
 
@@ -254,19 +236,17 @@ def case_folder_stats_count_photos_per_tier_and_respect_the_chatter_allowlist():
     rows = [(raw((1, "A")), "photo", "sfw"), (raw((1, "A"), (2, "B")), "photo", "Explicit "),
             (raw((1, "A")), "photo", "weird"), (raw((1, "A")), "video", "sfw"), (None, "photo", "sfw")]
     by = {f.name: f for f in folder_stats(rows)}
-    assert set(by) == {"A", "B"}, by                          # hasMedia False never counts
+    assert set(by) == {"A", "B"}, by
     assert by["A"].photos == 3 and by["A"].tiers == {
         "sfw": 1, "suggestive": 0, "explicit": 1, "hardcore": 0, "unknown": 1}, by["A"].tiers
     assert by["A"].slot()["id"] == "1"
     assert [f.name for f in folder_stats(rows, frozenset({2}))] == ["B"]
 
 
-# ── Pure: lists ───────────────────────────────────────────────────────
 
 def case_list_names_resolve_to_of_ids_and_unknowns_are_unresolved():
     d = _resolve(_pilot_intent(online_only=True, audience={
         "include": ["vip", "whales", "Gold"], "exclude": ["fans", "Nope"]}))
-    # Names match case- and symbol-blind ("whales" = "Whales 💰"), never by guess.
     assert d.slots["includes"] == ["501", "502"], d.slots["includes"]
     assert d.slots["excludes"] == [], d.slots["excludes"]
     joined = " ".join(d.unresolved)
@@ -330,13 +310,12 @@ def case_massdmexclude_is_never_stored_and_always_explained():
     assert assistant_draft.MASS_EXCLUDE_NOTE not in d.assumptions, d.assumptions
 
 
-# ── The prompt ────────────────────────────────────────────────────────
 
 def case_the_fewshots_parse_as_the_schema_they_teach():
     shots = re.findall(r"^JSON: (.*)$", assistant_draft._FEWSHOTS, re.M)
     assert len(shots) == 15, len(shots)
     every = [Intent.model_validate(json.loads(s)) for s in shots]
-    parsed, configs, exports = every[:9], every[9:12], every[12:]  # 3 full_ai_config, then 3 report_export
+    parsed, configs, exports = every[:9], every[9:12], every[12:]
     requests = re.findall(r"^REQUEST: (.*)$", assistant_draft._FEWSHOTS, re.M)[12:]
     ctx = assistant_report.ReportCtx((("a1", "Luna"), ("a2", "Mia Rose")), ((1, "Anna"), (2, "Marco")),
                                      "Europe/London", date(2026, 3, 14), "monday", frozenset())
@@ -351,13 +330,13 @@ def case_the_fewshots_parse_as_the_schema_they_teach():
     assert (top["recipe"]["sort"], top["recipe"]["limit"], top["recipe"]["window"]) == (
         "total", 20, {"from": "2025-12-15", "to": "2026-03-14"}), top
     assert parsed[0].flow == "mass_premade" and len(parsed[0].captions.generated) == 10
-    assert parsed[-1].flow is None and parsed[-6].every is None   # a mass with no timing is still one
-    unsend, pause = parsed[-5], parsed[-4]                        # mass_edit: unsend off ≠ switch off
+    assert parsed[-1].flow is None and parsed[-6].every is None
+    unsend, pause = parsed[-5], parsed[-4]
     assert unsend.flow == pause.flow == "mass_edit"
     assert (unsend.edit.scope, unsend.edit.changes.unsend_after_hours, unsend.edit.changes.disable_rule) == (
         "all", 0, False)
     assert (pause.edit.scope, pause.edit.match, pause.edit.changes.disable_rule) == ("this", "Morning mass", True)
-    clock, interval = parsed[-3], parsed[-2]                      # auto_story: a clock time vs "every"
+    clock, interval = parsed[-3], parsed[-2]
     assert clock.flow == interval.flow == "auto_story"
     beach = assistant_draft.resolve_story(clock, folders=[_f("Beach pics", "12", sfw=4)]).slots
     assert (beach["mode"], beach["times"], beach["per_run"], beach["hours_to_live"]) == (
@@ -380,12 +359,11 @@ async def case_the_system_prompt_is_byte_stable_and_the_request_is_not_in_it():
         assert leak not in s1["content"], leak
     assert "<request>\nhourly mass to VIP [one]\n</request>" in u1["content"], u1["content"]
     assert "Whales 💰" in u1["content"] and "Daytime (12 photos)" in u1["content"], u1["content"]
-    assert "MASSdmEXCLUDE" in u1["content"]                   # listed; resolution drops it
+    assert "MASSdmEXCLUDE" in u1["content"]
     assert "EXISTING AUTO MASS RULES: Hourly SFW mass" in u1["content"]
     assert 'PREVIOUS DRAFT: {"name": "x"}' in u2["content"], u2["content"]
 
 
-# ── The route ─────────────────────────────────────────────────────────
 
 async def case_the_pilot_phrase_drafts_the_acceptance_rule():
     await _seed()
@@ -407,7 +385,7 @@ async def case_the_pilot_phrase_drafts_the_acceptance_rule():
     assert s["folder"]["name"] == "Daytime" and s["folder"]["id"] == "11", s["folder"]
     assert s["folder"]["photos"] == 12 and s["folder"]["tiers"]["unknown"] == 2, s["folder"]
     assert len(s["captions"]) == 10 and s["captions_ai"] == 10, s
-    assert s["name"] == "Hourly SFW mass 2", s["name"]      # the seeded rule holds the name
+    assert s["name"] == "Hourly SFW mass 2", s["name"]
     assert assistant_draft.MASS_EXCLUDE_NOTE in out["assumptions"], out["assumptions"]
     assert any("8/12 photos AI-flagged SFW · 2 suggestive · 0 explicit · 2 unknown" in a
                for a in out["assumptions"]), out["assumptions"]
@@ -427,7 +405,7 @@ async def case_an_unsupported_request_is_flow_null_with_a_sentence():
     assert (out["flow"], out["slots"], out["error"]) == (None, None, None), out
     assert out["answer"] == assistant_draft.UNSUPPORTED_ANSWER and isinstance(out["id"], int), out
     _patch(_Spy(json.dumps({"flow": None})))
-    out = await _draft("send a mass to VIP right now")     # names a mass: says what would work, not "ask Q&A"
+    out = await _draft("send a mass to VIP right now")
     assert (out["flow"], out["answer"]) == (None, assistant_draft.ONE_OFF_MASS_ANSWER), out
 
 
@@ -472,7 +450,7 @@ async def case_a_caller_who_cannot_create_the_rule_gets_a_sentence_not_a_403():
     spy = _patch(_Spy(json.dumps(_pilot_intent())))
     real = assistant_draft.opt_in_refusal
 
-    async def refuse(pages, account_id):   # neither do-mode page: refused before any call
+    async def refuse(pages, account_id):
         assert pages in (("/growth/auto-mass",), ("/growth/auto-story",), ("/full-ai-chatter",)), pages
         return "Your role does not allow it"
     assistant_draft.opt_in_refusal = refuse
@@ -552,14 +530,11 @@ def case_both_routes_are_served_over_http():
 def case_the_purpose_is_registered_like_the_help_bot():
     assert "help_assistant_do" in MODEL_PURPOSES
     assert PURPOSE_DEFAULT_MODELS["help_assistant_do"] == "deepseek-v4-flash"
-    # Owner 2026-11-11: a Sonnet/Opus pin is allowed — the draft parses Claude's
-    # plain-text JSON itself (`parse_json_object`), so it is no json_object lane.
     assert "help_assistant_do" not in JSON_OBJECT_PURPOSES
     assert llm_client.feature_label("help_assistant_do") == "The help assistant"
 
 
 async def case_only_an_auto_mass_plan_is_a_refine():
-    # rwl W30 M19: refine was guessed from the absence of "changes" / "after" — any other plan's slots counted
     await _seed()
     spy = _patch(_Spy(json.dumps(_pilot_intent())))
     for stray in ({"scope": "this", "match": None, "rules": []}, {"mode": "clock", "times": ["09:00"]}, {}):
@@ -572,8 +547,6 @@ async def case_only_an_auto_mass_plan_is_a_refine():
 
 
 async def case_a_refine_sees_list_and_folder_names_and_keeps_the_custom_list():
-    """`previous` is the prior response's slots (OF ids + a folder object); the
-    model only knows NAMES, so PREVIOUS DRAFT is rendered with names."""
     await _seed()
     prev = {"name": "VIP mass", "interval": {"value": 1, "unit": "hours"},
             "includes": ["501", "fans"], "excludes": ["502", "999"],
@@ -588,19 +561,17 @@ async def case_a_refine_sees_list_and_folder_names_and_keeps_the_custom_list():
     line = next(x for x in user.split("\n\n") if x.startswith("PREVIOUS DRAFT: "))
     shown = json.loads(line[len("PREVIOUS DRAFT: "):])
     assert shown["includes"] == ["VIP", "fans"], shown
-    assert shown["excludes"] == ["Whales 💰", "999"], shown          # unknown id kept
+    assert shown["excludes"] == ["Whales 💰", "999"], shown
     assert shown["folder"] == {"name": "Daytime"}, shown
     assert out["slots"]["includes"] == ["501", "fans"], out["slots"]
     assert out["slots"]["excludes"] == ["502"], out["slots"]
     assert out["slots"]["interval"] == {"value": 3, "unit": "hours"}, out["slots"]
-    # Same rendering on the eval seam.
     spy = _patch(_Spy(json.dumps(refined)))
     await assistant_draft.draft_for_eval("make it every 3 hours", assistant_draft.EvalContext(
         lists=LISTS), "deepseek-v4-flash", previous=prev)
     assert '"includes": ["VIP", "fans"]' in spy.calls[0]["messages"][1]["content"]
 
 
-# ── Who pays: the agency, else the deployment's help-bot DeepSeek key ─
 
 import llm_providers  # noqa: E402
 import tenant_keys  # noqa: E402
@@ -611,7 +582,6 @@ PLATFORM_KEY = "sk-deployment-help"
 
 async def _owned(aid: str, *, cap_cents: int = 1_000_000, agency_key: str | None = None,
                  pin: str | None = None) -> str:
-    """An account with ONE agency owner (so the house key is out of reach)."""
     import uuid
     uid = uuid.uuid4().hex
     async with get_session() as s:
@@ -626,7 +596,6 @@ async def _owned(aid: str, *, cap_cents: int = 1_000_000, agency_key: str | None
 
 
 class _PlatformKey:
-    """`llm_providers._api_key` answering only for the given env ids."""
     def __init__(self, **envs):
         self.envs, self.real = envs, llm_providers._api_key
 
@@ -644,24 +613,20 @@ async def case_a_keyless_agency_drafts_on_the_platform_deepseek_key():
     with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY,
                       HELP_ASSISTANT_ANTHROPIC_KEY="sk-deployment-claude"):
         assert await llm_client._tenant_api_key(aid, ds, "help_assistant_do") == PLATFORM_KEY
-        # The Q&A's Anthropic row is NOT shared: a Claude pin bills the agency.
         try:
             await llm_client._tenant_api_key(aid, an, "help_assistant_do")
             raise AssertionError("the platform Claude key leaked to the draft")
         except LLMKeyError:
             pass
-        # …and the platform key still pays for no lane.
         try:
             await llm_client._tenant_api_key(aid, ds, "gen_info")
             raise AssertionError("the platform key leaked to gen_info")
         except LLMKeyError:
             pass
-        # End to end on the route: the draft goes out (spied at chat).
         spy = _patch(_Spy(json.dumps(_pilot_intent())))
         out = await draft(DraftBody(request=PILOT, account_id=aid))
     assert out["flow"] == "mass_premade" and out["error"] is None, out
     assert spy.calls[0]["account_id"] == aid, spy.calls[0]
-    # An agency's own key still beats the platform's.
     aid2 = "acc_draft_ownkey"
     await _owned(aid2, agency_key="sk-agency-own")
     with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY):
@@ -669,9 +634,6 @@ async def case_a_keyless_agency_drafts_on_the_platform_deepseek_key():
 
 
 async def case_platform_paid_drafts_stop_at_the_accounts_daily_cap():
-    """The bound is Q&A's: the account's daily cost cap, enforced in
-    llm_client._reserve BEFORE any wire call. Real chat(), no spy; the wire
-    (`_fire`) explodes if reached, so nothing is ever bought."""
     aid = "acc_draft_capped"
     await _owned(aid, cap_cents=0)
     real_fire = llm_client._fire
@@ -693,8 +655,6 @@ async def case_platform_paid_drafts_stop_at_the_accounts_daily_cap():
 
 
 async def case_the_draft_caps_its_output_and_the_budget_reserves_that_cap():
-    """rwl W30 F11: real chat(), faked only at the wire — the body carries max_tokens and the reservation prices
-    exactly that output (never the assumed 1,024 while the provider may write more)."""
     aid = "acc_draft_max_tokens"
     await _owned(aid)
     llm_client.chat = REAL_CHAT
@@ -737,8 +697,6 @@ async def case_do_caps_no_key_only_when_neither_agency_nor_platform_key_resolves
     await _owned(aid2, agency_key="sk-agency-own")
     with _PlatformKey():
         assert await do_caps(account_id=aid2) == {"account_id": aid2, "can_do": True, "reason": None}
-    # A Claude pin with no agency Anthropic key: the platform's DeepSeek key
-    # does not pay for it → no_key, said up front.
     aid3 = "acc_draft_caps_claude"
     await _owned(aid3, pin="claude-sonnet-5-5")
     with _PlatformKey(HELP_ASSISTANT_DEEPSEEK_KEY=PLATFORM_KEY,
@@ -746,7 +704,6 @@ async def case_do_caps_no_key_only_when_neither_agency_nor_platform_key_resolves
         assert (await do_caps(account_id=aid3))["reason"] == "no_key"
 
 
-# ── Claude: no JSON mode, the JSON parsed out of plain text ───────────
 
 def case_parse_json_object_takes_fences_and_prose():
     obj = {"flow": "mass_premade", "name": "a {curly} \"name\"", "captions": {"count": 1}}
@@ -754,9 +711,8 @@ def case_parse_json_object_takes_fences_and_prose():
     for text in (js, f"```json\n{js}\n```", f"```\n{js}\n```",
                  f"Here is the JSON you asked for:\n\n```json\n{js}\n```\nLet me know!",
                  f"Sure — {js} — done.", f"{{not json}} then {js}",
-                 f"```json\n{js}"):                       # an unclosed fence
+                 f"```json\n{js}"):
         assert assistant_draft.parse_json_object(text) == obj, text
-    # DeepSeek dropped the outer "}": closed, never the nested {"count": 1} (which read as flow null)
     assert assistant_draft.parse_json_object(js[:-1]) == obj
     for bad in ("", "no json here", "{broken: ", "```json\n```"):
         try:
@@ -784,7 +740,6 @@ async def case_a_claude_pin_drafts_without_json_mode():
     assert (out["error"], out["answer"]) == ("bad_draft", assistant_draft.BAD_DRAFT_ANSWER), out
 
 
-# ── The eval seam ─────────────────────────────────────────────────────
 
 EVAL_CTX = assistant_draft.EvalContext(
     lists=[{"id": 501, "name": "VIP"}, {"id": 503, "name": "MASSdmEXCLUDE"}],
@@ -813,10 +768,6 @@ async def case_draft_for_eval_runs_the_real_prompt_and_returns_usage():
 
 
 async def case_draft_for_eval_prices_claude_usage_from_the_provider_reply():
-    """Real llm_client.chat on Claude Sonnet, faked only at the wire (`_fire`):
-    the house ANTHROPIC_API_KEY pays (account None), no response_format goes
-    out, and usage — cache read/write + output incl. thinking — is priced by
-    llm_models, not estimated."""
     llm_client.chat = REAL_CHAT
     seen = {}
     native = {"id": "msg_1", "model": "claude-sonnet-5-5", "stop_reason": "end_turn",
@@ -838,7 +789,6 @@ async def case_draft_for_eval_prices_claude_usage_from_the_provider_reply():
     assert seen["url"].endswith("/messages") and seen["headers"]["x-api-key"] == "sk-house-claude"
     assert "response_format" not in seen["body"] and seen["body"]["thinking"] == {"type": "adaptive"}
     assert out["flow"] == "mass_premade" and out["error"] is None, out
-    # Sonnet 5.5: 0.2 in / 0.25 write / 0.01 hit / 1.0 out (cents per 1k).
     want_mc = round((1000 * 0.2 + 2000 * 0.25 + 3000 * 0.01 + 500 * 1.0) / 1000 * 100)
     assert want_mc == 123 == llm_client._cost_millicents("claude-sonnet-5-5", 6000, 500, 3000, 2000)
     assert usage.pop("raw") and usage == {"model": "claude-sonnet-5-5", "tokens_in": 6000, "tokens_cached": 3000,
@@ -846,7 +796,6 @@ async def case_draft_for_eval_prices_claude_usage_from_the_provider_reply():
                      "cost_millicents": 123}, usage
 
 
-# ── mass_edit (spec D11): bulk edits of existing Auto mass rules ──────
 
 import assistant_edit  # noqa: E402
 from assistant_edit import Skip, apply_changes, clean_changes, plan_rules, RuleRow, rule_version  # noqa: E402
@@ -874,7 +823,6 @@ def case_clean_changes_whitelists_and_clamps():
 def case_apply_changes_table():
     P = lambda *ms: {"messages": list(ms)}     # noqa: E731
     table = [
-        # changes, payload, every, enabled → payload messages, every, enabled, diff fields
         ({"unsend_after_hours": 0}, P(_msg(unsend_after_hours=8)), 3600, True,
          [_msg()], 3600, True, ["unsend_after_hours"]),
         ({"unsend_after_hours": 2}, P(_msg(), _msg(unsend_after_hours=8)), 3600, False,
@@ -887,8 +835,8 @@ def case_apply_changes_table():
         ({"price": 15, "media_count": 3}, P(_msg()), 3600, True,
          [_msg(price=15, media_count=3)], 3600, True, ["price", "media_count"]),
         ({"disable_rule": True}, P(_msg()), 3600, True, [_msg()], 3600, False, ["is_enabled"]),
-        ({"disable_rule": True}, P(_msg()), 3600, False, [_msg()], 3600, False, []),      # already off
-        ({"unsend_after_hours": 0}, P(_msg()), 3600, True, [_msg()], 3600, True, []),     # already no unsend
+        ({"disable_rule": True}, P(_msg()), 3600, False, [_msg()], 3600, False, []),
+        ({"unsend_after_hours": 0}, P(_msg()), 3600, True, [_msg()], 3600, True, []),
     ]
     for ch, payload, every, enabled, want_msgs, want_every, want_enabled, fields in table:
         before = json.dumps(payload)
@@ -920,12 +868,9 @@ def case_apply_changes_table():
 
 
 def case_live_is_decided_on_the_server_over_every_message():
-    """rwl W30 S1: the card read only the first message's prior value — msg1 online-only off, msg2 on, change
-    "online only off" → msg2 now goes to every fan, yet no LIVE. `live` is now per diff, over every prior value."""
     P = lambda *ms: {"messages": list(ms)}     # noqa: E731
     media = {"media_folder_id": 1}
     table = [
-        # changes, messages, every, enabled → live per diff field
         ({"online_only": False}, [_msg(), _msg(online_only=True)], 3600, True, {"online_only": True}),
         ({"online_only": False}, [_msg(), _msg(online_only=True)], 3600, False, {"online_only": False}),
         ({"exclude_last_chat_hours": 2}, [_msg(exclude_last_chat_hours=1), _msg(exclude_last_chat_hours=6)], 3600,
@@ -939,7 +884,6 @@ def case_live_is_decided_on_the_server_over_every_message():
         ({"every_seconds": 7200}, [_msg()], 3600, True, {"every_seconds": False}),
         ({"price": 10}, [_msg(**media)], 3600, True, {"price": True}),
         ({"unsend_after_hours": 0}, [_msg(unsend_after_hours=8)], 3600, True, {"unsend_after_hours": False}),
-        # switched off in the same change: nothing sends more
         ({"every_seconds": 1800, "disable_rule": True}, [_msg()], 3600, True,
          {"every_seconds": False, "is_enabled": False}),
     ]
@@ -949,14 +893,13 @@ def case_live_is_decided_on_the_server_over_every_message():
 
 
 def case_online_only_off_also_clears_filters_online():
-    # the sender reads filters.online as online-only too (review P1): off must clear it, never a silent no-op
     m = _msg(filters={"online": 1})
     out, _, _, diffs = apply_changes("mass_premade", {"messages": [m]}, 3600, True, {"online_only": False})
     assert "filters" not in out["messages"][0] and [d["field"] for d in diffs] == ["online_only"], (out, diffs)
     m = _msg(filters={"online": "1", "min_spent": 5})
     out, *_ = apply_changes("mass_premade", {"messages": [m]}, 3600, True, {"online_only": False})
     assert out["messages"][0]["filters"] == {"min_spent": 5}, out
-    try:   # online fans were its only audience: clearing it would send to nobody
+    try:
         apply_changes("mass_premade", {"messages": [{"text": "hi", "filters": {"online": 1}}]}, 3600, True,
                       {"online_only": False})
         raise AssertionError("expected Skip")
@@ -991,7 +934,6 @@ def case_plan_groups_rules_per_model_and_counts_already_and_skipped():
 
 
 def case_a_non_latin_or_empty_rule_name_never_selects_every_rule():
-    # rwl W30 F6: "夜" normalised to "" = generic = all rules
     rows = [RuleRow(1, "a", "夜のマス", "mass_premade", json.dumps({"messages": [_msg(unsend_after_hours=8)]}),
                     '{"every_seconds": 3600}', True),
             RuleRow(2, "a", "Morning", "mass_premade", json.dumps({"messages": [_msg(unsend_after_hours=8)]}),
@@ -1008,14 +950,11 @@ def case_a_non_latin_or_empty_rule_name_never_selects_every_rule():
 
 
 def case_every_prior_value_shows_with_its_count_and_one_formatter_speaks_for_card_and_summary():
-    """rwl W30 F7+F12: $5 and $50 on one rule both show (never only the first message's); the summary, the
-    card head and each diff line are the server's one wording."""
     from assistant_edit import apply_changes, change_lines, diff_text
     msgs = [{"text": "a", "user_lists": ["fans"], "media_folder_id": 1, "price": p} for p in (5, 50, 50)]
     d = apply_changes("mass_premade", {"messages": msgs}, 3600, True, {"price": 10})[3]
     assert d[0]["befores"] == [{"value": 5, "count": 1}, {"value": 50, "count": 2}], d
     assert d[0]["text"] == "Price $5 (1 message), $50 (2 messages) → $10", d
-    # every message already at the target → no diff; a mix where one already matches still lists both
     assert apply_changes("mass_premade", {"messages": msgs[1:]}, 3600, True, {"price": 50})[3] == []
     d = apply_changes("mass_premade", {"messages": msgs}, 3600, True, {"price": 50})[3]
     assert d[0]["text"] == "Price $5 (1 message), $50 (2 messages) → $50", d
@@ -1031,7 +970,7 @@ def case_a_mass_edit_draft_is_not_vetoed_and_resolves_the_change_spec():
     v = assistant_draft.vetoed
     assert v("pause my Morning mass", refine=False) and not v("pause my Morning mass", refine=False,
                                                                flow="mass_edit")
-    assert v("pause my auto posting", refine=False, flow="mass_edit")     # another feature, no mass word
+    assert v("pause my auto posting", refine=False, flow="mass_edit")
     intent = {"flow": "mass_edit", "edit": {"scope": "all", "match": None, "changes": {
         "unsend_after_hours": 0, "online_only": None, "every": None, "exclude_last_chat_hours": None,
         "price": None, "media_count": None, "disable_rule": None}}, "assumptions": [], "unresolved": []}
@@ -1040,7 +979,6 @@ def case_a_mass_edit_draft_is_not_vetoed_and_resolves_the_change_spec():
         "scope": "all", "match": None, "changes": {"unsend_after_hours": 0},
         "change_lines": ["Unsend after → never"], "rules": [], "already": 0, "skipped": []}, o
     assert "Unsend after → never" in o.answer and "every model" in o.answer, o.answer
-    # price on every model: dropped + said; nothing else left → the "what I can do" sentence
     intent["edit"]["changes"] = {"price": 20}
     o = assistant_draft.interpret(json.dumps(intent), request="set price to $20 on every model's auto mass",
                                   lists=[], folders=[], existing=[])
@@ -1050,7 +988,6 @@ def case_a_mass_edit_draft_is_not_vetoed_and_resolves_the_change_spec():
                                   existing=[])
     assert o.draft.slots["changes"] == {"unsend_after_hours": 0}, o.draft.slots
     assert assistant_edit.ONE_MODEL_NOTE in o.draft.unresolved, o.draft.unresolved
-    # scope "all" without a word naming several models → this model, said (eval: "pause all auto masses")
     o = assistant_draft.interpret(json.dumps(intent), request="pause all auto masses", lists=[], folders=[],
                                   existing=[])
     assert o.draft.slots["scope"] == "this" and assistant_draft.ONLY_THIS_NOTE in o.draft.assumptions, o.draft
@@ -1066,8 +1003,6 @@ EA, EB, EC = "acc_edit_a", "acc_edit_b", "acc_edit_c"
 
 
 async def _seed_edit() -> dict[str, int]:
-    """Three models with an hourly Auto mass, unsend 8h. A on, B off; C's
-    caller has no Auto Mass opt-in (patched per case)."""
     ids = {}
     async with get_session() as s:
         for aid, on in ((EA, True), (EB, False), (EC, True)):
@@ -1088,7 +1023,6 @@ async def _rule(rid: int) -> AutomationRule:
 
 
 def case_nothing_to_change_counts_already_and_skipped_with_reasons():
-    # rwl W30 M15: "already" used to hide the skipped rules and why
     base = {"scope": "this", "match": None, "changes": {"unsend_after_hours": 0}, "rules": []}
     sk = [{"id": i, "name": f"R{i}", "reason": "has no message to change"} for i in range(1, 5)]
     both = assistant_draft.edit_nothing_answer({**base, "already": 2, "skipped": sk[:1]})
@@ -1101,7 +1035,6 @@ def case_nothing_to_change_counts_already_and_skipped_with_reasons():
 
 
 async def case_unauthed_scope_all_never_widens_past_the_focused_model():
-    # rwl W30 M14: no clamp (unauthed dev hatch) used to query every account's rules in the DB
     ids = await _seed_edit()
     intent = {"flow": "mass_edit", "edit": {"scope": "all", "match": None,
                                             "changes": {"unsend_after_hours": 0}}}
@@ -1118,7 +1051,7 @@ async def case_unauthed_scope_all_never_widens_past_the_focused_model():
     finally:
         auth._request_user.reset(token)
         assistant_draft.opt_in_refusal = real
-        async with get_session() as s:            # the later cases count the seeded rules
+        async with get_session() as s:
             for rid in ids.values():
                 await s.delete(await s.get(AutomationRule, rid))
     accts = {r["account_id"] for r in out["slots"]["rules"]}
@@ -1158,12 +1091,11 @@ async def case_the_owner_phrase_edits_every_opted_in_model_and_nothing_else():
     for r, on in ((a, True), (b, False)):
         msg = json.loads(r.steps_json)["messages"][0]
         assert "unsend_after_hours" not in msg and msg["text"] == "hi", msg
-        assert r.is_enabled is on, (r.id, r.is_enabled)              # never enabled, never disabled
+        assert r.is_enabled is on, (r.id, r.is_enabled)
     assert json.loads(c.steps_json)["messages"][0]["unsend_after_hours"] == 8, c.steps_json
 
 
 async def case_an_edit_plans_and_applies_only_on_models_with_the_auto_mass_opt_in():
-    # rwl W30 F1: B grants Auto Story only — `can_do` says yes there, but its mass rules stay off the card
     ids = await _seed_edit()
     intent = {"flow": "mass_edit", "edit": {"scope": "all", "match": None,
                                             "changes": {"unsend_after_hours": 0}}}
@@ -1200,8 +1132,6 @@ async def case_an_edit_plans_and_applies_only_on_models_with_the_auto_mass_opt_i
 
 
 async def case_every_model_says_how_many_models_the_role_cannot_edit():
-    # rwl W30 C2: "every model" silently dropped the models without the Auto Mass opt-in (a bulk switch-off
-    # left them running, card said "Every model you manage", zero skips)
     await _seed_edit()
     real = assistant_draft.opt_in_refusal
 
@@ -1224,11 +1154,10 @@ async def case_every_model_says_how_many_models_the_role_cannot_edit():
     assert out["flow"] == "mass_edit" and note in out["unresolved"], out
     assert {r["account_id"] for r in out["slots"]["rules"]} == {EA}, out["slots"]["rules"]
     assert none["flow"] is None and none["answer"].endswith(note), none
-    assert "Hourly b" not in json.dumps(out) and "Hourly c" not in json.dumps(none)   # no rule names
+    assert "Hourly b" not in json.dumps(out) and "Hourly c" not in json.dumps(none)
 
 
 async def case_rules_past_the_cap_are_matched_first_and_a_cut_is_said():
-    # rwl W30 F3: the cap used to slice BEFORE the name match — a named rule past it vanished silently
     aid = "acc_edit_cap"
     async with get_session() as s:
         if await s.get(Account, aid) is None:
@@ -1258,7 +1187,7 @@ async def case_apply_skips_a_rule_changed_since_the_plan_and_reapplies_to_the_fr
     ids = await _seed_edit()
     a = await _rule(ids[EA])
     seen = rule_version(a.account_id, a.steps_json, a.trigger_json, a.is_enabled)
-    async with get_session() as s:                    # someone edits the rule after the card showed it
+    async with get_session() as s:
         r = await s.get(AutomationRule, ids[EA])
         r.steps_json = json.dumps({"messages": [_msg(unsend_after_hours=8, text="edited")]})
     res = await assistant_draft.edit_apply(assistant_draft.EditApplyBody(
@@ -1271,7 +1200,7 @@ async def case_apply_skips_a_rule_changed_since_the_plan_and_reapplies_to_the_fr
         changes={"unsend_after_hours": 0, "disable_rule": True, "payload": {"messages": []}}))
     assert res["changed"] == 1, res
     a = await _rule(ids[EA])
-    assert json.loads(a.steps_json) == {"messages": [_msg(text="edited")]}, a.steps_json   # fresh row kept
+    assert json.loads(a.steps_json) == {"messages": [_msg(text="edited")]}, a.steps_json
     assert a.is_enabled is False
 
 
@@ -1299,7 +1228,6 @@ async def _refs(ids: list[int]) -> list[dict]:
 
 
 async def case_a_rule_that_fails_to_validate_or_write_is_its_own_skip():
-    # rwl W30 F4: a 422 / DB error on rule 2 used to escape the loop after rule 1 committed
     import automation_rules_api
     ids = await _seed_rules("acc_edit_f4", 3)
     real = automation_rules_api._validate_payload_for_kind
@@ -1327,8 +1255,6 @@ async def case_a_rule_that_fails_to_validate_or_write_is_its_own_skip():
 
 
 async def case_an_edit_committed_between_read_and_write_is_never_overwritten():
-    # rwl W30 F5: the version was checked on the already-loaded row; an operator's commit after the load was
-    # overwritten and apply said ok. The operator commits while the per-rule opt-in check awaits.
     (rid,) = await _seed_rules("acc_edit_f5", 1)
     theirs = json.dumps({"messages": [_msg(unsend_after_hours=8, text="operator edit")]})
 
@@ -1344,8 +1270,6 @@ async def case_an_edit_committed_between_read_and_write_is_never_overwritten():
 
 
 async def case_a_reused_rule_id_on_another_model_is_never_the_planned_rule():
-    # rwl W30 C1: a planned rule deleted, its id reused by a same-payload rule on another model → the old
-    # "this model" plan's switch-off used to land on the other model's rule
     (rid,) = await _seed_rules("acc_edit_c1a", 1)
     (ref,) = await _refs([rid])
     async with get_session() as s:
@@ -1405,7 +1329,6 @@ def case_create_extras_are_clamped_and_need_a_folder():
 
 
 
-# ── auto_story (spec D13) ─────────────────────────────────────────────
 
 def _story(**over) -> dict:
     d = {"flow": "auto_story", "folder": {"want": "named", "name": "Daytime"}, "every": None,
@@ -1428,14 +1351,14 @@ def case_a_story_draft_needs_a_story_word_and_is_never_an_edit_or_a_mass():
                 "change my auto story to every 2 hours", "delete my auto story", "turn on my auto story",
                 "show my message history"):
         assert v(req), req
-    assert v("auto story every 3 hours", refine=True)                     # a refine is of an Auto mass plan
+    assert v("auto story every 3 hours", refine=True)
     o = assistant_draft.interpret(json.dumps(_story()), request="change my auto story to every 2 hours",
                                   lists=[], folders=[], existing=[])
     assert (o.flow, o.answer) == (None, assistant_draft.UNSUPPORTED_ANSWER), o
 
 
 def case_story_slots_are_clamped_and_default_like_the_blank_form():
-    rows = [   # intent overrides → (mode, times, every_hours, per_run, hours_to_live, max_runs)
+    rows = [
         ({}, ("clock", ["09:00"], 6, 1, 6, None)),
         ({"times": ["21:00", "9:00", "9", "25:00", "x"]}, ("clock", ["09:00", "21:00"], 6, 1, 6, None)),
         ({"times": ["6pm", "12am", "12 PM", "9:30 a.m.", "13pm"]}, ("clock", ["00:00", "09:30", "12:00", "18:00"], 6, 1, 6, None)),
@@ -1545,7 +1468,6 @@ async def case_a_folder_named_like_mass_does_not_veto_a_story():
                                   refine=False, flow=assistant_draft.STORY_FLOW)
 
 
-# ── report_export (ultra-mode ticket 02) ──────────────────────────────
 
 from assistant_draft import REPORT_FLOW  # noqa: E402
 from assistant_report import ReportCtx, resolve_export, resolve_name  # noqa: E402
@@ -1572,28 +1494,27 @@ def _export(**over) -> dict:
 
 def case_report_names_resolve_uniquely_or_stay_unresolved():
     opts = list(CREATORS)
-    table = [("Luna", "a1", None),            # exact wins over containment ("Luna B")
+    table = [("Luna", "a1", None),
              ("luna b", "a2", None), ("mia", "a3", None), ("Mia Rose OF", "a3", None), ("a4", "a4", None),
              ("lun", None, '"lun" could be Luna or Luna B — say which Creator.'),
-             ("Lunna", None, 'No Creator called "Lunna" — name one of yours.'),   # close spelling never resolves
+             ("Lunna", None, 'No Creator called "Lunna" — name one of yours.'),
              ("Bob", None, 'No Creator called "Bob" — name one of yours.'),
              ("", None, 'Which Creator is ""?')]
     for want, key, problem in table:
         assert resolve_name(want, opts, "Creator") == (key, problem), (want, resolve_name(want, opts, "Creator"))
-    dup = [("x1", "Kim"), ("x2", "Kim")]                   # two Creators with one nickname: never a guess
+    dup = [("x1", "Kim"), ("x2", "Kim")]
     assert resolve_name("Kim", dup, "Creator")[0] is None
 
 
 def case_resolve_export_table():
     d, why = _rx({"dataset": "sales", "window": None, "creators": []})
-    assert why is None and d.slots["recipe"]["creators"] == [] and d.unresolved == [], (d, why)   # all of them
+    assert why is None and d.slots["recipe"]["creators"] == [] and d.unresolved == [], (d, why)
     assert assistant_report.WHEN_NOTE in d.assumptions, d.assumptions
-    assert d.slots["recipe"]["window"] == {"from": "2026-10-15", "to": "2026-11-13"}, d.slots     # fixed at draft
+    assert d.slots["recipe"]["window"] == {"from": "2026-10-15", "to": "2026-11-13"}, d.slots
     assert d.slots["window"] == {"from": "2026-10-15", "to": "2026-11-13", "tz": "Europe/London"}
     assert d.slots["filename"] == "sales_2026-10-15_to_2026-11-13.csv" and d.slots["format"] == "csv"
     assert d.slots["columns"] == ["Creator", "Gross ($)", "Net or 80% ($)", "Sales"], d.slots["columns"]
     assert d.slots["labels"]["creators"] == [] and d.slots["labels"]["all_creators"] == 4
-    # Names: resolved → ids + labels; ambiguous → unresolved and NO recipe (Download off), never all Creators.
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia", "Kim"]})
     assert (d.slots["recipe"]["creators"], d.slots["labels"]["creators"]) == (["a3", "a4"], ["Mia Rose", "Kim"])
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia", "lun"]})
@@ -1602,14 +1523,12 @@ def case_resolve_export_table():
     assert d.slots["recipe"]["employees"] == [2] and d.slots["labels"]["employees"] == ["Marco"], d.slots
     d, _ = _rx({"dataset": "chat_activity", "window": {"preset": "today"}, "employees": ["Marc"]})
     assert d.slots["recipe"] is None and "Marco or Marco Polo" in d.unresolved[0], d
-    # Kinds as the model writes them; xlsx only when the request says so.
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "kinds": ["Tips", "PPVs"], "format": "xlsx"},
                request="export tips and ppv to excel")
     assert (d.slots["recipe"]["kinds"], d.slots["format"]) == (["tip", "ppv"], "xlsx"), d.slots
     assert d.slots["labels"]["kinds"] == ["Tips", "PPV"] and d.slots["filename"].endswith(".xlsx")
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "format": "xlsx"}, request="export sales")
     assert d.slots["format"] == "csv", d.slots
-    # Refusals: a restriction that does not parse never widens the report.
     for report, needle in [
         ({"dataset": "messages", "window": {"preset": "today"}}, "dataset: not available; nearest is chat_activity"),
         ({"dataset": "sales", "window": {"preset": "today"}, "kinds": ["refunds"]}, "kinds: unknown kind refunds"),
@@ -1623,11 +1542,9 @@ def case_resolve_export_table():
         d, why = _rx(report)
         assert d is None and why and needle in why, (report, why)
     assert _rx(None) == (None, assistant_report.NO_REPORT_ANSWER)
-    # Only sort / limit are dropped, each with a line why.
     d, why = _rx({"dataset": "fan_spend", "window": {"preset": "today"}, "sort": "planet", "limit": 0})
     assert why is None and d.slots["recipe"]["sort"] is None and d.slots["recipe"]["limit"] is None, (d, why)
     assert any("couldn't sort by" in a for a in d.assumptions) and any("Every row" in a for a in d.assumptions)
-    # No Creators at all, or more than a report takes with none named: unresolved.
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}}, creators=())
     assert d.slots["recipe"] is None and "no Creators" in d.unresolved[0], d.unresolved
     many = tuple((f"c{i}", f"Creator {i}") for i in range(60))
@@ -1637,7 +1554,7 @@ def case_resolve_export_table():
 
 def case_a_malformed_restriction_refuses_and_never_widens():
     base = {"dataset": "sales", "window": {"preset": "today"}}
-    for kinds in ("", False, 0, {}, "tip"):                 # F2: never read as "all kinds"
+    for kinds in ("", False, 0, {}, "tip"):
         d, why = _rx({**base, "kinds": kinds})
         assert d is None and why == "I can't make that report — kinds: a list of kinds.", (kinds, why)
     for key, bad, needle in [("filters", {"minimum_spend": 1000}, "filters: unknown field"),
@@ -1651,7 +1568,7 @@ def case_a_malformed_restriction_refuses_and_never_widens():
     d, why = _rx({**base, "employees": {}})
     assert d is None and "employees: sales has no Employees" in why, why
     for absent in ({}, {"kinds": None, "group_by": None, "metrics": None, "creators": None, "employees": None}):
-        d, why = _rx({**base, **absent})                     # absent / null = the dataset's default
+        d, why = _rx({**base, **absent})
         assert why is None and d.slots["recipe"]["kinds"] == [] and d.slots["recipe"]["creators"] == [], (absent, why)
     d, why = _rx({"dataset": "sales", "window": None})
     assert why is None and assistant_report.WHEN_NOTE in d.assumptions, why
@@ -1660,7 +1577,7 @@ def case_a_malformed_restriction_refuses_and_never_widens():
 def case_a_name_the_model_widened_stays_a_question():
     two_mias = (("a1", "Mia Rose"), ("a2", "Mia Lux"), ("a3", "Luna"))
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
-               request="export today's sales for Mia", creators=two_mias)      # F3: "Mia" is two Creators
+               request="export today's sales for Mia", creators=two_mias)
     assert d.slots["recipe"] is None and d.unresolved == ['"Mia" could be Mia Rose or Mia Lux — say which Creator.'], d
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
                request="export today's sales for mia rose", creators=two_mias)
@@ -1670,9 +1587,8 @@ def case_a_name_the_model_widened_stays_a_question():
                request="export Mia's sales", creators=exact)
     assert d.slots["recipe"] is None and "Mia or Mia Rose" in d.unresolved[0], d
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
-               request="export Mia's sales")                               # one Mia: resolves
+               request="export Mia's sales")
     assert d.slots["recipe"]["creators"] == ["a3"] and d.unresolved == [], d
-    # F20: a short name widens too — "Li" (2 letters), "李" (one character, a whole word of the name)
     for short, rose, lux in (("Li", "Li Rose", "Li Lux"), ("李", "李 Rose", "李 Lux")):
         two = (("a1", rose), ("a2", lux), ("a3", "Luna"))
         d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": [rose]},
@@ -1680,30 +1596,30 @@ def case_a_name_the_model_widened_stays_a_question():
         assert d.slots["recipe"] is None and d.unresolved == [f'"{short}" could be {rose} or {lux} — say which '
                                                               'Creator.'], d
         d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": [rose]},
-                   request=f"export {short} sales today", creators=two[::2])  # one of them: resolves
+                   request=f"export {short} sales today", creators=two[::2])
         assert d.slots["recipe"]["creators"] == ["a1"] and d.unresolved == [], d
     d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}, "creators": ["Mia Rose"]},
-               request="give me a report on her")                          # "a": no name's word, not a question
+               request="give me a report on her")
     assert d.slots["recipe"]["creators"] == ["a3"] and d.unresolved == [], d
 
 
 def case_a_name_the_model_shortened_is_the_longer_one_or_a_question():
     today = {"dataset": "sales", "window": {"preset": "today"}}
     mias = (("a1", "Mia"), ("a2", "Mia Rose"), ("a3", "Luna"))
-    d, _ = _rx({**today, "creators": ["Mia"]}, request="export Mia Rose's sales", creators=mias)   # F22
+    d, _ = _rx({**today, "creators": ["Mia"]}, request="export Mia Rose's sales", creators=mias)
     assert d.slots["recipe"]["creators"] == ["a2"] and d.unresolved == [], d
     d, _ = _rx({"dataset": "employee_sales", "window": {"preset": "today"}, "employees": ["Anna"]},
                request="export Anna Lee's sales", employees=((1, "Anna"), (2, "Anna Lee")))
     assert d.slots["recipe"]["employees"] == [2] and d.unresolved == [], d
-    d, _ = _rx({**today, "creators": ["Mia"]}, request="export Mia's sales", creators=mias)   # exact: no question
+    d, _ = _rx({**today, "creators": ["Mia"]}, request="export Mia's sales", creators=mias)
     assert d.slots["recipe"]["creators"] == ["a1"] and d.unresolved == [], d
     d, _ = _rx({**today, "creators": ["Mia", "Mia Rose"]}, request="export Mia and Mia Rose", creators=mias)
-    assert d.slots["recipe"]["creators"] == ["a1", "a2"] and d.unresolved == [], d                # both named
+    assert d.slots["recipe"]["creators"] == ["a1", "a2"] and d.unresolved == [], d
     d, _ = _rx({**today, "creators": ["Mia", "Rose"]}, request="export Mia, Rose",
-               creators=(*mias, ("a4", "Rose")))                                                  # a list, not "Mia Rose"
+               creators=(*mias, ("a4", "Rose")))
     assert d.slots["recipe"]["creators"] == ["a1", "a4"] and d.unresolved == [], d
     d, _ = _rx({**today, "creators": ["Lee"]}, request="export Anna Lee Kim",
-               creators=(("a1", "Lee"), ("a2", "Anna Lee"), ("a3", "Lee Kim")))                   # two longer: ask
+               creators=(("a1", "Lee"), ("a2", "Anna Lee"), ("a3", "Lee Kim")))
     assert d.slots["recipe"] is None and d.unresolved == ['"Lee" could be Lee or Anna Lee or Lee Kim — say which '
                                                           'Creator.'], d
     d, _ = _rx({**today, "creators": ["李"]}, request="导出李明的销售", creators=(("a1", "李"), ("a2", "李明")))
@@ -1712,7 +1628,7 @@ def case_a_name_the_model_shortened_is_the_longer_one_or_a_question():
 
 def case_names_match_in_any_script_and_short_parts_never_widen():
     opts = [(1, "Anna"), (2, "李"), (3, "Žana"), (4, "Zoë")]
-    assert resolve_name("Žan", opts, "Employee") == (3, None)          # not Anna (F4: "an" ⊂ "anna")
+    assert resolve_name("Žan", opts, "Employee") == (3, None)
     assert resolve_name("Zan", opts, "Employee") == (3, None)
     assert resolve_name("李", opts, "Employee") == (2, None)
     assert resolve_name("zoe", opts, "Employee") == (4, None)
@@ -1722,12 +1638,12 @@ def case_names_match_in_any_script_and_short_parts_never_widen():
 
 def case_employee_sales_with_a_shared_creator_is_a_question():
     d, why = _rx({"dataset": "employee_sales", "window": {"preset": "today"}}, shared={"a3"})
-    assert why is None and d.slots["recipe"] is None, (d, why)               # F15: Download off, never a 400
+    assert why is None and d.slots["recipe"] is None, (d, why)
     assert d.unresolved == ["Mia Rose is shared with another Agency — employee sales can't read it yet; "
                             "name your other Creators."], d.unresolved
     d, _ = _rx({"dataset": "employee_sales", "window": {"preset": "today"}, "creators": ["Luna"]}, shared={"a3"})
     assert d.slots["recipe"]["creators"] == ["a1"] and d.unresolved == [], d
-    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}}, shared={"a3"})   # sales reads shared ones
+    d, _ = _rx({"dataset": "sales", "window": {"preset": "today"}}, shared={"a3"})
     assert d.slots["recipe"] is not None and d.unresolved == [], d
 
 
@@ -1769,7 +1685,6 @@ def case_no_creator_keeps_an_export_or_its_refusal_and_asks_for_a_creator_otherw
     refused = general({**export, "report": {"dataset": "weather"}}, "export the weather", _ctx())
     assert refused.flow is None and refused.answer.startswith("I can't make that report"), refused
     assert general(export, "export sales").error == "not_allowed"
-    # An edit with nothing usable still asks for a Creator (it was an account flow), not UNSUPPORTED.
     assert general({"flow": "mass_edit"}, "edit my mass").answer == ad.PICK_CREATOR_ANSWER
     assert general(_story(), "post a story every 4 hours").answer == ad.PICK_CREATOR_ANSWER
     assert general({"flow": None}, "send a one-off mass").answer == ad.UNSUPPORTED_ANSWER
@@ -1825,7 +1740,6 @@ async def case_general_focus_is_a_report_only_and_owners_only():
     finally:
         auth._request_user.reset(token)
     assert (out["flow"], out["answer"]) == (None, assistant_draft.PICK_CREATOR_ANSWER), out
-    # A chatter (or the anonymous dev admin) with no Creator: a sentence, no completion.
     spy = _patch(_Spy(json.dumps(_export())))
     real = assistant_draft.get_request_chatter
     assistant_draft.get_request_chatter = lambda: object()
@@ -1837,12 +1751,11 @@ async def case_general_focus_is_a_report_only_and_owners_only():
         None, "not_allowed", assistant_draft.EXPORT_NOT_ALLOWED_ANSWER), out
     assert spy.calls == [], "a chatter bought a completion"
     try:
-        await draft(DraftBody(request="export sales"))       # nobody signed in, no Creator
+        await draft(DraftBody(request="export sales"))
     except HTTPException as e:
         assert e.status_code == 401, e.status_code
     else:
         raise AssertionError("an anonymous General draft sailed through")
-    # On a Creator, a non-owner's export draft is refused after the call.
     await _seed()
     _patch(_Spy(json.dumps(_export())))
     out = await _draft("export sales")
@@ -1858,7 +1771,7 @@ async def case_an_owner_on_a_creator_exports_all_creators_and_a_report_is_never_
         refined = await draft(DraftBody(request="export sales", account_id="acc_x_luna", previous={"name": "x"}))
     finally:
         auth._request_user.reset(token)
-    assert out["flow"] == REPORT_FLOW and out["slots"]["recipe"]["creators"] == [], out   # all, not the focused one
+    assert out["flow"] == REPORT_FLOW and out["slots"]["recipe"]["creators"] == [], out
     assert out["slots"]["labels"]["all_creators"] == 2, out["slots"]["labels"]
     assert refined["flow"] is None, refined
 
@@ -1873,7 +1786,7 @@ async def case_an_owner_keeps_the_account_gate_and_report_names_ride_only_report
     try:
         spy = _patch(_Spy(json.dumps(_pilot_intent())))
         assistant_draft.opt_in_refusal = refuse
-        out = await draft(DraftBody(request=PILOT, account_id="acc_x_luna"))   # F7: no report word, no call
+        out = await draft(DraftBody(request=PILOT, account_id="acc_x_luna"))
         assert (out["error"], out["answer"]) == ("not_allowed", assistant_draft.NOT_ALLOWED_ANSWER), out
         assert spy.calls == [], "a refused owner bought a completion"
         spy = _patch(_Spy(json.dumps({"flow": None})))
@@ -1881,17 +1794,16 @@ async def case_an_owner_keeps_the_account_gate_and_report_names_ride_only_report
         assert (out["error"], out["answer"]) == ("not_allowed", assistant_draft.NOT_ALLOWED_ANSWER), out
         _patch(_Spy(json.dumps(_export())))
         out = await draft(DraftBody(request="export sales", account_id="acc_x_luna"))
-        assert out["flow"] == REPORT_FLOW, out                                  # an export is not the account's gate
+        assert out["flow"] == REPORT_FLOW, out
         assistant_draft.opt_in_refusal = real
         spy = _patch(_Spy(json.dumps(_pilot_intent())))
         await draft(DraftBody(request=PILOT, account_id="acc_x_luna"))
-        assert "CREATORS:" not in spy.calls[0]["messages"][1]["content"]       # F13: a mass ask reads no names
+        assert "CREATORS:" not in spy.calls[0]["messages"][1]["content"]
     finally:
         assistant_draft.opt_in_refusal = real
         auth._request_user.reset(token)
 
 
-# ── full_ai_config (phase 03c, ticket 55) ──────────────────────────────
 
 def _config_shots() -> list[tuple[str, str]]:
     reqs = re.findall(r"^REQUEST: (.*)$", assistant_draft._FEWSHOTS, re.M)
@@ -1907,7 +1819,6 @@ def case_interpret_parses_the_full_ai_config_fewshots():
     assert [o.draft.slots for o in got] == [
         {"set": {"reply_speed": "0-15-60"}}, {"set": {"gifs": False}},
         {"set": {"writers": ["euryale-v2.3", "hermes-4-405b"]}}], [o.draft.slots for o in got]
-    # An empty patch is no config draft.
     empty = interpret('{"flow": "full_ai_config", "config": {"set": {}}}', request="reply slower",
                       lists=[], folders=[], existing=[])
     assert (empty.flow, empty.draft) == (None, None), empty
@@ -1924,7 +1835,6 @@ def case_vetoed_keeps_full_ai_config_only_on_a_config_word():
 
 
 def case_config_word_matches_every_config_key_and_writer_model():
-    """Built from the schema: a new DEFAULTS key or Writer model with no word fails here."""
     from automations.full_ai_config import DEFAULTS, WRITER_MODELS
     keys = [k for k in DEFAULTS if k not in assistant_full_ai.LOCKED_KEYS]
     assert set(keys) == set(assistant_full_ai.CONFIG_KEYS), keys

@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Proxy health (roadmap 2.14, service/proxy_health.py + proxy_probe.py).
-
-Pins (the probes and the Test button: test_proxy_probe.py; failover and
-the pool binding: test_proxy_failover.py): DOWN_AFTER
-errors in a row start a confirm probe: when it answers the proxy is a blip
-(count restarts, nothing announced); when it fails the proxy is bad (`down`),
-announced as `proxy_switched` {down} to each Creator on it, and rechecked
-with backoff. One answer brings it back up (announced too); a healthy proxy
-staying healthy writes nothing. A ProxyError out of OFClient._http_call
-counts as an error and an answer as a success. /admin/proxies carries the
-pool's `bad` count, /admin/accounts carries `proxy_down`. The confirm waits CONFIRM_GAP_S
-after the streak's first error and is skipped when an answer reset the count
-meanwhile (a blip); a proxy gone from the registry ends its watcher. A
-proxy back up mid-recheck and at DOWN_AFTER again is confirmed by the same
-watcher; a streak right after a watcher's end starts the next. Only a
-full-policy failure counts (test_proxy_retry_interactive). The periodic probe is off
-unless PROXY_HEALTH_INTERVAL_S is set, and probes only proxies a Creator is on.
-
-No network: the curl session, the probe and the OF client's http are fakes;
-the watcher runs inline (`_spawn`) and never sleeps (`_sleep`).
-
-Run:  ./venv/bin/python service/tests/test_proxy_health.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -45,8 +22,6 @@ from _proxy_health_fixtures import (  # noqa: E402
 
 def case_down_after_consecutive_errors_confirmed_and_back_up():
     _registry()
-    # The confirm fails; the first recheck "wait" is an answer through the proxy
-    # (a Creator still on it), which ends the watcher.
     with _Events() as ev, _Watch(False) as w:
         _fail("hu-1", proxy_health_decide.DOWN_AFTER - 1)
         snap = proxy_health.snapshot("hu-1")
@@ -77,9 +52,6 @@ def case_confirm_that_answers_is_a_blip():
 
 
 def case_confirm_waits_and_a_blip_that_ends_meanwhile_probes_nothing():
-    """F5: three counted failures inside one blip. The confirm would go through
-    the same blip, so it waits CONFIRM_GAP_S from the streak's first error; any
-    answer through the proxy meanwhile ends the streak without a probe."""
     _registry()
     with _Events() as ev, _Watch(False) as w:
         proxy_health._sleep = _then(lambda: proxy_health.record("hu-1", True))
@@ -103,7 +75,7 @@ def case_recheck_backoff_then_back_up():
             _fail("hu-1")
     finally:
         os.environ.pop(proxy_health.RECHECK_ENV, None)
-    assert w.probed == ["hu-1"] * 4, w.probed   # confirm + 3 rechecks
+    assert w.probed == ["hu-1"] * 4, w.probed
     assert w.slept[1:] == [5, 10, 20], w.slept
     assert 0 < w.slept[0] <= proxy_health.CONFIRM_GAP_S * 5 / proxy_health.RECHECK_S, w.slept
     snap = proxy_health.snapshot("hu-1")
@@ -113,22 +85,17 @@ def case_recheck_backoff_then_back_up():
 
 
 def _through_during_the_confirm(then=lambda: None):
-    """A `proxy_probe.probe_of` wrapper (inside `_Watch`): on the confirm probe, an OF call through the proxy
-    answers first, then `then()` runs, then the probe answers as scripted."""
     inner = proxy_probe.probe_of
 
     def _probe(p, timeout_s=15):
         proxy_health.record(p["label"], True)
         then()
-        proxy_probe.probe_of = inner   # once
+        proxy_probe.probe_of = inner
         return inner(p, timeout_s)
     proxy_probe.probe_of = _probe
 
 
 def _new_streak_confirmed_after_its_gap(w, ev) -> None:
-    """The first confirm's probe failed after a call got through and a whole new streak: not bad; the same
-    watcher waits a full CONFIRM_GAP_S from the new streak's first error, its confirm fails: bad. The
-    recheck then answers: back up."""
     gap = proxy_health.confirm_gap_s()
     assert w.probed == ["hu-1"] * 3, f"confirm, the new streak's confirm, one recheck: {w.probed}"
     assert [round(s, 6) for s in w.slept[:3]] == [gap, 0.0, gap], \
@@ -140,9 +107,6 @@ def _new_streak_confirmed_after_its_gap(w, ev) -> None:
 
 
 def case_failed_confirm_after_a_call_got_through_is_not_bad():
-    """ADR 0030: a call that got through while the confirm probed means the proxy is not bad, even
-    though the probe itself failed. With a whole new streak since, the same watcher confirms that one
-    CONFIRM_GAP_S after its first error (nobody is left watching a proxy at DOWN_AFTER)."""
     _registry()
     with _Events() as ev, _Watch(False) as w:
         _through_during_the_confirm()
@@ -152,15 +116,12 @@ def case_failed_confirm_after_a_call_got_through_is_not_bad():
         assert not snap["down"] and snap["state"] == "healthy" and not proxy_health._watchers, snap
     _registry()
     with _Events() as ev, _Watch(False, False) as w:
-        _through_during_the_confirm(lambda: _fail("hu-1"))   # a new streak lands during the probe
+        _through_during_the_confirm(lambda: _fail("hu-1"))
         _fail("hu-1")
         _new_streak_confirmed_after_its_gap(w, ev)
 
 
 def case_confirm_is_for_the_streak_it_waited_on():
-    """The streak a confirm probes for is the one its wait was decided on, in the same lock section: a
-    reset and a whole new streak landing after that decision, before the probe, make a failed probe
-    not bad, and the new streak gets its own full CONFIRM_GAP_S (no confirm sooner)."""
     _registry()
     real_step, injected = proxy_health._step, []
 
@@ -182,8 +143,6 @@ def case_confirm_is_for_the_streak_it_waited_on():
 
 
 def case_confirm_waits_again_for_a_streak_that_restarted_in_the_wait():
-    """N5: the streak ended and a new one began during the confirm's wait:
-    the confirm waits CONFIRM_GAP_S from the new streak's first error."""
     _registry()
     with _Watch(False, True) as w:
         waits: list[tuple[float, list[str]]] = []
@@ -203,8 +162,6 @@ def case_confirm_waits_again_for_a_streak_that_restarted_in_the_wait():
 
 
 def case_one_endpoint_counts_once_custom_or_pool():
-    """F7: an endpoint held as a custom entry (verified) and as a pool entry
-    (not yet) is one egress: its custom bindings make the pool entry used."""
     a, b, c = _pool()
     pa = proxies.get_by_label(a)
     proxies.upsert({"label": "same", "scheme": "socks5", "host": pa["host"], "port": pa["port"]})
@@ -238,8 +195,6 @@ def case_proxies_list_counts_bad_pool():
 
 
 def case_health_view_shows_cross_agency_totals_to_the_site_owner_only():
-    """The refusal window's counts and the in-flight counts are every Agency's traffic through the proxy:
-    the site owner sees them, an Agency's owner the share alone, on custom and pool rows alike."""
     import proxies_admin_api
     h = {"state": "bad", "down": True, "errors": 2, "bad_reason": "flapping", "inflight": 3, "inflight_peak": 9,
          "refusals": {"window_s": 600.0, "refused": 31, "calls": 100, "pct": 31.0}}
@@ -321,7 +276,7 @@ def case_of_calls_feed_the_state():
         raise curl_requests.exceptions.ProxyError("CONNECT tunnel failed, response 403")
     c = _bare_client(_refused)
     with _Events(), _Watch(False) as w:
-        proxy_health._sleep = _then(None, lambda: proxy_health.record("hu-1", True))  # ends the watcher
+        proxy_health._sleep = _then(None, lambda: proxy_health.record("hu-1", True))
         for _ in range(proxy_health_decide.DOWN_AFTER):
             try:
                 c._http_call("GET", "https://onlyfans.com/api2/v2/users/me")
@@ -331,7 +286,7 @@ def case_of_calls_feed_the_state():
                 raise AssertionError("the ProxyError must still reach the caller")
         assert w.probed == ["hu-1"], "three refused calls confirm with one probe"
         _fail("hu-1", proxy_health_decide.DOWN_AFTER - 1)
-        proxy_health._state["hu-1"]["down"] = True   # as after a failed confirm
+        proxy_health._state["hu-1"]["down"] = True
         ok = _bare_client(lambda url, **kw: types.SimpleNamespace(headers={}, ok=True, status_code=200))
         ok._http_call("GET", "https://onlyfans.com/api2/v2/users/me")
     assert not proxy_health.snapshot("hu-1")["down"]
@@ -365,7 +320,6 @@ def case_a_refused_proxy_connect_counts_a_timeout_does_not():
 
 
 def case_watcher_ends_when_the_proxy_is_gone():
-    """F15: a proxy deleted while bad: its watcher stops and its state goes."""
     _registry()
     with _Events(), _Watch(False):
         proxy_health._sleep = _then(None, lambda: proxies.remove("hu-1"))
@@ -374,12 +328,6 @@ def case_watcher_ends_when_the_proxy_is_gone():
 
 
 def case_an_error_right_after_the_watchers_last_step_starts_a_new_watcher():
-    """N1: the watcher's last step releases its claim in its own lock section (Unwatch), so a streak's
-    DOWN_AFTER-th error landing right after that decide, before the watcher has returned, starts a new
-    watcher. A blip the confirm's wait outlasts (an answer resets the count: ConfirmDue ends the
-    watcher), then the proxy dies for good: DOWN_AFTER errors injected just after that ConfirmDue's
-    decide. Measured red with the claim released in `_watch`'s finally (the proxy left at DOWN_AFTER
-    errors, nobody watching)."""
     _registry()
     real_step, ends, spawned = proxy_health._step, [], []
 
@@ -392,14 +340,14 @@ def case_an_error_right_after_the_watchers_last_step_starts_a_new_watcher():
         nxt = real_step(label, _seen)
         if not ends and nxt is None and isinstance(seen[0], proxy_health_decide.ConfirmDue):
             ends.append(seen[0])
-            _fail(label)   # dead for good: the whole streak lands right at the watcher's end
+            _fail(label)
         return nxt
     try:
         proxy_health._step = _step
         with _Events() as ev, _Watch(False, True) as w:
             inline = proxy_health._spawn
             proxy_health._spawn = lambda fn, name: (spawned.append(name), inline(fn, name))
-            proxy_health._sleep = _then(lambda: proxy_health.record("hu-1", True))   # the blip ends in the wait
+            proxy_health._sleep = _then(lambda: proxy_health.record("hu-1", True))
             _fail("hu-1")
     finally:
         proxy_health._step = real_step
@@ -411,10 +359,6 @@ def case_an_error_right_after_the_watchers_last_step_starts_a_new_watcher():
 
 
 def case_back_at_the_bar_during_a_recheck_sleep_is_confirmed_by_the_same_watcher():
-    """F1: bad, the watcher sleeps before a recheck; a call answers (back up), then DOWN_AFTER errors land
-    with the claim still held (no new watcher). The waking watcher goes back to the confirm phase: the
-    confirm fails (bad again), the next recheck answers. Measured red with the recheck's not-down
-    branch ending the watcher (the proxy left at DOWN_AFTER errors, nobody watching)."""
     _registry()
     spawned: list[str] = []
     with _Events() as ev, _Watch(False, False, True) as w:
@@ -431,7 +375,7 @@ def case_back_at_the_bar_during_a_recheck_sleep_is_confirmed_by_the_same_watcher
 def case_a_watcher_that_raises_releases_its_claim():
     _registry()
     spawned: list[str] = []
-    proxy_health.log.disabled = True   # its traceback, logged on purpose
+    proxy_health.log.disabled = True
     try:
         with _Watch() as w:
             proxy_health._spawn = lambda fn, name: (spawned.append(name), fn())
@@ -448,22 +392,16 @@ def case_a_watcher_that_raises_releases_its_claim():
 
 
 def case_concurrent_errors_start_one_watcher_and_one_failover():
-    """Two errors at once at the DOWN_AFTER-th: `_step` claims the label under its lock, so exactly one
-    watcher is spawned; that watcher, run after the race with a probe that never answers, calls
-    failover_pool once at the first failover due point. The interleaving is forced, not hoped for: A's
-    claim (`_watchers.add`) starts B and holds until B is blocked on the lock (the claim is inside it: B
-    then sees the claim) or B's error is through (it is not: B decided before the claim and spawned a
-    second watcher). Measured red every run with `_watchers.add` moved out of the lock."""
     import threading
     real_lock, real_watchers, real_failover = proxy_health._lock, proxy_health._watchers, proxies.failover_pool
-    b_moved = threading.Event()   # B is blocked on the lock, or its whole error went through
+    b_moved = threading.Event()
     racer: list[threading.Thread] = []
 
     def _b():
         proxy_health.record("hu-1", False, "CONNECT tunnel failed, response 403")
         b_moved.set()
 
-    class _Lock:   # the real lock; tells A when B has to wait for it
+    class _Lock:
         def __enter__(self):
             if not real_lock.acquire(blocking=False):
                 if racer and threading.current_thread() is racer[0]:
@@ -474,7 +412,7 @@ def case_concurrent_errors_start_one_watcher_and_one_failover():
         def __exit__(self, *_):
             real_lock.release()
 
-    class _Claims(set):   # A's claim lets B race first
+    class _Claims(set):
         def add(self, label):
             if not racer:
                 racer.append(threading.Thread(target=_b))
@@ -489,9 +427,8 @@ def case_concurrent_errors_start_one_watcher_and_one_failover():
         proxies.failover_pool = lambda label, **_: failovers.append(label) or []
         with _Events() as ev, _Watch(dead={"hu-1"}):
             proxy_health._spawn = lambda fn, name: spawned.append((name, fn))
-            # the confirm's wait, two recheck waits (the 2nd failed recheck fails over), then it leaves
             proxy_health._sleep = _then(None, None, None, lambda: proxies.remove("hu-1"))
-            _fail("hu-1", proxy_health_decide.DOWN_AFTER)   # A: its DOWN_AFTER-th error claims the label
+            _fail("hu-1", proxy_health_decide.DOWN_AFTER)
             assert racer, "A's claim did not go through _watchers.add under the lock: the race never ran"
             racer[0].join(10)
             assert not racer[0].is_alive()
@@ -531,9 +468,6 @@ def case_accounts_list_flags_proxy_down():
 
 
 def case_accounts_list_reads_each_binding_once_and_survives_an_unbind():
-    """One registry read per account, the reason from that read's label: an unbind between reads (the old
-    second `get_for_account(...)["label"]`) cannot 500, a failover between them cannot borrow another
-    proxy's reason. 101 on flapping hu-1, 102 unbound when read, 201 on nothing."""
     _registry()
     import server
     import accounts_admin_api
@@ -584,9 +518,7 @@ def case_probe_all_only_creator_proxies():
     assert probed == ["hu-1"], "the unbound proxy is not probed"
 
 
-# ── refusal telemetry and the flap knob ──
 def _refused_then(n: int):
-    """A raw call refused `n` times (ProxyError), then answering."""
     left = [n]
 
     def fn():
@@ -603,7 +535,7 @@ def case_refusal_window_counts_every_attempt_and_prunes():
     proxy_health._now = lambda: clock[0]
     try:
         c = _bare_client(lambda url, **kw: None)
-        OFClient._proxy_retry(c, _refused_then(2), policy=RetryPolicy(3, 0.0, False))   # refused, refused, ok
+        OFClient._proxy_retry(c, _refused_then(2), policy=RetryPolicy(3, 0.0, False))
         from curl_cffi.const import CurlECode
 
         def _timeout():
@@ -627,7 +559,7 @@ def case_refusal_window_counts_every_attempt_and_prunes():
         real_cap, proxy_health._WINDOW_CAP = proxy_health._WINDOW_CAP, 5
         try:
             for i in range(8):
-                proxy_health._sample("hu-1", i < 3)   # 3 refused then 5 ok: the cap keeps the last 5
+                proxy_health._sample("hu-1", i < 3)
             assert proxy_health.refusals("hu-1")["refused"] == 0 and proxy_health.refusals("hu-1")["calls"] == 5
         finally:
             proxy_health._WINDOW_CAP = real_cap
@@ -642,8 +574,8 @@ def case_inflight_counts_concurrent_attempts():
     seen = []
 
     def fn():
-        gate.wait(5)        # all n inside fn
-        gate.wait(5)        # the main thread has read inflight
+        gate.wait(5)
+        gate.wait(5)
         return types.SimpleNamespace(ok=True)
     c = _bare_client(lambda url, **kw: None)
     threads = [threading.Thread(target=OFClient._proxy_retry, args=(c, fn)) for _ in range(n)]
@@ -664,18 +596,15 @@ def case_inflight_counts_concurrent_attempts():
 
 
 def case_flap_knob_on_by_default_zero_turns_it_off():
-    """Env unset: the knob is FLAP_PCT_DEFAULT (20, the owner's 2026-11-05 call): the 20th attempt at >= 20 %,
-    refusals in 3 tenths of the window, marks the pool proxy bad (bad_reason "flapping"). PROXY_FLAP_BAD_PCT=0
-    turns it off: the same window marks nothing and `flapping` is False."""
     a, b, c = _pool()
     os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
     assert proxy_health.flap_bad_pct() == proxy_health.FLAP_PCT_DEFAULT == 20.0
     with _Events() as ev, _Watch():
-        _spread_refusals(a, 15, 4)                               # 19 attempts, 21 %: too few to judge
+        _spread_refusals(a, 15, 4)
         assert not proxy_health.snapshot(a)["down"] and ev.seen == []
         spawned = []
-        proxy_health._spawn = lambda fn, name: spawned.append(fn)   # the watcher as a thread: not run here
-        proxy_health._sample(a, True)                            # the 20th, 25 %: bad
+        proxy_health._spawn = lambda fn, name: spawned.append(fn)
+        proxy_health._sample(a, True)
         snap = proxy_health.snapshot(a)
         assert snap["state"] == "bad" and snap["bad_reason"] == "flapping" and len(spawned) == 1, snap
         assert [(e[1]["account_id"], e[1]["down"]) for e in ev.seen] == [("1", True), ("4", True)], ev.seen
@@ -693,27 +622,22 @@ def case_flap_knob_on_by_default_zero_turns_it_off():
 
 
 def case_flap_knob_marks_bad_fails_over_and_clears_below_half():
-    """PROXY_FLAP_BAD_PCT=30: the 20th attempt at >= 30 %, refusals in 3 tenths of the window, marks the pool
-    proxy bad (no confirm; bad_reason "flapping"); each recheck probe answers, but while the rate (its own sample
-    counted) stays >= 15 % (half: hysteresis, over >= 20 attempts) it is a failed one: the second
-    moves its Creators (the existing failover); 21 % still fails; the first under 15 % brings it back."""
     a, b, c = _pool()
     os.environ[proxy_health.FLAP_PCT_ENV] = "30"
     os.environ[proxy_health.RECHECK_ENV] = "5"
     try:
         with _Events() as ev, _Watch() as w:
-            _spread_refusals(a, 13, 6)                           # 19 attempts, 31.6 %: too few to judge
+            _spread_refusals(a, 13, 6)
             assert not proxy_health.snapshot(a)["down"] and ev.seen == []
             spawned = []
-            proxy_health._spawn = lambda fn, name: spawned.append(fn)   # as a thread: after the announce
-            proxy_health._sample(a, True)                        # the 20th, 35 %: bad
+            proxy_health._spawn = lambda fn, name: spawned.append(fn)
+            proxy_health._sample(a, True)
             snap = proxy_health.snapshot(a)
             assert snap["state"] == "bad" and snap["bad_reason"] == "flapping" and len(spawned) == 1, snap
             assert [(e[1]["account_id"], e[1]["down"]) for e in ev.seen] == [("1", True), ("4", True)], ev.seen
 
             def oks(n):
                 return lambda: [proxy_health._sample(a, False) for _ in range(n)]
-            # rechecks: 7/21 33 %, 7/22 32 % (failover), +10 ok: 7/33 21 % (>= 15: still bad), +15 ok: 7/49 14 %
             proxy_health._sleep = _then(None, None, oks(10), oks(15))
             spawned[0]()
     finally:
@@ -728,8 +652,6 @@ def case_flap_knob_marks_bad_fails_over_and_clears_below_half():
 
 
 def case_flap_blip_or_down_streak_is_not_flap_bad():
-    """A short full outage (25 refusals at 100 % inside 10 s: one or two tenths of the window) is the ADR path's
-    (the 30 s confirm), never FlapBad; nor is a proxy with a DOWN_AFTER streak open (its confirm owns it)."""
     _registry()
     os.environ[proxy_health.FLAP_PCT_ENV] = "30"
     try:
@@ -739,7 +661,7 @@ def case_flap_blip_or_down_streak_is_not_flap_bad():
                 _advance(0.4)
             assert not proxy_health.snapshot("hu-1")["down"] and ev.seen == [], "a blip: no FlapBad"
             proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "errors": proxy_health_decide.DOWN_AFTER}
-            proxy_health._watchers.add("hu-1")   # its confirm is under way
+            proxy_health._watchers.add("hu-1")
             _spread_refusals("hu-1", 0, 9)
             assert not proxy_health.snapshot("hu-1")["down"] and ev.seen == [], "the streak's confirm owns it"
     finally:
@@ -747,8 +669,6 @@ def case_flap_blip_or_down_streak_is_not_flap_bad():
 
 
 def case_flap_failover_never_moves_onto_a_flapping_proxy():
-    """Herd guard: every pool proxy refusing (b, c at 25 % over 3 tenths: under the knob, so not bad, but over
-    half of it) and a goes flap-bad: its failover finds no destination (their probes would answer), nobody moves."""
     a, b, c = _pool()
     os.environ[proxy_health.FLAP_PCT_ENV] = "30"
     os.environ[proxy_health.RECHECK_ENV] = "5"
@@ -771,15 +691,12 @@ def case_flap_failover_never_moves_onto_a_flapping_proxy():
 
 
 def case_flap_hysteresis_probe_class_and_bad_reason():
-    """Still flapping down to X/2 % over >= FLAP_MIN_CALLS attempts, never marked bad below X, with no recency
-    rule (it holds until the window drains); knob off: never flapping, even at 100 %; a probe timeout is in
-    neither column, a refused one is; outage-bad reads "down"."""
     _registry()
     os.environ[proxy_health.FLAP_PCT_ENV] = "30"
     clock, real = [time.time()], proxy_health._now
     proxy_health._now = lambda: clock[0]
     try:
-        for refused, flapping in ((2, False), (3, True), (5, True)):   # of 20: 10 %, 15 % (= half), 25 %
+        for refused, flapping in ((2, False), (3, True), (5, True)):
             proxy_health._tele.clear()
             for i in range(20):
                 proxy_health._sample("hu-1", i < refused)
@@ -825,7 +742,7 @@ def case_verify_pick_judges_by_probe_of_and_fills_the_region_once():
 
 def case_a_login_attach_never_waits_on_the_region_trace():
     a, b, c = _pool()
-    with _Watch(True) as w:   # every geo unknown: a failover's verify would trace once
+    with _Watch(True) as w:
         p, kept = proxy_health.assign_pool("7", random.Random(1))
     assert w.probed == [p["label"]] and w.traced == [], f"attach: one probe_of, no trace: {w.traced}"
     assert proxy_health.last_geo(p) is None

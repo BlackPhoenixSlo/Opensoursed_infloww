@@ -1,29 +1,3 @@
-"""vault_ai_actions — the Vault-AI actions layer schema
-
-Revision ID: 0049_vault_ai_actions
-Revises: 0048_vault_of_search
-Create Date: 2026-07-20
-
-Adds the durable substrate for the suggest-only "actions" layer on top of the
-already-shipped describe/mirror substrate:
-
-  * vault_items.story_score / .tip_vault_score  — AI 0-100 ranks pairing the
-    existing story_suitable / tip_vault_flag booleans (feats 5 & 6).
-  * account_ai_config.vault_ai_config_json      — per-account config blob
-    (cadence, tier→price bands, folders, daily reminder). Shape frozen in
-    plans/VAULT_AI_ACTIONS_CONTRACT.md.
-  * vault_ai_review_items  — pending AI-proposed ACTIONS (folder | ppv |
-    reminder) awaiting operator approval. Descriptions auto-apply and are NOT
-    queued here. baseline_json enables stale-approval detection.
-  * vault_daily_usage      — ACCOUNT-level image-rotation history for the daily
-    reminder (distinct from fan-scoped VaultSend); record only after a send
-    succeeds.
-
-Additive + idempotent (inspector-guarded, house convention): init_db's
-create_all + boot ADD-COLUMN catch-up may already have applied any of these on
-a create_all-built DB whose alembic_version lags, so every step is guarded by
-an existence check.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -43,7 +17,6 @@ def upgrade() -> None:
     inspector = sa.inspect(bind)
     tables = set(inspector.get_table_names())
 
-    # ── Additive columns on existing tables ───────────────────────────────
     if "vault_items" in tables:
         cols = {c["name"] for c in inspector.get_columns("vault_items")}
         if "story_score" not in cols:
@@ -59,14 +32,13 @@ def upgrade() -> None:
                 sa.Column("vault_ai_config_json", sa.Text(), nullable=True),
             )
 
-    # ── New table: review queue (ACTIONS only) ────────────────────────────
     if "vault_ai_review_items" not in tables:
         op.create_table(
             "vault_ai_review_items",
             sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
             sa.Column("account_id", sa.String(),
                       sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
-            sa.Column("kind", sa.String(), nullable=False),  # folder|ppv|reminder
+            sa.Column("kind", sa.String(), nullable=False),
             sa.Column("status", sa.String(), nullable=False, server_default="pending"),
             sa.Column("payload_json", sa.Text(), nullable=False, server_default="{}"),
             sa.Column("baseline_json", sa.Text(), nullable=True),
@@ -79,7 +51,6 @@ def upgrade() -> None:
         op.create_index("ix_vault_ai_review_account_kind",
                         "vault_ai_review_items", ["account_id", "kind", "status"])
 
-    # ── New table: account-level daily image-rotation history ─────────────
     if "vault_daily_usage" not in tables:
         op.create_table(
             "vault_daily_usage",

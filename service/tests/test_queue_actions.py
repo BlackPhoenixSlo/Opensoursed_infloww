@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager queue row actions: publish now, delete, pin.
-
-"Post now" / "Message now" is OF's PUT /api2/v2/schedules/{id}/publish with no
-body, keyed by the schedule item's own id (module 409363 `V9`). Delete goes to
-the entity: DELETE /posts/{id} for a post, DELETE /messages/queue/{id} for a
-message; pin is the POST toggle. Plain-assert, OF faked (no request leaves the
-process).
-
-  case_publish_route_is_registered
-  case_publish_route_calls_the_client
-  case_client_publish_is_a_bodyless_put
-  case_delete_post_and_cancel_message_paths
-  case_of_error_is_502
-
-Run: ./venv/bin/python service/tests/test_queue_actions.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -26,7 +10,6 @@ import server  # noqa: E402
 
 
 def _client():
-    """An OFClient whose every request is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = "4242"
     c.sent = []

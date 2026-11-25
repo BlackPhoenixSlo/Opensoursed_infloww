@@ -1,30 +1,3 @@
-"""phase_d_stats
-
-Revision ID: 0012_phase_d_stats
-Revises: 0011_phase_c_automation_employee
-Create Date: 2026-05-22
-
-Stats-dashboard plumbing:
-
-  • `per_employee_revenue_with_attribution` view — one place that resolves
-    the three tip-attribution cases (PPV+message, tip+message, standalone
-    tip via 7-day lookback to the most recent outbound). Reused by
-    /admin/stats/per-employee and /admin/stats/per-model.
-
-  • `ix_fans_subscription_status` partial index — defensive index for the
-    active-subs snapshot query. `fans.subscription_status` is currently
-    never written (the codebase only reads it via `subscription_expires_at`
-    today), so the active-subs path falls back to expires_at; the index
-    is still cheap insurance for when/if status starts being populated.
-
-SQLite quirk: there's no `CREATE OR REPLACE VIEW`. We DROP + CREATE
-unconditionally so a future migration can change the view schema. Same
-for the index, which lets the migration be re-applied safely.
-
-SQLite version: the standalone-tip CTE uses ROW_NUMBER() (SQLite ≥ 3.25,
-2018). The window function falls outside what very old SQLite supports;
-if that ever becomes a constraint, swap for a correlated subquery.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -94,8 +67,7 @@ WHERE subscription_status IS NOT NULL
 
 
 def upgrade() -> None:
-    # DROP then CREATE so this migration is idempotent AND a future
-    # migration can replace the view definition without manual cleanup.
+    # SQLite has no CREATE OR REPLACE VIEW: DROP then CREATE keeps this re-runnable.
     op.execute(sa.text("DROP VIEW IF EXISTS per_employee_revenue_with_attribution"))
     op.execute(sa.text(_VIEW_SQL))
 

@@ -26,7 +26,10 @@ TRIGGER_KIND = "test"
 JOIN_SRC = "test"
 TEASE_TTL_S = 900
 SIDES = {"checkpoint": "L", "draft": "R"}
+# "0-15-60": most replies near 15 min, none past an hour (spec › Config v1 `reply_speed`).
 _SPEEDS = {"0-2m": lambda r: r.uniform(0, 120), "0-15-60": lambda r: r.triangular(0, 3600, 900)}
+# One settle at a time per account (process-local): the `already_owned` read and the UPDATE are two
+# statements, so two Buys of one piece (an Offer and its haggle re-offer) at once both passed it.
 _SETTLE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -283,6 +286,9 @@ def tease_bubble_ids(rows, tease) -> set:
 
 
 def teased_of(r) -> Teased | None:
+    """Row `r`'s Pick as the Turn reads it (`TurnFacts.tease`, a tease row; `TurnFacts.offer_piece`,
+    the open Offer): its item ref's `subject` and `format`, its `locked` and `previews` media and
+    its `offer_list_cents` and row id; None for None."""
     if r is None:
         return None
     ref = _loads(r.offer_item_ref)
@@ -372,12 +378,29 @@ def expect_n(facts, n: int) -> None:
 
 
 def hold(config: dict, anchor_key: str) -> float:
+    """The reply wait the page shows, drawn from the side's reply speed seeded by `session:n`
+    (replayable). Test never holds: the server never sleeps."""
     seed = anchor_key.removeprefix("test:")
     return round(_SPEEDS[config["reply_speed"]](random.Random(seed)), 1)
 
 
 def send(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | None = None,
          desc: str | None = None) -> None:
+    """Her bubbles onto the row about to be recorded; the row's `mode='test'` marks it a test row.
+    A `pick` (`full_ai_sell.Pick`) lands on the row's Offer columns (0120): price, list, media,
+    item ref with its kind by Route (ADR-0034: tease -> `tease`, price NULL; make_right -> `free`,
+    price 0; a price-0 sell_now Pick, Chat tease's free photo -> `free`; else `offer`); `over` (a haggle row: the open Offer's row id it re-offers, ticket 47)
+    joins the item ref, so `open_offer_of` never opens that Offer again; `desc` (the sext scene:
+    the anchor's description, <= 120 chars) joins it for `purchases_of`;
+    `offer_message_id`, `outcome`, `outcome_at`, `join_src` stay NULL (no send, no settle yet).
+    `offer_media_json` = {locked, previews, items}: `items` is the Pick's `facts["media"]` (each locked
+    then preview item's {id, kind, seconds}), the PPV bubble's kind and length line (`[]` when absent).
+    Unless a tease, it rides the last bubble as `ppv: {ref, price_cents, media, previews}`.
+    One call, one Pick: at most one Offer per row. A make_right row never carries a priced Offer
+    (raises).
+    ASSUMPTION: a tease sends no media (spec 03b: no PPV, no `>>OFFER`; nothing says a preview
+    rides it); its media is stored only so the next Turn can re-validate the teased piece.
+    Overturned if the owner wants the tease to show a free preview."""
     reply = row["reply_json"]
     reply["parts"] = [{"text": p} for p in parts]
     if pick is not None and reply["parts"]:
@@ -475,6 +498,7 @@ async def _existing(s, row: dict) -> int | None:
 
 async def _send_io(row: dict, parts: list[str], pick: Pick | None = None, *, over: int | None = None,
                    desc: str | None = None, gif: dict | None = None) -> None:
+    """`TurnIO.send`: `send`, then the gif part rides the row (nothing leaves the server)."""
     send(row, parts, pick, over=over, desc=desc)
     if gif:
         row["reply_json"]["parts"].append(gif)

@@ -1,15 +1,3 @@
-"""service/split_inbox_api.py — read/write account_ai_config.split_inbox_json.
-
-Split Inbox divides one Creator's Fans into 1 to 9 groups (ADR-0004); the rule
-and its enforcement live in split_inbox.py.
-
-  GET /admin/split-inbox?account_id=   → {account_id, config, my_group}
-       Open to chatters, who get no `chatter_groups`, only `my_group` (their bound
-       group, null when unbound or unsplit). An unset Creator reads one group.
-  PUT /admin/split-inbox               → upsert, returns {account_id, config}
-       Owner-only: a chatter session gets 403, an anonymous one 401. Concurrent
-       saves are last-write-wins.
-"""
 from __future__ import annotations
 
 import json

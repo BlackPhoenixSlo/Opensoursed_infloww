@@ -1,37 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_offer_resolver — the Offer resolver (spec docs/spec/phase-01-full-ai-offer-details.md › B,
-ADR-0038), pure tables over fake Offer rows (SimpleNamespace), plus the OF reply id reader and the
-Open Offers list helper.
-
-  case_quote_reply_older_card       Quote-reply to an older card with a newer one open -> the older
-                                    card, step quote_reply, by message id (live) and by row id (test)
-  case_price_*                      "the $20 one" -> that row; same price x2 -> none, unless a media
-                                    cue narrows it; no price match: one open -> it, two open -> none
-  case_media_*                      the one holding the kind (newest open on a tie); an older bought
-                                    video wins "the video"; no video -> the open one; previews ignored
-  case_open_offer_wins_unless_referenced      rwl3 A5: an Offer open, "is it a video?" / "is this
-                                    $20?" stay on it; "the video", "the one i bought" name the older
-  case_price_tie_prefers_open_row   2 price matches, one open, no reference -> the open row
-  case_no_cue_newest_open_and_no_candidates   newest open; nothing open / no rows -> none
-  case_pending_tease_is_open_candidate        open, price NULL ("no price named yet")
-  case_lookback_bounds              11th newest and 8-day-old rows out; a 30 h one named by price in
-  case_quoted_price_is_rows_not_folder        the row's offer_price_cents
-  case_live_drops_unconfirmed_priced_rows     live: priced + no offer_message_id never a candidate
-  case_open_offers_list_matches_single_fold   open_offers_of's last == open_offer_of, every row set
-  case_live_open_ids                <= 24 h, priced only with an OF message id
-  case_reply_to_id                  replyToMessage.id, replyToMessageId, neither, non-dict
-  case_offer_facts_captions         her ppv bubble text, a tease's text bubbles (rwl3 N3)
-  case_check_*                      ticket 04 (D): `offer_answer_ok` tables (counts beside previews,
-                                    media nouns, durations, dollars incl. spelled, "free", none)
-  case_fallback_*                   `offer_fallback`: the fact clause, a tease, a Free item, a clip,
-                                    missing media ("can't confirm" with no price), none ("which one?");
-                                    each worded one passes #808's Writer floor and `copied`
-
-Run: ./venv/bin/python service/tests/test_full_ai_offer_resolver.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import json  # noqa: E402
 from dataclasses import replace  # noqa: E402
@@ -50,7 +20,6 @@ NOW = datetime(2026, 11, 16, 12, 0)
 
 def _row(rid: int, *, price: int | None = 2000, kinds=("photo",), ago_h: float = 1, omid: int | None = None,
          outcome: str | None = None, status: str = "sent", tease: bool = False, previews=()):
-    """A Full AI Decision row carrying one Offer (a tease: price NULL, item kind `tease`)."""
     locked = [rid * 10 + i for i in range(len(kinds))]
     prev = [rid * 10 + 5 + i for i in range(len(previews))]
     items = [{"id": m, "kind": k, "seconds": 30 if k == "video" else None}
@@ -118,9 +87,6 @@ def case_media_older_bought_video():
 
 
 def case_open_offer_wins_unless_referenced():
-    """rwl3 A5: with an Offer open, a kind or price he merely asks about is no reference; only a
-    definite one ("the video", "the $20 one") or a past-Offer word ("bought", "before") names an
-    older row. Nothing open: the cue alone still names it."""
     rows = [_row(1, price=2000, kinds=("video",), ago_h=30, outcome="bought"), _row(2, price=5000, ago_h=1)]
     for text, want in (("is it a video?", (2, "open_offer")), ("is this $20?", (2, "open_offer")),
                        ("is it $20 babe", (2, "open_offer")), ("a video or pics?", (2, "open_offer")),
@@ -130,7 +96,6 @@ def case_open_offer_wins_unless_referenced():
         assert _resolve(rows, text, open_ids={2}) == want, (text, _resolve(rows, text, open_ids={2}), want)
     assert _resolve(rows, "is it a video?") == (1, "media"), "nothing open: the cue names it"
     assert _resolve(rows, "is this $20?") == (1, "price")
-    # rwl3 round 2: "that" before a bare price is the question, not a reference.
     priced = [_row(1, price=2000, ago_h=30, outcome="bought"), _row(2, price=5000, ago_h=1)]
     for text, want in (("is that $20?", (2, "open_offer")), ("that $20 right?", (2, "open_offer")),
                        ("is that 20 bucks", (2, "open_offer")), ("the $20 one", (1, "price")),
@@ -141,8 +106,6 @@ def case_open_offer_wins_unless_referenced():
 
 
 def case_price_tie_prefers_open_row():
-    """rwl3 round 2: 2 price matches, one of them open, no reference -> the open row; a reference
-    ("the $20 one") or both open -> none."""
     rows = [_row(1, price=2000, ago_h=30, outcome="bought"), _row(2, price=2000, ago_h=1)]
     for text in ("is it $20?", "is that $20?", "$20 right?"):
         assert _resolve(rows, text, open_ids={2}) == (2, "price"), (text, _resolve(rows, text, open_ids={2}))
@@ -180,11 +143,11 @@ def case_lookback_bounds():
     rows = [_row(i, price=1000 + i * 100, ago_h=1 + (11 - i)) for i in range(1, 12)]
     ask = build_ask(rows, NOW, frozenset(), None, "")
     assert [r.id for r in ask.candidates] == list(range(2, 12))
-    assert _resolve(rows, "the $11 one") == (None, "none")       # row 1 is the 11th newest
+    assert _resolve(rows, "the $11 one") == (None, "none")
     old = [_row(1, price=2000, ago_h=8 * 24), _row(2, price=3000, ago_h=30)]
     assert [r.id for r in build_ask(old, NOW, frozenset(), None, "").candidates] == [2]
-    assert _resolve(old, "the $20 one") == (None, "none")         # 8 days old
-    assert _resolve(old, "the $30 one") == (2, "price")           # > 24 h, not open, still named
+    assert _resolve(old, "the $20 one") == (None, "none")
+    assert _resolve(old, "the $30 one") == (2, "price")
     assert _resolve(old, "what is in it") == (None, "none")
 
 
@@ -207,7 +170,7 @@ def case_open_offers_list_matches_single_fold():
     over = _row(3, price=1800, ago_h=0.5)
     over.offer_item_ref = json.dumps({**json.loads(over.offer_item_ref), "over": 2})
     owns = _row(5, price=2200, ago_h=0.2)
-    owns.offer_media_json = _row(4).offer_media_json       # same locked ids as bought row 4
+    owns.offer_media_json = _row(4).offer_media_json
     table = [
         ([], [], None),
         ([_row(1)], [1], 1),
@@ -243,7 +206,6 @@ def case_reply_to_id():
 
 
 def case_offer_facts_captions():
-    """rwl3 N3: `captions` is the row's `ppv` bubble text; a tease (no `ppv` bubble) all its text bubbles."""
     row = _row(1)
     row.reply_json = json.dumps({"parts": [{"text": "hey u"}, {"text": "for u babe", "ppv": {"ref": 1}}, {"gif": "x"}]})
     assert offer_facts(row, {}, []).captions == ("for u babe",)
@@ -252,13 +214,10 @@ def case_offer_facts_captions():
     assert offer_facts(tease, {}, []).captions == ("wanna see?", "its spicy")
 
 
-# ── Offer answer check + fallback (ticket 04, D) ──────────────────────
 
-# 3 locked photos + 1 free preview photo at a $25 Quoted price.
 PHOTOS = OfferFacts(locked_kinds={"photo": 3}, locked=3, preview_kinds={"photo": 1}, previews=1, seconds=(),
                     descriptions=("her on the bed",), quoted_cents=2500, sent_at=NOW, bought=False,
                     same_as_first=None, missing=frozenset())
-# One 83 s clip, no previews, $25.
 CLIP = replace(PHOTOS, locked_kinds={"video": 1}, locked=1, preview_kinds={}, previews=0, seconds=(83,))
 SHORT = replace(CLIP, seconds=(2,))
 TEASE = replace(PHOTOS, quoted_cents=None)
@@ -279,13 +238,13 @@ def case_check_counts_beside_previews():
         ("4 pics", PHOTOS, ("count",)),
         ("1 pic", PHOTOS, ("count",)),
         ("1 paid pic", PHOTOS, ("count",)),
-        ("1 pic + 1 free preview", PHOTOS, ("count",)),     # the reach stops at the next count
+        ("1 pic + 1 free preview", PHOTOS, ("count",)),
         ("1 pic and 1 free pic", PHOTOS, ("count",)),
         ("1 paid pic and 1 free pic", PHOTOS, ("count",)),
-        ("the 2nd pic is my fav", PHOTOS, ()),             # an ordinal is no count
+        ("the 2nd pic is my fav", PHOTOS, ()),
         ("my 1st vid", CLIP, ()),
         ("three hot pics", PHOTOS, ()),
-        ("a pic of me", PHOTOS, ()),                 # "a" is no count
+        ("a pic of me", PHOTOS, ()),
         ("3 vids total", CLIP, ("count",)),
         ("1 vid", CLIP, ()),
     ])
@@ -296,7 +255,7 @@ def case_check_media_nouns():
         ("its a video babe", PHOTOS, ("media",)),
         ("its a pic", CLIP, ("media",)),
         ("1 video and 1 free pic", replace(CLIP, preview_kinds={"photo": 1}, previews=1), ()),
-        ("i filmed it for u babe", PHOTOS, ("media",)),        # rwl3 A4: a clip word claims a clip
+        ("i filmed it for u babe", PHOTOS, ("media",)),
         ("just hit play babe", PHOTOS, ("media",)),
         ("i filmed it for u babe", CLIP, ()),
         ("i filmed it for u babe", None, ("none",)),
@@ -328,14 +287,14 @@ def case_check_dollars_and_free():
         ("3 pics for $25 + 1 free preview", PHOTOS, ()),
         ("its free", PHOTOS, ("free",)),
         ("feel free to unlock", PHOTOS, ("free",)),
-        ("its free", CLIP, ("free",)),               # a free preview needs a preview
+        ("its free", CLIP, ("free",)),
         ("its free", TEASE, ("free",)),
         ("$25", TEASE, ("dollars",)),
         ("its free babe", FREE, ()),
         ("$25", FREE, ("dollars",)),
-        ("it was zero dollars babe", PHOTOS, ("dollars",)),     # rwl3 A3: zero is an amount
+        ("it was zero dollars babe", PHOTOS, ("dollars",)),
         ("0 bucks for u", PHOTOS, ("dollars",)),
-        ("and dollars of fun", PHOTOS, ()),                     # no number word: no amount
+        ("and dollars of fun", PHOTOS, ()),
     ])
 
 
@@ -348,7 +307,7 @@ def case_check_none_resolved_and_missing_media():
         ("$25", None, ("none",)),
         ("3 pics", NO_MEDIA, ("none",)),
         ("hmm i cant say babe", NO_MEDIA, ()),
-        ("its $25", NO_MEDIA, ()),                   # the price is the row's fact, not the media's
+        ("its $25", NO_MEDIA, ()),
         ("$30", NO_MEDIA, ("none",)),
         ("$25", replace(NO_MEDIA, quoted_cents=None), ("none",)),
     ])
@@ -357,16 +316,16 @@ def case_check_none_resolved_and_missing_media():
 def case_fallback_fact_clause():
     table = [
         (PHOTOS, "3 pics + 1 free preview, $25"),
-        (TEASE, "3 pics + 1 preview"),                  # no price named yet, never "free"
+        (TEASE, "3 pics + 1 preview"),
         (FREE, "3 pics + 1 preview, free"),
         (replace(CLIP, preview_kinds={"photo": 1}, previews=1), "1 vid + 1 free preview, 83 sec, $25"),
-        (NO_MEDIA, "$25"),                              # no counts, no kinds
-        (replace(NO_MEDIA, quoted_cents=None), "can't confirm what's in it"),   # named, nothing to state
+        (NO_MEDIA, "$25"),
+        (replace(NO_MEDIA, quoted_cents=None), "can't confirm what's in it"),
     ]
     for of, want in table:
         assert offer_fallback(of) == want, (of, offer_fallback(of), want)
     for of in (PHOTOS, TEASE, FREE, CLIP, SHORT, NO_MEDIA, replace(NO_MEDIA, quoted_cents=None),
-               replace(NO_MEDIA, quoted_cents=0)):     # every fact clause passes its own check
+               replace(NO_MEDIA, quoted_cents=0)):
         assert offer_answer_ok(offer_fallback(of), of) == (), (of, offer_fallback(of))
     assert "free" not in offer_fallback(TEASE) and "$" not in offer_fallback(TEASE)
 
@@ -377,10 +336,6 @@ def case_fallback_none_is_which_one():
 
 
 def case_fallback_passes_writer_floor():
-    """#808's Writer floor never runs on the fallback (it goes through the reply chain only), but
-    every worded fallback would pass it: no label / quote strip changes it, `reject` passes it and
-    it copies no run of its own facts block. "$25" (no media) has no letters: the chain ships it
-    (case_d_missing_media_fallback_no_counts), the Writer floor would say `no_letters`."""
     pieces = lambda of: wr.prompt_pieces(wr.offer_facts_block(of))        # noqa: E731
     for of in (PHOTOS, TEASE, FREE, CLIP, SHORT, replace(NO_MEDIA, quoted_cents=None),
                replace(NO_MEDIA, quoted_cents=0), None):

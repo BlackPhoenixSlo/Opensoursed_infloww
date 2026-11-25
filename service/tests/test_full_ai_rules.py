@@ -34,7 +34,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_rules.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -179,7 +179,7 @@ def case_every_router_variant_and_keyset_shown():
         if n.endswith("_STATE_KEYS"):
             assert set(getattr(rj, n)) <= set(keys) or n == "STATE_KEYS", n
     assert "he_likes" in keys and "teases_sent" in keys
-    assert all(v in router_text for v in rj.TEST_NOULS["chat_tease"]["criteria"].values())   # Chat tease wording
+    assert all(v in router_text for v in rj.TEST_NOULS["chat_tease"]["criteria"].values())
     assert {p for p, _ in fr.keysets()} <= set(fr._KEYSET_FLAG), fr.keysets()
     info_text = "\n".join(_strings(_node(p, "get_fan_info")))
     assert ij.LIKES_EXTRACT in info_text
@@ -225,7 +225,6 @@ def case_route_rows_match_decide_turn():
         assert [r[1] for r in rows[1:1 + len(full_ai_decide._FIRST)]] == [q for q, _ in full_ai_decide._FIRST]
         names = {r[1] for r in rows}
         assert {"sell", "tease_price", "sexual_now", "otherwise"} <= names, names
-        # "Broke" routes nothing in any Mode (owner 2026-11-15); the page still names it.
         assert ["declines_buying fired: routes nothing; the Writer may joke", "otherwise", "chat"] in rows, rows
         assert not {"decline", "tease_decline"} & names, names
         assert {"sell_off", "haggle", "scene_offer", "chat_tease"} <= names, names
@@ -271,8 +270,6 @@ def case_cutoff_is_what_fired_applies():
 
 
 def _decider_rows(qids, **fixed) -> set[str]:
-    """Every row `decide_turn` returns over all of Facts' bool flags not `fixed` and every fired set of at
-    most two of `qids`."""
     bools = [f.name for f in fields(full_ai_decide.Facts) if f.type in ("bool", bool) and f.name not in fixed]
     fired = [()] + [(q,) for q in qids] + list(itertools.combinations(qids, 2))
     rows = set()

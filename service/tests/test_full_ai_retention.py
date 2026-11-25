@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Full AI ledger retention (ticket 72, spec phase-04a › Retention, ADR-0034), in db_retention.evict_audit_logs_once:
-non-test `ai_decisions` rows older than FULL_AI_JSON_RETAIN_S (default 90 days) lose `jev_json` + `reply_json` and
-stay; never a `sending` row nor the newest row of its (account, fan, mode). Test rows' shipped 7-day delete pinned.
-W30 #11: a tease-priced row keeps `reply_json.chat_tease.cents` (and nothing else), so `full_ai_test.is_tease` still
-counts it: the live loader folds every row of the Fan (`teases_sent_of`, Spacing), not a 90-day window.
-
-Run: ./venv/bin/python service/tests/test_full_ai_retention.py   (prints "all cases passed")
-"""
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
@@ -28,7 +20,6 @@ _key = iter(range(10**6))
 
 
 def _now() -> datetime:
-    """Naive UTC, as db_retention and the stored column."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -62,7 +53,6 @@ async def _rows() -> dict[int, dict]:
 
 
 def _nulled(before: dict, after: dict) -> bool:
-    """JSON gone, every other column as it was."""
     rest = lambda r: {k: v for k, v in r.items() if k not in ("jev_json", "reply_json")}  # noqa: E731
     return after["jev_json"] is None and after["reply_json"] is None and rest(after) == rest(before)
 
@@ -71,15 +61,13 @@ D = timedelta(days=1)
 
 
 async def case_old_terminal_rows_lose_json_and_stay():
-    """Shadow `planned` and live sent / no_send / failed / unconfirmed rows at 91 days, each with a newer row for
-    the Fan: both JSON NULL, every other column unchanged, row count unchanged. The same at 89 days: untouched."""
     await _reset()
     old = []
     for fan, (mode, status) in enumerate([("shadow", "planned"), ("live", "sent"), ("live", "no_send"),
                                           ("live", "failed"), ("live", "unconfirmed")], start=1):
         old.append(await _add(fan, mode, status, 91 * D))
-        await _add(fan + 100, mode, status, 89 * D)    # 89 days: untouched
-        await _add(fan, mode, "sent", 1 * D)          # the newer row of each Fan / Mode
+        await _add(fan + 100, mode, status, 89 * D)
+        await _add(fan, mode, "sent", 1 * D)
         await _add(fan + 100, mode, "sent", 1 * D)
     before = await _rows()
     res = await db_retention.evict_audit_logs_once()
@@ -93,7 +81,6 @@ async def case_old_terminal_rows_lose_json_and_stay():
 
 
 async def case_newest_row_kept_until_a_newer_one_lands():
-    """The Fan's newest live row at 200 days: untouched; a newer row added: the next pass NULLs it."""
     await _reset()
     lone = await _add(7, "live", "sent", 200 * D)
     res = await db_retention.evict_audit_logs_once()
@@ -115,13 +102,11 @@ async def case_sending_row_untouched():
 
 
 async def case_newest_per_mode_both_kept():
-    """A Fan's newest Shadow row and newest live row (both old) keep their JSON; an older Shadow row of the Fan
-    does not; another Fan's rows do not count as newer."""
     await _reset()
     old_shadow = await _add(9, "shadow", "planned", 300 * D)
     new_shadow = await _add(9, "shadow", "planned", 200 * D)
     new_live = await _add(9, "live", "sent", 150 * D)
-    other = await _add(10, "live", "sent", 150 * D)      # another Fan's lone row: its own newest
+    other = await _add(10, "live", "sent", 150 * D)
     await _add(11, "live", "sent", 1 * D)
     res = await db_retention.evict_audit_logs_once()
     after = await _rows()
@@ -131,7 +116,6 @@ async def case_newest_per_mode_both_kept():
 
 
 async def case_test_rows_deleted_at_7_days_never_nulled():
-    """Shipped: test rows 8 days old deleted, 6 days old kept (with JSON)."""
     await _reset()
     gone = await _add(12, "test", "sent", 8 * D)
     kept = await _add(12, "test", "sent", 6 * D)
@@ -154,7 +138,6 @@ async def case_second_pass_changes_nothing():
 
 
 async def case_batches_until_done():
-    """More rows than a batch: one pass NULLs them all."""
     await _reset()
     db_retention._FULL_AI_JSON_BATCH = 2
     try:
@@ -171,8 +154,6 @@ async def case_batches_until_done():
 
 
 async def case_env_window_and_zero_disables():
-    """FULL_AI_JSON_RETAIN_S=60 in the environment: a 2-minute-old non-newest row is NULLed (a test row of the same
-    age is not: deleted at 7 days, never NULLed and kept). 0 disables the NULLing."""
     await _reset()
     live = await _add(30, "live", "sent", timedelta(minutes=2))
     await _add(30, "live", "sent", timedelta(seconds=5))
@@ -199,9 +180,6 @@ async def case_env_window_and_zero_disables():
 
 
 async def case_old_tease_row_stays_a_tease():
-    """W30 #11: an old offer_moment row priced by the tease price Jev (and a free one, cents 0) keeps only
-    `reply_json.chat_tease.cents`: `is_tease` and `teases_sent_of` read the same before and after; a malformed
-    reply_json is NULLed as before; a second pass changes nothing."""
     await _reset()
     tease = await _add(40, "live", "sent", 120 * D, reply_json='{"chat_tease": {"cents": 300, "options": [0, 300]},'
                        ' "ride": true, "parts": ["hey"]}')

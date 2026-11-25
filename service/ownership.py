@@ -1,41 +1,3 @@
-"""service/ownership.py — the one home for "what does this fan OWN" semantics.
-
-Phase 2 of plan/PREVENTION_FIX_NO_DUPLICATE_PPV.md. This module owns all four
-faces of the concept:
-
-  • the WRITERS — every lane stamps purchases through here;
-  • the READERS — `owned_or_seen_media` (fan → owned media) and
-    `owners_of_media` (media → owning fans), the two dedup checks every
-    seller consults;
-  • the media parsing (`item_media`) the readers share.
-
-It imports only db/sqlalchemy (a dependency root), so automations import it
-freely — which is what killed the old "local mirror of _item_media to avoid a
-circular import" wart in ppv_send.
-
-The writers, which every lane calls:
-
-  • wall-POST purchases (`stamp_post_purchase`) — resolved from OF's purchase
-    notification feed (`type=paided_post`, post id in `{POST_URL}`), media ids
-    from the local `wall_media` scan with a live `get_post` fallback;
-  • chat purchases in ANY lane (`stamp_message_ownership`) — fired wherever
-    `Message.is_paid` flips (ledger linker, relink sweep, purchase
-    notifications): media from the row's `media_ids` JSON when real, else the
-    VaultSend rows the send recorded (teaser/offer lanes), else the mass
-    broadcast cache for placeholder rows;
-  • direct media-id stamps (`stamp_media_owned`) — the primitive the writers
-    above resolve into, callable directly when the caller already holds the
-    real media ids.
-
-Stamps are per-media VaultSend rows with `was_purchased=True`. The table has
-NO unique key, so idempotency is SELECT-first: existing (account, fan, media)
-rows are UPDATEd (Phase 1's rule), only never-sent media get first-time
-INSERTs (a wall-post buy has no send history at all). Re-running any stamp is
-a no-op.
-
-Stamping is deliberately ALL media of the bought unit, previews included: the
-fan holds every file he paid for.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -60,15 +22,11 @@ from db.models import (
 
 log = logging.getLogger("of-relay.ownership")
 
-# A delivered offer counts as OWNED only when the money was real — NEVER a
-# free teaser (resolved_by='free'), or every paid item reusing that media
-# becomes permanently unsellable (product rule: dedup BOUGHT, never
-# sent-that-can-be-resent). The one copy of the predicate all readers share.
+# Owned only when the money was real, never a free teaser: else every paid item reusing that media becomes unsellable.
 OWNED_RESOLVED_BY = ("tip", "ppv_ledger", "ppv_txn", "ppv_fastpath", "manual")
 
 
 def item_media(item: Any) -> list[int]:
-    """Media ids bound to a CatalogItem-shaped row (duck-typed on .media_ids)."""
     try:
         return [int(m) for m in json.loads(item.media_ids or "[]")]
     except Exception:
@@ -76,12 +34,6 @@ def item_media(item: Any) -> list[int]:
 
 
 async def owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
-    """Media we must NOT re-offer this fan: only what he actually OWNS — a tip/PPV
-    unlock (VaultSend.was_purchased) or a paid Message whose media JSON overlaps.
-    Deliberately EXCLUDES anything merely SENT: a free teaser AND an offered-but-
-    UNBOUGHT PPV (whose VaultSend carries price_cents>0 as the ASKED price, not proof
-    of purchase) can both ride again in a future offer. (Product rule: dedup bought,
-    never sent-that-can-be-resent.)"""
     out: set[int] = set()
     async with get_session() as s:
         seen_ids = (await s.execute(
@@ -96,8 +48,7 @@ async def owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
                 Message.fan_id == int(fan_id),
                 Message.is_paid.is_(True))
         )).all()
-        # A NON-FREE delivered content_offer is durable item-level proof of purchase — it survives a
-        # missed/crashed was_purchased flip and covers gate-off accounts (which write no ladder_quote).
+        # A NON-FREE delivered content_offer survives a missed was_purchased flip and covers gate-off accounts.
         delivered_items = (await s.execute(
             select(ContentOffer.item_id).where(
                 ContentOffer.account_id == str(account_id),
@@ -121,35 +72,21 @@ async def owned_or_seen_media(account_id: str, fan_id: int) -> set[int]:
     return out
 
 
-# A priced send must be at least half NEW photography (operator ruling
-# 2026-08-08). Held as an exact FRACTION of the non-preview photo set — it
-# scales with bundle size instead of hard-coding a count, and integer
-# cross-multiplication keeps a money decision away from float rounding (a
-# 0.5 literal makes 1-of-2 a coin toss on the boundary). Move the bar by
-# changing these two, e.g. 2/3.
+# A priced send must be at least half NEW photos (operator ruling); an exact fraction with integer cross-multiplication keeps money off float rounding.
 FRESH_PHOTO_MIN_NUM = 1
 FRESH_PHOTO_MIN_DEN = 2
 
-# The two grounds for blocking. Named constants, not bare literals, because the
-# HTTP layer switches on them to pick the operator's message — a renamed string
-# would otherwise degrade one block into the other's wording with every module
-# still internally consistent and every test still green.
+# Named constants: the HTTP layer switches on them to pick the operator's message.
 RESALE_OWNED_VIDEO = "owned_video"
 RESALE_MOSTLY_OWNED_PHOTOS = "mostly_owned_photos"
 
 
 class ResaleVerdict(NamedTuple):
-    """Why a priced send is — or is not — a re-sale of content the fan holds.
 
-    A NamedTuple rather than a bare set because there are two distinct grounds
-    for blocking and the caller has to tell the operator WHICH one it hit; a
-    set of ids can't carry that, and the counts are what make the photo message
-    actionable ("3 of 4 already bought")."""
-
-    reason: str                 # "" = allow, else a RESALE_* constant
-    owned_videos: list[int]     # already-paid videos anywhere in the send
-    owned_photos: list[int]     # already-paid NON-PREVIEW photos
-    photos_total: int           # non-preview photos the vault mirror could classify
+    reason: str
+    owned_videos: list[int]
+    owned_photos: list[int]
+    photos_total: int
 
     @property
     def blocked(self) -> bool:
@@ -157,8 +94,6 @@ class ResaleVerdict(NamedTuple):
 
     @property
     def owned_media(self) -> list[int]:
-        """The ids this verdict is ABOUT — scoped to the reason, so the payload
-        never lists photos under a message that only mentions video."""
         return (self.owned_videos if self.reason == RESALE_OWNED_VIDEO
                 else self.owned_photos)
 
@@ -169,35 +104,6 @@ async def resale_verdict(
     media_ids: list[int],
     previews: list[int] | None = None,
 ) -> ResaleVerdict:
-    """Judge a PRICED send against what this fan has already paid for.
-
-    The re-sale guard for the human/extension send path
-    (`POST /api/of/v2/chats/{id}/messages`) which — unlike ppv_send, which
-    checks ownership — had no check at all, and
-    re-sold one whale the same two clips four times at a climbing price
-    ($40 → $80 → $100 → $120, ledger-confirmed).
-
-    Two operator rulings, deliberately different in shape:
-
-    • VIDEO is absolute — one already-bought video blocks the send. Checked
-      across the WHOLE media list including previews: a video is never mere
-      filler, even if someone misconfigured it into the preview pool.
-    • PHOTOS are proportional — the non-preview photo set must be at least
-      `FRESH_PHOTO_MIN_NUM/DEN` new. Re-using some stills to frame a fresh set
-      is normal selling; charging again for a set that is mostly his already is
-      the abuse. Previews are excluded because they are the free-visible tease
-      slice, not the thing being sold.
-
-    ⚠️ A paid video listed in `previews` STILL blocks. An OF preview rides
-    unlocked, so strictly he is not being re-charged for it — this is deliberate
-    extra strictness (a video is never mere filler), and the one place
-    this guard is stricter than "is he paying twice". If that ever proves wrong,
-    read the video line off `payload` instead of `target`; nothing else moves.
-
-    Media the vault mirror can't classify counts toward NEITHER rule and is
-    logged: it can't be called a video, and it can't sit in the photo
-    denominator without silently moving the ratio. Blocking a live send on a
-    guess is worse than the miss."""
     target = {int(x) for x in media_ids if x}
     if not target or not fan_id:
         return ResaleVerdict("", [], [], 0)
@@ -224,26 +130,20 @@ def resale_verdict_of(
     kinds: dict[int, str],
     previews: list[int] | None = None,
 ) -> ResaleVerdict:
-    """The pure half of `resale_verdict` (rules in its docstring): `owned` is
-    the fan's `owned_or_seen_media`, `kinds` the vault mirror's media_id→kind
-    (absent = unknown, counted toward no rule)."""
+    # A paid video in `previews` still blocks: deliberately stricter than "paying twice".
+    # Unclassifiable media counts toward neither rule: blocking a live send on a guess is worse than the miss.
     target = {int(x) for x in item_media if x}
     prev = {int(x) for x in (previews or []) if x} & target
-    payload = target - prev            # what the price is actually FOR
+    payload = target - prev
 
     # Videos: the whole list, previews included (a video is never filler).
     owned_videos = sorted(m for m in target
                           if kinds.get(m) == "video" and m in owned)
-    # Photos: the payload only — previews are the free tease slice.
     photos = {m for m in payload if kinds.get(m) == "photo"}
     owned_photos = sorted(photos & owned)
     fresh = len(photos) - len(owned_photos)
 
-    # Only the REASON varies — decide it, then build the verdict once, so the
-    # precedence (a paid video outranks the photo ratio) is stated rather than
-    # implied by return order.
-    # The photo test is cross-multiplied `fresh / total < NUM / DEN`; exactly
-    # half is ALLOWED ("at LEAST 50% unbought"), so the comparison is strict.
+    # Photo test is cross-multiplied; exactly half is ALLOWED, so the comparison is strict.
     stale_photos = (bool(photos) and fresh * FRESH_PHOTO_MIN_DEN
                     < len(photos) * FRESH_PHOTO_MIN_NUM)
     reason = (RESALE_OWNED_VIDEO if owned_videos
@@ -253,15 +153,6 @@ def resale_verdict_of(
 
 
 async def owners_of_media(account_id: str, media_ids: list[int]) -> set[int]:
-    """Fan ids who ALREADY own any of this media — so we never re-pitch/re-sell content a fan holds.
-    THREE signals:
-      1. a `VaultSend.was_purchased is True` row (a tip/PPV unlock in ANY lane — the reliable,
-         lane-independent signal; this is what makes a buy in one lane visible to the mass
-         lane and to the discount-resend guard);
-      2. a NON-FREE delivered `content_offer` whose item media overlaps (durable item-level proof;
-         `resolved_by='free'` teasers are EXCLUDED — a teaser is resendable, not owned);
-      3. a paid `Message` whose per-message `media_ids` JSON overlaps (kept for inbound/real-id rows;
-         inert for pipeline PPVs, which store `media_ids='[]'`)."""
     target = {int(x) for x in media_ids}
     if not target:
         return set()
@@ -319,9 +210,6 @@ async def stamp_media_owned(
     message_id: int | None = None,
     source: str = "",
 ) -> int:
-    """Flip/insert `was_purchased=True` VaultSend rows for every media id.
-    Returns how many media ids were newly stamped (already-True ids count 0).
-    """
     ids = sorted({int(m) for m in media_ids if m})
     if not ids or not fan_id:
         return 0
@@ -365,10 +253,7 @@ async def stamp_media_owned(
     return stamped
 
 
-# post → media resolution cache. Positive entries save an OF GET per repeat
-# sighting of the same purchase notification; negative entries rate-limit the
-# retry for posts OF won't serve (deleted/archived). Process-local — a relay
-# restart just refetches once.
+# Negative entries rate-limit retries for posts OF won't serve (deleted/archived); process-local.
 _POST_MEDIA_TTL_OK = timedelta(hours=24)
 _POST_MEDIA_TTL_MISS = timedelta(hours=1)
 _POST_MEDIA_CACHE_MAX = 512
@@ -378,14 +263,7 @@ _post_media_cache: dict[tuple[str, int], tuple[list[int] | None, datetime]] = {}
 async def media_for_post(
     account_id: str, post_id: int, client: Any = None
 ) -> list[int]:
-    """Media ids of a wall post. LIVE single-post GET first — it is the only
-    COMPLETE source: the `wall_media` scan keys rows by media id and keeps the
-    FIRST-seen post_id (server.py upsert), so a paid post that re-uses media
-    from an earlier post has an incomplete row-set there, and stamping the
-    subset would silently leave the re-used media re-sellable. The scan is the
-    fallback when the live fetch fails/empties (logged as possibly-partial).
-    [] when neither source knows the post — callers must treat that as
-    "cannot stamp, log and move on"."""
+    # Live GET first: wall_media keeps the FIRST-seen post_id, so a post re-using media is incomplete there and stamping the subset leaves media re-sellable.
     key = (str(account_id), int(post_id))
     cached = _post_media_cache.get(key)
     if cached is not None:
@@ -442,13 +320,6 @@ async def stamp_post_purchase(
     price_cents: int = 0,
     client: Any = None,
 ) -> dict[str, Any]:
-    """A fan bought a wall post → own every media id in it. Unresolvable post
-    (never wall-scanned AND the live fetch failed/empty) stamps nothing and
-    logs — being honest beats guessing the wrong media.
-
-    `resolved=False` → the caller should retry on a later sighting (the wall
-    scan / live fetch may land); `resolved=True` → fully handled (stamped may
-    still be 0 when an earlier sighting already stamped everything)."""
     media = await media_for_post(account_id, post_id, client)
     if not media:
         log.info(
@@ -465,15 +336,6 @@ async def stamp_post_purchase(
 async def stamp_message_ownership(
     account_id: str, fan_id: int, message_id: int, *, price_cents: int = 0
 ) -> int:
-    """A priced chat message got PAID → own its media, whatever lane sent it.
-
-    Three cumulative legs (a row can satisfy several; the union is stamped):
-      1. the Message row's own `media_ids` JSON (real ids from WS/scrape rows);
-      2. the VaultSend rows the send recorded under this message id (offer /
-         teaser lanes write these with real ids) — flipped True;
-      3. `mass_run_id` rows (echoed reals AND 5e15 placeholders alike):
-         MassRun.queue_id → MassBroadcastCache.media_json = the blast's media.
-    """
     stamped = 0
     async with get_session() as s:
         msg = (await s.execute(
@@ -499,7 +361,6 @@ async def stamp_message_ownership(
             price_cents=price_cents, message_id=message_id,
             source=f"msg:{message_id}")
 
-    # Leg 2: the send's own VaultSend rows (real media ids, keyed by message).
     async with get_session() as s:
         res = await s.execute(
             update(VaultSend)
@@ -516,7 +377,6 @@ async def stamp_message_ownership(
             "ownership_stamp account=%s fan=%s via=vault_send msg=%s flipped=%d",
             account_id, fan_id, message_id, res.rowcount)
 
-    # Leg 3: mass rows — the blast's media set lives in the broadcast cache.
     if mass_run_id is not None:
         mass_media = await _mass_run_media(account_id, int(mass_run_id))
         if mass_media:
@@ -536,8 +396,6 @@ async def try_stamp_message(
     account_id: str, fan_id: int, message_id: int, *,
     price_cents: int = 0, context: str = "",
 ) -> int:
-    """Best-effort `stamp_message_ownership`: a stamp must never break the
-    tick/poll/sweep it rides on. One uniform failure log; 0 on error."""
     try:
         return await stamp_message_ownership(
             account_id, fan_id, message_id, price_cents=price_cents)
@@ -551,8 +409,6 @@ async def try_stamp_post(
     account_id: str, fan_id: int, post_id: int, *,
     price_cents: int = 0, client: Any = None, context: str = "",
 ) -> dict[str, Any]:
-    """Best-effort `stamp_post_purchase` — same never-raises contract; the
-    error shape (`resolved=False`) leaves the notification retryable."""
     try:
         return await stamp_post_purchase(
             account_id, fan_id, post_id,
@@ -564,8 +420,6 @@ async def try_stamp_post(
 
 
 async def _mass_run_media(account_id: str, mass_run_id: int) -> list[int]:
-    """MassRun → OF queue row in the broadcast cache → media ids. [] when the
-    run never got its queue_id or the cache hasn't seen the row."""
     async with get_session() as s:
         queue_id = (await s.execute(
             select(MassRun.queue_id).where(MassRun.id == int(mass_run_id))

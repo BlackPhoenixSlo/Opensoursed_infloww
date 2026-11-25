@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""OnlyFans Statistics figures per Creator per UTC day (roadmap W5 5.5; service/of_stats_daily.py), and the
-Creator reports' columns per_model reads off them and off the ledger (spenders).
-
-OF is faked: a real OFClient without a session whose `get_json` records every GET and answers from
-service/tests/fixtures/of_statistics_reads.json (the relay's recorded shapes), so the job's reads go through the
-client's own methods and params. No network.
-
-  the fetch          three GETs, read only: Reach's profile stats, the Subscriptions chart by=new and by=renew,
-                     over the last 7 complete UTC days; each chart's points stored per day
-  the shape check    a series not one point per consecutive day (another shape, a weekly bucket) is not stored
-  the upsert         a re-fetch overwrites its series and leaves the roster columns alone
-  the roster         the latest complete crawl's active and renew-on counts land on its UTC day; an unknown status
-                     leaves renew_on NULL
-  the loop's pass    only OnlyFans Creators with a live session; once a day; a failure waits, at most 3 tries a
-                     day, counted on the row; a dead session is flagged and skipped
-  the window         a sum only when every day through yesterday is stored; the new subscriber conversion when
-                     both its series are; renew on at the last day
-  per_model          the spender columns from the ledger, the OF columns from the stored days
-
-Run: ./venv/bin/python service/tests/test_of_stats_daily.py   (exit 0 = green)
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -46,12 +25,10 @@ from test_of_stats_parse import chart, pts  # noqa: E402
 API = of_client.API_BASE
 FIX = json.loads((Path(__file__).parent / "fixtures" / "of_statistics_reads.json").read_text())
 A1, A2, A3, A4 = "7300001", "7300002", "7300003", "7300004"
-NOW = datetime(2026, 10, 3, 12, 0)  # yesterday = 2026-10-02, the fixture's last chart day
+NOW = datetime(2026, 10, 3, 12, 0)
 
 
 def _fake(replies: dict[str, dict] | None = None):
-    """An OFClient whose GETs are recorded and answered from the fixture (or `replies`, keyed by path, then
-    `path?by=`)."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.sent = []
 
@@ -104,12 +81,11 @@ def case_the_fetch_reads_three_charts_and_stores_each_day():
     c = _fake()
     n = asyncio.run(osd.snapshot(A1, c, now=NOW, pause_s=0))
     rng = {"startDate": "2026-09-26 00:00:00", "endDate": "2026-10-02 23:59:59"}
-    subs = {**rng, "startDate": "2026-09-03 00:00:00"}  # the subscriber charts re-read 30 days
+    subs = {**rng, "startDate": "2026-09-03 00:00:00"}
     assert c.sent == [("/users/me/profile/stats", {**rng, "limit": 10}),
                       ("/subscriptions/subscribers/chart", {**subs, "by": "new"}),
                       ("/subscriptions/subscribers/chart", {**subs, "by": "renew"}),
                       ("/earnings/chart", {**rng, "withTotal": "true", **EARN_FILTER})], c.sent
-    # The fixture: visitors 0 on 10-01 and 3 on 10-02; subscribes 0 on 10-01 (both tabs answer it).
     assert n == 2, n
     assert _rows(A1) == {"2026-10-01": (0, 0, 0, None, None), "2026-10-02": (3, None, None, None, None)}, _rows(A1)
 
@@ -119,7 +95,7 @@ def case_a_series_not_one_point_per_day_is_not_stored():
     c = _fake({"/subscriptions/subscribers/chart?by=new": weekly,
                "/users/me/profile/stats": {"chart": {"visitors": "n/a"}}})
     got = osd.fetch_blocking(c, datetime(2026, 9, 26).date(), datetime(2026, 10, 2).date(), pause_s=0)
-    assert set(got) == {"renewals"}, got  # each shape the parser drops: test_of_stats_parse.py
+    assert set(got) == {"renewals"}, got
 
 
 def case_a_refetch_overwrites_its_series_and_keeps_the_roster_columns():
@@ -141,7 +117,6 @@ def case_the_roster_lands_on_its_crawls_day():
 
     async def seed():
         async with get_session() as s:
-            # An older crawl listed a fan who has since lapsed: not active at the latest one.
             s.add(SubscriberSnapshot(account_id=A2, fan_id=1, renew_on=True, seen_at=early))
             for fid, on in ((2, True), (3, True), (4, False)):
                 s.add(SubscriberSnapshot(account_id=A2, fan_id=fid, renew_on=on, seen_at=late))
@@ -173,13 +148,13 @@ def case_the_pass_fetches_only_live_onlyfans_creators_a_few_times_a_day_at_most(
     def tick(at):
         return asyncio.run(osd.tick(now=at, pause_s=0))
     saved = (account_registry.list_accounts, account_registry.get_platform, client_pool.get, osd.earnings_due)
-    osd.earnings_due = _never_due  # the earnings history walk has its own case
+    osd.earnings_due = _never_due
     account_registry.list_accounts = lambda: metas
     account_registry.get_platform = lambda aid: platforms.get(aid, "onlyfans")
     client_pool.get = get
     asyncio.run(account_health.mark_session_dead(A4, "wrong_user"))
     try:
-        assert tick(NOW) == {} and built == [A2], built  # A1 already holds yesterday; A2 fails
+        assert tick(NOW) == {} and built == [A2], built
         assert not asyncio.run(account_health.is_session_dead(A2)), "a proxy blip is no dead session"
         fail["with"] = None
         tick(NOW + timedelta(hours=5))
@@ -188,8 +163,6 @@ def case_the_pass_fetches_only_live_onlyfans_creators_a_few_times_a_day_at_most(
         tick(NOW + timedelta(hours=11))
         assert built == [A2, A2], "yesterday stored: not due again today"
 
-        # The next day both are due. The fixture has no point for it, so A1's fetch stores nothing for
-        # yesterday either: both are capped.
         built.clear()
         fail["with"] = RuntimeError("proxy down")
         day2 = datetime(2026, 10, 4)
@@ -258,7 +231,6 @@ def case_per_model_carries_the_spender_and_of_columns():
     pm = asyncio.run(stats.per_model(from_="2026-10-01", to="2026-10-07", account_id=None, engagement=False))
     row = {m["account_id"]: m for m in pm["per_model"]}
     a1, a3 = row[A1], row[A3]
-    # Fans 1 and 2 bought or tipped; fan 3 only subscribed; fan 4's tip was charged back.
     assert (a1["spenders_count"], a1["avg_spend_per_spender_cents"], a1["avg_spend_per_transaction_cents"]) \
         == (2, 900, 600), a1
     assert (a3["spenders_count"], a3["avg_spend_per_spender_cents"]) == (0, None), a3
@@ -268,8 +240,6 @@ def case_per_model_carries_the_spender_and_of_columns():
 
 
 def case_days_stored_before_the_total_check_are_read_again():
-    """Rows written by the reader of before 2026-10-25 (no `total`, PPV messages at $0) are not OF's days: the
-    reports read the ledger for them, the job asks OF again and overwrites them, with no manual data fix."""
     saved = osd._EARNINGS_HISTORY_DAYS
     osd._EARNINGS_HISTORY_DAYS = 3
     now = datetime(2026, 10, 3, 6)
@@ -295,7 +265,7 @@ def case_days_stored_before_the_total_check_are_read_again():
 def case_the_earnings_history_fills_its_newest_missing_days_back_to_the_horizon():
     saved = osd._EARNINGS_HISTORY_DAYS
     osd._EARNINGS_HISTORY_DAYS = 75
-    now = datetime(2026, 10, 3, 6)  # yesterday 10-02: the history is 07-20 .. 10-02
+    now = datetime(2026, 10, 3, 6)
     try:
         _sql("DELETE FROM of_earnings_daily")
         asyncio.run(osd._upsert_earnings(A4, {d: {"tips": (100, 125, 1), osd.TOTAL: (100, 125, 1)}
@@ -323,7 +293,6 @@ def case_the_earnings_history_fills_its_newest_missing_days_back_to_the_horizon(
 
 
 def _of_days(aid: str, days: dict[str, dict[str, tuple[int, int, int]]]) -> None:
-    """Store OF's days as the job does: every category, and their total."""
     def total(cats):
         return tuple(sum(v[i] for v in cats.values()) for i in range(3))
     asyncio.run(osd._upsert_earnings(aid, {d: {**{c: cats.get(c, (0, 0, 0)) for c in osd.EARNINGS}, osd.TOTAL: total(cats)}
@@ -344,8 +313,6 @@ def case_the_reports_read_the_larger_of_of_and_the_ledger_per_day():
                                   currency="USD", source="ledger"))
             await s.commit()
     asyncio.run(seed())
-    # OF's own days: 09-10 and 09-11 (the ledger's 09-11 tip is in OF's tips: max, not a sum); 09-12 and 09-13
-    # are not read yet.
     _of_days(A5, {"2026-09-10": {"tips": (5000, 6250, 4)}, "2026-09-11": {"tips": (3000, 3750, 2)}})
 
     def rev(lo, hi, **kw):
@@ -361,7 +328,6 @@ def case_the_reports_read_the_larger_of_of_and_the_ledger_per_day():
     days = {r["day"]: (r["total_cents"], r["net_cents"], [k["kind"] for k in r["by_kind"]]) for r in by_day["rows"]}
     assert days == {"2026-09-10": (6250, 5000, ["tip"]), "2026-09-11": (3750, 3000, ["tip"]),
                     "2026-09-12": (2000, 1600, ["ppv_message"]), "2026-09-13": (500, 400, ["subscription"])}, days
-    # 09-08 and 09-09: before A5 was added, no OF figure: unknown, so a growth against them is "-".
     assert rev("2026-09-08", "2026-09-11", group_by="kind")["history_missing_days"] == 2
     assert rev("2026-09-12", "2026-09-13", group_by="kind")["history_missing_days"] == 0, "after it was added"
     assert "history_missing_days" not in rev("2026-09-10", "2026-09-13", group_by="kind", status="reversed")
@@ -374,12 +340,10 @@ def case_the_reports_read_the_larger_of_of_and_the_ledger_per_day():
     rk = row["revenue_by_kind"]
     assert (rk["tip"], rk["ppv"], rk["subscription"]) == (10000, 2000, 500), rk
 
-    # Today is never OF's: the window runs through yesterday.
     _of_days(A5, {"2026-09-20": {"tips": (100, 125, 1)}, "2026-09-21": {"tips": (100, 125, 1)}})
     cells, _ = asyncio.run(osd.earnings_window([A5], datetime(2026, 9, 20), datetime(2026, 9, 21, 23, 59, 59),
                                                now=datetime(2026, 9, 21, 18)))
     assert set(cells) == {(A5, "2026-09-20")}, cells
-    # The answer is kept until the job writes again, and a write is read at once.
     again, _ = asyncio.run(osd.earnings_window([A5], datetime(2026, 9, 20), datetime(2026, 9, 21, 23, 59, 59),
                                                now=datetime(2026, 9, 21, 18)))
     assert again is cells, "a repeated window is the kept answer"
@@ -387,7 +351,6 @@ def case_the_reports_read_the_larger_of_of_and_the_ledger_per_day():
     fresh, _ = asyncio.run(osd.earnings_window([A5], datetime(2026, 9, 20), datetime(2026, 9, 21, 23, 59, 59),
                                                now=datetime(2026, 9, 21, 18)))
     assert [c["net_cents"] for c in fresh[(A5, "2026-09-20")]] == [900], fresh
-    # A write elsewhere (another window's days) keeps this window's answer; askers at once share one read.
     _of_days(A5, {"2026-08-01": {"tips": (100, 125, 1)}})
     kept, _ = asyncio.run(osd.earnings_window([A5], datetime(2026, 9, 20), datetime(2026, 9, 21, 23, 59, 59),
                                               now=datetime(2026, 9, 21, 18)))
@@ -411,8 +374,6 @@ def case_the_reports_read_the_larger_of_of_and_the_ledger_per_day():
 
 
 def case_an_of_zero_day_never_erases_a_sale_the_ledger_holds():
-    """max(OF, ledger) per Creator, UTC day and category: OF's $0 (or a chargeback day's negative) keeps the
-    ledger's sale; OF's larger figure adds only what the ledger lacks."""
     A6 = "7300006"
 
     async def seed():
@@ -426,8 +387,6 @@ def case_an_of_zero_day_never_erases_a_sale_the_ledger_holds():
                                   fee_cents=gross // 5, occurred_at=at, status=status, currency="USD", source="ledger"))
             await s.commit()
     asyncio.run(seed())
-    # 08-21: OF $0 (the prod case: the $14 PPV message read as $0); 08-22: OF's tips a chargeback day (-$3);
-    # 08-23: OF has $20 of tips where the ledger caught $5.
     _of_days(A6, {"2026-08-21": {}, "2026-08-22": {"tips": (-300, -375, 0)}, "2026-08-23": {"tips": (1600, 2000, 3)}})
 
     def rev(**kw):
@@ -444,9 +403,6 @@ def case_an_of_zero_day_never_erases_a_sale_the_ledger_holds():
 
 
 def case_a_sale_near_midnight_in_another_zone_is_counted_once_on_its_local_day():
-    """OF cuts days at UTC midnight (its points are stamped 00:00+00:00; a sale at 19:00 UTC charts on that UTC
-    day, measured 2026-10-25), the report at the Agency's zone. A sale at 23:30 in UTC-7 (06:30 UTC the next day)
-    is in OF's next UTC day: the report shows it once, on its local day, not again on OF's."""
     A7 = "7300007"
 
     async def seed():
@@ -458,6 +414,7 @@ def case_a_sale_near_midnight_in_another_zone_is_counted_once_on_its_local_day()
                               currency="USD", source="ledger"))
             await s.commit()
     asyncio.run(seed())
+    # OF buckets days at UTC midnight, so a sale at 19:00 UTC charts on that UTC day
     _of_days(A7, {"2026-07-14": {}, "2026-07-15": {"messages": (2000, 2500, 1)}})
     real = stats._report_prefs
 

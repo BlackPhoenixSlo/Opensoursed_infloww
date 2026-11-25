@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""event_transcode_decide: the pure decisions of service/event_transcoder.py as tables.
-Pure: no DB, no clock (`now` is passed), no I/O; the shell's own path is test_event_transcoder_tip.py
-(and the private-alias identity check lives there, since importing the shell binds a DB).
-
-Pins: route sends a dict chat_message / PPV-unlock payload to its writer, toasts and chat_queue_* to
-theirs, anything else (a non-dict chat_message too) to the touch fall-through, skipping `__` keys.
-The blast ring ignores updates, a total of -1 or under 5 and a bad id; a cancel (finish or update)
-removes its id; a re-sent finish replaces its entry (newest last); it keeps the newest 32. user_blob reads fromUser > user > data.relatedUser >
-data.user; avatar > c144 > c50 > any str thumb; a non-int id or no field is None. dm_plan skips a
-frame missing an id or the account, plans no row for our own echo, reads a tip's cents from
-tipAmount (price as fallback, a negative one is 0), keeps is_paid NULL when free, emits exact
-`messages` columns, gives a non-tip media/gif DM to the image hook (else words); a degenerate
-isTip + media + tipAmount 0 is words. is_inbound_dm is True exactly when dm_plan would be Inbound
-(never raises; any other frame kind is False). fan_upsert: newest non-blank field wins, last-received is the batch's latest created_at, blanks never
-clobber on conflict, source from subscribedOn/By on insert, the flags handed back for the heal. ppv_fields: message first, then the
-payload's fallbacks; None without an id, a fan or an amount.
-
-Runs under pytest (parametrized tables) or as a script (the repo's convention, no pytest needed):
-    ./venv/bin/python service/tests/test_event_transcode_decide.py
-"""
 from __future__ import annotations
 
 import copy
@@ -34,28 +14,27 @@ from event_transcode_decide import Echo, Inbound, Outbound, Skip  # noqa: E402
 
 try:
     if __name__ == "__main__":
-        raise ImportError  # script mode uses the runner below, even with pytest installed
+        raise ImportError
     import pytest
     table = pytest.mark.parametrize
-except ImportError:  # script mode: the runner below calls each row
+except ImportError:
     def table(names, rows):
         def mark(fn):
             fn.rows = rows
             return fn
         return mark
 
-A = "9101"                                   # the Creator
+A = "9101"
 FAN = 354841559
 NOW = datetime(2026, 10, 30, 12, 0, 0)
-T = datetime(2026, 10, 30, 11, 0, 0)         # a frame's createdAt
+T = datetime(2026, 10, 30, 11, 0, 0)
 
 
-# ── field parsers ────────────────────────────────────────────────────
 
 @table("s, want", [
     ("2026-05-18T19:06:47+00:00", datetime(2026, 5, 18, 19, 6, 47)),
     ("2026-05-18T19:06:47Z", datetime(2026, 5, 18, 19, 6, 47)),
-    ("2026-05-18T21:06:47+02:00", datetime(2026, 5, 18, 21, 6, 47)),   # tz dropped, not converted
+    ("2026-05-18T21:06:47+02:00", datetime(2026, 5, 18, 21, 6, 47)),
     ("not a date", None),
     ("", None),
     (None, None),
@@ -92,15 +71,14 @@ def test_strip_html(s, want):
     assert td.strip_html(s) == want
 
 
-# ── route ────────────────────────────────────────────────────────────
 
 P = {"id": 1}
 
 
 @table("event, want", [
     ({"api2_chat_message": P, "__account_id": A}, ("chat_message", "api2_chat_message", P)),
-    ({"__account_id": A, "api2_chat_message": P}, ("chat_message", "api2_chat_message", P)),  # sentinel first
-    ({"api2_chat_message": "x"}, ("other", "api2_chat_message", "x")),          # non-dict: touch lane
+    ({"__account_id": A, "api2_chat_message": P}, ("chat_message", "api2_chat_message", P)),
+    ({"api2_chat_message": "x"}, ("other", "api2_chat_message", "x")),
     ({"paidMessage": P}, ("ppv", "paidMessage", P)),
     ({"messageUnlock": P}, ("ppv", "messageUnlock", P)),
     ({"purchase": P}, ("ppv", "purchase", P)),
@@ -139,7 +117,6 @@ def test_counter_of(event, want):
     assert td.counter_of(event) == want
 
 
-# ── blast ring ───────────────────────────────────────────────────────
 
 Q = 46605849959
 
@@ -150,23 +127,23 @@ def fin(qid=Q, total=23, **kw):
 
 @table("ring, event_type, payload, want", [
     ((), "chat_queue_finish", fin(), ((Q, 100.0),)),
-    ((), "chat_queue_update", fin(), ()),                                        # update ignored
-    ((), "chat_queue_finish", fin(total=-1), ()),                                # first-update total
-    ((), "chat_queue_finish", fin(total=4), ()),                                 # a hand-send
-    ((), "chat_queue_finish", fin(total=5), ((Q, 100.0),)),                      # the floor
+    ((), "chat_queue_update", fin(), ()),
+    ((), "chat_queue_finish", fin(total=-1), ()),
+    ((), "chat_queue_finish", fin(total=4), ()),
+    ((), "chat_queue_finish", fin(total=5), ((Q, 100.0),)),
     ((), "chat_queue_finish", fin(total="x"), ()),
     ((), "chat_queue_finish", fin(qid="nope"), ()),
-    ((), "chat_queue_finish", {"total": 23}, ()),                                # no id
+    ((), "chat_queue_finish", {"total": 23}, ()),
     ((), "chat_queue_finish", "not a dict", ()),
-    (((Q, 1.0), (7, 2.0)), "chat_queue_finish", fin(isCanceled=True), ((7, 2.0),)),   # cancel removes
+    (((Q, 1.0), (7, 2.0)), "chat_queue_finish", fin(isCanceled=True), ((7, 2.0),)),
     (((Q, 1.0), (7, 2.0)), "chat_queue_update", {"id": Q, "isCanceled": True}, ((7, 2.0),)),
-    (((7, 2.0),), "chat_queue_finish", fin(isCanceled=True), ((7, 2.0),)),       # cancel of an unknown id
-    (((Q, 1.0), (7, 2.0)), "chat_queue_finish", fin(), ((7, 2.0), (Q, 100.0))),  # re-sent: replace by id
+    (((7, 2.0),), "chat_queue_finish", fin(isCanceled=True), ((7, 2.0),)),
+    (((Q, 1.0), (7, 2.0)), "chat_queue_finish", fin(), ((7, 2.0), (Q, 100.0))),
 ])
 def test_queue_fold(ring, event_type, payload, want):
     before = copy.deepcopy(ring)
     assert td.queue_fold(ring, event_type, payload, 100.0) == want
-    assert ring == before                                                        # never mutates
+    assert ring == before
 
 
 def test_queue_ring_keeps_newest_32():
@@ -174,8 +151,7 @@ def test_queue_ring_keeps_newest_32():
     for i in range(td.QUEUE_RING_MAX + 1):
         ring = td.queue_fold(ring, "chat_queue_finish", fin(qid=i), float(i))
     assert len(ring) == td.QUEUE_RING_MAX == 32
-    assert ring[0] == (1, 1.0) and ring[-1] == (32, 32.0)                        # oldest (0) dropped
-    # a re-sent finish of a queue in a full ring keeps 32, the queue moves to newest
+    assert ring[0] == (1, 1.0) and ring[-1] == (32, 32.0)
     ring = td.queue_fold(ring, "chat_queue_finish", fin(qid=5), 99.0)
     assert len(ring) == 32 and ring[-1] == (5, 99.0) and ring[0] == (1, 1.0)
 
@@ -190,14 +166,14 @@ FULL = tuple((i, float(i)) for i in range(td.QUEUE_RING_MAX))
 
 
 @table("before, frame, want", [
-    ((), ("chat_queue_finish", fin()), True),                                   # first finish, total 23
-    (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin()), False),  # the same queue re-sent
-    ((), ("chat_queue_finish", fin(total=4)), False),                           # a hand-send
+    ((), ("chat_queue_finish", fin()), True),
+    (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin()), False),
+    ((), ("chat_queue_finish", fin(total=4)), False),
     ((), ("chat_queue_update", fin()), False),
     (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin(isCanceled=True)), False),
     ((), ("chat_queue_finish", fin(isCanceled=True)), False),
-    (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin(qid=7)), True),   # a second distinct queue
-    (FULL, ("chat_queue_finish", fin(qid=99)), True),                           # full ring: oldest out, new in
+    (_fold(("chat_queue_finish", fin())), ("chat_queue_finish", fin(qid=7)), True),
+    (FULL, ("chat_queue_finish", fin(qid=99)), True),
 ])
 def test_queue_reread(before, frame, want):
     after = td.queue_fold(before, frame[0], frame[1], 100.0)
@@ -207,15 +183,14 @@ def test_queue_reread(before, frame, want):
 @table("ring, now, seconds, want", [
     ((), 100.0, 3600, False),
     (((Q, 50.0),), 100.0, 3600, True),
-    (((Q, 50.0),), 100.0, 50, True),                                             # at the floor
+    (((Q, 50.0),), 100.0, 50, True),
     (((Q, 50.0),), 100.0, 49.9, False),
-    (((1, 0.0), (Q, 90.0)), 100.0, 10, True),                                    # any entry
+    (((1, 0.0), (Q, 90.0)), 100.0, 10, True),
 ])
 def test_blasted(ring, now, seconds, want):
     assert td.blasted(ring, now, seconds) is want
 
 
-# ── user_blob ────────────────────────────────────────────────────────
 
 U = {"id": FAN, "name": "Bob"}
 
@@ -225,7 +200,7 @@ U = {"id": FAN, "name": "Bob"}
     ({"user": U}, (FAN, {"of_display_name": "Bob"})),
     ({"data": {"relatedUser": U}}, (FAN, {"of_display_name": "Bob"})),
     ({"data": {"user": U}}, (FAN, {"of_display_name": "Bob"})),
-    ({"fromUser": U, "user": {"id": 2, "name": "x"}}, (FAN, {"of_display_name": "Bob"})),   # fromUser first
+    ({"fromUser": U, "user": {"id": 2, "name": "x"}}, (FAN, {"of_display_name": "Bob"})),
     ({"data": {"relatedUser": U, "user": {"id": 2, "name": "x"}}}, (FAN, {"of_display_name": "Bob"})),
     ({"fromUser": {"id": FAN, "avatar": "a", "avatarThumbs": {"c144": "b"}}}, (FAN, {"avatar_url": "a"})),
     ({"user": {"id": FAN, "avatarThumbs": {"c50": "s", "c144": "m"}}}, (FAN, {"avatar_url": "m"})),
@@ -233,9 +208,9 @@ U = {"id": FAN, "name": "Bob"}
     ({"user": {"id": FAN, "avatarThumbs": {"x": 1, "y": "any"}}}, (FAN, {"avatar_url": "any"})),
     ({"user": {"id": FAN, "username": "bob", "name": "Bob", "avatar": "a"}},
      (FAN, {"avatar_url": "a", "of_display_name": "Bob", "of_username": "bob"})),
-    ({"user": {"id": "354841559", "name": "Bob"}}, None),                        # non-int id
+    ({"user": {"id": "354841559", "name": "Bob"}}, None),
     ({"user": {"name": "Bob"}}, None),
-    ({"user": {"id": FAN}}, None),                                               # no field
+    ({"user": {"id": FAN}}, None),
     ({"user": {"id": FAN, "name": "", "avatarThumbs": {"x": 1}}}, None),
     ({"user": {}}, None),
     ({"data": {"other": U}}, None),
@@ -247,7 +222,6 @@ def test_user_blob(payload, want):
     assert td.user_blob(payload) == want
 
 
-# ── dm_plan ──────────────────────────────────────────────────────────
 
 def msg(**kw) -> dict:
     m = {"id": 10001, "text": "<p>hi</p>", "fromUser": {"id": FAN},
@@ -280,19 +254,19 @@ def echo(**kw) -> dict:
 
 
 @table("aid, m, want", [
-    (A, echo(), Echo(10001, FAN)),                                               # a Creator send from any client
+    (A, echo(), Echo(10001, FAN)),
     (A, echo(fromUser=None), Echo(10001, FAN)),
-    (A, echo(fromUser="garbage"), Echo(10001, FAN)),                             # not a dict: no sender
-    (A, echo(chatUserId=str(FAN)), Echo(10001, FAN)),                            # the fan id an int
-    (A, echo(chatUserId=None), Skip(10001, None)),                               # no chatUserId: Skip
+    (A, echo(fromUser="garbage"), Echo(10001, FAN)),
+    (A, echo(chatUserId=str(FAN)), Echo(10001, FAN)),
+    (A, echo(chatUserId=None), Skip(10001, None)),
     (A, echo(chatUserId=True), Skip(10001, None)),
     (A, echo(chatUserId="x"), Skip(10001, None)),
     (A, echo(chatUserId={"id": FAN}), Skip(10001, None)),
     (A, {"id": 10001}, Skip(10001, None)),
     (A, echo(id=None), Skip(None, None)),
     (None, echo(), Skip(10001, None)),
-    (A, echo(fromUser={"id": int(A)}), Outbound(10001)),                         # our send's shape: unchanged
-    (A, echo(fromUser={"id": FAN}), None),                                       # a Fan's DM: Inbound's
+    (A, echo(fromUser={"id": int(A)}), Outbound(10001)),
+    (A, echo(fromUser={"id": FAN}), None),
 ])
 def test_dm_key_creator_echo(aid, m, want):
     assert td.dm_key(aid, m) == want
@@ -307,15 +281,15 @@ def plan(**kw) -> Inbound:
 
 
 @table("kw, tip_cents, image", [
-    (dict(isTip=True, price=0, tipAmount=10), 1000, False),                      # tipAmount, not price
+    (dict(isTip=True, price=0, tipAmount=10), 1000, False),
     (dict(isTip=True, price=0, tipAmount="2.50"), 250, False),
-    (dict(isTip=True, price=5.0), 500, False),                                   # fallback to price
+    (dict(isTip=True, price=5.0), 500, False),
     (dict(isTip=True, price=5.0, tipAmount=0), 500, False),
-    (dict(isTip=True, price=5.0, tipAmount=-3), 0, False),                       # negative: no tip, no fallback
-    (dict(isTip=True, price=0, tipAmount=0), 0, False),                          # $0: no tip hook
-    (dict(isTip=False, price=9.99, tipAmount=10), 0, False),                     # not a tip: tipAmount unread
-    (dict(isTip=True, price=0, tipAmount=10, media=[{"id": 7}]), 1000, False),   # tip w/ media: words
-    (dict(isTip=True, price=0, tipAmount=0, media=[{"id": 7}]), 0, False),       # degenerate: words only
+    (dict(isTip=True, price=5.0, tipAmount=-3), 0, False),
+    (dict(isTip=True, price=0, tipAmount=0), 0, False),
+    (dict(isTip=False, price=9.99, tipAmount=10), 0, False),
+    (dict(isTip=True, price=0, tipAmount=10, media=[{"id": 7}]), 1000, False),
+    (dict(isTip=True, price=0, tipAmount=0, media=[{"id": 7}]), 0, False),
     (dict(media=[{"id": 7}]), 0, True),
     (dict(media=[], giphyId="Q9WDZTdraX9E4"), 0, True),
     (dict(text="hey you up"), 0, False),
@@ -327,7 +301,7 @@ def test_dm_plan_tip_and_image(kw, tip_cents, image):
 
 @table("kw, has_media", [
     (dict(media=[{"id": 7}, {"id": 8}]), True),
-    (dict(giphyId="Q9WDZTdraX9E4"), False),                                      # a gif: no media
+    (dict(giphyId="Q9WDZTdraX9E4"), False),
     (dict(text="x"), False),
 ])
 def test_dm_plan_has_media(kw, has_media):
@@ -335,7 +309,7 @@ def test_dm_plan_has_media(kw, has_media):
 
 
 @table("kw, price_cents, paid, purchased_at", [
-    (dict(price=0, isOpened=True), 0, None, None),                               # free: NULL, not False
+    (dict(price=0, isOpened=True), 0, None, None),
     (dict(price=None, isOpened=False), 0, None, None),
     (dict(price=9.99, isOpened=False), 999, False, None),
     (dict(price=9.99, isOpened=True, openedAt="2026-10-30T11:30:00Z"), 999, True,
@@ -357,12 +331,11 @@ def test_dm_plan_row():
         created_at=T,
     ), from_user=fu, tip_cents=0, image=True, has_media=True)
     assert plan(fromUser={"id": FAN, "username": "bob"}).msg["sender_name"] == "bob"
-    assert plan(createdAt=None).msg["created_at"] == NOW                         # stamped by the caller
+    assert plan(createdAt=None).msg["created_at"] == NOW
     assert plan(createdAt="garbage").msg["created_at"] == NOW
-    assert td.dm_plan(int(A), msg(), NOW).msg["account_id"] == A                 # str key for of_writer
+    assert td.dm_plan(int(A), msg(), NOW).msg["account_id"] == A
 
 
-# ── is_inbound_dm ────────────────────────────────────────────────────
 
 def dm_frame(m, aid=A) -> dict:
     f = {} if aid is ... else {"__account_id": aid}
@@ -371,21 +344,21 @@ def dm_frame(m, aid=A) -> dict:
 
 
 @table("frame, want", [
-    (dm_frame(msg()), True),                                                      # text DM
-    (dm_frame(msg(isTip=True, price=0, tipAmount=10)), True),                     # tip DM
-    (dm_frame(msg(media=[{"id": 7}])), True),                                     # photo DM
-    (dm_frame(msg(media=[], giphyId="Q9WDZTdraX9E4")), True),                     # gif DM
+    (dm_frame(msg()), True),
+    (dm_frame(msg(isTip=True, price=0, tipAmount=10)), True),
+    (dm_frame(msg(media=[{"id": 7}])), True),
+    (dm_frame(msg(media=[], giphyId="Q9WDZTdraX9E4")), True),
     (dm_frame(msg(), aid=int(A)), True),
-    (dm_frame(msg(fromUser={"id": int(A)})), False),                              # our own echo
+    (dm_frame(msg(fromUser={"id": int(A)})), False),
     (dm_frame(msg(fromUser={"id": A}), aid=int(A)), False),
-    (dm_frame(echo()), False),                                                    # a Creator echo
+    (dm_frame(echo()), False),
     (dm_frame(echo(fromUser=None)), False),
-    (dm_frame(msg(id=None)), False),                                              # missing id
+    (dm_frame(msg(id=None)), False),
     (dm_frame(msg(id=0)), False),
-    (dm_frame(msg(fromUser=None)), False),                                        # missing fromUser.id
+    (dm_frame(msg(fromUser=None)), False),
     (dm_frame(msg(fromUser={"name": "no id"})), False),
-    (dm_frame(msg(fromUser="garbage")), False),                                   # never raises
-    (dm_frame(msg(), aid=...), False),                                            # missing __account_id
+    (dm_frame(msg(fromUser="garbage")), False),
+    (dm_frame(msg(), aid=...), False),
     (dm_frame(msg(), aid=None), False),
     (dm_frame(msg(), aid=""), False),
     ({"__account_id": A, "toasts": [{"type": "tip", "data": {"relatedUser": {"id": FAN}}}]}, False),
@@ -394,11 +367,10 @@ def dm_frame(m, aid=A) -> dict:
     ({"__account_id": A, "typing": {"id": FAN}}, False),
     ("not a dict", False),
     (None, False),
-    (dm_frame("not a dict"), False),                                              # non-dict payload
+    (dm_frame("not a dict"), False),
 ])
 def test_is_inbound_dm(frame, want):
     assert td.is_inbound_dm(frame) is want
-    # The transcoder's own split: a chat_message frame it would write as a Fan's DM.
     r = td.route(frame)
     if r is not None and r[0] == "chat_message":
         assert want == isinstance(td.dm_plan(frame.get("__account_id"), r[2], NOW), Inbound), frame
@@ -406,7 +378,6 @@ def test_is_inbound_dm(frame, want):
         assert want is False
 
 
-# ── fan_upsert ───────────────────────────────────────────────────────
 
 def item(created_at, **user) -> Inbound:
     return Inbound({"account_id": A, "fan_id": FAN, "created_at": created_at},
@@ -420,9 +391,7 @@ BLANK = dict(of_username=None, of_display_name=None, avatar_url=None)
 
 
 @table("items, values, on_conflict, flags", [
-    # a plain DM: fromUser {id} only — insert blanks, conflict touches nothing but the time
     ([item(T)], dict(BLANK, source="unknown"), {"last_message_received_at": T}, (None, None)),
-    # newest non-blank wins; a later blank / None never clobbers an earlier value
     ([item(T, username="old", name="Bob", avatar="a1"), item(T2, username="new", name="", avatar=None)],
      dict(of_username="new", of_display_name="Bob", avatar_url="a1", source="unknown"),
      {"last_message_received_at": T2, "of_username": "new", "of_display_name": "Bob", "avatar_url": "a1"},
@@ -433,9 +402,8 @@ BLANK = dict(of_username=None, of_display_name=None, avatar_url=None)
      {"last_message_received_at": T}, (None, True)),
     ([item(T, subscribedOn=True, subscribedBy=True)], dict(BLANK, source="fan"),
      {"last_message_received_at": T}, (True, True)),
-    ([item(T, subscribedOn=False)], dict(BLANK, source="unknown"),               # False is a value, not blank
+    ([item(T, subscribedOn=False)], dict(BLANK, source="unknown"),
      {"last_message_received_at": T}, (False, None)),
-    # out of order: the last plan is older than an earlier one — the latest created_at wins
     ([item(T2), item(T)], dict(BLANK, source="unknown"), {"last_message_received_at": T2}, (None, None)),
 ])
 def test_fan_upsert(items, values, on_conflict, flags):
@@ -447,7 +415,6 @@ def test_fan_upsert(items, values, on_conflict, flags):
     assert items == before
 
 
-# ── ppv_fields ───────────────────────────────────────────────────────
 
 def ppv(fan_id=FAN, message_id=555, amount_cents=999, occurred_at=T) -> dict:
     return dict(fan_id=fan_id, message_id=message_id, kind="ppv",
@@ -459,17 +426,17 @@ ISO = "2026-10-30T11:00:00+00:00"
 
 @table("payload, want", [
     ({"message": {"id": 555, "fromUser": {"id": FAN}, "price": 9.99}, "openedAt": ISO}, ppv()),
-    ({"id": 555, "fromUser": {"id": FAN}, "price": 9.99, "createdAt": ISO}, ppv()),            # flat
+    ({"id": 555, "fromUser": {"id": FAN}, "price": 9.99, "createdAt": ISO}, ppv()),
     ({"messageId": 555, "user": {"id": FAN}, "amount": "9.99", "createdAt": ISO}, ppv()),
-    ({"message_id": "555", "fan": {"id": str(FAN)}, "price": 9.99, "createdAt": ISO}, ppv()),  # str ids
+    ({"message_id": "555", "fan": {"id": str(FAN)}, "price": 9.99, "createdAt": ISO}, ppv()),
     ({"message": {"id": 555, "fromUser": {"id": FAN}, "openedAt": ISO}, "price": 9.99}, ppv()),
     ({"message": {"id": 1, "fromUser": {"id": FAN}, "price": 5}, "messageId": 555, "price": 9.99,
-      "openedAt": ISO}, ppv(message_id=1, amount_cents=500)),                    # message first
-    ({"id": 555, "fromUser": {"id": FAN}, "price": 9.99}, ppv(occurred_at=NOW)),  # no time: now
-    ({"id": 555, "fromUser": {"id": FAN}, "price": 0}, None),                    # no amount
-    ({"fromUser": {"id": FAN}, "price": 9.99}, None),                            # no message id
-    ({"id": 555, "price": 9.99}, None),                                          # no fan
-    ({"id": 555, "fan": 42, "price": 9.99}, None),                               # fan not a dict
+      "openedAt": ISO}, ppv(message_id=1, amount_cents=500)),
+    ({"id": 555, "fromUser": {"id": FAN}, "price": 9.99}, ppv(occurred_at=NOW)),
+    ({"id": 555, "fromUser": {"id": FAN}, "price": 0}, None),
+    ({"fromUser": {"id": FAN}, "price": 9.99}, None),
+    ({"id": 555, "price": 9.99}, None),
+    ({"id": 555, "fan": 42, "price": 9.99}, None),
 ])
 def test_ppv_fields(payload, want):
     assert td.ppv_fields(payload, NOW) == want
@@ -483,7 +450,7 @@ def test_ppv_fields(payload, want):
      dict(account_id=A, fan_id=FAN, message_id=10001, direction="out", sender_name="", body="",
           media_ids="[5]", media_count=1, price_cents=999, is_paid=False, is_tip=False, is_unsent=False,
           created_at=NOW)),
-    (echo(isFromQueue=True), None),                                              # a mass copy: its placeholder's
+    (echo(isFromQueue=True), None),
 ])
 def test_echo_row(m, want):
     assert td.echo_row(A, m, td.dm_key(A, m), NOW) == want

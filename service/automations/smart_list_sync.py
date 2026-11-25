@@ -11,6 +11,7 @@ from automation_registry import register
 from db.engine import get_session
 from db.models import SmartList
 from of_client import OFAPIError
+from side_effect_gate import refusal
 
 log = logging.getLogger("of-relay.automation.smart_list_sync")
 
@@ -230,6 +231,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     import automation_executor as ax
     state = _Run(str(account_id), await asyncio.to_thread(ax._make_client, account_id))
+    if refusal(state.client, "list_users_in"):
+        return {"status": "skipped", "reason": "platform_lacks:list_users_in"}
     stats: dict = {"lists": len(ids), "ok": 0, "pending": 0, "error": 0, "deleted": 0}
     for list_id, of_list_id in tombstones:
         if await _finish_tombstone(state, int(list_id), of_list_id):

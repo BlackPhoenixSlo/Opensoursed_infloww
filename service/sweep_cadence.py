@@ -1,32 +1,3 @@
-"""service/sweep_cadence.py — full chat sweeps (`scrape_chats`, payload `{}`) on a cadence.
-
-The sweep is how an agency's outbound from another CRM (Infloww) reaches our DB: the
-WS pump stores inbound only. It used to be enqueued once per account on EVERY relay
-start (server._seed_chat_links_once), with no dedupe: deploys stacked up to 18
-identical jobs per account on a 2-slot bulk lane (prod, 2026-11).
-
-Now, per live account (session on disk, not deactivated, not session-dead): at most ONE
-open (pending/running) `{}` sweep; a new one only when none is open AND its last full
-sweep finished >= SWEEP_EVERY_S ago (never swept: at once). The anchor is the
-latest job with payload exactly `{}` that ended for real, read from the DB, so
-restarts change nothing:
-  - ok: its `automation_runs` row (scrape_chats stamps `full_sweep` on a `{}` run
-    only; `{"limit": 50}`, `fan_ids` and failed runs never carry it, nor a `{}` run
-    that scraped nothing and hit a non-404 failure: it raises, so it retries then parks
-    'error'), `completed_at`;
-  - a real error (retries spent): the job row parked 'error', at its `run_at` (the
-    last attempt's due time, ~when it ran), so a failing account waits the cadence.
-A restart's cancel (`last_error` RESTART_CANCEL, even with the retries spent) and an
-interrupted / orphaned run never anchor: the next pass enqueues at once.
-
-Each pass also collapses duplicates: per account the oldest pending automation `{}`
-sweep stays, the rest are cancelled (DUP_REASON); none stays when one is running or
-an operator's / rule's `{}` sweep is open. `fan_ids` / `chat_ids` jobs, and
-operator / rule jobs, are never touched.
-
-Runs as its own periodic task (server._start_event_pumps): first pass FIRST_AFTER_S
-after boot, then every TICK_S.
-"""
 from __future__ import annotations
 
 import logging
@@ -45,21 +16,21 @@ from db.models import AutomationRun, ScheduledJob
 log = logging.getLogger("of-relay.automation")
 
 KIND = "scrape_chats"
-SWEEP_PAYLOAD = "{}"          # what enqueue_job writes for payload={}
+SWEEP_PAYLOAD = "{}"
 SWEEP_EVERY_S = 4 * 3600
 TICK_S = 300
 FIRST_AFTER_S = 120
 DUP_REASON = "duplicate full sweep"
-FULL_SWEEP_MARK = '"full_sweep": true'   # scrape_chats' stats on a `{}` run (json.dumps)
-RESTART_CANCEL = "cancelled"   # last_error of a job whose run a shutdown cancelled (automation_executor's
-                               # run_decide.outcome("cancelled", None, "cancelled"): a literal there, no constant)
+FULL_SWEEP_MARK = '"full_sweep": true'
+# Literal last_error of a job a shutdown cancelled (automation_executor writes it as a literal, no constant).
+RESTART_CANCEL = "cancelled"
 
 
 @dataclass(frozen=True)
 class OpenJob:
     id: int
     running: bool
-    automation: bool   # no operator, no rule: the cadence's own (or a legacy restart seed's)
+    automation: bool
 
 
 @dataclass(frozen=True)
@@ -70,12 +41,10 @@ class Plan:
 
 def plan(live: Iterable[str], open_jobs: Mapping[str, Sequence[OpenJob]],
          swept_recently: set[str]) -> Plan:
-    """Pure. `open_jobs`: per account its open `{}` sweeps, oldest first.
-    `swept_recently`: accounts whose last full sweep finished < SWEEP_EVERY_S ago."""
     cancel: list[int] = []
     for jobs in open_jobs.values():
         pending = [j for j in jobs if j.automation and not j.running]
-        keep = 0 if len(pending) < len(jobs) else 1   # something else open: keep none
+        keep = 0 if len(pending) < len(jobs) else 1
         cancel += [j.id for j in pending[keep:]]
     enqueue = [a for a in live if not open_jobs.get(a) and a not in swept_recently]
     return Plan(enqueue=enqueue, cancel=cancel)
@@ -123,10 +92,10 @@ async def tick() -> dict:
     p = plan(live, open_jobs, recent)
     cancelled = 0
     if p.cancel or p.enqueue:
-        from automation_executor import enqueue_job, wake_supervisor   # lazy: executor imports widely
+        # Lazy: the executor imports widely.
+        from automation_executor import enqueue_job, wake_supervisor
         async with get_session() as s:
             if p.cancel:
-                # Only still-pending rows: a claim since the read keeps its job.
                 cancelled = (await s.execute(
                     update(ScheduledJob)
                     .where(ScheduledJob.id.in_(p.cancel), ScheduledJob.status == "pending")

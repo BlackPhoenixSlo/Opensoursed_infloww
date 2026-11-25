@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""Proxy probes (service/proxy_probe.py) and the Test button.
-
-Pins: `probe` is ONE GET of Cloudflare's cdn-cgi/trace through the proxy (never OnlyFans, never without
-the proxy) and reads ip / country / colo and the time to first byte; a failed or garbled probe is not ok.
-`probe_of` (the health probe) is one cookie-less GET of robots.txt on the API's own host. The Test
-button's `ok` is probe_of's, the trace beside it display and region only, neither counted; a failed
-trace keeps the last verified egress. /admin/proxies carries `health`.
-
-No network: the curl session and the probes are fakes.
-
-Run:  ./venv/bin/python service/tests/test_proxy_probe.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -95,8 +83,6 @@ def case_probe_failures_are_not_ok():
 
 
 def case_probe_of_gets_the_api_host_with_no_session():
-    """The health probe: one GET of robots.txt on the host the API CONNECTs to (not the x-hash CDN), Chrome's
-    TLS, no cookie or header; any HTTP answer is ok (the tunnel to OF opened), a refused CONNECT is refused."""
     import of_client
     _registry()
     out = _probe_with(_resp(text="", status=403), fn=proxy_probe.probe_of)
@@ -112,7 +98,6 @@ _TRACE_HU = {"ok": True, "ip": "203.0.113.7", "geo": "HU", "colo": "BUD", "ttfb_
 
 
 def _test_click(label: str, of_ok: bool, traced: bool = True) -> dict:
-    """The Test button with the trace answering `traced` and probe_of answering `of_ok` (refused when not)."""
     import proxies_admin_api
     real = proxy_probe.probe, proxy_probe.probe_of
     proxy_probe.probe = lambda p, timeout_s=15: (
@@ -142,7 +127,6 @@ def case_routes_carry_health():
     assert rows["hu-1"]["health"]["state"] == "healthy"
 
 
-# ── one health probe: probe_of; the trace is display and region only ──
 def case_a_test_click_never_brings_a_down_proxy_back():
     _registry()
     proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "down": True, "bad_reason": "down", "errors": 3}
@@ -153,8 +137,6 @@ def case_a_test_click_never_brings_a_down_proxy_back():
 
 
 def case_a_test_click_says_not_ok_where_only_the_trace_answers():
-    """The Test button's `ok` is the health probe's: a proxy answering Cloudflare's trace but refusing
-    CONNECT to OF reads not ok (and verified_ip cleared), its ip still shown; nothing counted."""
     _registry()
     proxy_health._state.pop("hu-1", None)
     out = _test_click("hu-1", False)
@@ -165,8 +147,6 @@ def case_a_test_click_says_not_ok_where_only_the_trace_answers():
 
 
 def case_a_test_click_whose_trace_fails_keeps_the_last_verified_egress():
-    """OF answers but Cloudflare's trace does not (a provider blocking 1.1.1.1): ok, and the stored
-    verified ip/geo (the row's "verified" text, the failover's region) are kept, not wiped, and shown."""
     _registry()
     assert _test_click("hu-1", True)["ok"]
     out = _test_click("hu-1", True, traced=False)

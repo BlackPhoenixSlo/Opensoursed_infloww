@@ -1,15 +1,3 @@
-"""
-vault.py — DB-backed read endpoints for vault items, presets, and saved
-replies. Per T-B5 these are cache-first: vault content changes rarely
-enough that serving from SQLite (mirrored by the WS transcoder + the OF
-import paths) gives the UI a fast, paginated read without burning OF
-rate-limit budget.
-
-The OF-passthrough path at /api/of/v2/vault/* stays intact — switching it
-to DB-first is a separate decision pending SSE reliability measurement
-(plan 07 §2). These admin routes are additive.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -47,8 +35,7 @@ async def vault_media_stats(account_id: str = Query(...)) -> dict[str, Any]:
     row. A 1:1 row recorded without its message id that a purchase later
     flipped drops out too: an undercount, never an inflation."""
     assert_account_owned(account_id)
-    # A restricted chatter gets the media in its folders only — the mirror's
-    # folders, the listing's rule; a media the mirror has no row for is out too.
+    # A restricted chatter gets media in its folders only; a media the mirror has no row for is out too.
     allowed = await allowed_folder_ids_for_chatter(account_id)
     fan = VaultSend.fan_id
     on_mass = (select(Message.message_id)

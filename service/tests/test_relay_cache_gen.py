@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""relay_cache invalidation-generation guard.
-
-An in-flight fetch snapshots the (namespace, account) generation before going
-upstream and skips its cache write-back if an invalidation bumped it meanwhile.
-Without this, a fetch that read upstream BEFORE a state change (mark-as-read,
-a WS-signalled message) resolves after the invalidation and silently re-caches
-the pre-change snapshot for a full TTL — "zombie" entries the invalidation was
-meant to kill. These cases pin:
-
-  • fetch → invalidate mid-flight → the fetched value is RETURNED to its
-    caller but NOT cached; the next reader re-fetches.
-  • no invalidation → write-back still happens (the normal path).
-  • the guard is pair-level, so it covers keys with no cached entry yet.
-  • invalidation no longer pops live locks, so single-flight coalescing
-    survives an invalidation (one upstream fetch for N queued waiters).
-
-Run:  ./venv/bin/python service/tests/test_relay_cache_gen.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -42,11 +24,10 @@ async def case_invalidate_mid_flight_skips_write_back():
         ns, aid, ("k",), ttl_seconds=60.0, fetcher=_slow_v1,
     ))
     await started.wait()
-    # State changes while the fetch is upstream — the invalidation must win.
     relay_cache.invalidate(ns, aid)
     release.set()
     got = await task
-    assert got == "v1-pre-change", got  # caller still gets what it fetched
+    assert got == "v1-pre-change", got
 
     async def _v2():
         return "v2-post-change"
@@ -74,9 +55,6 @@ async def case_no_invalidation_still_caches():
 
 
 async def case_guard_covers_uncached_keys():
-    """The mark-read zombie: nothing cached yet for the key, fetch in flight,
-    invalidation lands (drops zero entries) — the write-back must STILL be
-    skipped, which is why the generation is pair-level, not per-entry."""
     ns, aid = "genguard", "acct-g3"
     relay_cache.invalidate(ns, aid)
 
@@ -120,7 +98,7 @@ async def case_single_flight_survives_invalidation():
     t1 = asyncio.create_task(relay_cache.get_or_fetch(
         ns, aid, ("k",), ttl_seconds=60.0, fetcher=_fetch,
     ))
-    await asyncio.sleep(0)  # let t1 acquire the per-key lock
+    await asyncio.sleep(0)
     relay_cache.invalidate(ns, aid)  # must NOT pop the live lock
     t2 = asyncio.create_task(relay_cache.get_or_fetch(
         ns, aid, ("k",), ttl_seconds=60.0, fetcher=_fetch,
@@ -129,10 +107,6 @@ async def case_single_flight_survives_invalidation():
     release.set()
     r1, r2 = await asyncio.gather(t1, t2)
     assert r1 == r2 == "coalesced"
-    # t2 queued on the SAME lock; after t1's write-back was skipped (gen bump),
-    # t2 re-checks the cache, misses, and fetches once more — 2 total is the
-    # correct ceiling. The regression this pins: a popped lock would let t2
-    # fetch CONCURRENTLY with t1 (no coalescing at all).
     assert len(calls) <= 2, f"single-flight broken: {len(calls)} fetches"
     relay_cache.invalidate(ns, aid)
 

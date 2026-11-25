@@ -563,6 +563,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if st is not None and st.last_nudge_at and (now - st.last_nudge_at) < reply_gap:
             skipped_cap += 1
             continue
+        # Per-message dedup: don't cover the SAME waiting message twice (a new fan
+        # message → new anchor → fresh spell, so it can be covered after the gap).
         spell_anchor = inbound_at
         nudges = int(st.nudges_sent or 0) if (st is not None and st.spell_inbound_at == spell_anchor) else 0
         if nudges >= max_nudges:

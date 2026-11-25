@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""The chat open's bundle (service/chat_screen_api.py): one call answers a thread open's local reads with exactly
-what each route answers, under the same authorization; `lacks` adds the Creator-wide lists; `thumbs` lists the seed's
-fresh photo thumbnails. And the vault backfill answers the fan's new history when it inserted rows.
-
-The seam is the Relay over HTTP with real session cookies (the shared two-Agency fixture).
-
-Run: ./venv/bin/python service/tests/test_chat_screen_api.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 _harness.bootstrap()
 
@@ -32,12 +24,12 @@ for aid in (A1, B1):
     d = account_registry.ACCOUNTS_DIR / aid
     d.mkdir(exist_ok=True)
     account_registry.upsert_account(aid, nickname=f"n{aid}")
-    (d / "latest.json").write_text(json.dumps({"session": "s.json"}))   # has_session
+    (d / "latest.json").write_text(json.dumps({"session": "s.json"}))
 
-# The chatter's mirror Employee up front (as test_screens_api): its first request would otherwise race its creation.
+# the chatter's mirror Employee up front: its first request would otherwise race its creation
 EMP_A = asyncio.run(employees.get_or_create_mirror_employee(
     IDS["chatter_a"], IDS["agency_a_owner"], display_name="chatter_a", color="#bbbbbb"))
-_LOOP = contextlib.ExitStack()   # one event loop for every request, as in the running relay
+_LOOP = contextlib.ExitStack()  # one event loop for every request, as in the running relay
 PORTAL = _LOOP.enter_context(anyio.from_thread.start_blocking_portal())
 
 
@@ -62,8 +54,6 @@ def _chat(client, **params):
 
 
 def _flat(env: dict) -> dict:
-    """The screen envelope (screens_api.run_screen) as `{read: body}` plus `errors` (every answer with a status),
-    `thumbs` and `asOf`, for these checks."""
     assert set(env) == {"answers", "thumbs", "asOf"}, set(env)
     out = {"errors": [], "thumbs": env["thumbs"], "asOf": env["asOf"]}
     for a in env["answers"]:
@@ -77,7 +67,6 @@ def _flat(env: dict) -> dict:
 
 
 def _cf(exp: int) -> str:
-    """A CloudFront-signed URL expiring at `exp` (its custom Policy, CloudFront's base64)."""
     pol = json.dumps({"Statement": [{"Resource": "x", "Condition": {"DateLessThan": {"AWS:EpochTime": exp}}}]})
     raw = base64.b64encode(pol.encode()).decode().translate(str.maketrans("+=/", "-_~"))
     return f"https://cdn2.onlyfans.com/files/{exp}.jpg?Policy={raw}&Signature=s&Key-Pair-Id=k"
@@ -132,12 +121,11 @@ def _role(pages: dict[str, bool] | None) -> None:
 
 
 def case_a_chatter_gets_each_routes_own_answer():
-    """Each read is what its route answers the chatter (a body, or the role hook's refusal)."""
     _same_as_routes()
 
 
 def case_a_restricted_chatter_gets_each_routes_own_refusal():
-    _role({"/": True})   # the Dashboard only: no chat page
+    _role({"/": True})
     try:
         _same_as_routes(want_refused=True)
     finally:
@@ -166,7 +154,7 @@ def _same_as_routes(want_refused: bool = False):
 def case_another_agencys_creator_is_403_before_any_read():
     r = OWNER_A.get("/admin/screens/chat", params={"account": B1, "fan": FAN})
     assert r.status_code == 403, (r.status_code, r.text)
-    assert OWNER_A.get(f"/admin/fans/{B1}/{FAN}").status_code == 403   # the route agrees
+    assert OWNER_A.get(f"/admin/fans/{B1}/{FAN}").status_code == 403
 
 
 def case_thumbs_fresh_photos_newest_first_at_most_six():
@@ -180,7 +168,7 @@ def case_thumbs_fresh_photos_newest_first_at_most_six():
     got = chat_screen_api.thumbs(seed, now=now)
     assert got == [fresh] + [f"https://public.onlyfans.com/{i}.jpg" for i in range(5)], got
     assert vault_stills.signed_url_expired(old, now) and not vault_stills.signed_url_expired(fresh, now)
-    assert not vault_stills.signed_url_expired("https://cdn2.onlyfans.com/a.jpg?Policy=%%%", now)   # unreadable: /img decides
+    assert not vault_stills.signed_url_expired("https://cdn2.onlyfans.com/a.jpg?Policy=%%%", now)
     assert vault_stills.signed_url_expired("https://x/a.jpg?Expires=10", now)
 
 
@@ -199,4 +187,4 @@ def case_the_backfill_answers_the_new_history():
 try:
     _harness.run()
 finally:
-    _LOOP.close()   # the portal's loop thread, else the exit waits on it
+    _LOOP.close()  # the portal's loop thread, else the exit waits on it

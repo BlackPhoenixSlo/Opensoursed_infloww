@@ -1,23 +1,3 @@
-"""tip_reward — fan-tip image reward automation
-
-Revision ID: 0033_tip_reward
-Revises: 0032_automation_kind
-Create Date: 2026-06-11
-
-Two additive changes for the "send vault images when a fan tips" automation:
-
-  account_ai_config — + tip_reward_config_json TEXT  (per-account config:
-                      enabled, $/image, min/max images, caption, rolling-window
-                      hours, folder tiers). NULL = automation's built-in
-                      defaults (DISABLED, empty folders).
-
-  tip_reward_log    — NEW table. One row per tip the automation acted on, PK
-                      (account_id, tip_message_id) → INSERT-OR-IGNORE gives
-                      exactly-one-reward-per-tip idempotency (a webhook can
-                      replay a tip) + an audit trail.
-
-Additive + nullable + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence

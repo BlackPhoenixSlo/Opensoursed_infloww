@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""Response gzip (backend 1.5) and the SQLite pragmas (backend 1.20).
-
-  • A JSON body ≥ 1 KiB leaves the relay gzip-encoded when the client accepts
-    it; a small one does not; an SSE stream and a media type never are (SSE
-    must flush frame by frame through the compressor), including every type
-    /img can stream through from the CDN (any image/*, video, octet-streams).
-  • Every pooled SQLite connection opens with mmap_size and temp_store=MEMORY;
-    init_db leaves planner stats behind (sqlite_stat1); `db.engine.optimize()`
-    runs clean with analysis_limit set.
-
-Run:  ./venv/bin/python service/tests/test_gzip_and_pragmas.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -27,7 +15,6 @@ import db_retention  # noqa: E402
 
 
 def _probe_routes() -> None:
-    """Throwaway routes under a public prefix so the probe needs no login."""
     async def _big():
         return JSONResponse({"rows": [{"id": i, "text": "hello there"} for i in range(200)]})
 
@@ -44,7 +31,6 @@ def _probe_routes() -> None:
         return Response(b"\x89PNG" + b"\0" * 4096, media_type="image/png")
 
     async def _media_stream(ct: str):
-        # Shaped like /img: chunks streamed with the CDN's Content-Type as-is.
         async def _gen():
             for _ in range(4):
                 yield b"\0" * 2048
@@ -75,7 +61,7 @@ def case_big_json_is_gzipped():
         raise AssertionError(f"probe route not public: {r.status_code}")
     assert r.status_code == 200, r.status_code
     assert r.headers.get("content-encoding") == "gzip", dict(r.headers)
-    assert len(r.json()["rows"]) == 200  # TestClient decodes transparently
+    assert len(r.json()["rows"]) == 200
 
 
 def case_small_json_and_no_accept_stay_plain():
@@ -110,7 +96,7 @@ async def case_sqlite_pragmas_on_connect():
         mmap = (await conn.execute(text("PRAGMA mmap_size"))).scalar()
     assert temp_store == 2, f"temp_store={temp_store} (2 = MEMORY)"
     assert mmap == 268435456, f"mmap_size={mmap}"
-    await db_optimize()  # must run clean on a live DB
+    await db_optimize()
 
 
 async def case_init_db_optimizes_once_not_per_connection():

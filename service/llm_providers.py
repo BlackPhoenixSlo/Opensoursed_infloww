@@ -1,16 +1,3 @@
-"""service/llm_providers.py — WHO we call and WHICH credential we call them with.
-
-Provider identity only: the base URL, the env var its key lives in, and how that
-key is resolved. Everything about a CALL — models, pricing, cost accounting, cap
-reservation, the request itself — is `llm_client`, which imports this.
-
-It is its own module because `tenant_keys` needs the same two things (the list of
-providers, and the deployment's own key for one) and `llm_client` imports
-`tenant_keys` on the money path. With the registry in llm_client that was a cycle
-papered over with function-local imports; split along the seam it already had, the
-dependencies run one way: llm_client → llm_providers ← tenant_keys.
-"""
-
 from __future__ import annotations
 
 import os
@@ -22,65 +9,39 @@ from dotenv import dotenv_values, load_dotenv
 
 _HERE = Path(__file__).resolve().parent
 _ENV_FILE = _HERE / ".env"
-# Mirror db.engine: load service/.env if it hasn't been loaded yet. override=False
-# means a real value already in the process env (e.g. a host-exported key) wins.
 load_dotenv(_ENV_FILE, override=False)
 
 
 @dataclass(frozen=True)
 class LLMProvider:
-    name: str          # "deepseek" | "deepinfra" | "zai" | "anthropic"
-    base_url: str      # API base (path appended by llm_client per `wire`)
-    api_key_env: str   # env var holding the key
-    # Request/response shape: "openai" = POST {base}/chat/completions with a
-    # Bearer key; "anthropic" = native POST {base}/messages (llm_anthropic).
+    name: str
+    base_url: str
+    api_key_env: str
     wire: Literal["openai", "anthropic"] = "openai"
 
 
-# Both keys are CONFIRMED present in service/.env (verified 2026-06-04, 19 §4).
 PROVIDERS: dict[str, LLMProvider] = {
     "deepseek": LLMProvider("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
-    # DeepInfra hosts the Qwen3-VL vision models (OpenAI-compatible, NSFW-permissive).
     "deepinfra": LLMProvider("deepinfra", "https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY"),
-    # Z.ai (GLM). The base URL is the one the API actually answers on, NOT the
-    # one its OpenAI-compatibility docs give: `https://api.z.ai/api/openai/v1`
-    # returns `{"code":500,"msg":"404 NOT_FOUND"}` — under an HTTP **200**, so a
-    # caller that trusts the status code sees a successful request with no
-    # choices rather than a routing error. Probed 2026-08-27.
+    # Z.ai's documented OpenAI-compat URL answers HTTP 200 with a 404 body; this is the URL that works.
     "zai": LLMProvider("zai", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY"),
-    # Anthropic (Claude) on its NATIVE Messages API (llm_anthropic), not the
-    # OpenAI-compat layer: the layer does not prompt-cache, so the help bot's
-    # ~39k-token system prompt billed in full every answer (measured
-    # 2026-11-07). `x-api-key` header; same key resolution as every provider.
+    # Native Messages API: the OpenAI-compat layer does not prompt-cache (help bot's ~39k-token prompt billed in full).
     "anthropic": LLMProvider("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY",
                              wire="anthropic"),
-    # Full AI Chat Writers (phase 03a), both OpenAI-compatible.
-    # ASSUMPTION (evidence blocked): base URLs from D54/D60 research notes, not
-    # probed (no network in the build run). Ticket 40's first real call confirms.
+    # ASSUMPTION: base URLs not probed yet.
     "nanogpt": LLMProvider("nanogpt", "https://nano-gpt.com/api/v1", "NANOGPT_API_KEY"),
     "openrouter": LLMProvider("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
 }
 
 
+# compose passes `${KEY:-}` as an empty string, so load_dotenv(override=False) never backfills it: read service/.env directly.
 def _api_key(env_name: str) -> str:
-    """Resolve a provider key. A non-empty process-env value wins; if it's
-    missing or blank we fall back to the COPYed service/.env directly.
-
-    Why the file fallback: docker-compose passes the key through as
-    `${DEEPSEEK_API_KEY:-}`, which injects an EMPTY string into the container when
-    the host shell doesn't export it. load_dotenv(override=False) then refuses
-    to backfill the already-set (empty) var, so the real value sitting in the
-    COPYed service/.env would be ignored. Reading the file here recovers it —
-    the Phase-F clean-build footgun, defused.
-
-    A value pasted into the Setup → Keys UI (secrets.json) wins over both, so a
-    self-hoster can add a key without touching env/.env or restarting."""
     try:
         from secrets_store import stored as _stored
         s = _stored(env_name)
         if s:
             return s
-    except Exception:  # never let the key store crash a provider call
+    except Exception:
         pass
     val = (os.environ.get(env_name) or "").strip()
     if val:
@@ -91,81 +52,32 @@ def _api_key(env_name: str) -> str:
         return ""
 
 
-# ── Purpose-scoped fallback credentials ───────────────────────────────
-# ONE ROW PER HOLE IN THE FAIL-CLOSED KEY GATE, and today there is one purpose
-# (on two providers). The key
-# is `(purpose, provider)` and the value is the env id of a credential THIS
-# DEPLOYMENT pays for; `llm_client._tenant_api_key` consults it only after an
-# agency turns out to have no key of its own.
-#
-# Why the hole exists: the gate makes "where do I paste my API key?"
-# unanswerable exactly when it is asked. The in-product help assistant sends no
-# fan anything, so it is the one purpose that may fall back.
-#
-# Why a MAP and not three constants: "which purposes may spend the deployment's
-# money" is policy, and policy belongs in one readable place rather than spread
-# across a caller's `if`. The call site then carries no feature name at all, and
-# adding or removing a hole is a line here — reviewable on its own.
-#
-# 🚨 The env id is DELIBERATELY NOT `DEEPSEEK_API_KEY`. The house key is already
-# reachable on the un-owned-account path for this deployment's own maintenance
-# calls; widening THAT to every keyless agency would bill us for their sending
-# too. A separate id can be set, rotated or emptied on its own, and an empty
-# value simply restores the old fail-closed behaviour.
-#
-# `help_assistant_do` (the help bot's "Do it for me" form-fill draft,
-# assistant_draft.py) shares the DeepSeek row's credential: owner call
-# 2026-11-11 — a draft is one small cached call, it saves a rule switched OFF
-# and sends no fan anything, so it is paid like the Q&A it grew out of. Same
-# bound too: the account's daily cost cap (`llm_client._reserve`). No
-# Anthropic row: a Claude pin for the draft bills the agency's own key.
+# Env id deliberately not DEEPSEEK_API_KEY: widening the house key would bill us for keyless agencies' sending; empty restores fail-closed.
 _FALLBACK_KEY_ENVS: dict[tuple[str, str], str] = {
     ("help_assistant", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
+    # Shares the Q&A credential (owner call): one small cached call, bounded by the account's daily cost cap.
     ("help_assistant_do", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
-    # Set → the help bot runs Claude Opus by default (`_model_pick`).
     ("help_assistant", "anthropic"): "HELP_ASSISTANT_ANTHROPIC_KEY",
 }
 
 
 def fallback_key(purpose: str, provider: str) -> str:
-    """The deployment's own credential for this (purpose, provider), or "".
-
-    "" for every pair not in the map above, for an unset value, and for the
-    empty purpose — so a caller that knows nothing about purposes gets exactly
-    the fail-closed behaviour it had before this existed.
-    """
     env = _FALLBACK_KEY_ENVS.get((purpose, provider))
     return _api_key(env) if env else ""
 
 
 def house_key(provider: str) -> str:
-    """The DEPLOYMENT's own key for one provider ("" if it has none, including
-    for a name that is not a provider).
-
-    Public so callers ask for a provider's key rather than re-deriving which env
-    var holds it — that mapping is this module's business.
-    """
     prov = PROVIDERS.get(provider)
     if prov is None:
         return ""
     return _api_key(prov.api_key_env)
 
 
-# ── TypeSafe (Jev): a judge, not a chat provider ──────────────────────
-# Vault Jev (`vault_jev.py`) asks Jev through TypeSafe's own SDK, not the
-# OpenAI-compatible chat path, so it is no `PROVIDERS` row (no model list, no
-# llm_client billing). An agency may still save its own key for it
-# (`TENANT_KEY_PROVIDERS`; `tenant_keys.typesafe_key_for` picks it); this
-# deployment's key, resolved the way every provider key is (Setup > Keys, then
-# env, then service/.env), is the fallback for every agency that has not.
 TYPESAFE = "typesafe"
 TYPESAFE_KEY_ENV = "TYPESAFE_API_KEY"
 
-# What an agency can save a key for: every chat provider, plus TypeSafe.
 TENANT_KEY_PROVIDERS = sorted({*PROVIDERS, TYPESAFE})
 
 
 def typesafe_key() -> str:
-    """The deployment's TypeSafe key, or "" — the fallback for an agency with
-    no key of its own (`tenant_keys.typesafe_key_for`)."""
     return _api_key(TYPESAFE_KEY_ENV)

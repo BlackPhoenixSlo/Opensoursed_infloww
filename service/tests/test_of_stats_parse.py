@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""OnlyFans' Statistics replies read per UTC day (service/of_stats_parse.py): pure tables, no DB, no client.
-
-  points     Reach / Subscriptions charts as {day: count}: one point per consecutive day with a whole count, the
-             days in [first, last] kept (so today, after `last`, is never stored)
-  earnings   /earnings/chart as {day: {category: (net, gross, sales)}} in cents, plus OF's total: every category
-             under OF's reply key, gross from the period's gross/net, the days adding up to OF's total
-
-Rows start from the recorded replies (service/tests/fixtures/of_statistics_reads.json); None = not stored.
-
-Run: ./venv/bin/python service/tests/test_of_stats_parse.py   (exit 0 = green)
-"""
 import _harness  # noqa: F401 — first, as in every service test (paths)
 
 import copy  # noqa: E402
@@ -25,14 +14,11 @@ Z = "T00:00:00+00:00"
 
 
 def pts(days: dict[str, object]) -> list[dict]:
-    """A chart series, one point per day in day order (dict order ignored)."""
     return [{"date": f"{d}{Z}", "count": n} for d, n in sorted(days.items())]
 
 
 def chart(cats: dict[str, dict[str, float]], counts: dict | None = None, gross: dict | None = None,
            total: bool = True) -> dict:
-    """An /earnings/chart reply as OF answers Statements' filters: per category (under OF's reply key) its daily net
-    amounts (dollars), counts, net total and gross, and OF's `total` of them."""
     out = {}
     for c, days in cats.items():
         tot = sum(days.values())
@@ -53,9 +39,8 @@ def _edit(reply: dict, fn) -> dict:
     return out
 
 
-# ── points ──────────────────────────────────────────────────────────────
 
-POINTS = [  # (why, series, first, last, expected)
+POINTS = [
     ("Reach's recorded visitors", FIX["/users/me/profile/stats"]["chart"]["visitors"], D1, D2,
      {"2026-10-01": 0, "2026-10-02": 3}),
     ("Subscriptions' recorded subscribes", FIX["/subscriptions/subscribers/chart"]["subscribes"], D1, D2,
@@ -86,7 +71,6 @@ def case_points_table():
         assert got == want, (why, got)
 
 
-# ── earnings ────────────────────────────────────────────────────────────
 
 REC = FIX["/earnings/chart?filter=statements"]
 TWO_DAYS = chart({"tips": {"2026-10-01": 8, "2026-10-02": 12.8}, "messages": {"2026-10-02": 100}},
@@ -129,7 +113,7 @@ def _set_gross(cat: str, value: object):
     return fn
 
 
-EARNINGS = [  # (why, reply, first, last, {day: {category: (net, gross, sales)}} picked from the result | None)
+EARNINGS = [
     ("recorded: a $14 PPV message under chat_messages is $11.20 net, not $0", REC, D1, D2,
      {"2026-10-01": {"messages": (1120, 1400, 1), p.TOTAL: (1120, 1400, 1)},
       "2026-10-02": {"tips": (800, 1000, 2), "subscribes": (400, 500, 1), "messages": (0, 0, 0)}}),
@@ -192,11 +176,10 @@ def case_earnings_table():
 
 
 def case_earnings_reads_every_category_and_the_total():
-    """The filters fetch_earnings_blocking sends name EARNINGS and TOTAL; the recorded reply answers each."""
     for c in (*p.EARNINGS, p.TOTAL):
         assert p.REPLY_KEY.get(c, c) in REC, c
     assert set(p.EARNINGS_KIND) == set(p.EARNINGS)
 
 
-if __name__ == "__main__":  # test_of_stats_daily imports its reply builders
+if __name__ == "__main__":
     _harness.run()

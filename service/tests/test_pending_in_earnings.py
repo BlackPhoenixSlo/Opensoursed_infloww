@@ -1,28 +1,7 @@
 #!/usr/bin/env python3
-"""
-Pending (uncleared) sales count in every earnings read — owner rule.
-
-OF writes every sale `loading` (our `pending`) and clears it ~7 days later, so a
-read filtered to `status='cleared'` drops the whole last week. The Dashboard,
-per-model, per-employee and Creator Reports reads already count
-`TRACKED_STATUSES` (locked by test_stats_revenue.py). These are the reads that
-still filtered cleared-only until 2026-10-20 — each case was RED before:
-
-  case_tips_list_counts_pending        /admin/tips-list (Message dashboard › Tips)
-  case_top_tippers_counts_pending      /admin/top-tippers (Top tippers card)
-  case_fan_spend_counts_pending        fan_data._load_spend →
-                                       /admin/stats/per-fan-data's total_spend
-  case_orphan_tips_counts_pending      /admin/ingest/transactions/orphan-tips (the
-                                       Unattributed tips list)
-
-Each also proves a chargeback stays out: "count pending" must not become "count
-every status".
-
-Run: ./venv/bin/python service/tests/test_pending_in_earnings.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness
 
 _harness.bootstrap()
 

@@ -1,36 +1,5 @@
-"""service/full_ai_prepare.py — Prepare content: one owner-pressed chain that makes a
-Creator's vault sellable for Full AI (docs/spec/phase-03b-full-ai-selling-test-chat.md).
-
-  read_facts(account_id)  what is already done: harvested (`vault_runs._walked`), undescribed
-                          (`describe_selection("undescribed")`), unflagged (`_flags_todo`), ai_folders,
-                          feet_pack
-  steps_for(facts)        pure: which of harvest / describe / folders / feet still need running
-  start(account_id)       claim the chain and run it in the background; a running run is returned as is
-  view(account_id)        the run as the status route shows it
-
-The chain, in order, each step only if still missing (facts re-read before each step):
-  harvest   the Collect button's setup (`vault_ai_api.claim_collect`) + `_run_collect`
-  describe  `_claim_describe` + `_run_describe_all("undescribed")`, then the flags sweep on
-            items still missing Jev flags (`_flags_todo` / `_run_flags_all`); both in CHUNK
-            (2000) sweeps, rechecking budget + the left count between them
-  folders   `vault_of_folders.build_ai_folders` with the Folder plan's defaults, never mirrored to OF
-  feet      the Feet pack's one-click "File N preselected" (`vault_pack_picker`): every photo Jev scores
-            feet at the confident gate goes on its preselected rung; the possible ones stay in the picker
-            for the operator. Only while the account has no feet-* folder (owner 2026-11-14: the default
-            ticks were right, so the button files them). Never published to OF.
-Each step reuses its job's own running guard (held → `busy`, the chain stops) and reads its
-state from the job's RECORDED outcome (the run row, the sweeps' progress snapshots), never from
-the coroutine returning: the jobs record failures and return normally.
-
-Nothing starts it but the owner's press (POST /admin/full-ai/prepare-content): no timer, no
-page load, no sell switch. The Turn path never imports it (it reaches the OF client).
-
-Step states: pending | running | done | failed | busy | skipped. A cap or missing key on
-describe reads the ONE budget sentence (`vault_ai_vision._vision_budget`).
-
-ASSUMPTION: state `pending` for steps not reached yet; overturned if ticket 49's UI wants only the spec's five states.
-ASSUMPTION: a restart reads `run_id: null` (progress is in memory), not `interrupted`; overturned if progress must survive restarts.
-"""
+# Read each step's state from the job's recorded outcome, never the coroutine returning: jobs record failures and return normally.
+# Started only by the owner's press: no timer, page load or sell switch.
 from __future__ import annotations
 
 import asyncio
@@ -57,23 +26,21 @@ from vault_ai_vision_decide import describe_selection
 log = logging.getLogger(__name__)
 
 STEPS = ("harvest", "describe", "folders", "feet")
-# The Folder plan's own defaults (`vaultAiFoldersForm.ts` INITIAL_FORM), mirror always off. `keep` is the
-# vault's constant, not a copy: a literal 2 here left prepare content with 2 script folders, the modal with 10.
+# `keep` is the vault's constant, not a copy: a literal 2 left prepare content with 2 script folders, the modal with 10.
 FOLDER_DEFAULTS: dict[str, Any] = {"keep": vault_scripts.DEFAULT_KEEP_SCRIPTS, "solo": False, "topics": [],
                                    "split": True}
 STOPPED = "not run: an earlier step stopped the chain"
 FEET = vault_pack_picker.category("feet")
-CHUNK = 2000   # describe / flags walk this many per sweep, then recheck budget + what is left
+CHUNK = 2000
 
-_running: set[str] = set()              # accounts whose chain runs now (process-local)
-_runs: dict[str, dict[str, Any]] = {}   # account → its latest run (in memory; a restart forgets it)
+_running: set[str] = set()
+_runs: dict[str, dict[str, Any]] = {}
 
 
 def _now() -> str:
     return iso_z(datetime.utcnow())
 
 
-# ── What is done ─────────────────────────────────────────────────────
 
 async def read_facts(account_id: str) -> dict[str, Any]:
     async with get_session() as s:
@@ -95,8 +62,6 @@ def _step(name: str, state: str, detail: str = "", counts: dict[str, Any] | None
 
 
 def steps_for(facts: dict[str, Any]) -> list[dict[str, Any]]:
-    """harvest / describe / folders / feet, each `pending` (to run) or `skipped` (done already).
-    Before a harvest the mirror is empty, so describe can't be judged yet: pending."""
     todo = {"undescribed": facts["undescribed"], "unflagged": facts["unflagged"]}
     return [
         _step("harvest", "skipped", "already harvested") if facts["harvested"] else _step("harvest", "pending"),
@@ -108,7 +73,6 @@ def steps_for(facts: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-# ── The steps (each returns its final step dict) ─────────────────────
 
 async def _harvest(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -117,13 +81,13 @@ async def _harvest(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
         if e.status_code == 409:
             return _step("harvest", "busy", "a vault collect is already running")
         raise
-    await vault_ai_api._run_collect(account_id, run_id, pause_every=0)   # nobody to ask: never pauses
+    await vault_ai_api._run_collect(account_id, run_id, pause_every=0)
     async with get_session() as s:
         run = await s.get(VaultCacheRun, run_id)
     counts = {"seen": run.total_seen or 0, "pages": run.pages_done or 0}
     if run.status != "done":
         return _step("harvest", "failed", run.error or f"collect ended {run.status}", counts)
-    return _step("harvest", "done", run.error or "", counts)   # a capped walk: done, the cap's text
+    return _step("harvest", "done", run.error or "", counts)
 
 
 async def _budget_sentence(account_id: str) -> str:
@@ -131,12 +95,9 @@ async def _budget_sentence(account_id: str) -> str:
 
 
 async def _sweep_failure(account_id: str, prog: dict[str, Any] | None) -> str | None:
-    """The sweep's recorded stop, or None when it ran through clean: a key error or a stop
-    (`vault_sweep.SweepStop` / breaker) reads its own message + fix, a cap the budget sentence, an abort its recorded error, any failed item "<failed> of <done> items
-    failed: <first error>" (the step vocabulary has no partial: a run with failures is not done)."""
     if prog is None:
         return "the sweep stopped before recording progress (see the relay log)"
-    for k in ("key_error", "stop"):   # the relay's own sentences: what is wrong + the fix
+    for k in ("key_error", "stop"):
         if isinstance(prog.get(k), dict):
             return f"{prog[k]['message']} {prog[k]['fix']}"
     if prog.get("capped"):
@@ -150,7 +111,6 @@ async def _sweep_failure(account_id: str, prog: dict[str, Any] | None) -> str | 
 
 
 def _sweep_counts(prog: dict[str, Any] | None) -> dict[str, Any]:
-    """described / failed / total from a sweep snapshot (an early abort records none)."""
     if not prog or "done" not in prog:
         return {}
     return {"described": prog["done"] - prog["failed"], "failed": prog["failed"], "total": prog["total"]}
@@ -168,9 +128,6 @@ async def _undescribed(account_id: str) -> int:
 
 
 async def _describe(account_id: str, facts: dict[str, Any], progress=lambda counts: None) -> dict[str, Any]:
-    """Describe then flag, each in CHUNK-sized sweeps. Between chunks it rechecks: the claim
-    re-reads the budget (a cap fails the step), the left count is re-read and shown via `progress`,
-    and a chunk that shrinks nothing ends the loop (what is left keeps getting skipped)."""
     counts: dict[str, Any] = {}
     left = facts["undescribed"]
     while left:
@@ -198,12 +155,12 @@ async def _describe(account_id: str, facts: dict[str, Any], progress=lambda coun
     todo = await vault_ai_vision._flags_todo(account_id, limit=CHUNK)
     while todo:
         budget = await vault_ai_vision._vision_budget(account_id)
-        if budget["key_missing"]:   # the Flags button's own refusal (`flags_all`'s 424)
+        if budget["key_missing"]:
             return _step("describe", "failed", budget["blocked_reason"], counts)
         if not vault_ai_vision.claim_flags(account_id):
             return _step("describe", "busy", "a flags sweep is already running", counts)
         vault_ai_vision._flags_progress.pop(account_id, None)
-        await vault_ai_vision._run_flags_all(account_id, todo)   # releases the claim in its finally
+        await vault_ai_vision._run_flags_all(account_id, todo)
         prog = vault_ai_vision._flags_progress.get(account_id)
         counts["flagged"] = counts.get("flagged", 0) + _sweep_counts(prog).get("described", 0)
         stop = await _sweep_failure(account_id, prog)
@@ -222,9 +179,6 @@ async def _folders(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _feet(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
-    """File the Feet pack's preselected photos, each on its preselected rung (the picker's "File N
-    preselected"). `to_check` = the possible ones left in the picker. Nothing preselected: no folder
-    is made, so a later press looks again."""
     queue = [c for c in (await vault_pack_picker.candidates(account_id, FEET, limit=2000))["candidates"]
              if not c["rung"]]
     verdicts = {c["media_id"]: c["suggested"] for c in queue if c["preselect"]}
@@ -233,9 +187,8 @@ async def _feet(account_id: str, facts: dict[str, Any]) -> dict[str, Any]:
     return _step("feet", "done", "", {"filed": len(verdicts), "to_check": sum(1 for c in queue if c["possible"])})
 
 
-# ── The chain ────────────────────────────────────────────────────────
 
-_RUN = {"harvest": _harvest, "describe": _describe, "folders": _folders, "feet": _feet}   # keyed by STEPS
+_RUN = {"harvest": _harvest, "describe": _describe, "folders": _folders, "feet": _feet}
 
 async def _chain(account_id: str, run: dict[str, Any]) -> None:
     steps = run["steps"]
@@ -258,7 +211,6 @@ async def _chain(account_id: str, run: dict[str, Any]) -> None:
                 log.exception("prepare_content %s failed account=%s", name, account_id)
                 steps[i] = _step(name, "failed", f"{type(e).__name__}: {e}"[:300])
             state = steps[i]["state"]
-            # A failed describe (cap, key) still leaves folders worth building on what is described.
             if state == "busy" or (state == "failed" and name != "describe"):
                 for j in range(i + 1, len(STEPS)):
                     steps[j] = _step(STEPS[j], "skipped", STOPPED)
@@ -269,8 +221,6 @@ async def _chain(account_id: str, run: dict[str, Any]) -> None:
 
 
 async def start(account_id: str) -> dict[str, Any]:
-    """Claim the account's one chain (before any await) and start it; a press while it
-    runs gets the running run back."""
     if account_id in _running:
         return view(account_id)
     _running.add(account_id)
@@ -286,7 +236,6 @@ async def start(account_id: str) -> dict[str, Any]:
 
 
 def view(account_id: str) -> dict[str, Any]:
-    """The account's latest run (a copy), or the idle shape when none ran in this process."""
     run = _runs.get(account_id)
     if run is None:
         return {"run_id": None, "steps": [], "started_at": None, "finished_at": None}

@@ -1,25 +1,11 @@
 #!/usr/bin/env python3
-"""
-audit_log.audit_decision — table tests over which finished request the audit
-middleware logs to `actions`, and under which `actions.action`:
-
-  case_table:        normal writes, the app's BACKGROUND_WRITES (audited like
-                     any write), each skip prefix, the exact skip paths
-                     (/admin/mcp, not /admin/mcp-x), reads, non-2xx answers.
-  case_skip_seam:    the middleware's prefixes are read through employees,
-                     where slop/lib/relay.py extends them.
-  case_reexports:    employees still exports what its importers use.
-
-Run: ./venv/bin/python service/tests/test_audit_decision.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 import audit_log  # noqa: E402
 from audit_log import _AUDIT_SKIP_PREFIXES, BACKGROUND_WRITES, audit_decision, audited  # noqa: E402
 
-# (method, path, status) -> action or None
 TABLE = [
     ("POST", "/admin/employees", 200, "POST /admin/employees"),
     ("PATCH", "/admin/employees/7", 204, "PATCH /admin/employees/7"),
@@ -38,13 +24,13 @@ TABLE = [
     ("POST", "/admin/employees", 403, None),
     ("POST", "/admin/employees", 500, None),
     ("POST", "/", 200, "POST /"),
-    ("POST", "/healthz", 200, None),            # prefix match, not segment
+    ("POST", "/healthz", 200, None),
     ("POST", "/admin/auditor", 200, None),
     ("POST", "/admin/login/start", 200, None),  # body carries the OF password
     ("POST", "/admin/shifts/clock-heartbeat", 200, None),
     ("POST", "/admin/shifts/clock-in", 200, "POST /admin/shifts/clock-in"),
-    ("POST", "/__slop/of-ws-frame", 200, "POST /__slop/of-ws-frame"),  # default prefixes only
-    ("POST", "/admin/mcp", 200, None),              # _AUDIT_SKIP_PATHS: exact
+    ("POST", "/__slop/of-ws-frame", 200, "POST /__slop/of-ws-frame"),
+    ("POST", "/admin/mcp", 200, None),
     ("POST", "/admin/mcp-x", 200, "POST /admin/mcp-x"),
     ("POST", "/admin/mcp/x", 200, "POST /admin/mcp/x"),
 ]
@@ -106,7 +92,7 @@ def case_reexports():
     assert employees.owner_context is agency_context.owner_context
     assert employees.agency_context is agency_context.agency_context
     assert employees.agency_contexts is agency_context.agency_contexts
-    assert employees._chatter_agency_for_creator is agency_context._chatter_agency_for_creator  # clock_api
+    assert employees._chatter_agency_for_creator is agency_context._chatter_agency_for_creator
 
 
 if __name__ == "__main__":

@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""The 30 s fast poll reads OF's purchases feed only, not the ledger (backend 1.6).
-
-The ledger lands hours late (measured 209/560/628 min), so re-reading its newest
-page every 30 s bought no freshness over the 5-min supervisor and cost 120 OF
-calls an hour per selling account. The "he just paid" signal is the purchases
-notification (`poll_purchases`), which stays. Pins: one OF read per tick, and it
-is the purchases feed; no Transaction rows are written by the fast tick.
-
-Run:  ./venv/bin/python service/tests/test_fast_tick_no_ledger.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()

@@ -1,46 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_tease_chat — the Pending tease and the Free item at the Test chat API (phase 03b,
-ticket 46 phase B).
-
-`POST /admin/full-ai/test/turn` and `POST /admin/full-ai/test/settle` over the shared selling
-helpers (`_full_ai_sell_helpers`: two-Agency fixture, owner session cookies, a seeded vault) and
-fakes at the network edges only (Jev at `_router_jev._client` / `_info_jev._client`, the Writers at
-`llm_client.httpx.AsyncClient`). Every request runs inside `_guarded` (03a's invariants +
-content_offers + `ownership.stamp_media_owned`).
-
-Tease:
-  case_tease_then_sell_same_piece      "how much?" -> tease row (Pick, price NULL,
-                                       no PPV, no `$`); his next reply -> row `sell`, the same piece
-                                       (a fresh pick would differ); the Router saw the tease text
-                                       as `pending_offer` (fetch, tease first)
-  case_decline_is_ignored              "I'm not buying" (.97) routes nothing (owner 2026-11-15): a plain
-                                       chat, no Pick or Offer, BROKE_JOKE once in her prompt
-  case_tease_gone_after_900s           the tease row 901 s old -> normal routing, `pending_offer` none
-  case_complaint_after_tease           complaint inside the window -> make_right (rows 1-5 win)
-  case_teased_piece_gone               teased photo removed -> re-pick of the same subject and
-                                       format; then nothing of that format -> Refusal, never the clip
-  case_tease_caption_fallback          the tease caption failing the audit twice -> priceless
-                                       fallback caption, no `$`, still the tease row
-  case_tease_buyer_no_spend_line       S3/S4: a prior buyer's tease prompt has no spend line, its
-                                       text saying "free" passes the audit (no fallback caption)
-  case_tease_sticker_only_tries_next   S2: GIFs on, a sticker-only tease -> floor:no_letters, the
-                                       next Writer's text ships with the tease's Pick
-
-Free item (make_right after a Buy, D52):
-  case_free_item_after_buy             Buy -> complaint -> one unseen item at price 0 (row kind
-                                       `free`, PPV 0), FREE item line, no spend line, "FREE" passes
-                                       the audit (S3/S4); then Owned: never sold to him after
-  case_free_item_needs_a_buy           a declined Offer is no Buy: apology alone, no sell step
-  case_free_item_exhausted             everything already sent: Refusal all_owned, apology, no item
-  case_free_item_sticker_only_tries_next  S2: a sticker-only Free-item reply -> floor:no_letters,
-                                       the next Writer's text ships with the item
-  case_settle_refuses_tease_and_free   settle on a tease / Free item row -> 422 not_a_priced_offer
-
-Run: ./venv/bin/python service/tests/test_full_ai_tease_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
@@ -68,7 +29,6 @@ TEASE_TEXT = "mm its a cute one babe, u wanna see it"
 
 
 def _turn(body: dict, script: dict | str, verdict):
-    """One test turn under the invariants: (response json, Writer fake, Pick results, Router fake)."""
     script = {NANO: script} if isinstance(script, str) else script
     fw = FakeWriterHTTP({NANO: "ok:hii", OPENROUTER: "ok:hii", **script})
     fj = FakeJev(verdict)
@@ -112,7 +72,6 @@ def _remove(mid: int) -> None:
 
 
 def _add_clip(mid: int, lane: str) -> None:
-    """A solo, priced 30 s clip in A's vault (`_vault` drops it with the rest)."""
     async def q():
         async with get_session() as s:
             s.add(VaultItem(account_id=A, media_id=mid, kind="video", duration_seconds=30,
@@ -125,7 +84,6 @@ def _add_clip(mid: int, lane: str) -> None:
 
 
 def _tease_row_checks(got: dict, row: AiDecision, ref: int) -> None:
-    """A tease row (ticket 07 r3): its Pick in the item ref, price NULL, no PPV, no `$` shown."""
     assert got["route"] == "tease" and got["status"] == "sent", got
     assert got["offer"] is not None and got["offer"]["kind"] == "tease", got["offer"]
     assert (got["offer"]["ref"], got["offer"]["price_cents"]) == (ref, None), got["offer"]
@@ -135,11 +93,8 @@ def _tease_row_checks(got: dict, row: AiDecision, ref: int) -> None:
     assert row.outcome is None and row.offer_message_id is None
 
 
-# ── Tease ─────────────────────────────────────────────────────────────
 
 def case_tease_then_sell_same_piece():
-    """Heat 2 teases the $10 photo (101); his next reply comes at Heat 3, where a fresh pick takes
-    the $50 one (202): the sell is the teased 101 at its list price."""
     pair = "t-price"
     with _sell_draft(), _vault(PRICED):
         tease, fw, (pick,), _ = _turn(_body(pair, HOW_MUCH), f"ok:{TEASE_TEXT}", (_hot(price=0.9), 1.0))
@@ -152,7 +107,6 @@ def case_tease_then_sell_same_piece():
         assert "SELLING RULES" not in system and "to unlock" not in system, system
         assert _reply(row)["caption_fallback"] is False, _reply(row)
         sell, _, picks, fj = _turn(_body(pair, "ok", n=2), "ok:here u go babe", (QUIET, 2.0))
-    # fetch's one source, tease first: her tease bubbles, space-joined.
     assert fj.calls[0]["state"]["pending_offer"] == " ".join(_texts(tease["parts"])), fj.calls[0]["state"]
     assert (sell["route"], _rows(pair)[1].route_row) == ("sell_now", "sell"), sell
     assert sell["offer"]["kind"] == "offer" and sell["offer"]["ref"] == 101, sell["offer"]
@@ -161,8 +115,6 @@ def case_tease_then_sell_same_piece():
 
 
 def case_decline_is_ignored():
-    """"I'm not buying" (declines_buying .97, over its .95) routes nothing (owner 2026-11-15 "just be
-    ignorant of this broke stuff"): the chat Route, no Pick, no Offer; BROKE_JOKE once under the goal."""
     pair = "t-decline"
     with _sell_draft(), _vault(PRICED):
         got, fw, picks, _ = _turn(_body(pair, NOT_BUYING), "ok:lol not too broke for me",
@@ -193,14 +145,10 @@ def case_complaint_after_tease():
         got, fw, picks, _ = _turn(_body(pair, "this is a scam", n=2), "ok:omg im so sorry babe",
                                   (_hot(complains_now=0.9), 1.0))
     assert (got["route"], _rows(pair)[1].route_row) == ("make_right", "complains_now"), got
-    # No Buy in this session: the apology alone, no sell step.
     assert got["offer"] is None and picks == [] and w.MAKE_RIGHT_TAIL in _system(fw), got
 
 
 def case_teased_piece_gone():
-    """The teased photo leaves the vault inside the window: his next reply sells the other photo
-    (same subject anything, same format photo), never the $10 clip a fresh any-format pick could
-    take; with no photo left at all it is a Refusal, never the clip."""
     pair = "t-repick"
     photo = (_hot(price=0.9), 1.0, {"asks_format": "photo"})
     with _sell_draft(), _vault(PRICED):
@@ -211,7 +159,6 @@ def case_teased_piece_gone():
         got, _, (again,), _ = _turn(_body(pair, "ok", n=2), "ok:here u go babe", (QUIET, 1.0))
         assert got["route"] == "sell_now" and got["offer"]["ref"] == 202, got
         assert (again.subject, again.format) == ("anything", "photo"), again
-        # Tease again (the clip is still there); then the last photo goes too.
         _, _, (pick2,), _ = _turn(_body(pair, HOW_MUCH, n=3), f"ok:{TEASE_TEXT}", photo)
         assert pick2.ref == 202, pick2
         _remove(202)
@@ -222,8 +169,6 @@ def case_teased_piece_gone():
 
 
 def case_tease_caption_fallback():
-    """spec 03b line 195: the tease caption claims 5 videos for one photo, the rewrite too -> the
-    priceless fallback caption, no `$`, the row still a tease with its Pick."""
     pair = "t-fallback"
     with _sell_draft(), _vault(PRICED):
         got, fw, (pick,), _ = _turn(_body(pair, HOW_MUCH),
@@ -237,8 +182,6 @@ def case_tease_caption_fallback():
 
 
 def case_tease_buyer_no_spend_line():
-    """S3 + S4: after a Buy the tease prompt carries no spend line (its amounts would fail the
-    price check); a tease text saying "free" names no price, so it passes (no fallback caption)."""
     pair = "t-buyer"
     free_text = "feel free to imagine it babe, its so cute"
     with _sell_draft(), _vault(PRICED):
@@ -253,8 +196,6 @@ def case_tease_buyer_no_spend_line():
 
 
 def case_tease_sticker_only_tries_next():
-    """S2: GIFs on, the first Writer answers a tease with only a sticker: a tease carries its Pick,
-    so the lone gif can't be the reply -> floor:no_letters, the second Writer's text ships."""
     pair = "t-sticker"
     with _draft(sell_on=True, gifs=True), _vault(PRICED):
         got, fw, (pick,), _ = _turn(_body(pair, HOW_MUCH), {NANO: f"ok:STICKER: {_GIF_TAG}",
@@ -267,14 +208,12 @@ def case_tease_sticker_only_tries_next():
     _tease_row_checks(got, row, pick.ref)
 
 
-# ── Free item (make_right after a Buy) ────────────────────────────────
 
 FREE_VAULT = {**PRICED, 303: "$10"}
 SORRY = "omg im so sorry babe, this one is FREE for u"
 
 
 def _buy(pair: str, n: int = 1) -> dict:
-    """Turn `n` sells (Heat 2: the $10 photo 101 first) and he buys it."""
     sold, _, _, _ = _turn(_body(pair, PICS, n=n), "ok:mm ok i have something for u", (_hot(wants_content=0.9), 1.0))
     assert sold["route"] == "sell_now" and sold["offer"]["kind"] == "offer", sold
     assert _settle(pair, sold["row_id"], "bought").status_code == 200
@@ -282,11 +221,8 @@ def _buy(pair: str, n: int = 1) -> dict:
 
 
 def case_free_item_after_buy():
-    """D52: a complaint after a Buy -> make_right with one unseen item at price 0 (row kind `free`,
-    a PPV of 0 on the last bubble), the FREE item line, no spend line; S4: her "FREE" passes.
-    Then it is Owned: his next content ask sells the other photo, never the Free item."""
     pair = "f-buy"
-    with _sell_draft(sell_bundle="shoot"), _vault(FREE_VAULT):     # one-photo Buy: 303 stays unseen
+    with _sell_draft(sell_bundle="shoot"), _vault(FREE_VAULT):
         sold = _buy(pair)
         got, fw, (gift,), _ = _turn(_body(pair, "this is a scam", n=2), f"ok:{SORRY}",
                                     (_hot(complains_now=0.9), 1.0))
@@ -306,7 +242,6 @@ def case_free_item_after_buy():
 
 
 def case_free_item_needs_a_buy():
-    """D52: an Offer he declined is no Buy: the complaint gets the apology alone, no sell step."""
     pair = "f-declined"
     with _sell_draft(), _vault(FREE_VAULT):
         sold, _, _, _ = _turn(_body(pair, PICS), "ok:mm ok i have something for u", (_hot(wants_content=0.9), 1.0))
@@ -319,8 +254,6 @@ def case_free_item_needs_a_buy():
 
 
 def case_free_item_exhausted():
-    """Every item already sent to him (101 bought, 202 offered and not bought: seen, not Owned): a
-    Refusal (all_owned) keeps make_right's apology, no item, never chat."""
     pair = "f-exhausted"
     with _sell_draft(), _vault(PRICED):
         _buy(pair)
@@ -328,15 +261,13 @@ def case_free_item_exhausted():
         assert offered["offer"]["ref"] == 202, offered
         got, fw, picks, _ = _turn(_body(pair, "this is a scam", n=3), "ok:omg im so sorry babe",
                                   (_hot(complains_now=0.9), 1.0))
-    assert picks == [], picks                   # the pool refuses before any draw
+    assert picks == [], picks
     assert got["route"] == "make_right" and got["offer"] is None and _ppvs(got["parts"]) == [], got
     assert w.MAKE_RIGHT_TAIL in _system(fw) and "SELLING RULES" not in _system(fw), _system(fw)
     assert _reply(_rows(pair)[2])["refusal"] == "all_owned", _reply(_rows(pair)[2])
 
 
 def case_free_item_sticker_only_tries_next():
-    """S2: a Free item carries an offer, so a sticker-only make_right reply is floor:no_letters and
-    the next Writer's text ships with the item."""
     pair = "f-sticker"
     with _draft(sell_on=True, gifs=True), _vault(FREE_VAULT):
         _buy(pair)
@@ -350,10 +281,8 @@ def case_free_item_sticker_only_tries_next():
 
 
 def case_settle_refuses_tease_and_free():
-    """spec 03b story 59: settle on a tease row or a Free item row -> 422 `not_a_priced_offer`,
-    nothing written."""
     pair = "f-settle"
-    with _sell_draft(sell_bundle="shoot"), _vault(FREE_VAULT):     # one-photo Buy: 303 stays unseen
+    with _sell_draft(sell_bundle="shoot"), _vault(FREE_VAULT):
         _buy(pair)
         free, _, _, _ = _turn(_body(pair, "this is a scam", n=2), f"ok:{SORRY}", (_hot(complains_now=0.9), 1.0))
         tease, _, _, _ = _turn(_body(pair, HOW_MUCH, n=3), f"ok:{TEASE_TEXT}", (_hot(price=0.9), 1.0))
@@ -368,7 +297,6 @@ def case_settle_refuses_tease_and_free():
 
 @contextlib.contextmanager
 def _draft(**cfg):
-    """A's draft side with `cfg` over DEFAULTS (through the config API), DEFAULTS again after."""
     _put_draft({**DEFAULTS, **cfg})
     try:
         yield

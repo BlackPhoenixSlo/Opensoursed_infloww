@@ -1,14 +1,3 @@
-"""vault_account_settings.solo_sequences — Script Fill puts only solo media into Sequences
-
-Per-Creator switch, ON by default (client rule). One nullable Boolean column, no default: NULL
-reads as on (`vault_settings.DEFAULTS`), so every existing row and every account with no row keeps
-the solo-only Fill. Boxes upgrade through db.engine's init_db additive catch-up (nullable = safe);
-this file keeps the alembic chain linear. Inspector-guarded + idempotent, like 0128.
-
-Revision ID: 0131_vault_solo_sequences
-Revises: 0130_ai_decisions_offer_attempt
-Create Date: 2026-11-22
-"""
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -19,6 +8,7 @@ down_revision: str | Sequence[str] | None = "0130_ai_decisions_offer_attempt"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# nullable, no default: NULL reads as on (vault_settings.DEFAULTS), keeping solo-only Fill for existing rows
 _TABLE = "vault_account_settings"
 
 

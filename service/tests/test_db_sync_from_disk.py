@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""sync_from_disk runs one at a time: two admin saves in a row (POST /admin/proxies, then
-/admin/proxies/assign) each kick it; overlapping, both inserted the new proxy label and the
-second died on UNIQUE proxies.label (slop proxy-failover recheck-gap, 2026-11-06).
-
-    ./venv/bin/python service/tests/test_db_sync_from_disk.py
-"""
 from __future__ import annotations
 
 import asyncio
@@ -30,7 +24,8 @@ from db import import_legacy, repo  # noqa: E402
 from db.engine import init_db  # noqa: E402
 
 
-def _slow_accounts(_s, dry_run: bool):   # holds the proxy insert open until commit, as a slow import
+# Overlapping syncs both inserted the new proxy label and the second died on UNIQUE proxies.label.
+def _slow_accounts(_s, dry_run: bool):
     time.sleep(0.3)
     return 0, 0
 

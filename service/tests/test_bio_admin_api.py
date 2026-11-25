@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""Bio pages owner admin API (bio_pages/admin.py) over the real relay app: auth (401 / chatter 403 by prefix and by
-handler / impersonated writes 403), tenancy (another owner's ids 404 on every route, its rows unchanged), create and
-diff PATCH, links (order, cap, stock icons), atomic reorder, image uploads (size, format, EXIF, alpha, frame 0,
-resize, fresh names), deletes (rows, cascades, files), 30-day stats and no destination/geo in any log line; create
-with a Creator (OnlyFans name + an "OnlyFans" link from the cached users_me), the vault avatar (photo only, owned
-page), the request-derived public base when BIO_PUBLIC_URL is unset and `short_url` from BIO_SHORT_URL.
-The public side is read through bio_pages.app over ASGI on the same temp DB and files dir.
-
-Run: ./venv/bin/python service/tests/test_bio_admin_api.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 import os  # noqa: E402
 import tempfile  # noqa: E402
@@ -151,7 +141,6 @@ def img(fmt: str, size=(64, 32), mode="RGB", color=(200, 10, 10), **save) -> byt
 
 
 def png_header(w: int, h: int) -> bytes:
-    """A PNG whose IHDR claims w x h, with one tiny IDAT: Pillow reads the size without decoding."""
     def chunk(t, d):
         return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
@@ -165,7 +154,6 @@ def served(url: str) -> Image.Image:
     return Image.open(BytesIO(r.content))
 
 
-# seeded by SQL for B (the tenancy oracle) and one legacy A row whose stored code fails today's rule
 B_PID, B_LID = "bbbbbbbbbbbbbb1", "bbbbbbbbbbbbbl1"
 sql("INSERT INTO bio_profiles(id, owner_user_id, username, display_name, mode) VALUES (?, ?, 'bobpage', 'Bob', "
     "'direct')", B_PID, B)
@@ -184,7 +172,6 @@ def _b_snapshot():
             sorted(p.name for p in (FILES / "links" / B_LID).iterdir()))
 
 
-# ── auth ─────────────────────────────────────────────────────────────
 
 ROUTES = [("GET", BASE), ("POST", BASE), ("GET", f"{BASE}/stock/onlyicon.webp"),
           ("GET", f"{BASE}/files/links/{B_LID}/backgroundImage_bbbbbbbbbb.webp"),
@@ -208,7 +195,6 @@ def case_auth():
         assert anon.request(method, path).status_code == 401, (method, path)
         r = chatter.request(method, path)
         assert r.status_code == 403, (method, path, r.status_code)
-    # the handler refuses a chatter too, without the prefix block
     import chatters
     blocked = chatters._CHATTER_BLOCKED_ADMIN_PREFIXES
     chatters._CHATTER_BLOCKED_ADMIN_PREFIXES = tuple(p for p in blocked if p != "/admin/bio-pages")
@@ -234,7 +220,6 @@ def case_impersonated_reads_only():
     assert sql("SELECT display_name FROM bio_profiles WHERE id = ?", B_PID) == [("Bob",)]
 
 
-# ── tenancy ──────────────────────────────────────────────────────────
 
 def case_tenancy():
     before = _b_snapshot()
@@ -254,7 +239,6 @@ def case_tenancy():
         assert r.status_code == 404, (method, path, r.status_code, r.text)
     assert _b_snapshot() == before
 
-    # A's own page with B's link id
     mine = create(owner, "tenant_a")["profile"]["id"]
     for method, path in (("PATCH", f"{BASE}/{mine}/links/{B_LID}"), ("DELETE", f"{BASE}/{mine}/links/{B_LID}"),
                          ("DELETE", f"{BASE}/{mine}/links/{B_LID}/background"),
@@ -351,7 +335,6 @@ def case_bad_health_url_is_cached_false():
             os.environ["BIO_HEALTH_URL"] = old
 
 
-# ── create / patch ───────────────────────────────────────────────────
 
 def case_create_and_patch():
     p = create(owner, "  Alice_Page ")
@@ -374,7 +357,6 @@ def case_create_and_patch():
     got = r.json()["profile"]
     assert (got["bio"], got["verified"], got["mode"], got["display_name"]) == ("hi", True, "direct", "Alice_Page")
     assert owner.patch(f"{BASE}/{pid}", json={"username": "x"}).status_code == 422
-    # legacy value (20-digit code) survives an unrelated PATCH
     lk = add_link(owner, pid)["links"][0]
     assert sql("SELECT bot_check FROM bio_links WHERE id = ?", lk["id"]) == [(1,)], "a new Link is bot-checked"
     sql("UPDATE bio_links SET default_tracking_code = '12345678901234567890' WHERE id = ?", lk["id"])
@@ -387,7 +369,6 @@ def case_create_and_patch():
     assert pj["links"][0]["title"] == "Renamed"
 
 
-# ── links ────────────────────────────────────────────────────────────
 
 def case_links_order_cap_and_icons():
     pid = create(owner, "links_page")["profile"]["id"]
@@ -411,12 +392,10 @@ def case_links_order_cap_and_icons():
     assert not (FILES / "links" / lk["id"] / lk2["icon"]).exists()
     pub = public_json("links_page").json()["links"]
     assert [x["title"] for x in pub] == ["L0", "L1", "L2", "Icon"] and pub[-1]["icon"] == ""
-    # stock route
     r = owner.get(f"{BASE}/stock/twitchicon.webp")
     assert r.status_code == 200 and r.content == (PUBLIC / "images" / "twitchicon.webp").read_bytes()
     for bad in ("nope.webp", "onlyicon.png", "..%2Fonlyicon.webp"):
         assert owner.get(f"{BASE}/stock/{bad}").status_code == 404, bad
-    # cap
     con = sqlite3.connect(_harness.DB_PATH)
     con.executemany("INSERT INTO bio_links(id, profile_id, link_id, title, destination, sort_order) "
                     "VALUES (?, ?, ?, 't', 'https://x', ?)",
@@ -445,7 +424,6 @@ def case_reorder():
     assert [lk["id"] for lk in owner.get(f"{BASE}/{pid}").json()["links"]] == want
 
 
-# ── uploads ──────────────────────────────────────────────────────────
 
 def case_uploads():
     page = create(owner, "upload_page")
@@ -453,7 +431,6 @@ def case_uploads():
     lid = add_link(owner, pid)["links"][0]["id"]
     av = f"{BASE}/{pid}/avatar"
     bg = f"{BASE}/{pid}/links/{lid}/background"
-    # no content-length (chunked) → 411
     r = owner.post(av, content=iter([b"--x\r\n"]), headers={"content-type": "multipart/form-data; boundary=x"})
     assert r.status_code == 411, r.status_code
     big = b"\xff\xd8" + b"\x00" * (21 * 1024 * 1024)
@@ -463,7 +440,6 @@ def case_uploads():
         r = upload(owner, av, bad, name)
         assert r.status_code == 415 and r.json()["detail"] == "Pick a JPG, PNG, GIF or WebP image.", (name, r.text)
     assert owner.post(av, files={"other": ("x", b"x")}).status_code == 422
-    # EXIF orientation 6 (rotate 90 CW): stored 300x100 → upright 100x300, no EXIF out
     exif = Image.Exif()
     exif[0x0112] = 6
     exif[0x010F] = "SlopCam"
@@ -475,7 +451,6 @@ def case_uploads():
     im = served(page["profile"]["avatar_url"])
     assert im.size == (100, 300), im.size
     assert not im.getexif() and "exif" not in im.info and "icc_profile" not in im.info
-    # a new name each time; old file gone; public bio app serves it immutable
     page = upload(owner, av, img("PNG", (3000, 1500), "RGBA", (0, 0, 255, 0))).json()
     name2 = page["profile"]["avatar"]
     assert name2 != name1 and not (FILES / "profiles" / pid / name1).exists()
@@ -484,14 +459,12 @@ def case_uploads():
     r = bio_get(f"/api/files/profiles/{pid}/{name2}")
     assert r.status_code == 200 and r.headers["cache-control"] == "public, max-age=31536000, immutable"
     assert public_json("upload_page").json()["profile"]["avatarUrl"] == f"/api/files/profiles/{pid}/{name2}"
-    # GIF → frame 0; background 1080 max side
     frames = [Image.new("RGB", (2000, 3000), c) for c in ((255, 0, 0), (0, 0, 255))]
     gif = BytesIO()
     frames[0].save(gif, "GIF", save_all=True, append_images=frames[1:])
     page = upload(owner, bg, gif.getvalue(), "a.gif").json()
     im = served(page["links"][0]["background_url"])
     assert im.size == (720, 1080) and im.convert("RGB").getpixel((10, 10))[0] > 200, (im.size,)
-    # the page's own background: 1080 max side, in the public JSON, removable
     pbg = f"{BASE}/{pid}/background"
     assert public_json("upload_page").json()["profile"]["backgroundUrl"] == ""
     page = upload(owner, pbg, img("PNG", (3000, 1500))).json()
@@ -499,7 +472,6 @@ def case_uploads():
     assert pbg_name.startswith("background_") and served(page["profile"]["background_url"]).size == (1080, 540)
     assert public_json("upload_page").json()["profile"]["backgroundUrl"] == f"/api/files/profiles/{pid}/{pbg_name}"
     assert page["profile"]["avatar_url"].rsplit("/", 1)[1] == name2, "the avatar stays"
-    # the upload is audited as the page's stored Creator (no X-Account-Id sent)
     owner.patch(f"{BASE}/{pid}", json={"account_id": IDS["creator_a"]}).raise_for_status()
     assert upload(owner, pbg, img("PNG", (3000, 1500))).status_code == 200
     assert sql("SELECT account_id FROM actions ORDER BY id DESC LIMIT 1") == [(IDS["creator_a"],)]
@@ -508,7 +480,6 @@ def case_uploads():
     page = owner.delete(pbg).json()
     assert page["profile"]["background_url"] == "" and not (FILES / "profiles" / pid / pbg_name).exists()
     assert (FILES / "profiles" / pid / name2).exists()
-    # removes
     page = owner.delete(av).json()
     assert page["profile"]["avatar"] == "" and not (FILES / "profiles" / pid / name2).exists()
     bg_name = page["links"][0]["background_image"]
@@ -517,7 +488,6 @@ def case_uploads():
     assert owner.delete(av).status_code == 200, "removing nothing is fine"
 
 
-# ── delete ───────────────────────────────────────────────────────────
 
 def case_deletes():
     page = create(owner, "doomed")
@@ -531,13 +501,11 @@ def case_deletes():
     sql("INSERT INTO bio_daily(day, profile_id, link_id, country, in_app, code, views, clicks) VALUES "
         "('2026-11-01', ?, '', 'US', '', '', 5, 0), ('2026-11-01', ?, ?, 'US', '', '', 0, 3)", pid, pid, lid2)
     assert owner.get(f"{BASE}/{pid}").json()["profile"]["public_url"] == "https://doomed.test/"
-    # link delete: row + dir gone, its bio_daily rows stay, Reveal 404
     page = owner.delete(f"{BASE}/{pid}/links/{lid2}").json()
     assert [lk["id"] for lk in page["links"]] == [lid1] and not (FILES / "links" / lid2).exists()
     assert sql("SELECT clicks FROM bio_daily WHERE link_id = ?", lid2) == [(3,)]
     assert bio_get(f"/.netlify/functions/reveal?id={key2}", **{"sec-fetch-site": "same-origin"}).status_code == 404
     assert owner.delete(f"{BASE}/{pid}/links/{lid2}").status_code == 404
-    # profile delete: links, domain, bio_daily gone (FK), dirs gone, username free
     assert (FILES / "links" / lid1).exists() and (FILES / "profiles" / pid).exists()
     r = owner.delete(f"{BASE}/{pid}")
     assert r.status_code == 204 and r.content == b""
@@ -549,7 +517,6 @@ def case_deletes():
     assert create(owner, "doomed")["profile"]["id"] != pid
 
 
-# ── stats ────────────────────────────────────────────────────────────
 
 def case_stats_30_days():
     pid = create(owner, "stats_page")["profile"]["id"]
@@ -571,7 +538,6 @@ def case_stats_30_days():
     assert row["link_count"] == 0 and row["public_url"] == "https://ofl.test/stats_page"
 
 
-# ── create with a Creator ────────────────────────────────────────────
 
 def case_create_with_creator_fills_name_and_onlyfans_link():
     calls: list[str] = []
@@ -591,17 +557,14 @@ def case_create_with_creator_fills_name_and_onlyfans_link():
         assert (lk["title"], lk["destination"], lk["tracking"], lk["icon_stock"]) == (
             "OnlyFans", "https://onlyfans.com/ava.of", True, "onlyicon"), lk
         assert public_json("ava_page").status_code == 200
-        # a typed name stays; the link is still added
         page = owner.post(BASE, json={"username": "ava_two", "display_name": " Mine ", "account_id": aid}).json()
         assert page["profile"]["display_name"] == "Mine" and len(page["links"]) == 1
-        # no name on OF: the @username; OF unreadable: no link, and an empty name is refused
         me = {"username": "only_user"}
         assert create(owner, "ava_three", display_name=None, account_id=aid)["profile"]["display_name"] == "only_user"
         me = None
         r = owner.post(BASE, json={"username": "ava_four", "account_id": aid})
         assert r.status_code == 422 and r.json()["detail"]["field"] == "display_name", r.text
         assert create(owner, "ava_five", account_id=aid)["links"] == []
-        # refused before any OF read: a bad username, a foreign Creator; no Creator, no read
         calls.clear()
         assert owner.post(BASE, json={"username": "x", "account_id": aid}).status_code == 422
         assert owner.post(BASE, json={"username": "ava_six", "account_id": IDS["creator_b"]}).status_code in (403, 404)
@@ -626,7 +589,6 @@ def case_creator_set_later_adds_onlyfans_link_first():
         links = r.json()["links"]
         assert [(lk["title"], lk["destination"], lk["tracking"]) for lk in links] == [
             ("OnlyFans", "https://onlyfans.com/ava.later", True), ("Mine", DEST, False)], links
-        # already links to OnlyFans: none added on a re-set; OF unreadable: none either
         dirs = lambda: sorted(p.name for p in (bio_admin.files.files_dir() / "links").iterdir())
         before = dirs()
         assert len(owner.patch(f"{BASE}/{pid}", json={"account_id": aid}).json()["links"]) == 2
@@ -642,7 +604,6 @@ def case_creator_set_later_adds_onlyfans_link_first():
         bio_admin._of_me = real
 
 
-# ── vault avatar ─────────────────────────────────────────────────────
 
 def case_vault_avatar_photo_only_and_owned():
     import vault_stills
@@ -663,21 +624,18 @@ def case_vault_avatar_photo_only_and_owned():
         name = r.json()["profile"]["avatar"]
         assert name.startswith("avatar_") and name.endswith(".webp"), name
         assert served(r.json()["profile"]["avatar_url"]).size == (512, 384)
-        # video / gif refused, by mirror kind or by the picked type; the avatar stays
         for body in ({"media_id": 9002}, {"media_id": 9003, "type": "photo"}, {"media_id": 9001, "type": "video"}):
             r = owner.post(url, json=body)
             assert r.status_code == 415 and r.json()["detail"] == "Pick a photo, not a video.", (body, r.text)
         for bad in ({}, {"media_id": "9001"}, {"media_id": True}, {"media_id": -1}):
             assert owner.post(url, json=bad).status_code == 422, bad
         assert owner.get(f"{BASE}/{pid}").json()["profile"]["avatar"] == name
-        # a page with no Creator: 409; another owner's page (either way round): 404, unchanged
         bare = create(owner, "vault_bare")["profile"]["id"]
         assert owner.post(f"{BASE}/{bare}/avatar/vault", json={"media_id": 9001}).status_code == 409
         before = _b_snapshot()
         assert owner.post(f"{BASE}/{B_PID}/avatar/vault", json={"media_id": 9001}).status_code == 404
         assert other.post(url, json={"media_id": 9001}).status_code == 404
         assert _b_snapshot() == before and owner.get(f"{BASE}/{pid}").json()["profile"]["avatar"] == name
-        # a link's background from the vault: photo only, the link's own page
         lid = add_link(owner, pid)["links"][-1]["id"]
         burl = f"{BASE}/{pid}/links/{lid}/background/vault"
         r = owner.post(burl, json={"media_id": 9001, "type": "photo"})
@@ -687,7 +645,6 @@ def case_vault_avatar_photo_only_and_owned():
         assert served(lk["background_url"]).size[0] > 512, lk
         assert owner.post(burl, json={"media_id": 9002}).status_code == 415
         assert owner.post(f"{BASE}/{bare}/links/{lid}/background/vault", json={"media_id": 9001}).status_code == 404
-        # the page's background from the vault: photo only, 1080 max side, the page's own Creator
         purl = f"{BASE}/{pid}/background/vault"
         r = owner.post(purl, json={"media_id": 9001})
         assert r.status_code == 200, r.text
@@ -696,7 +653,6 @@ def case_vault_avatar_photo_only_and_owned():
         assert owner.post(f"{BASE}/{bare}/background/vault", json={"media_id": 9001}).status_code == 409
         assert other.post(purl, json={"media_id": 9001}).status_code == 404
         assert other.post(burl, json={"media_id": 9001}).status_code == 404
-        # a photo removed from the vault (soft-deleted mirror row) is gone, even with its still on disk
         sql("INSERT INTO vault_items(account_id, media_id, kind, tags, send_count, created_at, removed_at) VALUES "
             "(?, 9004, 'photo', '[]', 0, '2026-11-01 00:00:00', '2026-11-02 00:00:00')", aid)
         path = vault_stills.image_path(aid, 9004)
@@ -709,8 +665,6 @@ def case_vault_avatar_photo_only_and_owned():
 
 
 def case_vault_photo_creator_relinked_mid_fetch():
-    # W30 C4: the page is relinked to another Creator (here: none) while the vault photo loads: 409, nothing
-    # written (the previous Creator's photo never lands on the page), for the avatar, background and link background
     import vault_stills
     vault_dir = Path(tempfile.mkdtemp(prefix="bio_vault_relink_"))
     real_dir, vault_stills.IMAGE_DIR = vault_stills.IMAGE_DIR, vault_dir
@@ -744,7 +698,6 @@ def case_vault_photo_creator_relinked_mid_fetch():
         vault_stills.IMAGE_DIR = real_dir
 
 
-# ── public base ──────────────────────────────────────────────────────
 
 def case_public_base_from_request_when_unset():
     pid = create(owner, "base_page")["profile"]["id"]
@@ -776,7 +729,6 @@ def case_short_url_from_env():
         os.environ.pop("BIO_SHORT_URL")
 
 
-# ── custom domain ────────────────────────────────────────────────────
 
 IP = "203.0.113.7"
 
@@ -796,8 +748,6 @@ def case_domain_pure_tables():
     assert domains.host_of("https://Ofl.Test:8443/p") == "ofl.test" and domains.host_of(None) is None
     assert domains._txt_value('"ab" "cd"') == "abcd" and domains._txt_value("plain") == "plain"
     assert domains._caa_entry('0 issue "letsencrypt.org"') == ("issue", "letsencrypt.org")
-    # v2's recordsFor: names relative to a two-label zone (v2's relativeName), full names beside them (x.co.uk's
-    # zone is not co.uk: its owner needs the full name)
     assert domains.records_for("www.a.com", "t", IP, "2001:db8::1") == [
         {"type": "A", "name": "www", "fqdn": "www.a.com", "value": IP},
         {"type": "AAAA", "name": "www", "fqdn": "www.a.com", "value": "2001:db8::1"},
@@ -806,7 +756,6 @@ def case_domain_pure_tables():
         ("@", "a.com"), ("_oflink", "_oflink.a.com")]
     assert [r["fqdn"] for r in domains.records_for("x.co.uk", "t", IP, None)] == ["x.co.uk", "_oflink.x.co.uk"]
     assert [r["type"] for r in domains.records_for("a.com", "t", IP, None)] == ["A", "TXT"]
-    # v2's checks (b)-(e), its sentences
     v6 = "2001:db8::1"
     proof = ("oflink-verify=tok",)
     rows = [(domains.Dns((IP,), (), proof), None, []),
@@ -825,7 +774,6 @@ def case_domain_pure_tables():
             (domains.Dns((IP,), (), proof, (("iodef", "mailto:x@y"),)), None, [])]
     for dns, ipv6, want in rows:
         assert domains.problems("d.example", "tok", IP, ipv6, dns) == want, (dns, ipv6)
-    # contested (another page serves the domain): the proof must be the TXT's only oflink-verify= value
     both = domains.Dns((IP,), (), ("oflink-verify=tok", "oflink-verify=other", "v=spf1 -all"))
     assert domains.problems("d.example", "tok", IP, None, both) == []
     assert domains.problems("d.example", "tok", IP, None, both, sole=True) == [
@@ -838,7 +786,6 @@ def case_domain_pure_tables():
 
 
 class _FakeNet:
-    """domains.lookup / probe over a table: {domain: Dns}, probe answers from `certs`; counts calls."""
     def __init__(self):
         self.dns: dict[str, domains.Dns | None] = {}
         self.certs: set[str] = set()
@@ -873,7 +820,6 @@ def check(client, pid):
 
 
 def _tok(page):
-    """The token in the page's TXT record (`oflink-verify=<token>`)."""
     txt = next(r for r in page["profile"]["custom_domain"]["records"] if r["type"] == "TXT")
     return txt["value"].removeprefix("oflink-verify=")
 
@@ -983,11 +929,9 @@ def case_domain_check_transitions_and_uniqueness():
         assert sql("SELECT checked IS NOT NULL FROM bio_custom_domains WHERE profile_id = ?", pid) == [(1,)]
         r = owner.post(f"{BASE}/{pid}/domain/check")
         assert r.status_code == 429, "a second check within CHECK_GAP_S"
-        # pending_cert: served by the bio app (the cert needs it), isolated to its Profile
         assert _tls_ask(D) == 200
         assert bio_get("/api/profiles/dom_check.json", host=D).status_code == 200
         assert bio_get("/api/profiles/dom_rival.json", host=D).status_code == 404
-        # the rival's token is in the TXT too, beside the serving page's: ambiguous, the rival stays pending
         body = check(owner, rival).json()
         assert body["check"] == {"status": "pending", "problems": [
             f"The TXT record _oflink.shop.example holds another oflink-verify= value too. Keep only {rproof}."]}, body
@@ -997,7 +941,6 @@ def case_domain_check_transitions_and_uniqueness():
         assert r.status_code == 200 and r.json()["profile"]["custom_domain"]["status"] == "pending", \
             "another Agency may save a served domain: its own pending row, the serving page unchanged"
         assert bio_get("/api/profiles/dom_check.json", host=D).status_code == 200
-        # the certificate answers: live
         net.certs.add(D)
         body = check(owner, pid).json()
         assert body["profile"]["custom_domain"]["status"] == "live" and body["check"]["problems"] == [], body
@@ -1007,22 +950,19 @@ def case_domain_check_transitions_and_uniqueness():
         calls = net.calls
         assert check(owner, pid).json()["profile"]["custom_domain"]["status"] == "live"
         assert net.calls == calls, "a live domain's check reads no DNS"
-        # DNS broken while pending_cert sends it back to pending
         sql("UPDATE bio_custom_domains SET status = 'pending_cert' WHERE profile_id = ?", pid)
         net.dns[D] = domains.Dns()
         assert check(owner, pid).json()["profile"]["custom_domain"]["status"] == "pending"
         assert _tls_ask(D) == 404
-        net.dns[D] = None  # DNS unreadable: the status stays
+        net.dns[D] = None
         sql("UPDATE bio_custom_domains SET status = 'pending_cert' WHERE profile_id = ?", pid)
         assert check(owner, pid).json()["profile"]["custom_domain"]["status"] == "pending_cert"
-        # a spare domain added since it was saved: v2's own-address problem, no DNS read
         sql("INSERT INTO bio_spare_domains(id, domain) VALUES ('spare2', 'example')")
         calls = net.calls
         body = check(owner, pid).json()
         assert body["check"] == {"status": "pending", "problems": [
             "shop.example is one of ofl.ink's own addresses. Use a domain you own."]} and net.calls == calls, body
         sql("DELETE FROM bio_spare_domains WHERE id = 'spare2'")
-        # the row changed between the read and the write: refused, nothing written
         net.dns[D] = domains.Dns((IP,), (), (proof,))
         real = domains.check
 
@@ -1042,11 +982,6 @@ def case_domain_check_transitions_and_uniqueness():
 
 
 def case_domain_current_dns_wins():
-    """A domain another Agency's page serves moves only on a fresh DNS read whose TXT holds the new page's token alone:
-    the serving page keeps it through the save, a missing / ambiguous proof and a DNS failure; then it moves, the old
-    page back to `pending` with a fresh token, and a check of the old page that read DNS before the move but writes
-    after it can't flip it back (409, one serving row); nor can a challenger whose proof was read before a third page
-    moved the domain."""
     D = "moved.example"
     apid = create(owner, "dns_win_a")["profile"]["id"]
     bpid = create(other, "dns_win_b")["profile"]["id"]
@@ -1080,10 +1015,9 @@ def case_domain_current_dns_wins():
         real = domains.check
 
         async def stale(domain, token, *a, **kw):
-            """A's check reads DNS (its token alone: pending_cert), then B's check moves the domain, then A writes."""
             got = await real(domain, token, *a, **kw)
             if token == atok:
-                net.dns[D] = domains.Dns((IP,), (), (bproof, "v=spf1 -all"))  # B's token alone; other TXT is fine
+                net.dns[D] = domains.Dns((IP,), (), (bproof, "v=spf1 -all"))
                 net.certs.add(D)
                 moved = await asyncio.to_thread(check, other, bpid)
                 assert moved.status_code == 200 and moved.json()["check"]["status"] == "live", moved.text
@@ -1100,12 +1034,11 @@ def case_domain_current_dns_wins():
         assert sql("SELECT COUNT(*) FROM bio_custom_domains WHERE domain = ? AND status != 'pending'", D) == [(1,)]
         apage = owner.get(f"{BASE}/{apid}").json()
         assert _tok(apage) == atok2 and apage["profile"]["public_url"] != f"https://{D}/", apage["profile"]
-        body = check(owner, apid).json()  # A now contests B: B's sole token is not A's
+        body = check(owner, apid).json()
         assert body["check"]["status"] == "pending" and serving() == ["dns_win_b"], body["check"]
-        # A's sole proof over B, but a third page C moves the domain off B before A writes: 409, C alone serves
         cpid = create(owner, "dns_win_c")["profile"]["id"]
         ctok = _tok(owner.put(f"{BASE}/{cpid}/domain", json={"domain": D}).json())
-        net.certs.discard(D)  # no certificate: a second winner would be pending_cert, which no index refuses
+        net.certs.discard(D)
         net.dns[D] = domains.Dns((IP,), (), (f"oflink-verify={atok2}",))
 
         async def overtaken(domain, token, *a, **kw):
@@ -1130,8 +1063,6 @@ def case_domain_current_dns_wins():
 
 
 def case_relay_gets_the_bio_primary_hosts():
-    """The editor refuses this box's own hosts as a custom domain (_own_hosts reads BIO_PRIMARY_HOSTS in the relay):
-    compose hands the relay the same BIO_PRIMARY_HOSTS as the bio service."""
     import yaml
     svc = yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text())["services"]
     relay = svc["openinflowwww-relay"]["environment"].get("BIO_PRIMARY_HOSTS")

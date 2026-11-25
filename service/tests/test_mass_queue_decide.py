@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
-"""
-mass_queue_decide — table tests over POST /api/of/v2/messages/queue's pure half.
-
-No DB, no OF: every row is (request values) -> value.
-
-  case_threshold_refusal_table:     schedule / save-later × thresholds × online × expired
-                                    -> the two 422 texts, byte-identical, or None.
-  case_threshold_count_refusal_table: 0 ids / over the cap -> 422 text; 1..cap -> None.
-  case_nobody_left_refusal_table:   excluded lists held them / guards skipped them / none picked.
-  case_strip_excluded_table:        order kept, strings-as-ints dropped, elements as given.
-  case_strip_excluded_same_object:  either side empty -> the very same list (`is`).
-  case_needs_exclude_list_table:    ids-only audience needs no list; list/online/filters do.
-  case_pending_placeholders_table:  echoed fans and non-int ids excluded, order kept.
-  case_echoed_of_matches_old_loop:  send_mass_decide.echoed_of == _close_mass_run's old
-                                    step-1 loop on OF echo shapes (None ids, non-dicts).
-
-Run: ./venv/bin/python service/tests/test_mass_queue_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness
 
 import mass_queue_decide as mqd  # noqa: E402
 from automations.send_mass_decide import echoed_of  # noqa: E402
@@ -42,7 +24,6 @@ def _table(rows, fn) -> None:
 
 
 def case_threshold_refusal_table():
-    # (scheduled, save_for_later, thresholds, online_now, expired_over_days)
     _table([
         ("send now, thresholds, online", (None, False, True, True, None), None),
         ("scheduled, thresholds, online", (AT, False, True, True, None), SCHED),
@@ -69,7 +50,6 @@ def case_threshold_count_refusal_table():
 
 
 def case_nobody_left_refusal_table():
-    # (asked, listed_out)
     _table([
         ("excluded lists held them", (3, 2), "nobody left to send to: the excluded lists hold all 2 "
                                              "fan(s) left after the opt-out and already-queued checks; "
@@ -97,11 +77,10 @@ def case_strip_excluded_same_object():
     assert mqd.strip_excluded(ids, []) is ids
     empty: list = []
     assert mqd.strip_excluded(empty, [1]) is empty
-    assert mqd.strip_excluded(ids, [9]) is not ids     # a real strip builds a new list
+    assert mqd.strip_excluded(ids, [9]) is not ids
 
 
 def case_needs_exclude_list_table():
-    # (excluded, user_lists, online_only, filters)
     _table([
         ("ids-only audience", ([3], [], False, None), False),
         ("list audience", ([3], ["fans"], False, None), True),
@@ -122,7 +101,6 @@ def case_pending_placeholders_table():
 
 
 def _old_step1(result):
-    """_close_mass_run's step-1 loop before it called echoed_of (reference copy)."""
     msgs = result.get("messages") if isinstance(result, dict) else None
     per_fan_ids: list[tuple[int, int]] = []
     if isinstance(msgs, list):

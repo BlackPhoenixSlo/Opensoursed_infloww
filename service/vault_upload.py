@@ -1,59 +1,3 @@
-"""Batch-upload media into the OnlyFans vault, from disk or Google Drive.
-
-THE SHAPE OF THE PROBLEM. OnlyFans has no "save to vault" endpoint (see
-of_client.materialize_to_vault for the live evidence). Media enters the vault
-only when something references it, so every fresh file costs a carrier post
-that we create, read a vault id off, and delete. That makes a bulk import a
-long sequence of small, individually-failable, individually-DANGEROUS steps:
-a carrier that outlives its run is a scheduled post that eventually publishes
-to the creator's whole feed.
-
-So this module is built around three rules the reference implementation breaks:
-
-  1. **The INTENT to create a carrier is written to disk before the carrier
-     exists**, and the record survives the process. The id itself cannot be
-     written first — OnlyFans mints it — so the pre-POST record carries the
-     marker instead, and `sweep()` reconciles it against OnlyFans' own
-     scheduled-post list. That is what covers the worst case: the POST landed,
-     its response did not, and no id was ever learned. `of_client` holds the id
-     on the stack and deletes it in a `finally`, which a SIGKILL does not run.
-  2. **The spool is the run's own responsibility.** Files land in
-     `service/vault_spool/<run_id>/`, are deleted as each one lands in the
-     vault (a file waiting for its carrier keeps its copy until then), and the
-     directory goes when the run ends — including when it ends badly. A VPS
-     that fills its disk with abandoned gigabytes takes SQLite down with it.
-  3. **"Is this live?" is asked in exactly one place.** Every carrier decision
-     turns on it — the sweep deleting one, the reconciler calling a run
-     interrupted, the warning telling an operator one escaped — and for two
-     rounds it had three implementations that disagreed, so one HTTP response
-     could call a run interrupted while suppressing its warnings because the
-     account was busy. `_run_is_live` is the predicate; `_account_is_live` is
-     the same question at account width, which only the sweep asks. There is no
-     third way to ask it, and adding one is how the deleted-a-live-carrier bug
-     came back twice.
-
-FILES SHARE CARRIERS, `Limits.carrier_batch` (default 10) to a post. OnlyFans
-throttles post CREATION to about one per ten seconds, not media per post, so
-one carrier per file made a 40-image import forty carriers and seven-plus
-minutes of mostly waiting; ten claims on one carrier make it four. The bytes
-still go up one file at a time — dedupe check, S3, convert claim, each failing
-or skipping on its own (`_upload_one`) — and only the claims that come out of
-that wait for the next carrier (`_carry`), which mints all their vault ids at
-once and is deleted once. Every file on it carries the same intent, id, deleted
-flag and `carrier_key`, so the invariants above hold per carrier and every
-count of carriers counts carriers, not files. `vault_carrier.py` decides which
-of a carrier's vault ids is whose, from each file's own bytes, never from where
-it sits on the post; a file it cannot place fails alone. (The PARTS of a single
-file upload concurrently; see of_client._PART_CONCURRENCY, measured at 2x on a
-home connection — it lives there because it is a property of the S3 transport,
-not of a batch.) Fan-send runs stay one file per message: that path posts
-nothing.
-
-State lives in `<spool>/<run_id>/run.json` rather than a DB table: it must be
-readable by a sweep that runs before anything else boots, it is per-run garbage
-that should die with its directory, and `atomic_json` already gives us a
-never-half-written small file.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -82,107 +26,50 @@ import media_prep
 import of_client
 import of_paging
 import vault_carrier
-# The pure half (limits, wire parsing, caps, item schema): what this module
-# uses, plus names re-exported for callers that use `vault_upload.<name>`.
 from vault_upload_plan import (  # noqa: F401 — re-exports
     MAX_BYTES, MAX_FILES, MAX_MB, Limits, _apply_caps, _item, cap_for,
     drive_meta, fan_handle, parse_meta, parse_metas, resolve_budget)
 
 log = logging.getLogger("of-relay.vault_upload")
 
-# A gated write the caller stopped waiting for — timed out, or cancelled (the
-# relay's `_hop` surfaces a loop-side cancel as concurrent.futures'
-# CancelledError, an Exception; asyncio's own is a BaseException). Either way
-# the write may still have gone out. NOT a socket timeout: curl_cffi raises its
-# own `Timeout` (an OSError, not the builtin TimeoutError — checked on 3.12),
-# so a slow create is never mistaken for one of these.
+# NOT a socket timeout: curl_cffi raises its own Timeout (an OSError, not the builtin TimeoutError), so a slow create is never mistaken for "may have sent".
 _MAYBE_WRITTEN = (FuturesTimeout, _FuturesCancelled, asyncio.CancelledError)
 
 HERE = Path(__file__).resolve().parent
 SPOOL_ROOT = Path(os.environ.get("VAULT_SPOOL_DIR") or (HERE / "vault_spool"))
 LOCK_DIR = SPOOL_ROOT / "locks"
-# Where the HTTP route stages an uploaded batch before the run adopts it. Under
-# the spool rather than TMPDIR so that a SIGKILL between staging and the run
-# leaves the bytes somewhere `sweep()` knows about — a container never cleans
-# /tmp, and this feature's whole point is that it does not fill the disk.
+# Spool, not TMPDIR: a SIGKILL between staging and the run leaves bytes where sweep() finds them; a container never cleans /tmp.
 STAGE_ROOT = SPOOL_ROOT / "incoming"
 
-# The vocabulary. Declared once so the writer, the reconciler, the HTTP status
-# route, the CLI's mark map and the dashboard are all naming the same states —
-# they had already drifted by one value ("interrupted", which no writer
-# produced) when this was five separate lists.
 ITEM_STATUSES = ("pending", "uploading", "done", "failed", "skipped")
-# The phases a run passes through, same reason. `mirroring` is the one the
-# dashboard branches on to say "caching previews" instead of "uploading", so a
-# rename here that nothing pins is a label that silently degrades on the one
-# phase whose whole job is to explain a wait; `RUN_PHASES` is what the
-# dashboard's own union is written against.
 RUN_PHASES = ("collecting", "uploading", "mirroring", "finished")
 
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}-\d{8}T\d{6}-[0-9a-f]{6}")
 
 
-# One run per account, in-process: account id -> the run id it is running.
-# Deliberately NOT read from run.json: a stale "running" file from a killed
-# process must never lock the feature out forever. Keyed by run id as well as
-# account so a finished run cannot read as live just because a LATER run is.
-# Cross-process exclusion is a separate mechanism — see _acquire_lock.
+# Deliberately NOT read from run.json: a stale "running" file from a killed process must never lock the feature out forever.
 _live: dict[str, str] = {}
 _lock = threading.Lock()
 
-# Runs still taking files: run id -> the queue the HTTP route drops each newly
-# staged file into while the worker is already uploading the ones before it.
-# The browser sends a batch one file per request, so the first file is on its
-# way to OnlyFans while the tenth is still crossing the wire — instead of the
-# whole batch having to land on this server before anything starts.
-#
-# In-process only, like `_live`: a queue holds no state worth surviving a
-# restart (the staged files die with the process's staging dir), and the run
-# record already says which items made it in. Guarded by `_lock`, so a file is
-# either queued before the worker stops listening or refused — never staged
-# into a run that has already walked away from it.
 @dataclass
 class _Inbox:
-    """One open run's intake: the queue its worker reads, the staging dir the
-    HTTP route writes each appended file into, and how many of those writes are
-    still crossing the wire. One record, so "is this run taking files" and
-    "where do its files go" cannot disagree (they were two registries with two
-    lifetimes)."""
     q: "queue.Queue" = field(default_factory=queue.Queue)
     stage_dir: str | None = None
-    # Appends mid-transfer. The idle timer does not fire while this is above 0:
-    # a ten-minute upload of one large file is not ten minutes of silence.
     busy: int = 0
 
 
 _inbox: dict[str, _Inbox] = {}
-# What an append to a run that has stopped listening is told.
 NOT_TAKING = "that import is no longer taking files — start a new one"
 
 
 class NotTaking(RuntimeError):
-    """The run is no longer taking files; the caller still owns its file."""
-# How long an open run waits for the next file before it stops listening. A
-# closed tab never sends the "that was the last one" call, and an open run
-# holds its account's import lock the whole time.
+    pass
 OPEN_IDLE_S = float(os.environ.get("VAULT_OPEN_IDLE_S") or 10 * 60)
 
 
-# Drive-content-md5 -> vault id, remembered across runs. Drive publishes an md5
-# for every binary file in the LISTING, for free — so a re-import can recognise
-# content it already uploaded and never spend the download.
-#
-# This is not a nicety. The vault's own dedupe (an S3 ETag) can only be computed
-# from bytes we have already fetched, so without this memo every re-run
-# re-downloads the whole folder to discover it has nothing to do. Doing that
-# twice in ten minutes got this key served Google's "Sorry…" throttle page.
+# Memo of Drive files already uploaded: re-downloading a whole folder to find nothing to do got this key Google's throttle page.
 _MEMO_PATH = SPOOL_ROOT / "drive_memo.json"
-# The file is shared by every account. Each write is atomic; a read-modify-write
-# is not, so two imports running at once would drop each other's entries. This
-# lock closes that within the process. ACROSS processes it is still a race — but
-# only between DIFFERENT accounts, since one account cannot have two importers
-# (see _acquire_lock), and the cost of losing an entry is one re-download that
-# the next run re-remembers, never a wrong answer.
+# Guards memo writes: two imports at once would drop each other's entries; across processes only different accounts race, and a lost entry costs one re-download.
 _memo_lock = threading.Lock()
 
 
@@ -204,14 +91,6 @@ def _memo_remember(account_id: str, drive_md5: str, vault_id) -> None:
 
 
 def _memo_lookup(account_id: str, drive_md5: str, client) -> int | None:
-    """A remembered vault id, confirmed to still exist AND still be visible.
-
-    Verified rather than trusted: vault items can be hidden or removed between
-    runs, and handing back a dead id would silently drop a file the operator
-    asked for. A HIDDEN item is treated as absent on purpose — the id resolves,
-    but the media is not in the vault the operator is looking at, and reporting
-    that as "already in vault" is how a file is lost without anyone noticing.
-    """
     if not drive_md5:
         return None
     with _memo_lock:
@@ -235,9 +114,6 @@ def _now() -> str:
 
 def _run_dir(run_id: str) -> Path:
     if not _RUN_ID_RE.fullmatch(run_id or ""):
-        # `run_id` arrives from a query string. The account check downstream
-        # makes it only an existence probe, but a value that is joined onto a
-        # filesystem path gets validated whatever else guards it.
         raise ValueError(f"not a run id: {run_id!r}")
     return SPOOL_ROOT / run_id
 
@@ -247,15 +123,6 @@ def _state_path(run_id: str) -> Path:
 
 
 def read_state(run_id: str, cache: dict | None = None) -> dict | None:
-    """A run's state, always reconciled.
-
-    Reconciliation lives here rather than in `latest_run` because a reader that
-    can forget it will: polling a named run whose relay had restarted reported
-    `status: "running"` forever, the one lie this module exists to avoid.
-
-    `cache` is the per-request liveness cache — one process lookup for a whole
-    walk of the spool instead of one per run dir.
-    """
     try:
         state = json.loads(_state_path(run_id).read_text())
     except (OSError, ValueError):
@@ -268,18 +135,6 @@ def _save(state: dict) -> None:
 
 
 def _intent_unresolved(item: dict) -> bool:
-    """True while an intent might name a carrier nothing has accounted for.
-
-    An intent is written before EVERY carrier POST, and is never cleared once
-    an id is learned -- so `carrier_intent` alone does not mean "outstanding".
-    Only an intent with no id is unaccounted for, and only until a completed
-    marker scan says OnlyFans has no such post (`carrier_scan_clear`).
-
-    This is the one definition. Pass 1's scan trigger used to spell it without
-    the id check, so every successfully imported file kept its account in the
-    hourly scan for the 48 h its run dir was retained -- a full paged walk of
-    the creator's schedule, hourly, for nothing.
-    """
     if item.get("carrier_write_pending"):
         return True
     return bool(item.get("carrier_intent")
@@ -288,12 +143,6 @@ def _intent_unresolved(item: dict) -> bool:
 
 
 def account_runs(account_id: str) -> list[dict]:
-    """Every run record for one account, reconciled, read ONCE.
-
-    The status route needs the latest run AND the account-wide carrier roll-up,
-    and computing them independently walked the spool and re-parsed every
-    `run.json` twice for every 2.5 s poll of every open tab.
-    """
     cache: dict[str, bool] = {}
     return [st for d in _dirs()
             if (st := read_state(d.name, cache))
@@ -301,7 +150,6 @@ def account_runs(account_id: str) -> list[dict]:
 
 
 def latest_of(runs: list[dict]) -> dict | None:
-    """Most recent run, for a status poll after a page reload."""
     return max(runs, key=lambda s: s.get("created_at") or "") if runs else None
 
 
@@ -310,39 +158,11 @@ def latest_run(account_id: str) -> dict | None:
 
 
 def carriers_outstanding(account_id: str, runs: list[dict]) -> tuple[int, int]:
-    """`(undeletable carriers, carriers that may exist unrecorded)`.
-
-    Across EVERY run for the account, not just the last: a carrier that could
-    not be deleted is a scheduled post on a real feed, and if the warning
-    vanished the moment a newer import replaced the "latest" run the operator
-    would stop being told about it a day before it published.
-
-    Two rules the first version got wrong in opposite directions:
-
-      * only FINISHED runs count. A carrier legitimately exists for the couple
-        of seconds between its create and its delete, so counting live runs made
-        a real alarm fire on the happy path of every normal import — and an
-        alarm that cries wolf is one the operator stops reading.
-      * an INTENT counts too, on its own. The dangerous carrier is precisely the
-        one with no id: the create response was lost, so nothing here can name
-        it and only the marker sweep can find it. Counting ids alone reported
-        "all clear" in the single case where it might not be.
-
-    "Finished" is `_run_is_live`'s answer and not a second opinion. This used to
-    re-implement it inline as "the account is busy, or this run says running",
-    which silenced a WEEK-OLD run's real alarm for as long as any other import
-    was going — and one wedged run kept `aid` in `_live` for the life of the
-    relay, so "as long as any other import was going" could mean forever.
-    """
     undeletable = unrecorded = 0
-    # One liveness answer for the whole account: the lock check can cost a
-    # process lookup, and this runs on a 2.5 s poll.
     cache: dict[str, bool] = {}
     for st in runs:
         if _run_is_live(st, cache):
             continue
-        # Counted in CARRIERS, not files: up to `carrier_batch` files ride one
-        # post, and ten files naming one live post are one post on the feed.
         for riders in _carriers(st.get("items") or []).values():
             if _live_post(riders):
                 undeletable += 1
@@ -359,27 +179,6 @@ def _dirs() -> list[Path]:
 
 
 def _reconcile(state: dict, cache: dict | None = None) -> dict:
-    """A run whose file says 'running' but whose process is gone is finished —
-    it just never got to say so. Report that honestly rather than leaving a
-    status endpoint claiming progress forever.
-
-    The question is `_run_is_live`'s and nobody else's. Asking a narrower one
-    here — the in-process registry alone — meant a CLI import holding the
-    cross-process lock was reported as "the relay restarted mid-run" in the same
-    payload that suppressed its carrier warnings because the account was busy.
-
-    A run in the `mirroring` phase is the exception, and it is not a special
-    case so much as the same rule read properly. `_mirror_landed` holds the
-    record at `running` on purpose while it writes the local mirror — that
-    ordering is the whole reason a large import is visible in the grid at all —
-    but by then the terminal status is already DECIDED, and every file that was
-    going to reach the creator's vault has reached it. The window used to be
-    microseconds; it is now minutes. Calling that "relay restarted mid-run" is
-    a failure reported on a complete import, and the operator's documented next
-    move is to re-run the batch onto OnlyFans' byte dedupe. So a stashed
-    `terminal_status` is preferred: the run really did finish, it just never got
-    to finish MIRRORING, and the mirror is recoverable by a re-collect.
-    """
     if state.get("status") != "running" or _run_is_live(state, cache):
         return state
     decided = state.get("terminal_status")
@@ -389,29 +188,15 @@ def _reconcile(state: dict, cache: dict | None = None) -> dict:
             "error": state.get("error") or "relay restarted mid-run"}
 
 
-# ── cross-process exclusion ───────────────────────────────────────────────
 
-# A lock nobody can be holding any more. An import of forty large videos is
-# hours, not days, so anything older than this is a crash whose pid has since
-# been recycled — the case that used to lock the feature out permanently.
+# A lock nobody can be holding: imports last hours, so older than this is a crash whose pid was recycled (else permanent lockout).
 _LOCK_MAX_AGE_S = 24 * 3600
-# Same ceiling for the in-process registry. `_live` has no expiry of its own,
-# and a run CAN wedge — a Drive server trickling bytes under a per-read socket
-# timeout, a write gate waiting on a pacer that never comes round. While `aid`
-# sits in `_live` the sweep leaves the whole account alone and the operator is
-# told its carriers are clean, so an unbounded `_live` entry defers invariant 1
-# for the life of the relay process, which here is weeks. `_save` runs after
-# every item, so run.json's mtime is a live run's heartbeat.
+# Same ceiling for the in-process registry: an unbounded _live entry would defer the carrier sweep for the relay's whole life (weeks).
 _LIVE_MAX_STALL_S = 6 * 3600
-# How long a pid's start stamp is trusted without re-reading it.
 _PID_START_TTL_S = 30.0
 _pid_start_memo: dict[int, tuple[float, str | None]] = {}
 
-# THIS process, for as long as it lives. A pid is only meaningful inside one pid
-# namespace: a second container mounting the same spool sees the holder's pid
-# number attached to one of its OWN processes, reads a different start stamp,
-# and would call a genuinely live lock stale. The instance id says "that record
-# was not written by anyone I can see", which is UNKNOWN, not dead.
+# An instance id means "not written by anyone I can see": UNKNOWN, not dead, since a pid only means something inside one pid namespace.
 _INSTANCE_ID = uuid.uuid4().hex
 
 
@@ -421,32 +206,17 @@ def _pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except OSError:
-        return True      # EPERM — someone else's process, but alive
+        return True
     return True
 
 
 def _pid_start(pid: int) -> str | None:
-    """An opaque, comparable start-time stamp for `pid`, or None if unknowable.
-
-    Pid ALONE cannot answer "is my lock holder still alive": container pids are
-    small and recycled within minutes, so a relay OOM-killed at pid 37 whose pid
-    is taken by any new thread-spawning process reads as live forever. The start
-    time makes the identity unforgeable — a recycled pid has a different one.
-
-    Memoised for `_PID_START_TTL_S`, because on a non-Linux host this forks
-    `ps` and the status route asks it on a 2.5 s poll. The TTL is what bounds
-    the staleness: a pid recycled inside the window reads as its predecessor
-    for at most that long, which delays a stale-lock decision and never makes
-    a permanent one.
-    """
     now = time.time()
     hit = _pid_start_memo.get(pid)
     if hit and now - hit[0] < _PID_START_TTL_S:
         return hit[1]
     stamp = None
     try:
-        # Linux: field 22 of /proc/<pid>/stat, after the (possibly space- and
-        # bracket-bearing) comm field.
         raw = Path(f"/proc/{pid}/stat").read_text()
         stamp = raw.rsplit(")", 1)[1].split()[19]
     except (OSError, IndexError, ValueError):
@@ -473,20 +243,6 @@ def _read_lock(path: Path) -> dict:
 
 
 def _lock_holder(account_id: str) -> dict | None:
-    """The record of a LIVE importer holding this account's lock, or None.
-
-    Stale — and only these — means: unreadable, its pid gone, its pid alive but
-    STARTED AT A DIFFERENT TIME *while the record came from a process we can
-    actually see* (a recycled pid, the permanent-lockout case), or simply older
-    than any real import could be.
-
-    A record written by ANOTHER instance whose start stamp does not match is
-    UNKNOWN, not stale: across pid namespaces the same number names a different
-    process, so "the start times differ" stops being evidence of death. We
-    refuse rather than steal — a refused import is a message on screen; a stolen
-    lock is two importers on one account, which is what the lock exists to stop.
-    The age ceiling below is what keeps that from being permanent.
-    """
     p = _lock_path(account_id)
     rec = _read_lock(p)
     pid = rec.get("pid")
@@ -498,7 +254,7 @@ def _lock_holder(account_id: str) -> dict | None:
     now_started = _pid_start(pid)
     if (started and now_started and started != now_started
             and instance in (None, _INSTANCE_ID)):
-        return None      # same pid number, same namespace, different process
+        return None
     try:
         if time.time() - p.stat().st_mtime > _LOCK_MAX_AGE_S:
             return None
@@ -508,12 +264,6 @@ def _lock_holder(account_id: str) -> dict | None:
 
 
 def _stalled(run_id: str | None) -> bool:
-    """Has this run stopped writing for longer than any real one goes quiet?
-
-    The `_live` half of liveness has no expiry of its own; this is it. Unknowable
-    (no run id, no state file yet) counts as NOT stalled — a run that has only
-    just been claimed must never read as dead.
-    """
     try:
         return time.time() - _state_path(run_id).stat().st_mtime > _LIVE_MAX_STALL_S
     except (OSError, ValueError, TypeError):
@@ -521,21 +271,6 @@ def _stalled(run_id: str | None) -> bool:
 
 
 def _account_is_live(account_id: str, cache: dict | None = None) -> bool:
-    """Is ANY importer working on this account, in this process or another?
-
-    THE liveness atom, and `_run_is_live` below is the same question narrowed to
-    one run. `_live` alone cannot answer it — that is why the lockfile exists —
-    and the lockfile alone cannot either, since the CLI's sweep runs in a
-    process that holds neither. Both signals, and a carrier is only ever touched
-    when both say no. `cache` spares a caller looping over many run dirs one
-    process lookup per dir.
-
-    The SWEEP is what asks at this width, deliberately: it leaves a busy account
-    alone whole rather than picking which of its carriers are orphaned, because
-    that guess is the one that deletes a live carrier. Everything a person reads
-    — the run's status, the carrier warnings — asks the narrower question, so a
-    week-old escape is not hidden by today's import.
-    """
     aid = str(account_id)
     if cache is not None and aid in cache:
         return cache[aid]
@@ -547,27 +282,6 @@ def _account_is_live(account_id: str, cache: dict | None = None) -> bool:
 
 
 def _run_is_live(state: dict, cache: dict | None = None) -> bool:
-    """Is THIS RUN still being worked on? The only place that decides.
-
-    Everything that needs an answer asks here: the reconciler that decides
-    whether a `running` record is telling the truth, the operator warnings, and
-    (through `_account_is_live`) the sweep. There used to be three answers — a
-    named predicate, a character-for-character copy inside the warnings, and a
-    narrower `_live`-only rule in the reconciler — and one HTTP response could
-    call a run "interrupted" while suppressing its warnings because the account
-    was busy. Two answers to one question in one dict.
-
-    The rules, in order:
-
-      * `finished_at` is written exactly once, in `start()`'s `finally`. A run
-        that has it is over, in this process or any other. It is the only
-        cross-process-reliable "not live" there is.
-      * this process knows exactly which run it is running, keyed by RUN id so
-        an older run of a busy account does not read as live.
-      * otherwise the lockfile is the only witness, and it names its run — so a
-        CLI import in another process reads as live for its own run and for
-        nothing else.
-    """
     if state.get("finished_at") or state.get("status") != "running":
         return False
     aid, run_id = str(state.get("account_id")), state.get("run_id")
@@ -575,23 +289,11 @@ def _run_is_live(state: dict, cache: dict | None = None) -> bool:
     if mine is not None:
         return mine == run_id and not _stalled(run_id)
     holder = _lock_holder(aid) if _account_is_live(aid, cache) else None
-    # A lock written before run ids were recorded cannot name its run; treat it
-    # as possibly this one rather than deleting somebody's live carrier.
+    # A lock written before run ids were recorded cannot name its run: treat it as possibly this one rather than delete somebody's live carrier.
     return bool(holder) and holder.get("run_id") in (None, run_id)
 
 
 def _acquire_lock(account_id: str, run_id: str | None = None) -> Path:
-    """Exclude a SECOND PROCESS from importing for the same account.
-
-    The in-memory registry above cannot do this, and the CLI's own documented
-    invocation runs it inside the relay container — two processes, two pacers,
-    two live carriers and a stream of "Please allow 10 seconds" that also hits
-    fan automations. An O_EXCL file carrying the pid, its start time, this
-    instance's id AND the run it belongs to is stale-checked by process
-    identity, never by the on-disk `running` flag, so a killed importer cannot
-    lock the feature out — not even when its pid number is handed to something
-    else.
-    """
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     p = _lock_path(account_id)
     for _ in range(2):
@@ -613,9 +315,6 @@ def _acquire_lock(account_id: str, run_id: str | None = None) -> Path:
                     f"another process (pid {holder.get('pid')}) is already "
                     f"importing to this account's vault — if that is wrong, "
                     f"delete {p}") from None
-            # Our own pid, our own instance — and `begin()` has already checked
-            # `_live` under the mutex, so no run of ours is currently using this
-            # file. It is the residue of one that already released its claim.
             log.warning("vault: clearing a stale import lock at %s (%s)",
                         p, _read_lock(p) or "unreadable")
             p.unlink(missing_ok=True)
@@ -624,15 +323,7 @@ def _acquire_lock(account_id: str, run_id: str | None = None) -> Path:
 
 
 def _release_lock(path: Path | None, run_id: str | None = None) -> None:
-    """Drop the lock — but only while it still names OUR run.
-
-    `start()` pops its `_live` claim and releases the lock as two statements. A
-    second `begin()` landing between them passes the `_live` check, finds our
-    own (already finished) record on disk, correctly clears it and takes a fresh
-    lock — and the unlink below would then delete the NEW run's file, leaving
-    cross-process exclusion silently off for the run that is actually going.
-    The run id is what tells the two apart. `abandon()` had the same shape.
-    """
+    # Release only while the lock still names OUR run: a second begin() between start()'s two statements would otherwise have its new lock deleted.
     if path is None:
         return
     try:
@@ -647,7 +338,6 @@ def _release_lock(path: Path | None, run_id: str | None = None) -> None:
         log.warning("vault: could not release the import lock %s — %s", path, e)
 
 
-# ── the run ───────────────────────────────────────────────────────────────
 
 def _new_state(run_id: str, aid: str, list_id: int | None,
                fan_id: int | None = None) -> dict:
@@ -655,82 +345,30 @@ def _new_state(run_id: str, aid: str, list_id: int | None,
         "run_id": run_id, "account_id": aid, "status": "running",
         "phase": "collecting", "created_at": _now(), "finished_at": None,
         "list_id": list_id, "error": None, "filing_error": None,
-        # The fan each new file is SENT to (Infloww's "Link a fan account"), or
-        # None for the carrier path: a scheduled post, deleted again at once.
         "fan_id": fan_id,
-        # Declared here even though `_file_into_folder` and `_clear_spool`
-        # write them: the CLI and the dashboard both read this record, and a key
-        # that only appears once something happened is a key every reader has to
-        # guess at (the item schema got this treatment in `_item`).
         "filed_into_list": None, "spool_cleared_bytes": None,
-        # Set only for the window `_mirror_landed` holds the record at
-        # `running` (see there and `_reconcile`); declared here for the same
-        # reason as the two above — a key that appears only mid-flight is a key
-        # every reader has to guess at.
         "terminal_status": None,
-        # How many files the caps let through so far — the batch's and every
-        # appended one's, so one files-per-import count covers both (see
-        # `_apply_caps`).
         "admitted": 0,
-        # What became of the operator's per-file details once the files landed:
-        # `{applied, skipped, why}` from the caller's `on_landed`, or None when
-        # nothing carried any (or nothing could write them, like the CLI).
         "details_saved": None,
         "items": [],
     }
 
 
 def landed_ids(state: dict) -> list[int]:
-    """The vault ids this run actually put in the VISIBLE vault.
-
-    This module owns the run-state shape, so it owns the reading of it. Both
-    consumers of a finished import — the relay's batch route and the CLI — need
-    exactly this list to write the local mirror, and both had re-derived it
-    inline from `items`, which is how the one subtle part of the rule ends up
-    documented in one copy and absent from the other.
-
-    The subtle part: `skipped` is EXCLUDED even though a skipped item can carry a
-    perfectly real `vault_id`. A skip is a dedupe onto media that is HIDDEN on
-    OnlyFans (`_memo_lookup` and `of_client`'s byte dedupe both report the hidden
-    id and `_upload_one` marks it skipped), and mirroring a hidden id would put a
-    tile in the grid for bytes the creator deliberately removed from her vault.
-    `status == "done"` is the only status that means "in the vault the operator
-    is looking at".
-
-    `.get` throughout, not `[...]`: a run record can be read back off disk after
-    a crash mid-write of an item, and a KeyError here would lose the ids of every
-    file that DID land.
-    """
     return [int(it["vault_id"]) for it in (state or {}).get("items") or []
             if _landed(it)]
 
 
 def _landed(it: Any) -> bool:
-    """A well-formed item that is `done` and carries its vault id."""
     return isinstance(it, dict) and it.get("status") == "done" and bool(it.get("vault_id"))
 
 
 def begin(account_id: str, *, list_id: int | None = None,
           fan_id: int | None = None, keep_open: bool = False,
           stage_dir: str | None = None) -> str:
-    """Claim the account and write the run record. Returns the run id.
-
-    SYNCHRONOUS on purpose: the HTTP route calls this before it hands the work
-    to a thread, so the response can name the run. Returning before the record
-    existed meant the dashboard's first poll raced the worker, was told
-    `running: false`, and never armed its interval — the import ran to
-    completion with the panel showing the PREVIOUS run's summary.
-
-    `keep_open` opens the run's inbox, so `append()` can hand it more files
-    after it has started; `close()` says the last one has been sent.
-    `stage_dir` is where those files are staged — see `receiving()`.
-    """
     aid = str(account_id)
     run_id = f"{aid}-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
-    # In-process claim FIRST. Taking the file lock first meant a second run in
-    # this same process found its own pid in the lockfile, treated it as stale,
-    # cleared it — and then failed the `_live` check and released the lock the
-    # RUNNING import was relying on.
+    # In-process claim FIRST: taking the file lock first made a same-process second run see its own pid as stale, clear it, then release the lock the first run held.
     with _lock:
         if aid in _live:
             raise RuntimeError("a vault upload is already running for this account")
@@ -738,8 +376,7 @@ def begin(account_id: str, *, list_id: int | None = None,
     lock_path = None
     try:
         lock_path = _acquire_lock(aid, run_id)
-        # Inside the claim, so a read-only or full spool volume releases it
-        # again instead of locking the account out until the relay restarts.
+        # Inside the claim, so a read-only or full spool volume releases it instead of locking the account out until restart.
         _run_dir(run_id).mkdir(parents=True, exist_ok=True)
         _save(_new_state(run_id, aid, list_id, fan_id))
         if keep_open:
@@ -755,7 +392,6 @@ def begin(account_id: str, *, list_id: int | None = None,
 
 
 def abandon(run_id: str, error: str) -> None:
-    """Release a run that was claimed by `begin` but never actually ran."""
     left = _stop_taking(run_id)
     state = read_state(run_id)
     aid = str((state or {}).get("account_id") or "")
@@ -772,14 +408,6 @@ def abandon(run_id: str, error: str) -> None:
 
 @contextmanager
 def receiving(run_id: str):
-    """Hold a run open while one appended file crosses the wire; yields the
-    run's staging dir. Raises `NotTaking` when the run has stopped listening.
-
-    Call `append()` inside the block. While any block is open the run's idle
-    timer does not fire, so a large file that takes longer than `OPEN_IDLE_S`
-    to transfer is not refused once it has arrived. A run that ends anyway (it
-    failed) can pull the staging dir from under the write; that surfaces here
-    as `NotTaking` too, the one answer for "the run walked away"."""
     with _lock:
         box = _inbox.get(run_id)
         if box is None:
@@ -799,11 +427,6 @@ def receiving(run_id: str):
 
 
 def append(run_id: str, path: str, meta: dict | None = None) -> None:
-    """Hand a run that is still taking files one more staged file.
-
-    Raises `NotTaking` when the run has stopped listening (it finished, it
-    idled out, or it was never opened) — the caller still owns the file then.
-    """
     with _lock:
         box = _inbox.get(run_id)
         if box is None:
@@ -812,7 +435,6 @@ def append(run_id: str, path: str, meta: dict | None = None) -> None:
 
 
 def close(run_id: str) -> bool:
-    """The last file has been handed over. False if the run was not listening."""
     with _lock:
         box = _inbox.get(run_id)
         if box is None:
@@ -822,10 +444,6 @@ def close(run_id: str) -> bool:
 
 
 def _stop_taking(run_id: str) -> list[tuple]:
-    """Stop the run listening and hand back what was queued but never taken.
-
-    Under `_lock`, the lock `append` takes: after this no file can be queued,
-    so what comes back is the whole rest."""
     with _lock:
         box = _inbox.pop(run_id, None)
     left: list[tuple] = []
@@ -840,11 +458,6 @@ def _stop_taking(run_id: str) -> list[tuple]:
 
 
 def _record_unsent(state: dict, left: list[tuple]) -> None:
-    """Put files the run accepted but never uploaded on its record, failed.
-
-    The browser drops a file from its list the moment the relay takes it, so a
-    run that ends with files still queued (it failed, or was abandoned) must
-    name them — otherwise they are gone from both sides with nothing said."""
     for path, meta in left:
         it = _item(Path(path).name, None, "local", None, status="failed",
                    error="the import ended before this file was uploaded — "
@@ -854,10 +467,6 @@ def _record_unsent(state: dict, left: list[tuple]) -> None:
 
 
 def landed_meta(state: dict) -> dict[int, dict]:
-    """vault id -> the details the operator gave that file (hashtags, notes,
-    suggested price, tagged creators), for the files that landed with some.
-
-    Same `done`-only rule as `landed_ids`, for the same reason."""
     out: dict[int, dict] = {}
     for it in (state or {}).get("items") or []:
         if _landed(it) and it.get("meta"):
@@ -868,77 +477,15 @@ def landed_meta(state: dict) -> dict[int, dict]:
 def _mirror_landed(state: dict,
                    on_landed: Callable[[list[int], dict[int, dict]], Any] | None
                    ) -> None:
-    """Let the caller write the landed ids — and the details the operator gave
-    them (`landed_meta`) — somewhere, while the run is still reporting
-    `running`. A dict the hook returns (`{applied, skipped, why}` for those
-    details) is kept on the record as `details_saved`.
-
-    This exists for ORDERING, and the ordering is the whole point. The dashboard
-    polls the status route every 2.5 s and invalidates its query cache the moment
-    the run stops being `running` — once. If the mirror write happens after that
-    edge, the grid refetches the PRE-import mirror and nothing ever invalidates
-    it again: `refetchOnWindowFocus` is off, the mirror query has a 30 s
-    staleTime and no interval, and the status query stops polling. A small import
-    won that race and a large one never did, which is the failure that reads as
-    "the import worked for three photos and lost two hundred".
-
-    Called from the `finally` rather than the success path on purpose: a batch
-    can die on its LAST file with a dozen already in the creator's vault, and
-    those dozen deserve their mirror rows just as much. Called BEFORE the first
-    `_save` of the `finally`, because that save is the moment the run's status
-    stops being `running` on disk — which is the edge the client is watching.
-
-    A consequence worth stating, because it looks like a bug on the wire: on the
-    FAILURE path a run reads `failed → running → failed`. The `except` has
-    already decided `failed` in memory, this hook overwrites it with `running`
-    and saves, and the terminal save lands after the mirror write. A dashboard
-    that had rendered the failure flips back to "Importing…" for the length of
-    the mirror window before failing again. That is intended and it is not a
-    lie: the run IS still working, on the files it did land, and the alternative
-    is either skipping the mirror for a partially-successful batch or publishing
-    `failed` early and reopening the race this whole hook exists to close. What
-    it must not do is outlive the process invisibly — `_reconcile` reads the
-    `terminal_status` stashed below for exactly that.
-
-    Never fatal, and `BaseException` is the reason that sentence needs saying
-    twice. The relay's hook blocks on `concurrent.futures.Future.result()`, and
-    a loop shutting down mid-wait raises `CancelledError` — which since 3.8 IS
-    `asyncio.CancelledError`, a BaseException. An `except Exception` here let it
-    walk out of `start`'s own `finally`, skipping `phase="finished"`, the
-    terminal `_save`, `_cleanup_carriers`, `_clear_spool`, the `_live` pop and
-    `_release_lock`. The worst of those is not the lie in `run.json`: it is that
-    carrier cleanup is skipped for a run whose uploads all SUCCEEDED — the pass
-    that stops a carrier post publishing to the creator's whole feed 30 days out
-    — and that `_live[aid]` is left claimed, which `begin()` refuses on
-    unconditionally, locking that account out of imports for the life of the
-    process. The media is already on OnlyFans; a mirror row we could not write
-    is recoverable by a re-collect. Nothing this hook can do is worth the
-    teardown. Same reasoning, one frame away, on the batch route's
-    invalidate-in-its-own-`finally`.
-    """
     if on_landed is None:
         return
     ids = landed_ids(state)
     if not ids:
         return
-    # The terminal status is decided by now (the `try` set `done`, or the
-    # `except` set `failed`) but it is NOT published until the save below this
-    # call, and it must not be published early here either: a poll that reads
-    # `done` off disk is the edge the dashboard invalidates on, and that is the
-    # whole race being closed. So the record keeps saying `running` — which is
-    # the truth, since this run is still doing work — and names the work it is
-    # doing, so the wait does not read as a wedge.
+    # Failure is set but not published until the save after this call: publishing early lets a poll read a terminal state before the mirror lands.
     terminal = state["status"]
     state["status"] = "running"
     state["phase"] = "mirroring"
-    # Written to disk so a relay that restarts INSIDE this window can still
-    # report the truth. `_reconcile` turns a `running` record whose process is
-    # gone into `interrupted`, which was right while that window was
-    # microseconds wide; it is now up to `_VAULT_MIRROR_TIMEOUT_S` of serial OF
-    # reads, and it sits exactly where every file has ALREADY reached the
-    # creator's vault. Reporting that as "relay restarted mid-run" tells the
-    # operator a complete import failed, and the documented next move is to
-    # re-run it onto OnlyFans' byte dedupe. See `_reconcile`.
     state["terminal_status"] = terminal
     _save(state)
     try:
@@ -946,16 +493,11 @@ def _mirror_landed(state: dict,
         if isinstance(got, dict):
             state["details_saved"] = got
     except BaseException as e:  # noqa: BLE001 — see the docstring: nothing this
-        # hook raises, not even a cancellation, may pre-empt the run's teardown.
-        # Deliberately NOT re-raised: re-raising is exactly what skipped
-        # `_cleanup_carriers` and left the account claimed in `_live`.
+        # Deliberately NOT re-raised: re-raising skipped _cleanup_carriers and left the account claimed in _live.
         log.warning("vault run %s: mirror hook failed: %s: %s",
                     state.get("run_id"), type(e).__name__, e)
     finally:
         state["status"] = terminal
-        # Cleared again: the hint is only meaningful while the record lies about
-        # being `running`, and a finished run carrying a second status field is
-        # two answers to one question for every reader of run.json.
         state["terminal_status"] = None
 
 
@@ -969,46 +511,6 @@ def start(account_id: str, *, client, gate=None,
           metas: list[dict | None] | None = None,
           fan_id: int | None = None,
           send_gate=None) -> dict:
-    """Run a whole batch, synchronously. Returns the final state.
-
-    BLOCKING and network-bound — the caller must hand this to a thread, never
-    run it on the relay's event loop. `client` is an OFClient for `account_id`.
-
-    `gate(thunk)` wraps every OnlyFans write this run makes — the carrier post,
-    the carrier delete, the final foldering call. Pass it from inside the relay,
-    where it routes through the per-account write pacer that automations also
-    queue behind. It is a gate rather than a post factory so that `of_client`
-    stays the only place that knows what a carrier post looks like.
-
-    Pacing is `limits.pace_s`, and ONLY that — the gate's identity does not
-    decide policy. It used to: "no gate injected" meant "sleep locally", so any
-    gate that was not the relay's own pacer (a test double, a metrics wrapper)
-    silently turned pacing off. The relay passes `Limits(pace_s=0)` because its
-    gate already spaces every write for the account; a standalone caller keeps
-    the default and gets the local sleep as its backstop.
-
-    `run_id` adopts a run already claimed by `begin()`; without it this claims
-    one itself (the CLI path).
-
-    `send_gate(thunk)` wraps the one write that reaches a FAN: the chat message
-    a linked-fan run sends each new file in. It is the caller's to run that
-    write as what it is — a fan DM, with its true purpose and the relay's
-    outbound bookkeeping — rather than through the carrier gate. Defaults to
-    `gate`.
-
-    `on_landed(vault_ids, details)` runs while the run still reports `running` — see
-    `_mirror_landed` for why that ordering is load-bearing. The relay passes one
-    that writes the local mirror; the CLI passes nothing and does its own write
-    afterwards, which is fine because nothing is polling it.
-
-    `metas[i]` is the operator's details for `local_paths[i]` (hashtags, notes,
-    suggested price, tagged creators, folder) — carried on the item and handed
-    back by `landed_meta` once it lands. `fan_id` (or the adopted run's own)
-    sends each new file to that fan instead of a carrier post.
-
-    A run `begin` opened with `keep_open` keeps taking files from `append()`
-    after its first batch, until `close()` or `OPEN_IDLE_S` of silence.
-    """
     aid = str(account_id)
     limits = (limits or Limits()).checked()
     adopted = run_id is not None
@@ -1036,25 +538,14 @@ def start(account_id: str, *, client, gate=None,
     except Exception as e:
         log.exception("vault batch %s failed", run_id)
         state["status"] = "failed"
-        # Redacted: this slot is rendered in the dashboard and stored on disk,
-        # and a Drive failure that surfaces here is the last error path that had
-        # never been scrubbed of the API key.
+        # Redacted: this slot is stored on disk and shown on the dashboard.
         state["error"] = gdrive.redact(f"{type(e).__name__}: {e}")
-        # A run that stops early (a fan refusing the send stops it on purpose)
-        # leaves the rest of its batch unsent; say so on each, rather than
-        # leaving them "waiting" forever on a finished run.
         for it in state.get("items") or []:
             if it.get("status") == "pending":
                 it.update(status="failed",
                           error="not uploaded — the import stopped first")
     finally:
-        # FIRST, before anything below can take long: stop taking files, and
-        # put every file the run accepted but never reached on its record. On
-        # the success path `_drain_inbox` already emptied it; on a failure the
-        # browser has dropped those files from its list already.
         _record_unsent(state, _stop_taking(run_id))
-        # BEFORE the save below: that save is where the run stops reporting
-        # `running`, and everything watching this run acts on that edge.
         _mirror_landed(state, on_landed)
         state["phase"] = "finished"
         state["finished_at"] = _now()
@@ -1070,37 +561,21 @@ def start(account_id: str, *, client, gate=None,
 
 
 class _Staged(NamedTuple):
-    """A file whose bytes are claimed (`_upload_one`), waiting for its vault id."""
     item: dict
     claim: of_client.UploadClaim
-    # The name the bytes went up under, when media_prep renamed them.
     renamed: str | None
 
 
 class _Uploader:
-    """Uploads one run's files in order, and turns their claims into vault ids.
-
-    One place for "upload, save, carry, space the carriers", shared by the
-    batch's own files and the ones `append()` hands in later — they were two
-    copies, and the second had lost the first's rule about pacing.
-
-    Each file's bytes go up on their own (`add`); the claims wait here until
-    `batch` of them are staged or nothing more is on its way (`flush`). A
-    carrier run puts them on one carrier post (`_carry`); a fan-send run sends
-    each in a message of its own (`_send`), so its batch is 1.
-    """
 
     def __init__(self, state: dict, client, gate, send_gate, limits: Limits):
         self.state, self.client, self.limits = state, client, limits
         self.gate, self.send_gate = gate, send_gate
-        # A fan run sends each claim in a message of its own; a carrier run
-        # puts up to `carrier_batch` on one post.
         if state.get("fan_id"):
             self.batch, self._deliver = 1, self._send
         else:
             self.batch, self._deliver = limits.carrier_batch, self._carry
         self.staged: list[_Staged] = []
-        # When the last carrier finished (monotonic), or None before the first.
         self._carried_at: float | None = None
 
     def add(self, item: dict) -> None:
@@ -1131,10 +606,6 @@ class _Uploader:
         _send(self.state, staged, self.client, self.send_gate)
 
     def _carry(self, batch: list[_Staged]) -> None:
-        # Space the CARRIERS, and only them. Counted from the end of the last
-        # one, so the seconds this batch spent uploading are part of the gap,
-        # not added to it. `pace_s` is 0 wherever a gate already spaces the
-        # account's writes; see `start`.
         if self.limits.pace_s and self._carried_at is not None:
             wait = self.limits.pace_s - (time.monotonic() - self._carried_at)
             if wait > 0:
@@ -1144,14 +615,9 @@ class _Uploader:
 
     @contextmanager
     def running(self):
-        """Every claim staged inside is given its vault id before this exits."""
         try:
             yield self
         except Exception:
-            # One file broke the run (a full disk on a save, most likely). The
-            # claims already staged are bytes in S3 that only want their
-            # carrier: post it, so they land as they would have, then stop.
-            # Its own failure is the carrier's to record, never this one's.
             try:
                 self.flush()
             except Exception:  # noqa: BLE001 — the original error is the story
@@ -1159,9 +625,6 @@ class _Uploader:
                               "the way out failed", self.state["run_id"])
             raise
         except BaseException:
-            # Interrupted, not failed: posting a carrier now is a write nobody
-            # asked for. Claims nothing carried are not in the vault; say so on
-            # each and let the run end.
             for s in self.staged:
                 s.item.update(status="failed",
                               error="uploaded, but the import stopped before it "
@@ -1172,16 +635,6 @@ class _Uploader:
 
 
 def _drain_inbox(up: _Uploader) -> None:
-    """Upload what `append()` hands this run, as it arrives, until `close()`
-    or `OPEN_IDLE_S` of silence. A no-op for a run that was never opened.
-
-    Claims are flushed whenever the inbox is momentarily empty: files that
-    queued up while earlier ones were uploading share a carrier, and nothing
-    waits for more to arrive.
-
-    Silence means no file AND none on its way: while an append is still
-    crossing the wire (`receiving`) the run keeps waiting, so a file that takes
-    longer than the idle limit to transfer is not refused once it is here."""
     state = up.state
     run_id = state["run_id"]
     with _lock:
@@ -1209,9 +662,6 @@ def _drain_inbox(up: _Uploader) -> None:
 
 
 def _admit(state: dict, group: list[tuple], limits: Limits) -> list[dict]:
-    """Appended `(path, meta)` files onto the run's record, through the same
-    per-file and files-per-import caps as the batch (`_apply_caps`, counting
-    on from the batch's own tally). Returns the ones to upload."""
     items = []
     for path, meta in group:
         p = Path(path)
@@ -1226,18 +676,10 @@ def _admit(state: dict, group: list[tuple], limits: Limits) -> list[dict]:
     return [it for it in items if it["status"] == "pending"]
 
 
-# ── collection ────────────────────────────────────────────────────────────
 
 def _collect(state: dict, local_paths: list[str], drive_links: list[str],
              *, client, limits: Limits,
              metas: list[dict | None] | None = None) -> list[dict]:
-    """Build the work list: plan everything first, then fetch what survived.
-
-    The order matters. Deciding what to download only AFTER the caps have been
-    applied is what stops a 400 GB folder listing from failing the whole run on
-    "not enough disk" when the batch cap meant only 40 files were ever going to
-    be fetched.
-    """
     def progress(items: list[dict]) -> None:
         state["items"] = items
         _save(state)
@@ -1253,11 +695,6 @@ def _collect(state: dict, local_paths: list[str], drive_links: list[str],
 def _plan(state: dict, local_paths: list[str], drive_links: list[str],
           *, client, limits: Limits,
           metas: list[dict | None] | None = None) -> list[dict]:
-    """Everything the run could do, with sizes, before a byte moves.
-
-    A Drive file's details are its folder path as hashtags (`drive_meta`)
-    — the operator never sees a Drive import's files one by one, so the folder
-    they were sorted into is the tagging."""
     items: list[dict] = []
 
     for n, p in enumerate(local_paths):
@@ -1277,9 +714,6 @@ def _plan(state: dict, local_paths: list[str], drive_links: list[str],
             items.append(_item(f.name, None, "gdrive", f.size,
                                status="skipped", error=why))
             continue
-        # Already imported? Recognise it from Drive's own md5, before spending
-        # the download. Without this a re-run re-fetches the whole folder just
-        # to discover every file is a duplicate.
         meta = drive_meta(f)
         if known := _memo_lookup(state["account_id"], f.md5, client):
             it = _item(f.name, None, "gdrive", f.size, status="done")
@@ -1289,8 +723,6 @@ def _plan(state: dict, local_paths: list[str], drive_links: list[str],
         it = _item(f.name, None, "gdrive", f.size)
         it["meta"] = meta
         it.update(drive_id=f.id, drive_md5=f.md5, mime_type=f.mime_type,
-                  # Carried so the fetch pass can rebuild the ref: a dropped
-                  # resourcekey turns a working public link into a 404.
                   drive_resource_key=f.resource_key)
         items.append(it)
     return items
@@ -1298,12 +730,6 @@ def _plan(state: dict, local_paths: list[str], drive_links: list[str],
 
 def _fetch_drive(items: list[dict], run_dir: Path, limits: Limits,
                  progress: Callable[[list[dict]], None]) -> None:
-    """Download the Drive files the caps left standing, one at a time.
-
-    Free space is checked before EACH file rather than once against the sum of
-    the whole listing: the sum included files the cap was always going to skip,
-    and a folder far bigger than the batch failed the run before a byte moved.
-    """
     for it in items:
         if it["status"] != "pending" or it["source"] != "gdrive" or it.get("path"):
             continue
@@ -1317,9 +743,6 @@ def _fetch_drive(items: list[dict], run_dir: Path, limits: Limits,
             dest = gdrive.download(
                 f, run_dir,
                 max_bytes=cap_for(it["name"], it.get("mime_type"), limits),
-                # Drive's declared size is missing for some items, so the guard
-                # above can be guarding zero bytes; the download re-checks free
-                # space as it streams rather than trusting the metadata.
                 min_free_bytes=limits.min_free_bytes)
             it.update(path=str(dest), spooled=True)
         except Exception as e:  # noqa: BLE001 — one bad file must not end the run
@@ -1329,12 +752,6 @@ def _fetch_drive(items: list[dict], run_dir: Path, limits: Limits,
 
 def guard_space(incoming: int, limits: Limits | None = None, *,
                 path: Path | None = None) -> None:
-    """Refuse to write `incoming` bytes if it would eat the free-space floor.
-
-    `path` names the filesystem to measure — the staging directory for an HTTP
-    upload is often NOT on the same volume as the spool, and measuring the wrong
-    one is the same as not measuring.
-    """
     limits = limits or Limits()
     target = Path(path or SPOOL_ROOT)
     target.mkdir(parents=True, exist_ok=True)
@@ -1346,41 +763,24 @@ def guard_space(incoming: int, limits: Limits | None = None, *,
             f"{limits.min_free_bytes / 1e9:.1f} GB must stay free")
 
 
-# ── one file ──────────────────────────────────────────────────────────────
 
 def _carrier_hooks(state: dict, items: list[dict]):
-    """`(on_carrier_intent, on_carrier, on_carrier_deleted)` for one carrier
-    and EVERY file riding on it. One carrier is one post on the feed whatever
-    it carries, so each fact about it is written onto all of its files at once
-    and saved once — a file that missed the intent is a file whose lost carrier
-    no sweep would go looking for."""
     key = uuid.uuid4().hex
 
     def note_carrier_intent(marker: str) -> None:
-        # Written BEFORE the create call goes out. If the response is lost — a
-        # timeout on a slow attach, a proxy error, a SIGKILL — OnlyFans may have
-        # created the post anyway and we will never learn its id. This record is
-        # what tells sweep() to go looking for a post carrying `marker`. The
-        # key is what lets `carriers_outstanding` count a lost batch as one.
+        # A timeout, proxy error or SIGKILL mid-create: OF may have created the post anyway and we never learn its id; this intent record is what the sweep scans.
         intent = {"at": _now(), "marker": marker}
         for it in items:
             it.update(carrier_intent=intent, carrier_key=key, carrier_deleted=False)
         _save(state)
 
     def remember_carrier(post_id) -> None:
-        # Before the poll, before anything else — this narrows the sweep from
-        # "a marker-bearing post" to an exact id.
         for it in items:
             it["carrier_post_id"] = post_id
             it["carrier_deleted"] = False
         _save(state)
 
     def carrier_gone(post_id) -> None:
-        # Fired from of_client's `finally`, so the record is right even when the
-        # call that owned it is on its way out with an exception. The return
-        # value cannot say this on that path, and an item left claiming a live
-        # carrier that OnlyFans has actually deleted is a red banner nothing can
-        # ever clear.
         for it in items:
             it["carrier_post_id"] = post_id
             it["carrier_deleted"] = True
@@ -1390,16 +790,10 @@ def _carrier_hooks(state: dict, items: list[dict]):
 
 
 def _fail(item: dict, e: BaseException) -> None:
-    """Mark one file failed with the exception's `Type: message`."""
     item.update(status="failed", error=f"{type(e).__name__}: {e}")
 
 
 def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | None:
-    """One file's bytes: up to S3 and claimed (`OFClient.upload_claim`).
-
-    A fresh claim comes back `_Staged`, the item left `uploading`, for
-    `_Uploader.flush` to give it a vault id. Everything else — a dedupe hit, a
-    failed claim, a skip — is settled here and returns None."""
     path = item.get("path")
     if not path or not Path(path).exists():
         item.update(status="failed",
@@ -1407,16 +801,6 @@ def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | No
                            else "file no longer exists on disk"))
         return None
 
-    # Normalise the container first. Not a size pass any more: OF demonstrably
-    # accepts multi-gigabyte objects, and the failure that used to justify
-    # shrinking was a .mov that died at convert with every S3 part already
-    # stored (see `vault_upload_plan.MAX_MB`). So this is a remux when the
-    # codec is already mp4-legal — seconds, lossless — and a real transcode
-    # only for streams mp4 cannot carry.
-    #
-    # ffmpeg writes its output NEXT TO a source that may already be 2 GB, so the
-    # free-space floor is checked once more here — the earlier guard covered the
-    # download, not the pass it feeds.
     try:
         if media_prep.can_shrink(item["name"], item.get("mime_type")):
             guard_space(Path(path).stat().st_size, limits,
@@ -1436,16 +820,10 @@ def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | No
     renamed = (Path(upload_path).name
                if prepared and str(upload_path) != str(path) else None)
     if prepared:
-        # `compressed_from` is the dashboard's "<before> → <after>" pair. It
-        # stays honest for a remux: both numbers are real, and the second is
-        # genuinely the size of the object that went up.
         item["compressed_from"] = item["size"]
         item["size"] = Path(upload_path).stat().st_size
         _save(state)
 
-    # Now that the real upload size is known, enforce the ceiling. This is the
-    # operator's own backstop, NOT a protocol limit — see
-    # `vault_upload_plan.MAX_MB`.
     final_size = Path(upload_path).stat().st_size
     if final_size > limits.max_bytes:
         item.update(status="skipped",
@@ -1466,9 +844,6 @@ def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | No
         log.exception("vault upload failed for %s", item["name"])
         _fail(item, e)
         claim = None
-    # Clear the prepared copy as soon as it is no longer needed — the whole
-    # point of "push it up and let go of it" is that the disk stays flat. A
-    # staged claim no longer needs it either: its bytes are in S3.
     if renamed:
         Path(upload_path).unlink(missing_ok=True)
     if claim is None:
@@ -1485,22 +860,10 @@ def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | No
 def _settle(item: dict, vault_id, *, note: str | None = None,
             still_transcoding: bool = False, hidden: bool = False,
             deduped: bool = False, renamed: str | None = None) -> None:
-    """Write one file's outcome onto its item: done under `vault_id`, skipped
-    when that id is HIDDEN, else failed with `note`. `renamed` is the name the
-    bytes went up under when media_prep normalised them.
-
-    Carrier fields are not touched here: `_carrier_hooks` writes them as the
-    carrier happens. There is deliberately no "clear the intent" branch either
-    — clearing an intent on a guess would mean deciding, from no evidence, that
-    a carrier we cannot see does not exist; only a completed marker scan is
-    allowed to conclude that."""
     item.update(vault_id=vault_id, deduped=deduped, hidden=hidden,
                 still_transcoding=still_transcoding)
     if hidden:
-        # The bytes ARE on OnlyFans, under an id the creator removed — hiding
-        # is OF's only delete and it is one-way, so re-uploading the same file
-        # can never restore it. Calling that "done" is how twenty photos are
-        # lost with a green tick beside each one.
+        # The bytes ARE on OF under an id the creator hid; hiding is one-way, so re-uploading can never restore it: not "done".
         item.update(status="skipped",
                     error="already in the vault but HIDDEN (removed there) — "
                           "OnlyFans dedupes on the bytes, so re-uploading "
@@ -1508,9 +871,6 @@ def _settle(item: dict, vault_id, *, note: str | None = None,
     elif vault_id:
         item["status"] = "done"
     else:
-        # `note` names the file that was actually UPLOADED, which after a remux
-        # is media_prep's output, not anything the operator can find on their
-        # disk. Say which of their items it was.
         note = note or "no vault id"
         if renamed:
             note = f"{note} (uploaded as {renamed}, normalised from {item['name']})"
@@ -1518,13 +878,6 @@ def _settle(item: dict, vault_id, *, note: str | None = None,
 
 
 def _land(state: dict, item: dict) -> None:
-    """A settled file's last housekeeping: remember a Drive file's vault id,
-    and drop the spooled copy of anything that made it.
-
-    Never raises. The file IS in the vault by now; a full disk refusing the
-    memo write or a stubborn unlink costs a re-download next time or a file
-    `_clear_spool` takes later, and must not leave the files after it on the
-    same carrier unrecorded."""
     if item["status"] != "done":
         return
     try:
@@ -1538,11 +891,6 @@ def _land(state: dict, item: dict) -> None:
 
 
 def _send(state: dict, staged: _Staged, client, gate) -> None:
-    """A fan-send run's vault id: the claim sent to the linked fan, in a
-    message of its own, through the gate that runs it as a fan DM.
-
-    Raises `of_client.FanSendRefused` (after marking the item) when the linked
-    fan cannot be sent to: every later file would be refused the same way."""
     item, claim = staged.item, staged.claim
     try:
         res = client.materialize_via_message(
@@ -1555,10 +903,7 @@ def _send(state: dict, staged: _Staged, client, gate) -> None:
             item["error"] = str(e)
             raise
         if isinstance(e, _MAYBE_WRITTEN):
-            # The same lost race as a carrier's (see `_carry`), but the write
-            # was a chat message to the fan: nothing will ever publish to the
-            # feed, so it must not raise the carrier alarm or put the account
-            # on the schedule scan. It is still worth saying — it may yet go.
+            # Same lost race as a carrier's, but the write was a chat message: nothing will publish to the feed, so no carrier alarm.
             item.update(message_write_pending=True,
                         error="timed out waiting to send — the message to the "
                               "fan may still go out; check the chat before "
@@ -1572,15 +917,6 @@ def _send(state: dict, staged: _Staged, client, gate) -> None:
 
 
 def _carry(state: dict, batch: list[_Staged], client, gate) -> bool:
-    """ONE carrier post for every claim in `batch`, and each file settled from
-    its share of it. Returns whether a create call may have gone out (what
-    pacing counts from).
-
-    The carrier's intent, id and deletion are recorded on every file in the
-    batch (`_carrier_hooks`), so the safety story is the per-file one with a
-    bigger payload. Which vault id is whose is `vault_carrier.attribute`'s to
-    say, and a file it cannot place fails alone rather than taking a
-    neighbour's id."""
     items = [s.item for s in batch]
     intent, remember, gone = _carrier_hooks(state, items)
     try:
@@ -1594,17 +930,10 @@ def _carry(state: dict, batch: list[_Staged], client, gate) -> bool:
         for it in items:
             _fail(it, e)
             if isinstance(e, _MAYBE_WRITTEN):
-                # The gate gave up on (or was cancelled out of) a carrier
-                # write. The route cancels the queued coroutine, but a cancel
-                # that loses the race still creates the post — so this intent
-                # cannot be scanned for: a marker scan run NOW would correctly
-                # find nothing and wrongly conclude the carrier never existed.
-                # Leave it outstanding; the sweep keeps looking, and retention
-                # keeps the record.
+                # A carrier that loses the race still creates the post, so this intent cannot be scanned for: a scan now would find nothing and wrongly conclude it never existed.
                 it["carrier_write_pending"] = True
         if not isinstance(e, Exception):
             raise
-        # The intent is written just before the create goes out.
         return any(it.get("carrier_intent") for it in items)
     pid = res["carrier_post_id"]
     for s, got in zip(batch, placed, strict=True):
@@ -1617,22 +946,16 @@ def _carry(state: dict, batch: list[_Staged], client, gate) -> bool:
                     f"OnlyFans will recognise the bytes")
         _settle(s.item, got.vault_id, note=note,
                 still_transcoding=got.transcoding, renamed=s.renamed)
-    # Every outcome is written before any housekeeping runs.
     for it in items:
         _land(state, it)
     return True
 
 
 def _gate(gate):
-    """`gate`, or a pass-through. One spelling of "run this write through the
-    caller's pacer if there is one", instead of the same lambda three times."""
     return gate or (lambda thunk: thunk())
 
 
 def _file_into_folder(state: dict, client, gate=None) -> None:
-    """Put everything that succeeded into its vault list — the file's own
-    Category when the operator picked one, else the run's folder — one call
-    per list."""
     by_list: dict[int, list] = {}
     for i in state["items"]:
         if not (i.get("vault_id") and i["status"] == "done"):
@@ -1650,24 +973,16 @@ def _file_into_folder(state: dict, client, gate=None) -> None:
             run(lambda lid=lid, ids=ids: client.add_media_to_vault_list(lid, ids))
             filed += len(ids)
         except Exception as e:
-            # Never fatal, and never a reason to re-upload: the media is already
-            # in the vault, just not in the folder the operator picked. It gets
-            # its own field — writing it into `error` painted a successful
-            # import red.
+            # Never fatal and never a reason to re-upload: the media is already in the vault, just not in the picked folder.
             log.warning("vault batch %s: foldering into %s failed — %s",
                         state["run_id"], lid, e)
             errors.append(f"{len(ids)} into folder {lid}: {e}")
     state["filed_into_list"] = filed
     if errors:
-        # Every failed folder, not just the last one to fail.
         state["filing_error"] = ("could not file " + "; ".join(errors))
 
 
 def _carriers(items: list) -> dict[str, list[dict]]:
-    """Every carrier the items record -> the files that rode it, grouped by
-    `carrier_key`: up to `carrier_batch` files share one post, and it is one
-    post — counted once, deleted once. A record from before files shared
-    carriers has no key; each of its files had a carrier of its own."""
     out: dict[str, list[dict]] = {}
     for n, it in enumerate(items):
         if (it.get("carrier_intent") or it.get("carrier_post_id")
@@ -1677,25 +992,16 @@ def _carriers(items: list) -> dict[str, list[dict]]:
 
 
 def _rides_live(i: dict) -> bool:
-    """Did this file ride a carrier post still recorded as live?"""
     return bool(i.get("carrier_post_id") and not i.get("carrier_deleted"))
 
 
 def _live_post(riders: list[dict]):
-    """The post id of a carrier still recorded as live, else None."""
     return next((i["carrier_post_id"] for i in riders if _rides_live(i)), None)
 
 
 def _delete_live_carriers(items: list, remove: Callable[[Any], Any]
                           ) -> tuple[int, int, int]:
-    """`remove(post_id)` once per carrier still recorded as live, every file on
-    it marked deleted once it is gone. Returns `(deleted, already_gone,
-    failed)`.
-
-    A post OnlyFans says does not exist cannot publish, so a 404 is this having
-    already worked — most often by the `finally` in materialize_to_vault, whose
-    caller then raised before the fact could be recorded. Calling it a failure
-    left a permanent alarm."""
+    # A post OF says does not exist cannot publish, so a 404 counts as deleted.
     deleted = gone = failed = 0
     for riders in _carriers(items).values():
         pid = _live_post(riders)
@@ -1721,20 +1027,12 @@ def _delete_live_carriers(items: list, remove: Callable[[Any], Any]
 
 
 def _cleanup_carriers(state: dict, client, gate=None) -> None:
-    """Delete any carrier still recorded as live. Normally a no-op — every
-    carrier deletes itself in `materialize_to_vault`'s `finally` — but this is
-    what catches the ones a mid-run exception skipped."""
     run = _gate(gate)
     _delete_live_carriers(
         state["items"], lambda pid: run(lambda: of_client.remove_carrier(client, pid)))
 
 
 def _clear_spool(state: dict) -> None:
-    """Remove the run directory's media, keeping run.json for the status poll.
-
-    Failed items' files go too: a retry re-downloads or re-picks them, and
-    keeping them is how a VPS quietly fills up.
-    """
     rd = _run_dir(state["run_id"])
     if not rd.is_dir():
         return
@@ -1753,12 +1051,8 @@ def _clear_spool(state: dict) -> None:
     state["spool_cleared_bytes"] = freed
 
 
-# ── crash recovery ────────────────────────────────────────────────────────
 
 def _marker_text(post: dict) -> str | None:
-    """A scheduled post's text (`rawText` and `text`), with OF's markup out of
-    the way; None when the row carries neither as a string — its marker cannot
-    be read, so it may be a carrier."""
     raw = [v for v in (post.get("rawText"), post.get("text")) if isinstance(v, str)]
     if not raw:
         return None
@@ -1766,12 +1060,6 @@ def _marker_text(post: dict) -> str | None:
 
 
 def _known_carriers(account_id: str) -> set[str]:
-    """Every carrier id this account has on record RIGHT NOW.
-
-    Read fresh, never from a snapshot: an id learned since the sweep started is
-    exactly the one a live import is polling on, and the marker scan's rule is
-    "delete what nobody has recorded".
-    """
     aid, out = str(account_id), set()
     for d in _dirs():
         try:
@@ -1788,59 +1076,12 @@ def _known_carriers(account_id: str) -> set[str]:
 
 def _sweep_scheduled(client, account_id: str,
                      recheck: Callable[[], set | None]) -> tuple[int, int, bool]:
-    """Reconcile against OnlyFans' OWN list of scheduled posts, DELETING the
-    ones nobody has on record.
-
-    The run record cannot be the only source of truth here. If the create call's
-    response was lost — a timeout while OF attached a 180 MB video, a proxy
-    error on the last retry — the post exists and its id was never learned, so
-    nothing in `run.json` can point at it. The marker is the handle: no other
-    writer on the account ever produces that text, so a scheduled post carrying
-    it belongs to an import, and one whose id no live run owns is deletable.
-
-    The listing is GET /schedules over the carrier window, NOT
-    /schedules/later/post: a carrier is always dated (CARRIER_DAYS out), and a
-    dated post appears only in the calendar — later/post is OF's undated "saved
-    for later" list (live read 2026-11-21, capture
-    queue--scheduled-post-endpoint). Only `type == "post"` rows are candidates;
-    the calendar lists chats too.
-
-    The third return value says whether the scan was COMPLETE: every chunk
-    listed and every post row evaluated. Only a complete scan may retire an
-    intent (sweep pass 3). OF ignores `offset` and `limit` on /schedules, so
-    the window is read in date chunks (of_paging.schedules_in_window). A
-    read that fails, a reply that is not `{list: [...]}`, `syncInProcess`,
-    `hasMore`, or a single
-    day of of_paging.SCHEDULE_PAGE rows or more (maybe truncated) makes the
-    listing INCOMPLETE — but every chunk is still read, and the marker carriers
-    among the rows that WERE listed are still deleted (absence proves nothing;
-    presence does). A row that cannot be evaluated (no entity, no post id, a
-    type that is neither post nor chat, a post with no text field) may be a
-    carrier, so it too makes the scan incomplete. A listing that FAILED once returned the same `(0, 0)` as a
-    listing that found nothing — "we looked and it is clean" and "we could not
-    look" reported identically, on the only recovery path an unrecorded
-    carrier has.
-
-    `recheck()` returns the account's carrier ids as they are AT THAT MOMENT, or
-    None if an import has started since. Both matter, and a frozen snapshot of
-    either is the bug this walk keeps re-growing: the listing is several
-    sequential round trips, and an import that begins inside that window
-    creates a carrier which is (a) genuinely live and (b) not in any set taken
-    before it existed. So it is asked again before the listing
-    and again before every single delete.
-
-    Returns `(deleted, still_live, complete)`; an incomplete listing counts
-    one in `still_live` so the relay shouts. Abandoning because the account
-    went live is NOT a complete scan: nothing may be retired on it.
-    """
     known = recheck()
     if known is None:
         log.info("vault sweep: account %s started importing — leaving its "
                  "scheduled posts alone", account_id)
         return 0, 0, False
     try:
-        # Shared listing contract (date chunks, day-by-day re-read of a full
-        # chunk, fail closed), also used by scripts/throughput.
         rows, why = of_paging.schedules_in_window(client, of_client.CARRIER_DAYS)
     except Exception as e:  # noqa: BLE001 — a listing failure is not a run failure
         log.error("vault sweep: could NOT list scheduled posts for account "
@@ -1853,14 +1094,10 @@ def _sweep_scheduled(client, account_id: str,
 
     deleted = failed = unevaluable = 0
     for row in rows:
-        # The calendar lists scheduled chats too; only a post can be a carrier.
         kind = row.get("type") if isinstance(row, dict) else None
         if kind == "chat":
             continue
-        # Each row is a QUEUE entry wrapping the post in `entity`; the row's own
-        # `id` is the queue id (app/lib/__fixtures__/of/queue-schedules-2026-11.json).
-        # No entity / no post id / unknown type = a row we cannot evaluate: never
-        # deleted, and the scan is not complete (it may be the carrier).
+        # A row we cannot evaluate (no entity / post id / unknown type) is never deleted, and the scan is not complete (it may be the carrier).
         post = row.get("entity") if isinstance(row, dict) else None
         if not isinstance(post, dict):
             unevaluable += 1
@@ -1890,8 +1127,6 @@ def _sweep_scheduled(client, account_id: str,
             continue
         if of_client.VAULT_MARKER not in text:
             continue
-        # Re-asked per candidate, immediately before the irreversible bit. The
-        # listing above may be a minute old by now.
         fresh = recheck()
         if fresh is None:
             log.info("vault sweep: account %s started importing mid-scan — "
@@ -1914,47 +1149,12 @@ def _sweep_scheduled(client, account_id: str,
 
 
 def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
-    """Delete orphaned carriers, bin stale run dirs.
-
-    Runs at boot AND on a timer: the relay is a long-lived container that may
-    not restart for weeks, and a carrier publishes 30 days out, so "we clean up
-    next boot" is not a schedule.
-
-    `client_for(account_id)` supplies an OFClient. This is the piece the
-    reference implementation has no equivalent of, and the reason a crash here
-    costs nothing worse than a re-run.
-
-    THREE PASSES, and the order is the whole design:
-
-      1. read every run record and write NOTHING, collecting the accounts that
-         hold an unresolved intent. A run that is still going owns its carriers
-         — one legitimately exists, recorded and undeleted, for the entire
-         ten-minute transcode poll — and an account with ANY importer is left
-         alone whole: an hourly sweep can wait an hour, and guessing which of a
-         busy account's carriers are orphaned is the guess that deletes a live
-         one.
-      2. ask OnlyFans what is actually scheduled for those accounts, and DELETE
-         the marker-bearing posts nobody has on record. This pass writes to
-         OnlyFans; saying it only "asks" is how the liveness guard came to be
-         missing from it for two rounds. Liveness and the recorded-carrier set
-         are re-read inside it, per delete — pass 1's answers are a snapshot,
-         and this pass can run for minutes.
-      3. only now delete recorded carriers, write records, and retire
-         directories — and only ever for runs pass 1 found dead.
-
-    Merging 2 into 3 is what made retention destroy an intent-only record before
-    anything had successfully looked for the post it describes.
-    """
     fixed, failed, removed = 0, 0, 0
     cutoff = time.time() - keep_hours * 3600
-    # Accounts to reconcile against OnlyFans itself. The carrier ids are NOT
-    # collected here: they are re-read inside pass 2, at the moment of use.
     scan: set[str] = set()
     dead: list[tuple[Path, dict, bool]] = []
     live_cache: dict[str, bool] = {}
 
-    # Staging directories for HTTP uploads live under the spool (not TMPDIR)
-    # precisely so this sweep can own the ones a SIGKILL left behind.
     for d in sorted(STAGE_ROOT.glob("vault-in-*")) if STAGE_ROOT.is_dir() else []:
         try:
             if d.is_dir() and d.stat().st_mtime < cutoff:
@@ -1963,13 +1163,10 @@ def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
         except OSError:
             continue
 
-    # ── pass 1: read ──────────────────────────────────────────────────────
     for d in _dirs():
         try:
             raw = json.loads((d / "run.json").read_text())
         except (OSError, ValueError):
-            # No state file — nothing can be recovered from it, and its media
-            # is unreferenced. Bin it if it's old enough to be certainly dead.
             try:
                 stale = d.stat().st_mtime < cutoff
             except OSError:
@@ -1981,20 +1178,15 @@ def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
         state = _reconcile(raw, live_cache)
         aid = str(state.get("account_id"))
         items = state.get("items") or []
-        # The whole account, not just its live run — see the docstring.
         if _account_is_live(aid, live_cache):
             continue
         dead.append((d, state, state.get("status") != raw.get("status")))
         if any(_intent_unresolved(i) for i in items):
             scan.add(aid)
 
-    # ── pass 2: what does OnlyFans itself say is scheduled? Delete it. ────
     scanned: set[str] = set()
     for aid in sorted(scan):
         def _recheck(aid=aid) -> set | None:
-            """Fresh liveness AND fresh carrier ids, together, at the moment of
-            use. Deliberately uncached: this is the answer pass 1's cache is too
-            old to give."""
             return None if _account_is_live(aid) else _known_carriers(aid)
 
         if _recheck() is None:
@@ -2011,9 +1203,6 @@ def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
         if complete:
             scanned.add(aid)
 
-    # ── pass 3: delete, record, retire ────────────────────────────────────
-    # Liveness re-asked once more, and freshly: pass 2 can run for minutes, and
-    # the rule is the same one — an account with an importer is left alone.
     now_cache: dict[str, bool] = {}
     for d, state, changed in dead:
         aid = str(state.get("account_id"))
@@ -2033,14 +1222,7 @@ def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
                 fixed += got
                 failed += lost
                 changed = changed or bool(got or gone)
-        # An intent is only ever retired by a scan that actually completed.
-        # Anything less — a listing that failed, one we could not page to the
-        # end of, one abandoned because an import started — leaves it exactly
-        # where it is, for the next sweep. The intent record itself is KEPT: it
-        # is the evidence, and `carrier_scan_clear` is the conclusion drawn
-        # about it. Writing that conclusion into `carrier_deleted` asserted a
-        # deletion that never happened, on a field the CLI and the dashboard
-        # both read as "a post we named is gone".
+        # An intent is only retired by a scan that actually completed; a failed, unpaged or abandoned listing leaves it.
         if aid in scanned:
             for it in items:
                 if _intent_unresolved(it):
@@ -2049,13 +1231,7 @@ def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
         if changed:
             _save(state)
 
-        # Retention. Stat the STATE FILE, not the directory: `_save` writes via
-        # mkstemp + os.replace inside the run dir, which bumps the directory's
-        # mtime every time — so a directory mtime is never older than the last
-        # write and nothing was ever removed. A run with an unresolved carrier
-        # is kept regardless; its record is the only thing that can clean it up
-        # — and that includes an INTENT with no id, which is the MOST dangerous
-        # record there is, not the least: nothing else knows the post may exist.
+        # Retention stats the STATE FILE, not the directory: a directory mtime is never older than the last write, so nothing was ever removed.
         unresolved = any(
             _rides_live(i) or _intent_unresolved(i)
             for i in items)

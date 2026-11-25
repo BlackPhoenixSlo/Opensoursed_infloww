@@ -1,35 +1,3 @@
-"""
-mass_detect.py — retro-tag OF-native mass blasts the WS pump captured as
-individual per-fan rows.
-
-When a creator fires a mass message straight from OnlyFans (not through our
-send path), the WS pump writes one real per-fan `messages` row per recipient
-with `mass_run_id = NULL` and `automation_kind = NULL`. Nothing links those
-N rows, so the Messages page renders them as N identical "from us" rows
-instead of one collapsed "MASS · sent to N" summary.
-
-This sweep sessionizes those untagged outbound rows into BURSTS and stamps a
-synthetic `MassRun` on each, so the existing collapse in messages.py renders
-one summary row per blast (recipient_count = the burst's distinct fans).
-
-Burst rule — consecutive rows (ordered by time within an identical message)
-belong to the same blast while:
-  • same (account_id, body, price_cents, media_count), AND
-  • the gap to the previous row is ≤ `gap_seconds` (default 180s).
-A new identical message sent hours later is a DIFFERENT burst (the user's
-"yooo sent twice as a mass" → two summary rows, not one).
-
-Safety filters:
-  • only `automation_kind IS NULL` rows — per-fan automations (welcome,
-    welcome_chatter_for_info, …) carry a kind and personalize their text, so they're never
-    swept up here.
-  • only bursts with ≥ `min_recipients` distinct fans become a MassRun;
-    smaller clusters stay as individual rows.
-
-Idempotent: only ever touches `mass_run_id IS NULL` rows, so a re-run tags
-only blasts that appeared since the last run. `dry_run=True` reports what it
-would do without writing.
-"""
 from __future__ import annotations
 
 import logging
@@ -43,16 +11,12 @@ from db.models import MassRun, Message
 
 log = logging.getLogger(__name__)
 
-# A mass blast to many fans sprays over seconds/minutes (rate-limited by OF);
-# 3 minutes between consecutive sends comfortably bridges that without merging
-# two distinct blasts of the same line.
+# OF rate-limits mass sends so a blast sprays over minutes; 3 min bridges it without merging two blasts of the same line.
 DEFAULT_GAP_SECONDS = 180
-# Identical body to this many distinct fans in one burst = a mass send. Below
-# this we leave the rows alone (could be a couple of genuine 1:1s).
+# Below this, identical bodies could be genuine 1:1s: left alone.
 DEFAULT_MIN_RECIPIENTS = 5
 
-# Marks runs minted by this sweep (vs. send_mass_message / reply_mass_funnel /
-# manual UI broadcasts). queue_id stays NULL — these never had an OF queue id.
+# queue_id stays NULL: these never had an OF queue id.
 DETECTED_KIND = "detected_blast"
 
 
@@ -64,17 +28,8 @@ async def detect_mass_bursts(
     window_start: datetime | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Sessionize untagged outbound rows into bursts and tag each as a MassRun.
-
-    Returns a summary dict: {runs_created, rows_tagged, bursts: [...]}. When
-    `dry_run`, no writes happen and `runs_created`/`rows_tagged` reflect what
-    WOULD be written.
-    """
     gap = timedelta(seconds=gap_seconds)
 
-    # Pull candidate rows ordered so consecutive identical sends are adjacent
-    # and time-ascending within an identical message — the order the burst
-    # walk depends on.
     q = (
         select(
             Message.account_id,
@@ -105,12 +60,9 @@ async def detect_mass_bursts(
     async with get_session() as s:
         rows = (await s.execute(q)).all()
 
-    # ── Walk the ordered rows, closing a burst when the identity key changes
-    #    or the time gap exceeds `gap`. Each burst collects its member PKs and
-    #    distinct fan set.
     bursts: list[dict[str, Any]] = []
     cur_key: tuple | None = None
-    cur_members: list[tuple[int, int]] = []  # (fan_id, message_id)
+    cur_members: list[tuple[int, int]] = []
     cur_fans: set[int] = set()
     cur_first: datetime | None = None
     cur_last: datetime | None = None
@@ -179,11 +131,9 @@ async def detect_mass_bursts(
                     status="completed",
                 )
                 s.add(run)
-                await s.flush()  # assign run.id
+                await s.flush()
                 rid = run.id
-                # Stamp the member rows. message_id is OF-globally-unique, so
-                # (account_id, message_id) pins each row; chunk to keep the IN
-                # list bounded.
+                # message_id is OF-globally-unique, so (account_id, message_id) pins each row; chunk keeps the IN list bounded.
                 msg_ids = [m[1] for m in b["members"]]
                 for i in range(0, len(msg_ids), 500):
                     chunk = msg_ids[i : i + 500]

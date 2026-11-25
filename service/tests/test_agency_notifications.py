@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""The Agency owner's notification centre (service/notifications_api.py,
-roadmap W6 6.7 and 6.10) and the audit log's names and date filter (6.16).
-
-Over HTTP with real session cookies from the shared two-Agency fixture: the
-audit middleware's hook files a row per real change (a role, a deactivation,
-a chatter's unsend) and none for a save that changed nothing; each row is its
-own Agency's; read / read-all, dismiss / dismiss-all up to the shown id (kept for the dedupe)
-and the unread count; a kind switched off in
-the `preferences` blob files nothing; an assignment naming another Agency's
-Employee files nothing; a dead session files once per episode; the clock-in
-sweep files once per missed occurrence (not on a cancelled date, and past a
-Shift it cannot read) and drops rows past retention, pushing the unread count
-to each Agency that lost unread ones; the unread count's SSE
-push (once per batch) reaches the subscription the real /events route opens
-for an owner and not a chatter's; a Master impersonating an owner reads that
-owner's feed. No OnlyFans call: the unsend runs against a fake client.
-
-Run: ./venv/bin/python service/tests/test_agency_notifications.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 _harness.bootstrap()
 
@@ -72,7 +53,6 @@ def _put_roles(blob: dict) -> None:
     assert r.status_code == 200, r.text
 
 
-# ── The audit hook ──────────────────────────────────────────────────────────
 
 def case_a_roles_save_files_one_row_per_changed_assignment_and_none_when_nothing_changed():
     _clear()
@@ -122,7 +102,6 @@ def case_deactivating_files_once_by_patch_or_delete():
     rows = _rows(A, "employee_deactivated")
     assert [(r.text, r.employee_id) for r in rows] == [("Pat was deactivated", p), ("Dee was deactivated", d)], \
         [(r.text, r.employee_id) for r in rows]
-    # Another owner's DELETE is refused (404) and files nothing.
     q = _employee("Quin")
     assert OWNER_B.delete(f"/admin/employees/{q}").status_code == 404
     assert len(_rows(A)) == 2 and _rows(B) == []
@@ -167,7 +146,6 @@ def case_a_kind_switched_off_in_preferences_files_nothing():
     assert len(_rows(A, "employee_deactivated")) == 1
 
 
-# ── Routes, tenancy, unread ────────────────────────────────────────────────
 
 def case_the_list_read_and_read_all_are_the_owners_own_and_chatters_are_refused():
     _clear()
@@ -185,7 +163,6 @@ def case_the_list_read_and_read_all_are_the_owners_own_and_chatters_are_refused(
     assert OWNER_B.get("/admin/agency-notifications").json()["unread"] == 1
     assert CHATTER_A.get("/admin/agency-notifications").status_code == 403
     assert _harness.make_client().get("/admin/agency-notifications").status_code == 401
-    # Reading files no audit row.
     async def _audited():
         async with get_session() as s:
             return (await s.execute(select(Action.id).where(Action.action.like("%agency-notifications%")))).first()
@@ -202,7 +179,6 @@ def case_dismiss_takes_rows_off_the_list_reads_them_and_keeps_the_dedupe():
     assert OWNER_A.post(f"/admin/agency-notifications/{ids['a0']}/dismiss").json() == {"unread": 2}
     body = OWNER_A.get("/admin/agency-notifications").json()
     assert [n["text"] for n in body["notifications"]] == ["a2", "a1"] and body["unread"] == 2, body
-    # The dismissed row stays, so the same event is not filed again.
     assert asyncio.run(notifications_api.notify(A, [Notice("session_dead", "a0", dedupe="dead:x")])) == 0
     assert OWNER_A.post(f"/admin/agency-notifications/{ids['a1']}/read").json() == {"unread": 1}
     assert OWNER_A.post("/admin/agency-notifications/dismiss-all").json() == {"unread": 0}
@@ -217,20 +193,16 @@ def case_dismiss_all_up_to_id_spares_rows_filed_after_the_clients_fetch():
     asyncio.run(notifications_api.notify(A, [Notice("role_changed", "a0"), Notice("role_changed", "a1")]))
     asyncio.run(notifications_api.notify(B, [Notice("role_changed", "b0")]))
     shown = max(n["id"] for n in OWNER_A.get("/admin/agency-notifications").json()["notifications"])
-    # Filed after the owner's fetch: Clear all must not dismiss it unseen (its dedupe would block a refile).
     asyncio.run(notifications_api.notify(A, [Notice("session_dead", "late", dedupe="dead:late")]))
     b_id = _rows(B)[0].id
     assert OWNER_A.post("/admin/agency-notifications/dismiss-all", json={"up_to_id": max(shown, b_id)}).json() \
         == {"unread": 1}
     body = OWNER_A.get("/admin/agency-notifications").json()
     assert [n["text"] for n in body["notifications"]] == ["late"] and body["unread"] == 1, body
-    # Still the caller's Agency only, whatever the id range.
     assert [n["text"] for n in OWNER_B.get("/admin/agency-notifications").json()["notifications"]] == ["b0"]
 
 
 def _stream_agencies(client) -> frozenset:
-    """The `agencies` the real GET /events opens its subscription with for
-    `client`'s session (the stream itself is stubbed to end at once)."""
     seen: list[frozenset] = []
     original = server.sse_stream
 
@@ -280,7 +252,6 @@ def case_a_master_impersonating_an_owner_reads_that_owners_feed_and_cannot_mark_
     assert OWNER_A.get("/admin/agency-notifications").json()["unread"] == 1
 
 
-# ── Dead sessions ──────────────────────────────────────────────────────────
 
 def case_a_dead_session_files_once_per_episode_for_its_owner_only():
     _clear()
@@ -295,7 +266,6 @@ def case_a_dead_session_files_once_per_episode_for_its_owner_only():
     assert asyncio.run(account_health.mark_session_dead(acc, "no_session"))
     assert len(_rows(A, "session_dead")) == 2, "a new dead episode filed nothing"
     asyncio.run(account_health.clear_session_dead(acc))
-    # The same episode's key twice (two relays racing) files one row.
     at = datetime(2026, 1, 1)
     for _ in range(2):
         asyncio.run(notifications_api.notify_session_dead(acc, "wrong_user", at))
@@ -309,7 +279,6 @@ def case_an_otp_episode_points_the_owner_at_browserbase_login():
     assert not asyncio.run(account_health.mark_session_dead(acc, "otp_required"))
     rows = _rows(A, "session_dead")
     assert [r.text for r in rows] == [
-        # The link opens Browserbase login for any account: the text names whose to sign in to.
         "creator_a needs a 2FA code on OnlyFans: sign in to creator_a's OnlyFans account again "
         "with Browserbase login to resume"], \
         [r.text for r in rows]
@@ -321,8 +290,6 @@ def case_an_otp_episode_points_the_owner_at_browserbase_login():
 
 
 def case_a_ui_read_that_hits_otp_state_flags_the_creator_and_notifies():
-    # A Creator with no automations: the only caller that meets OF's 2FA demand
-    # is a UI read (the inbox, a chat), which `_proxy` answers with a 502.
     import json
     import threading
     from of_client import OFAPIError
@@ -343,12 +310,11 @@ def case_a_ui_read_that_hits_otp_state_flags_the_creator_and_notifies():
         def me(self):
             raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/users/me\n{body}", response=_Resp())
 
-    loop = asyncio.new_event_loop()  # the relay's main loop (startup sets it; tests run none)
+    loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, daemon=True).start()
     saved = server._load_client, server._main_loop, server.account_registry.get_account
     real_get = server.account_registry.get_account
     server._load_client, server._main_loop = (lambda aid: _Client()), loop
-    # The Creator's session dir (the registry) is not seeded here; the DB rows are.
     server.account_registry.get_account = lambda aid: {"id": aid} if aid == acc else real_get(aid)
     try:
         r = OWNER_A.get("/api/of/v2/users/me", headers={"X-Account-Id": acc})
@@ -360,7 +326,7 @@ def case_a_ui_read_that_hits_otp_state_flags_the_creator_and_notifies():
                 break
             asyncio.run(asyncio.sleep(0.05))
         assert stamp is not None and stamp.reason == "otp_required", stamp
-        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.2), loop).result(5)  # the notify after the flag
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.2), loop).result(5)
         rows = _rows(A, "session_dead")
         assert [r.account_id for r in rows] == [acc], [(r.account_id, r.text) for r in rows]
         assert rows[0].text.startswith("creator_a needs a 2FA code"), rows[0].text
@@ -371,8 +337,6 @@ def case_a_ui_read_that_hits_otp_state_flags_the_creator_and_notifies():
 
 
 def case_the_roster_strip_that_hits_otp_state_flags_the_creator_and_notifies():
-    # The Creators strip's badges (`/admin/accounts/roster-counts`: OF's chat list per
-    # model, on every page) are the OF read an owner makes even for a Creator nobody chats on.
     import json
     from of_client import OFAPIError
 
@@ -408,15 +372,11 @@ def case_the_roster_strip_that_hits_otp_state_flags_the_creator_and_notifies():
 
 
 def case_simultaneous_failures_after_a_recovery_file_one_notification():
-    # The row exists and is cleared (an earlier episode recovered); then many
-    # callers (automation kinds, an HTTP route, the WS pump) hit OF's 101 at once.
     _clear()
     acc = IDS["creator_a"]
     assert asyncio.run(account_health.mark_session_dead(acc, "wrong_user"))
     assert asyncio.run(account_health.clear_session_dead(acc))
     before = len(_rows(A, "session_dead"))
-    # Every statement of the transition takes 50 ms (a busy relay's gap between
-    # a read and the write after it), so the callers overlap every time.
     real = account_health.get_session
 
     @asynccontextmanager
@@ -447,10 +407,6 @@ def case_simultaneous_failures_after_a_recovery_file_one_notification():
 
 
 def case_a_caller_cancelled_after_its_claim_still_notifies_the_owner():
-    # The caller that won the transition can be cancelled before the owner is
-    # told: a WS pump rerouted by a proxy switch, a roster-counts request whose
-    # tab closed. Every later caller's claim matches nothing, so a notification
-    # lost there is lost for the whole episode.
     _clear()
     acc = IDS["creator_a"]
     real = notifications_api.notify_session_dead
@@ -481,7 +437,6 @@ def case_a_caller_cancelled_after_its_claim_still_notifies_the_owner():
         asyncio.run(account_health.clear_session_dead(acc))
 
 
-# ── The clock-in sweep ─────────────────────────────────────────────────────
 
 def case_the_sweep_files_a_missed_clock_in_once_and_skips_who_clocked_or_may_not():
     _clear()
@@ -493,7 +448,7 @@ def case_the_sweep_files_a_missed_clock_in_once_and_skips_who_clocked_or_may_not
     running = _shift(now - timedelta(minutes=30), now + timedelta(hours=1),
                      [(late, acc), (clocked, acc), (unroled, acc)])
     _shift(now - timedelta(minutes=5), now + timedelta(hours=1), [(early, acc)])
-    _shift(now - timedelta(hours=3), now - timedelta(hours=2), [(late, acc)])  # over: not missed now
+    _shift(now - timedelta(hours=3), now - timedelta(hours=2), [(late, acc)])
     _event(clocked, now - timedelta(minutes=40))
     try:
         assert asyncio.run(notifications_api.tick(now)) == 1
@@ -501,8 +456,6 @@ def case_the_sweep_files_a_missed_clock_in_once_and_skips_who_clocked_or_may_not
         rows = _rows(A, "clock_in_missed")
         assert [(r.employee_id, notifications_api._row(r)["data"]["shift_id"]) for r in rows] == [(late, running)]
         assert rows[0].text.startswith("Late has not clocked in for the "), rows[0].text
-        # A daily Shift that began yesterday runs again now, except on a
-        # cancelled local date; one in an unknown zone is skipped, not fatal.
         daily, cancelled, broken = (_employee(n) for n in ("Daily", "Cancelled", "Broken"))
         everyone = (late, clocked, early, daily, cancelled, broken)
         fx.store_blob(A, "roles", {"assignments": {str(e): "chatter" for e in everyone}})
@@ -514,7 +467,6 @@ def case_the_sweep_files_a_missed_clock_in_once_and_skips_who_clocked_or_may_not
         _edit_shift(_shift(now - timedelta(minutes=30), now + timedelta(hours=1), [(broken, acc)]), tz="Not/AZone")
         assert asyncio.run(notifications_api.tick(now)) == 1
         assert [r.employee_id for r in _rows(A, "clock_in_missed")] == [late, daily]
-        # Time tracking off: nothing to miss.
         _time_tracking(OWNER_A, {"enabled": False})
         _clear()
         assert asyncio.run(notifications_api.tick(now)) == 0
@@ -547,11 +499,8 @@ def case_the_sweep_drops_rows_past_retention():
 
 
 def case_the_sweep_pushes_unread_once_to_each_agency_it_pruned_unread_rows_of():
-    """(agency, days old, read) rows: A loses an unread row (one push, its
-    post-prune unread), B only a read one (no push); a sweep with nothing
-    left to prune pushes nothing."""
     _clear()
-    now = datetime(2026, 6, 1)  # before every fixture Shift: the sweep files nothing
+    now = datetime(2026, 6, 1)
     table = ((A, 91, False), (A, 92, True), (A, 1, False), (B, 91, True), (B, 1, False))
 
     async def _seed():
@@ -575,7 +524,6 @@ def case_the_sweep_pushes_unread_once_to_each_agency_it_pruned_unread_rows_of():
     assert [r.text for r in _rows(A)] == ["1d"] and [r.text for r in _rows(B)] == ["1d"]
 
 
-# ── Audit log: names and dates (6.16) ──────────────────────────────────────
 
 def case_action_label_names_known_actions_and_leaves_the_rest():
     label = audit_labels.action_label
@@ -609,16 +557,12 @@ def case_the_audit_log_filters_by_from_and_to_and_labels_rows():
     assert [a for a, _ in got(to="2026-03-02")] == ["clock.in", "DELETE /admin/employees/1"], "a date-only `to` includes its day"
     assert [a for a, _ in got(**{"from": "2026-03-02T00:00:00Z", "to": "2026-03-02T12:00:00Z"})] == []
     assert [a for a, _ in got(**{"from": "2026-03-02T13:00:00+02:00", "to": "2026-03-03T00:00:00Z"})] == ["clock.in"]
-    # The UI sends Date.toISOString() bounds (milliseconds, Z).
     assert [a for a, _ in got(**{"from": "2026-03-02T11:00:00.000Z", "to": "2026-03-03T00:00:00.000Z"})] == ["clock.in"]
     assert OWNER_A.get("/admin/audit", params={"from": "yesterday"}).status_code == 422
-    # The filter never widens the owner's scope: B sees none of A's rows.
     assert OWNER_B.get("/admin/audit", params={"employee_id": emp, "from": "2026-01-01"}).json()["actions"] == []
 
 
 def case_the_audit_log_hides_the_apps_background_writes_unless_asked():
-    """Perf-log flushes and error reports stay recorded but out of the default list, in SQL, so a page of 2 is
-    2 real actions; include_background=true shows them again."""
     emp = _employee("Backgrounder")
 
     async def _seed():

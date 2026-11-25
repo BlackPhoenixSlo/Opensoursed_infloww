@@ -1,32 +1,3 @@
-"""service/s4s_media.py — S4S media: up to 5 vault items per S4S post, kept as
-references to the Creator's own vault, never as files (ADR-0015).
-
-  PUT /admin/s4s/profiles/{account_id}/posts/{post_id}/media
-      {vault_media_ids: [<= 5 ids]} → the post's media, in this order.
-      Owner-only, the Creator's own Agency. Each newly named id is read with
-      the Creator's own OnlyFans session (`vault_media_by_id`, which proves it
-      is this Creator's vault item and one we can share); only its id and kind
-      are stored. An id no longer named is detached.
-  GET /admin/s4s/media/{media_id}
-      → a still of the item, read live from the Creator's vault with the
-      Creator's own session. For the Creator's own Agency; for any Agency the
-      Creator is listed to in Discovery while the item is on its Primary post
-      (`listed_to`), so a partner sees the post before it sends a request;
-      and for an Agency whose Creator is a party to a live request (pending,
-      or accepted) that snapshotted it, so each side sees what will be posted
-      before Accept. 404 to everyone else, a declined or expired request
-      included, and once the item has left the vault.
-
-At send, a request snapshots the media ids on each Primary post
-(`snapshot`). At slot time `s4s_post` reads each of the partner's snapshot
-items from the partner's vault with the partner's session (`fetch_to`, into
-a temporary directory removed after the post) and uploads it to the poster's
-own account. An item gone from the vault ends the slot `media_missing`.
-`prune` deletes a row once it is detached and no live request or slot names it.
-
-Limits: 5 per post (Infloww @13802032). Photos, GIFs and non-DRM videos only.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -52,11 +23,7 @@ log = logging.getLogger("of-relay.s4s_media")
 router = APIRouter(prefix="/admin/s4s", tags=["s4s"])
 
 MAX_MEDIA = 5
-# Request statuses whose snapshot a party may still preview ("skipped" is
-# the sender's pending). Declined, cancelled and expired grant nothing.
 LIVE = ("pending", "skipped", "accepted")
-# The file keeps its URL's extension when it is one of these (upload_media
-# names the upload after the file), else the kind's default.
 _EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".mov"}
 _DEFAULT_EXT = {"photo": ".jpg", "gif": ".mp4", "video": ".mp4"}
 
@@ -64,16 +31,14 @@ _save_locks: dict[str, asyncio.Lock] = {}
 
 
 class MediaMissing(Exception):
-    """A slot's snapshot names an item that is gone (its row, or the vault item itself)."""
+    pass
 
 
 def _ids(raw: str | None) -> list[int]:
-    """The media ids of a request's stored snapshot."""
     return [int(m["id"]) for m in json.loads(raw)] if raw else []
 
 
 def slot_media_ids(r: S4SRequest, slot: S4SSlot) -> list[int]:
-    """The snapshot ids this slot's poster posts: the partner's side of the request."""
     return _ids(r.from_media_json if slot.poster_account_id == r.to_account_id else r.to_media_json)
 
 
@@ -82,7 +47,6 @@ def _out(row: S4SMedia) -> dict[str, Any]:
 
 
 async def post_media(s, post_ids) -> dict[int, list[dict[str, Any]]]:
-    """Each post's attached media, oldest first (the order they were added)."""
     rows = (await s.execute(
         select(S4SMedia).where(S4SMedia.post_id.in_(list(post_ids))).order_by(S4SMedia.id)
     )).scalars().all()
@@ -93,8 +57,6 @@ async def post_media(s, post_ids) -> dict[int, list[dict[str, Any]]]:
 
 
 async def snapshot(s, account_id: str) -> list[dict[str, Any]]:
-    """`{id, media_type}` of each media on the Creator's Primary post now:
-    what a request stores at send."""
     return [{"id": i, "media_type": t} for i, t in (await s.execute(
         select(S4SMedia.id, S4SMedia.media_type)
         .join(S4SPost, S4SPost.id == S4SMedia.post_id)
@@ -104,8 +66,6 @@ async def snapshot(s, account_id: str) -> list[dict[str, Any]]:
 
 
 async def slot_vault_ids(s, slot: S4SSlot) -> list[int]:
-    """The partner's vault media ids for this slot, in snapshot order. Every
-    row must be the slot's partner's own; a missing row raises MediaMissing."""
     ids = slot_media_ids(await s.get(S4SRequest, slot.request_id), slot)
     if not ids:
         return []
@@ -119,13 +79,9 @@ async def slot_vault_ids(s, slot: S4SSlot) -> list[int]:
     return out
 
 
-# ── Cleanup ──────────────────────────────────────────────────────────
 
 
 async def _pinned(s, now: datetime) -> set[int]:
-    """Media ids a live request or slot still needs: an open request whose
-    time is ahead (lazy expiry may not have written it yet), or an accepted
-    one whose slots are not all done."""
     live_slots = select(S4SSlot.request_id).where(S4SSlot.status.in_(("scheduled", "posting")))
     rows = (await s.execute(
         select(S4SRequest.from_media_json, S4SRequest.to_media_json).where(
@@ -138,13 +94,6 @@ async def _pinned(s, now: datetime) -> set[int]:
 
 
 async def prune() -> int:
-    """Delete detached rows no live request or slot names. Returns rows deleted.
-
-    ASSUMPTION: prune runs after every media save, S4S post delete and
-    `s4s_post` end, not on a timer. Rung 4 (each of those is when a row can
-    stop being needed). Overturned by a Deployment that wants detached rows
-    gone without S4S activity.
-    """
     async with get_session() as s:
         pinned = await _pinned(s, datetime.utcnow())
         gone = [i for i in (await s.execute(select(S4SMedia.id).where(S4SMedia.post_id.is_(None)))).scalars().all()
@@ -154,12 +103,10 @@ async def prune() -> int:
     return len(gone)
 
 
-# ── Vault reads ──────────────────────────────────────────────────────
 
 
 def _of_url(url: str | None) -> str | None:
-    """`url` when it is an https URL on OF's own media hosts, else None.
-    No userinfo, port or backslash: urllib and libcurl must read the same host."""
+    # No userinfo, port or backslash: urllib and libcurl must read the same host.
     from of_client import OF_CDN_SUFFIXES
 
     if not url:
@@ -173,7 +120,6 @@ def _of_url(url: str | None) -> str | None:
 
 
 def _source(item: dict) -> tuple[str, str]:
-    """(url, media_type) of a vault item we can share, or a 400 why not."""
     kind = item.get("type")
     files = item.get("files") or {}
     full = files.get("full") or {}
@@ -194,7 +140,6 @@ def _source(item: dict) -> tuple[str, str]:
 
 
 def _vault_item(client, vid: int) -> dict:
-    """The vault item, or MediaMissing once OF no longer has it."""
     from of_client import OFAPIError
 
     try:
@@ -205,8 +150,6 @@ def _vault_item(client, vid: int) -> dict:
 
 
 def _check(account_id: str, vault_ids: list[int]) -> list[dict[str, Any]]:
-    """Read each vault item with the Creator's own session: `{vault_media_id,
-    media_type}` of each, or a 400 naming the first that cannot be shared."""
     client = ax._make_client(account_id)
     out = []
     for vid in vault_ids:
@@ -219,9 +162,6 @@ def _check(account_id: str, vault_ids: list[int]) -> list[dict[str, Any]]:
 
 
 def fetch_to(account_id: str, vault_id: int, folder: Path) -> Path:
-    """Stream one of the Creator's vault items into `folder` with the
-    Creator's own session, for an upload elsewhere. MediaMissing when the
-    item is gone or can no longer be shared; any other failure raises."""
     client = ax._make_client(account_id)
     try:
         url, kind = _source(_vault_item(client, vault_id))
@@ -245,8 +185,6 @@ def fetch_to(account_id: str, vault_id: int, folder: Path) -> Path:
 
 
 def _still(account_id: str, vault_id: int) -> tuple[bytes, str] | None:
-    """(bytes, content type) of a still of the vault item, read now with the
-    Creator's own session; None when the item or its still is gone."""
     client = ax._make_client(account_id)
     try:
         item = _vault_item(client, vault_id)
@@ -265,7 +203,6 @@ def _still(account_id: str, vault_id: int) -> tuple[bytes, str] | None:
     return r.content, (r.headers.get("content-type") or "image/jpeg")
 
 
-# ── Save ─────────────────────────────────────────────────────────────
 
 
 def _parse(body: dict[str, Any]) -> list[int]:
@@ -290,8 +227,7 @@ async def _own_post(s, account_id: str, raw_id: str) -> S4SPost:
     return post
 
 
-# The ids are strings parsed in the handler: a typed path parameter would let
-# FastAPI answer 422 before the 401/403 session checks run.
+# Ids are parsed in the handler: a typed path param would 422 before the 401/403 session checks.
 @router.put("/profiles/{account_id}/posts/{post_id}/media")
 async def put_post_media(account_id: str, post_id: str, request: Request) -> list[dict[str, Any]]:
     """Set the post's media to these vault items, in this order.
@@ -310,7 +246,7 @@ async def put_post_media(account_id: str, post_id: str, request: Request) -> lis
                 select(S4SMedia).where(S4SMedia.post_id == post.id))).scalars().all()}
         new = await asyncio.to_thread(_check, account_id, [i for i in ids if i not in have])
         async with get_session() as s:
-            post = await _own_post(s, account_id, post_id)  # deleted meanwhile → 404
+            post = await _own_post(s, account_id, post_id)
             await s.execute(update(S4SMedia).where(S4SMedia.post_id == post.id,
                                                    S4SMedia.vault_media_id.not_in(ids)).values(post_id=None))
             s.add_all(S4SMedia(account_id=account_id, post_id=post.id, created_at=datetime.utcnow(), **n)
@@ -321,7 +257,6 @@ async def put_post_media(account_id: str, post_id: str, request: Request) -> lis
     return media
 
 
-# ── Read ─────────────────────────────────────────────────────────────
 
 
 @router.get("/media/{media_id}")

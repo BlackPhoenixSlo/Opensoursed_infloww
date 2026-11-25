@@ -1,19 +1,3 @@
-"""vault_ai_mirror — whole-vault local mirror + describe/ordering columns
-
-Revision ID: 0046_vault_ai_mirror
-Revises: 0045_safe_state
-Create Date: 2026-07-20
-
-Revives the dead `vault_items` table as the durable per-account vault mirror:
-adds the cache bookkeeping (search_text, of_folder_ids, content_hash,
-last_seen_run_id, updated_at), the per-folder manual-order index, and the
-Qwen3-VL describe layer (description/tags/tier/flags/caption/script + status +
-audit + operator overrides/locks). Adds `vault_cache_runs` to drive the
-"Collect all" progress + the two-clean-sweep soft-delete guard.
-
-Additive + nullable + idempotent (inspector-guarded, house convention so a
-create_all-built DB whose alembic_version lags doesn't trip).
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -28,8 +12,6 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-# (name, type) — all nullable, so init_db's boot ADD-COLUMN catch-up can also
-# apply them on a lagging DB.
 _VAULT_ITEM_COLS: list[tuple[str, sa.types.TypeEngine]] = [
     ("search_text", sa.Text()),
     ("of_folder_ids", sa.Text()),

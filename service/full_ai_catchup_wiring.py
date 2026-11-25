@@ -1,7 +1,3 @@
-"""Relay start: every Creator already in Full AI Chat's Live Mode starts its waiting-chats catch-up
-(`automations.full_ai_catchup.boot`: after `BOOT_DELAY_S`, passes on config `catchup_minutes`, default 0/5/15, then every 15 min). A background loop
-starter (relay_hooks): server.py's event-pump startup calls it once, never in test mode.
-"""
 from __future__ import annotations
 
 from fastapi import FastAPI
@@ -11,7 +7,7 @@ import relay_hooks
 
 def _start() -> None:
     import relay_host
-    from automations import full_ai_catchup   # lazy: the automations import widely
+    from automations import full_ai_catchup
     relay_host.spawn_bg(full_ai_catchup.boot(), "full-ai-catchup-boot")
 
 

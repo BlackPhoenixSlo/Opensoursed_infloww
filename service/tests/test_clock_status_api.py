@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""The top bar's clock on the Relay (w4-a, amending docs/spec/phase-02):
-clock-in without a Creator, who may clock (`role_ids`), owners clocking as
-their own row, GET /clock-status, POST /clock-heartbeat, the clock-records
-read GET /clock-events, and the `last_seen_utc` column's migration and
-init_db() catch-up.
-
-The seam is the Relay over HTTP with real session cookies from the shared
-two-Agency fixture, as in test_clock_api.py (whose sweep and Owner edit
-cases this file does not repeat). Clocking happens at the server's "now";
-past events are seeded straight into the temp DB through _clock_fixtures.py,
-so no clock is mocked. Each case has its own chatters, so one open Clock
-event never leaks into another case.
-
-Run: ./venv/bin/python service/tests/test_clock_status_api.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 _harness.bootstrap()
 
@@ -45,9 +30,6 @@ from employees import get_or_create_mirror_employee  # noqa: E402
 
 ROLE_OFF = {"detail": {"error": "role_not_enabled", "message": "clock in is not enabled for your role"}}
 
-# ASSUMPTION: this file seeds its own second Creator of Agency A and its own
-# chatters, as test_clock_api.py does (same ids: each suite has its own temp
-# DB). Rung 3. Overturned when two files need the same rows and drift.
 CREATOR_A2 = "1000013"
 
 _CHATTERS = ("st_free", "st_attach", "st_role", "st_norole", "st_status", "st_idle", "st_beat", "st_late",
@@ -68,7 +50,6 @@ async def _seed() -> dict[str, int]:
         s.add(UserAccount(user_id=IDS["agency_a_owner"], account_id=CREATOR_A2))
         for name in _CHATTERS:
             s.add(ChatterUser(chatter_id=ids[name], user_id=IDS["agency_a_owner"], created_at=now))
-        # Two Shifts on one Creator may overlap here (test_shifts_api.py tests the rule).
         s.add(SettingsVersion(user_id=IDS["agency_a_owner"], tab="sales", effective_from=SETTINGS_EPOCH,
                               config_json='{"multi_employee_shift": true}'))
     return {name: await get_or_create_mirror_employee(ids[name], IDS["agency_a_owner"],
@@ -85,9 +66,6 @@ async def _ab_mirrors() -> dict[str, int]:
             for owner in ("agency_a_owner", "agency_b_owner")}
 
 
-# Since w5-a nobody clocks until "Enable clock in and clock out for" is saved (Infloww's never-saved list is all
-# unticked; case_role_ids_decide_who_may_clock... tests it), so the other cases tick the built-in Chatter, which
-# every chatter here holds but st_norole.
 ON = {**NEVER_SAVED, "role_ids": ["chatter"]}
 _AB = asyncio.run(_ab_mirrors())
 BASE_A = {str(e): "chatter" for name, e in MIRROR.items() if name != "st_norole"} | {str(_AB["agency_a_owner"]): "chatter"}
@@ -122,8 +100,6 @@ def _roles(client, assignments: dict[int, str]) -> None:
             "assignments": BASE_A | {str(emp): role for emp, role in assignments.items()}}
     r = client.put("/admin/settings/roles", json=body)
     assert r.status_code == 200, f"PUT roles: {r.status_code} {r.text}"
-    # The PUT gives every login it left unassigned the built-in Chatter; st_norole stands for a login stored
-    # with no role before that, so its assignment is taken back out of the stored blob.
     saved = r.json()["config"]
     fx.store_blob(IDS["agency_a_owner"], "roles", {**saved, "assignments": {
         k: v for k, v in saved["assignments"].items() if k != str(MIRROR["st_norole"])}})
@@ -153,15 +129,12 @@ def case_clock_in_without_a_creator_files_the_agency_wide_clock_and_links_a_shif
     assert ev["account_id"] is None and ev["shift_id"] is None and ev["employee_id"] == MIRROR["st_free"], ev
     assert _row(ev["clock_event_id"]).account_id is None
     _clock_out(free, ev["clock_event_id"])
-    # An old client naming the Creator still files it.
     ev = _clock_in(free, account_id=IDS["creator_a"]).json()
     assert ev["account_id"] == IDS["creator_a"], ev
     _clock_out(free, ev["clock_event_id"])
     r = _clock_in(free, account_id="")
     assert r.status_code == 422, f"empty account_id: {r.status_code} {r.text}"
 
-    # The agency-wide clock links the assigned occurrence on any Creator,
-    # earliest start first.
     emp = MIRROR["st_attach"]
     late = _create(owner_a, **_around_now(1, 1), employee_ids=[emp], account_ids=[CREATOR_A2])["shift_id"]
     early = _create(owner_a, **_around_now(2, 1), employee_ids=[emp], account_ids=[CREATOR_A2])["shift_id"]
@@ -174,7 +147,6 @@ def case_clock_in_without_a_creator_files_the_agency_wide_clock_and_links_a_shif
     assert ev["shift_id"] == late, ev
     _clock_out(attach, ev["clock_event_id"])
 
-    # A chatter in two Agencies must still name a Creator.
     _time_tracking(fx.login_owner("agency_b_owner"), ON)
     ab = fx.login_chatter("chatter_ab")
     r = _clock_in(ab)
@@ -187,7 +159,6 @@ def case_role_ids_decide_who_may_clock_and_an_owner_clocks_as_its_own_row():
     _roles(owner_a, {MIRROR["st_role"]: "role-chat"})
     role, norole = fx.login_chatter("st_role"), fx.login_chatter("st_norole")
 
-    # Never saved: nobody clocks, as Infloww's list starts all unticked (w5-a).
     _time_tracking(owner_a, NEVER_SAVED)
     for client in (role, norole):
         assert (_status(client)["can_clock"], _status(client)["reason"]) == (False, "role_not_enabled")
@@ -197,12 +168,10 @@ def case_role_ids_decide_who_may_clock_and_an_owner_clocks_as_its_own_row():
         "can_clock": False, "reason": "role_not_enabled", "open": None, "last_closed": None,
         "auto_clock_out_minutes": 60, "server_now": None}
 
-    # A built-in role (Chatter) is assignable and tickable like any other.
     _time_tracking(owner_a, ON)
     _clock_out(free_chatter := fx.login_chatter("st_free"), _clock_in(free_chatter).json()["clock_event_id"])
     assert _clock_in(norole).json() == ROLE_OFF
 
-    # Saved: only the ticked roles; an Employee with no role is refused.
     _time_tracking(owner_a, {**ON, "role_ids": ["role-chat", "gone-role"]})
     _clock_out(role, _clock_in(role).json()["clock_event_id"])
     r = _clock_in(norole)
@@ -210,7 +179,6 @@ def case_role_ids_decide_who_may_clock_and_an_owner_clocks_as_its_own_row():
     assert (_status(norole)["can_clock"], _status(norole)["reason"]) == (False, "role_not_enabled")
     assert _clock_in(owner_a).json() == ROLE_OFF
 
-    # Owner ticked: the owner clocks as its own row, without a Creator.
     _time_tracking(owner_a, {**ON, "role_ids": ["owner"]})
     r = _clock_in(role)
     assert r.status_code == 403 and r.json() == ROLE_OFF, f"role unticked: {r.status_code} {r.text}"
@@ -227,16 +195,13 @@ def case_role_ids_decide_who_may_clock_and_an_owner_clocks_as_its_own_row():
     assert ev["clock_event_id"] in {r["clock_event_id"] for r in listed}, listed
     r = _clock_in(owner_a, account_id=IDS["creator_b"])
     assert r.status_code in (403, 422), f"another Agency's Creator: {r.status_code} {r.text}"
-    # Another Agency's owner cannot close it.
     r = fx.login_owner("agency_b_owner").post("/admin/shifts/clock-out", json={"clock_event_id": ev["clock_event_id"]})
     assert r.status_code == 404, f"B closes A's owner event: {r.status_code} {r.text}"
-    # Unticking Owner while clocked in still lets it clock out.
     _time_tracking(owner_a, {**ON, "role_ids": []})
     assert _clock_out(owner_a, ev["clock_event_id"])["close_reason"] == "manual"
     last = _status(owner_a)["last_closed"]
     assert last["clock_event_id"] == ev["clock_event_id"] and last["close_reason"] == "manual", last
 
-    # The Master clocks as its own row in its own Agency.
     master = fx.login_owner("agency_master")
     _time_tracking(master, {**ON, "role_ids": ["owner"]})
     ev = _clock_in(master).json()
@@ -267,7 +232,6 @@ def case_clock_status_names_why_it_cannot_clock_and_a_two_agency_chatter_picks_a
     finally:
         asyncio.run(_deactivate(True))
 
-    # Two Agencies: pick a Creator while either allows; `open` in any Agency.
     ab = fx.login_chatter("chatter_ab")
     _time_tracking(owner_a, {**ON, "enabled": False})
     _time_tracking(owner_b, {**ON, "enabled": False})
@@ -286,7 +250,7 @@ def case_the_heartbeat_marks_the_open_event_seen_and_after_its_deadline_reports_
     owner_a = fx.login_owner("agency_a_owner")
     _time_tracking(owner_a, {**ON, "auto_clock_out_minutes": 10})
     idle = fx.login_chatter("st_idle")
-    assert _status(idle, heartbeat=True)["open"] is None  # nothing open: a no-op
+    assert _status(idle, heartbeat=True)["open"] is None
 
     beat = fx.login_chatter("st_beat")
     now = _utc_now()
@@ -300,7 +264,6 @@ def case_the_heartbeat_marks_the_open_event_seen_and_after_its_deadline_reports_
     assert seen is not None and abs((seen - datetime.utcnow()).total_seconds()) < 5, seen
     _clock_out(beat, ev_id)
 
-    # A heartbeat after the deadline finds the event already swept.
     late = fx.login_chatter("st_late")
     ev_id = _event(MIRROR["st_late"], now - timedelta(minutes=30))
     body = _status(late, heartbeat=True)
@@ -317,10 +280,6 @@ async def _actions_of(employee_id: int) -> list[str]:
 
 
 def case_the_apps_background_writes_do_not_keep_an_idle_event_open():
-    """A perf-log flush and an error report sent in one Creator's scope (the
-    app's `X-Account-Id`) are audited under the chatter's Mirror Employee (the
-    audit middleware), yet the sweep closes the idle event at its clock-in
-    plus the minutes, not at those writes."""
     owner_a = fx.login_owner("agency_a_owner")
     _time_tracking(owner_a, {**ON, "auto_clock_out_minutes": 10})
     chatter = fx.login_chatter("st_background")
@@ -347,7 +306,6 @@ def case_the_clock_in_reminder_follows_the_role_gate():
     chatter = fx.login_chatter("st_remind")
     _time_tracking(owner_a, {**ON, "clock_in_reminder": True})
     assert chatter.get("/admin/shifts/me").json()["reminder"] is not None
-    # Its role (Chatter) is not ticked: no reminder to a clock-in it would be refused.
     _time_tracking(owner_a, {**ON, "clock_in_reminder": True, "role_ids": ["owner"]})
     assert chatter.get("/admin/shifts/me").json()["reminder"] is None
     _time_tracking(owner_a, ON)
@@ -364,10 +322,10 @@ def case_clock_records_list_one_employees_events_newest_first_for_owners_only():
     emp = _employee("records")
     now = _utc_now()
     t0 = now - timedelta(days=2)
-    older = _event(emp, t0, t0 + timedelta(minutes=60, seconds=1))  # rounds up to 61
+    older = _event(emp, t0, t0 + timedelta(minutes=60, seconds=1))
     newer = _event(emp, t0 + timedelta(hours=3), t0 + timedelta(hours=4), account_id=CREATOR_A2)
-    _event(emp, t0 - timedelta(days=5), t0 - timedelta(days=5) + timedelta(hours=1))  # before the range
-    swept = _event(emp, now - timedelta(hours=5), None)  # no activity: auto at +60
+    _event(emp, t0 - timedelta(days=5), t0 - timedelta(days=5) + timedelta(hours=1))
+    swept = _event(emp, now - timedelta(hours=5), None)
     edited = _event(emp, now - timedelta(hours=26), now - timedelta(hours=25))
     r = owner_a.patch(f"/admin/shifts/clock-events/{edited}", json={"in_utc": _z(now - timedelta(hours=26, minutes=30))})
     assert r.status_code == 200, f"edit: {r.status_code} {r.text}"
@@ -385,7 +343,6 @@ def case_clock_records_list_one_employees_events_newest_first_for_owners_only():
     assert (by_id[newer]["account_id"], by_id[newer]["minutes"]) == (CREATOR_A2, 60), by_id[newer]
     assert (by_id[swept]["close_reason"], by_id[swept]["minutes"], by_id[swept]["edited"]) == ("auto", 60, False)
     assert (by_id[edited]["minutes"], by_id[edited]["edited"]) == (90, True), by_id[edited]
-    # An open event has no minutes; an event straddling `from` is listed.
     open_id = _event(emp, now - timedelta(minutes=2))
     rows = _records(owner_a, emp, now - timedelta(minutes=1), now + timedelta(hours=1)).json()["clock_events"]
     assert [(x["clock_event_id"], x["minutes"], x["out_utc"]) for x in rows] == [(open_id, None, None)], rows
@@ -407,7 +364,6 @@ def case_clock_records_list_one_employees_events_newest_first_for_owners_only():
     _time_tracking(owner_a, ON)
 
 
-# ── Storage: the `last_seen_utc` column ──────────────────────────────
 
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "db" / "migrations" / "versions"
 
@@ -448,7 +404,7 @@ def case_migration_upgrade_and_downgrade_on_a_fresh_temp_file():
                     step()
 
         for step, want in ((mod.upgrade, True), (mod.upgrade, True), (mod.downgrade, False), (mod.downgrade, False)):
-            _run(step)  # each twice: idempotent, house convention
+            _run(step)
             conn = sqlite3.connect(path)
             try:
                 assert ("last_seen_utc" in _columns(conn)) is want, f"{step.__name__}: {_columns(conn)}"
@@ -476,7 +432,6 @@ def case_init_db_brings_the_dropped_column_back():
         assert "last_seen_utc" in _columns(conn), f"init_db() did not add it back: {_columns(conn)}"
     finally:
         conn.close()
-    # The heartbeat works on the rebuilt column.
     _time_tracking(fx.login_owner("agency_a_owner"), ON)
     beat = fx.login_chatter("st_beat")
     ev_id = _event(MIRROR["st_beat"], _utc_now() - timedelta(minutes=1))

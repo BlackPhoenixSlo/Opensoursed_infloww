@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_config_chat — Full AI Test chat: checkpoint and draft (phase 03a, ticket 37; split
-from test_full_ai_test_chat.py).
-
-Shared setup (seeded Agencies, owner clients, `_guarded`, `_post`, the Writer fakes) is
-`_full_ai_chat_helpers.py`; every Turn runs inside `_guarded` as in test_full_ai_test_chat.py.
-
-  case_draft_turn_after_put_carries_its_rev
-  case_draft_follows_its_side_only
-
-Run: ./venv/bin/python service/tests/test_full_ai_config_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_fixtures import GIF_FITS
 from _full_ai_chat_helpers import (
@@ -23,13 +12,11 @@ from automations import full_ai_test
 from automations.full_ai_config import DEFAULTS
 
 
-# ── Checkpoint and draft (ticket 37) ──────────────────────────────────
 
 CONFIG = "/admin/full-ai/config"
 
 
 def _put_draft(draft: dict) -> int:
-    """`draft` stored as Creator A's draft through the config API, as the page stores it; the new rev."""
     rev = OWNER_A.get(CONFIG, params={"account_id": A}).json()["rev"]
     r = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": draft, "rev": rev})
     assert r.status_code == 200, r.text
@@ -56,7 +43,6 @@ def case_draft_turn_after_put_carries_its_rev():
 
 def case_draft_follows_its_side_only():
     try:
-        # text_style formal: the draft's parts are the formal chain's, the checkpoint's the girl's.
         pair, his = "p-cfg-style", "so what are you up to"
         raw = "omg hii. i was literally just thinking about u. what are u up to tonight? tell me everything"
         _put_draft({**DEFAULTS, "text_style": "formal"})
@@ -66,7 +52,6 @@ def case_draft_follows_its_side_only():
         assert ck.json()["parts"] == _direct(raw, fid, his, girl=True), ck.json()["parts"]
         assert dr.json()["parts"] == _direct(raw, fid, his, girl=False), dr.json()["parts"]
         assert ck.json()["parts"] != dr.json()["parts"]
-        # gifs on in the draft only: the same STICKER reply carries a gif part there alone.
         pair = "p-cfg-gif"
         _put_draft({**DEFAULTS, "gifs": True})
         line = f"ok:omg ur funny\nSTICKER: {_GIF_TAG}"
@@ -75,7 +60,6 @@ def case_draft_follows_its_side_only():
         assert ck.json()["parts"] and all(set(p) == {"text"} for p in ck.json()["parts"]), ck.json()
         assert set(dr.json()["parts"][-1]) == {"gif", "tag"}, dr.json()["parts"]
         assert dr.json()["parts"][-1]["tag"] == _GIF_TAG, dr.json()["parts"]
-        # reply_speed "0-15-60" in the draft: its wait in that preset's 0-60 min, the checkpoint's in 0-2 min.
         pair = "p-cfg-speed"
         _put_draft({**DEFAULTS, "reply_speed": "0-15-60"})
         ck, *_ = _post(OWNER_A, _body(pair), "ok:mm hey")

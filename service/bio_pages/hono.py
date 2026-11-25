@@ -1,13 +1,10 @@
-"""Hono/WHATWG request target normalization used by the bio port."""
 from __future__ import annotations
 
 import re
 
 _HEX = frozenset("0123456789abcdefABCDEF")
 
-# ── §1.1 request normalisation ──────────────────────────────────────────
 
-# WHATWG's path percent-encode set (C0 controls and everything above `~` are added in `_encode_char`).
 _PATH_ENCODE = frozenset(' "#<>?`{}')
 _SINGLE_DOT = frozenset((".", "%2e"))
 _DOUBLE_DOT = frozenset(("..", ".%2e", "%2e.", "%2e%2e"))
@@ -20,9 +17,6 @@ def _encode_char(ch: str) -> str:
 
 
 def url_path(raw_path: bytes) -> str:
-    """The WHATWG pathname of the request target, as @hono/node-server builds `c.req.url` (index.mjs:168-182): `\\`
-    is `/`, `.`/`%2e` segments dropped, `..` pops one, the path percent-encode set and every byte >= 0x80 encoded (Node
-    reads the target as latin-1), an existing `%XX` kept."""
     s = raw_path.decode("latin-1").replace("\t", "").replace("\n", "").replace("\r", "")
     if s[:1] in ("/", "\\"):
         s = s[1:]
@@ -36,7 +30,6 @@ def url_path(raw_path: bytes) -> str:
         if low in _SINGLE_DOT:
             continue
         out.append("".join(map(_encode_char, seg)))
-    # A trailing dot segment leaves an empty last segment (WHATWG: `/a/..` is `/`, `/a/.` is `/a/`).
     if re.split(r"[/\\]", s)[-1].lower() in _SINGLE_DOT | _DOUBLE_DOT:
         out.append("")
     return "/" + "/".join(out) if out else "/"
@@ -46,7 +39,6 @@ _URI_RESERVED = ";/?:@&=+$,#"
 
 
 def decode(s: str, reserved: str) -> str:
-    """JS decodeURI (reserved = `;/?:@&=+$,#`) / decodeURIComponent (reserved = ""): ValueError where JS throws."""
     out: list[str] = []
     i, n = 0, len(s)
     while i < n:
@@ -81,13 +73,13 @@ def decode(s: str, reserved: str) -> str:
                 raise ValueError("malformed")
             seq.append(nb)
             j += 3
-        out.append(bytes(seq).decode("utf-8"))  # strict: overlong, surrogate, > U+10FFFF raise as in JS
+        # strict: overlong, surrogate, > U+10FFFF raise as in JS
+        out.append(bytes(seq).decode("utf-8"))
         i = j
     return "".join(out)
 
 
 def _trydecode(s: str, reserved: str) -> str:
-    """Hono's tryDecode (utils/url.js:61-71): decode, else decode each `%XX` run alone and keep the runs that fail."""
     try:
         return decode(s, reserved)
     except ValueError:
@@ -100,14 +92,12 @@ def _trydecode(s: str, reserved: str) -> str:
 
 
 def route_path(path: str) -> str:
-    """Hono's getPath (utils/url.js:84-95) of `url_path`: `%25` doubled, then tryDecodeURI."""
     if "%" not in path:
         return path
     return _trydecode(path.replace("%25", "%2525"), _URI_RESERVED)
 
 
 def param(segment: str) -> str:
-    """A path parameter: Hono's tryDecodeURIComponent of the raw route-path segment (utils/url.js:147)."""
     return _trydecode(segment, "") if "%" in segment else segment
 
 

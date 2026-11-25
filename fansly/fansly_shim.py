@@ -89,31 +89,45 @@ _UPLOAD_HASH_CHUNK = 1024 * 1024
 # This decorator is the middle path. It marks the method as INTENTIONALLY empty,
 # carries the reason in the code, logs once per process (not once per call — an
 # automation loop would flood the log), and is machine-readable, so
-# test_fansly_capability.py can tell "deliberately unsupported" apart from
+# the Capability test can tell "deliberately unsupported" apart from
 # "someone forgot". Never delete the marker to "clean up" a method; if Fansly
 # grows the feature, replace the whole decorator with the real implementation.
 _UNSUPPORTED_LOGGED: set[str] = set()
+_RAISE = object()
 
 
-def fansly_unsupported(reason: str, returns: Any = None):
+class FanslyUnsupported(FanslyAPIError):
+    status_code = 501
+
+
+class FanslyBlocked(FanslyAPIError):
+    status_code = 501
+
+
+_BROADCAST_UNCONFIRMED = "broadcast shape is bundle-derived; sends only with confirm_live_broadcast"
+
+
+def fansly_unsupported(reason: str, returns: Any = _RAISE):
     """Mark a method as a permanent no-op because Fansly lacks the feature.
 
-    `returns` is the OF-shaped empty value the caller expects — a callable is
-    invoked per call so mutable defaults ({} / []) are never shared between
-    callers, which would let one plugin mutate another's "empty" result."""
+    Without `returns` the call raises FanslyUnsupported (501). A callable
+    `returns` is invoked per call so mutable defaults ({} / []) are never
+    shared between callers."""
     def decorate(fn):
         @_functools.wraps(fn)
         def wrapper(*_args: Any, **_kwargs: Any) -> Any:
             if fn.__name__ not in _UNSUPPORTED_LOGGED:
                 _UNSUPPORTED_LOGGED.add(fn.__name__)
                 log.info("fansly: %s is a no-op — %s", fn.__name__, reason)
+            if returns is _RAISE:
+                raise FanslyUnsupported(f"{fn.__name__}: {reason}")
             return returns() if callable(returns) else returns
         wrapper.fansly_unsupported = reason      # the machine-readable marker
         return wrapper
     return decorate
 
 
-def fansly_blocked(reason: str, returns: Any = None):
+def fansly_blocked(reason: str, returns: Any = _RAISE):
     """Mark a method Fansly PROBABLY supports but that we cannot ship yet.
 
     Distinct from fansly_unsupported, and the distinction is the point: an
@@ -126,9 +140,9 @@ def fansly_blocked(reason: str, returns: Any = None):
     blocked method left as a bare AttributeError takes down a live automation
     today, while one silently marked "unsupported" would never get finished.
 
-    So these return the caller's empty shape (the automation degrades to a
-    clean skip instead of crashing) and log a WARNING, not info — this one is
-    meant to be noticed and eventually removed."""
+    Without `returns` the call raises FanslyBlocked (501); with it, it returns
+    that shape. Either way it logs a WARNING, not info — this one is meant to
+    be noticed and eventually removed."""
     def decorate(fn):
         @_functools.wraps(fn)
         def wrapper(*_args: Any, **_kwargs: Any) -> Any:
@@ -136,6 +150,8 @@ def fansly_blocked(reason: str, returns: Any = None):
                 _UNSUPPORTED_LOGGED.add(fn.__name__)
                 log.warning("fansly: %s is not wired yet — %s",
                             fn.__name__, reason)
+            if returns is _RAISE:
+                raise FanslyBlocked(f"{fn.__name__}: {reason}")
             return returns() if callable(returns) else returns
         wrapper.fansly_blocked = reason
         return wrapper
@@ -2333,9 +2349,6 @@ class FanslyShimClient(VaultMixin, FanslyClient):
     # inherits. It needs only `_request` + `session`, so it splits off
     # cleanly and is testable against a fake client with no network.
 
-    def chat_media(self, chat_id: str | int | None = None, **_ignored: Any) -> dict:
-        return {"list": [], "hasMore": False}
-
     # OF's get_pinned_messages returns the ROWS, not an envelope (see
     # of_client) and callers iterate them — a {"list": []} here would hand
     # them the string "list" as a pinned message.
@@ -2374,9 +2387,6 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                         "entity": {"id": pid, "text": str(template.get("content") or "")}})
         out.sort(key=lambda i: i["publishDateTime"] or "")
         return {"list": out, "hasMore": False}
-
-    def scheduled_messages(self, **_ignored: Any) -> dict:
-        return {"list": [], "hasMore": False}
 
     # -- read state ---------------------------------------------------------
     # Fansly's read receipt is `POST /message/ack` (below). The relay clears
@@ -2496,7 +2506,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
     # `unreadCount: 0`, and `/message/unread.total` stays 0; a type-4 ack sent
     # from this shim changes nothing observable either. There is no
     # server-side unread state to set. The marker makes the Relay's
-    # mark-unread route answer 501 (server.py `_platform_write`): a success
+    # mark-unread route answer 501 (server.py `_platform_call`): a success
     # would show an unread dot the next read takes back.
     @fansly_unsupported("Fansly has no server-side unread state",
                         returns=lambda: {"success": True})
@@ -2874,10 +2884,23 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         `itemIds[]`. Sending the add shape for a remove is accepted and
         silently does nothing, so the two are written out separately here
         rather than sharing a builder."""
-        self._request("POST", "/lists/commands", json_body={"listCommands": [
-            {"type": 1, "listItem": {"id": str(user_id),
-                                     "listId": str(list_id)}}]})
+        self.add_users_to_lists({list_id: [user_id]})
         return {"success": True}
+
+    def add_users_to_lists(self, users_by_list: dict[str, list[int]],
+                           **_ignored: Any) -> dict[str, list[str]]:
+        sent = {str(lid): [str(u) for u in users] for lid, users in users_by_list.items()}
+        echoed = self._request("POST", "/lists/commands", json_body={"listCommands": [
+            {"type": 1, "listItem": {"id": uid, "listId": lid}}
+            for lid, uids in sent.items() for uid in uids]})
+        if not isinstance(echoed, list):
+            raise FanslyAPIError(f"POST /lists/commands echoed {type(echoed).__name__}, not the command array")
+        out: dict[str, list[str]] = {lid: [] for lid in sent}
+        for cmd in echoed:
+            item = cmd.get("listItem") or {}
+            if cmd.get("type") == 1 and str(item.get("listId")) in out:
+                out[str(item["listId"])].append(str(item["id"]))
+        return out
 
     def remove_user_from_list(self, list_id: str | int, user_id: str | int,
                               **_ignored: Any) -> dict:
@@ -2917,7 +2940,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
     # is retired, but these stay: the chat's Pin action
     # (POST/DELETE /api/of/v2/messages/{id}/pin/user/{fan}) reaches them on a
     # Fansly account, where the marker makes the route answer 501 (server.py
-    # `_platform_write`) instead of a success the next read takes back.
+    # `_platform_call`) instead of a success the next read takes back.
     @fansly_unsupported("Fansly has no message pinning",
                         returns=lambda: {"success": True})
     def pin_message(self, *_a: Any, **_k: Any) -> dict: ...
@@ -3047,8 +3070,8 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         `confirm_live_broadcast=True` is required to actually send. That flag is
         not bureaucracy: this is the one call in the shim that reaches an
         unbounded audience in a single unrecallable request, built entirely from
-        an unverified bundle reading. The default path returns a clean skip so
-        an automation that calls this degrades instead of blasting.
+        an unverified bundle reading. Without it the call raises FanslyBlocked,
+        so no caller can read a skip as sent.
 
         The FIRST real send should be to a list containing one account you
         control, with the request logged, so the derived shape gets confirmed
@@ -3056,12 +3079,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         include_lists = [i for i in (include_lists or []) if i]
         exclude_lists = [i for i in (exclude_lists or []) if i]
         if not confirm_live_broadcast:
-            log.warning(
-                "fansly: send_mass_message called without "
-                "confirm_live_broadcast — refusing to broadcast. The wire "
-                "shape is bundle-derived and unverified; see "
-                "capture/BUNDLE_DERIVED.md.")
-            return {"success": False, "skipped": "unconfirmed-broadcast"}
+            raise FanslyBlocked(f"send_mass_message: {_BROADCAST_UNCONFIRMED}")
         # Before the broadcast group is minted: a blocked text creates nothing.
         text = _guard_outbound(text)
         # The ordinary send rules apply unchanged — a broadcast is a message.
@@ -3076,15 +3094,15 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"success": True, "groupId": group_id,
                 "id": str(created.get("id")) if created.get("id") else None}
 
+    send_mass_message.fansly_blocked = _BROADCAST_UNCONFIRMED
+
     # OF's win-back list. Needs a subscription that has actually lapsed.
     @fansly_blocked("needs an expired subscription to capture",
                     returns=lambda: {"list": [], "hasMore": False})
     def recent_expired_subscribers(self, *_a: Any, **_k: Any) -> dict: ...
 
-    # Money movement. auto_follow already falls back to follow_user when this
-    # raises or returns falsy, so a clean skip keeps that path working.
-    @fansly_blocked("resubscribe moves money — needs a payment method",
-                    returns=lambda: {"success": False, "skipped": "not-wired"})
+    # Raises: auto_follow falls back to follow_user only on an exception.
+    @fansly_blocked("resubscribe moves money — needs a payment method")
     def resubscribe_user(self, *_a: Any, **_k: Any) -> dict: ...
 
     def delete_promo(self, promo_id: str | int, **_ignored: Any) -> dict:
@@ -3166,6 +3184,13 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                     returns=lambda: {"success": False, "skipped": "not-wired"})
     def like_post(self, *_a: Any, **_k: Any) -> dict: ...
 
+    @fansly_unsupported("Fansly has no server-side message template store", returns=None)
+    def message_templates(self, *_a: Any, **_k: Any) -> None: ...
+
+    @fansly_unsupported("Fansly has no OnlyFans settings object; the follow-rule mirror waits for a paid-subscribe capture",
+                        returns=None)
+    def my_settings(self, *_a: Any, **_k: Any) -> None: ...
+
     def _group_for_send(self, chat_id: str | int) -> str:
         """The group a SEND goes to — resolved like `_as_group_id`, but a fan
         with no DM thread yet gets one MINTED (`POST /group`, the base client's
@@ -3223,3 +3248,92 @@ class FanslyShimClient(VaultMixin, FanslyClient):
             self._known_group_ids.add(resolved)
             return resolved
         return chat_id
+
+
+_BLOCKED, _UNSUPPORTED = "blocked", "unsupported"
+_STATS = (_BLOCKED, "Fansly stats read not captured")
+_PROFILE = (_BLOCKED, "Fansly profile or account setting not captured")
+_LABELS = (_BLOCKED, "Fansly post labels not captured")
+_RELEASE = (_BLOCKED, "Fansly release forms not captured")
+_POSTS = (_BLOCKED, "Fansly post action or read not captured")
+_LINKS = (_BLOCKED, "Fansly tracking links, trials and promotions not captured")
+_CHAT = (_BLOCKED, "Fansly chat action not captured")
+_OF_SEND = (_UNSUPPORTED, "Fansly sends through send_message; OnlyFans's prepare/post/schedule split is not mapped")
+_LISTS = (_BLOCKED, "Fansly list read or setting not captured")
+_STORIES = (_BLOCKED, "Fansly story read or setting not captured")
+_STREAMS = (_BLOCKED, "Fansly livestreams not captured")
+_SUBS = (_BLOCKED, "Fansly subscription tiers and bundles not captured")
+_PAYOUTS = (_BLOCKED, "Fansly payouts not captured")
+_QUEUE = (_BLOCKED, "Fansly scheduled-message queue not captured")
+_FANS = (_BLOCKED, "Fansly fan roster, media or search read not captured")
+_NO_PIN = (_UNSUPPORTED, "Fansly has no message pinning")
+_NO_STORY_WRITE = (_UNSUPPORTED, "Fansly stories cannot be created from the web API")
+_OF_UPLOAD = (_UNSUPPORTED, "OnlyFans upload-claim pipeline; Fansly uploads through upload_media")
+
+UNBUILT: dict[str, tuple[str, str]] = {
+    "list_users_in": (_BLOCKED, "list members read not captured"),
+    "rename_list": (_BLOCKED, "list rename not captured"),
+    "delete_list": (_BLOCKED, "list delete not captured (its row menu needs a trusted event)"),
+    "block_user": (_BLOCKED, "block not captured"),
+    "unblock_user": (_BLOCKED, "unblock not captured"),
+    "search_users": (_BLOCKED, "username search not captured"),
+    "engagement_messages": (_BLOCKED, "mass-message stats feed not captured"),
+    "mass_message_history": (_BLOCKED, "mass-message history not captured"),
+    "schedule_mass_message": (_BLOCKED, "scheduled broadcast not captured"),
+    "restrict_user": (_UNSUPPORTED, "Fansly has no restrict"),
+    "unrestrict_user": (_UNSUPPORTED, "Fansly has no restrict"),
+    "search_chat": (_UNSUPPORTED, "Fansly has no in-thread message search"),
+    "set_subscription_discount": (_UNSUPPORTED, "Fansly has no per-fan subscription discount"),
+    "delete_chat": (_UNSUPPORTED, "no capture or bundle note names a Fansly chat delete"),
+    "chat_media": (_BLOCKED, "chat media gallery not captured"),
+    **dict.fromkeys(("bookmarks_all", "campaign_claimers", "campaigns_chart", "campaigns_stats", "chargebacks",
+                     "chargebacks_chart", "chargebacks_ratio", "earnings_chart", "fans_activity", "mass_message_buyers",
+                     "messages_chart", "my_profile_stats", "my_start_date", "my_stats_overview", "my_stats_top_posts",
+                     "notification_settings", "offer_claims", "payout_invoice", "payouts_chart", "promotions_chart",
+                     "promotions_stats", "qr_views", "referral_payouts", "referrals", "referrals_balance",
+                     "referrals_chart", "sessions", "social_buttons", "social_media_providers", "stats_top",
+                     "stories_chart", "stories_top", "story_viewers", "streaks", "streaks_top", "stream_blocked_users",
+                     "stream_viewers", "streams_chart", "streams_top", "subscribers_latest", "subscribers_top",
+                     "today_activity", "trials_chart", "trials_stats"), _STATS),
+    **dict.fromkeys(("add_social_button", "add_users_link", "close_all_sessions", "countries", "create_guest",
+                     "delete_social_button", "delete_users_link", "patch_notification_settings",
+                     "patch_security_settings", "put_security_settings", "set_reply_on_subscribe", "update_profile",
+                     "users_links"), _PROFILE),
+    **dict.fromkeys(("create_label", "labels", "sort_labels"), _LABELS),
+    **dict.fromkeys(("release_form_mentions", "release_forms", "toggle_release_form"), _RELEASE),
+    **dict.fromkeys(("archive_post", "comment_on_post", "edit_post", "pin_post", "post_comments", "post_stats",
+                     "post_users", "posts_chart", "posts_top", "publish_schedule", "save_queued_post",
+                     "schedules_later_chat", "schedules_later_post", "search_posts", "tagged_friend_users",
+                     "unlike_post", "unpin_post"), _POSTS),
+    **dict.fromkeys(("create_tracking_link", "create_trial_link", "delete_tracking_link", "delete_trial_link",
+                     "finish_promo", "promotions", "share_campaign_stats", "share_trial_stats", "tracking_links",
+                     "tracking_links_shared_with_me", "tracking_links_sorted", "trial_links", "trial_links_sorted",
+                     "trials_shared_with_me", "unshare_campaign_stats", "add_link_claimers_to_list"), _LINKS),
+    **dict.fromkeys(("bookmark_message", "hide_message", "mute_chat", "unmute_chat", "unlike_message", "hide_chat",
+                     "unhide_chat"), _CHAT),
+    **dict.fromkeys(("post_message", "prepare_message", "schedule_message"), _OF_SEND),
+    **dict.fromkeys(("clear_list", "get_list", "list_posts_in", "set_list_pinned_to_chat"), _LISTS),
+    **dict.fromkeys(("highlight", "my_stories_archive", "stories_feed", "user_highlights", "user_stories",
+                     "settings_story", "patch_story_settings"), _STORIES),
+    **dict.fromkeys(("block_stream_viewer", "reset_stream_key", "schedule_stream", "streams_feed",
+                     "unblock_stream_viewer", "user_streams"), _STREAMS),
+    **dict.fromkeys(("create_bundle", "delete_bundle", "edit_bundle", "subscription_bundles", "update_subscription"), _SUBS),
+    **dict.fromkeys(("earning_stats", "payout_check_receive", "request_payout", "update_withdrawal_period"), _PAYOUTS),
+    **dict.fromkeys(("edit_queued_message", "queued_message", "scheduled_messages"), _QUEUE),
+    **dict.fromkeys(("performers_search", "user_photos", "user_videos", "following"), _FANS),
+    **dict.fromkeys(("unpin_all_messages",), _NO_PIN),
+    **dict.fromkeys(("create_story", "post_story"), _NO_STORY_WRITE),
+    **dict.fromkeys(("upload_claim", "materialize_via_message", "materialize_to_vault"), _OF_UPLOAD),
+}
+
+
+def _marked(name: str, verdict: str, reason: str):
+    def stub(self, *_a: Any, **_k: Any) -> Any: ...
+    stub.__name__ = stub.__qualname__ = name
+    return (fansly_blocked if verdict == _BLOCKED else fansly_unsupported)(reason)(stub)
+
+
+for _name, (_verdict, _reason) in UNBUILT.items():
+    if hasattr(FanslyShimClient, _name):
+        raise RuntimeError(f"UNBUILT marks {_name}, which FanslyShimClient defines")
+    setattr(FanslyShimClient, _name, _marked(_name, _verdict, _reason))

@@ -1,31 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager Queue: Edit post, Edit message and Save for later bodies.
-
-Edit post (relay PUT /api/of/v2/queue/posts/{id}) is OF's PUT /posts/{id} with the create body (MakeFeedPost sends
-`px(post.id, getDataObject())`); Edit message is OF's PUT /messages/queue/{id}
-with the message body (`654685.Os`: `isScheduled: 1` + `scheduledDate`, or
-`isPublishedWithPeriod: 1` for saved for later), loaded first with
-GET /messages/queue/{id}?format=scheduled. A mass message saved for later is
-POST /messages/queue with `isPublishedWithPeriod: 1` and no date (relay POST
-/api/of/v2/messages/queue/later), and must never take the send-now path. Shapes read from OF's bundles (build
-202610091632), not verified live. Plain-assert, OF faked (no request leaves
-the process).
-
-  case_edit_post_puts_the_create_body
-  case_edit_post_save_for_later
-  case_edit_post_route_forwards_every_field
-  case_queued_message_get
-  case_edit_message_reschedules_with_lists_and_recipients
-  case_edit_message_save_for_later_has_no_date
-  case_edit_message_needs_a_schedule
-  case_edit_message_route_refuses_no_schedule
-  case_mass_save_for_later_body
-  case_mass_route_save_for_later_takes_the_scheduled_branch
-  case_later_route_saves_for_later
-  case_routes_are_registered
-
-Run: ./venv/bin/python service/tests/test_queue_edit_body.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -42,7 +15,6 @@ AT = "2026-11-27T20:15:00+02:00"
 
 
 def _client():
-    """An OFClient whose every request is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = "4242"
     c.sent = []
@@ -50,6 +22,7 @@ def _client():
     return c
 
 
+# Body shapes read from OF's bundles, not verified live.
 def case_edit_post_puts_the_create_body():
     c = _client()
     c.save_queued_post(2433845504, "Synthetic post", media_files=[11, 12], price=5, posted_at=AT, label_ids=[3])
@@ -149,7 +122,6 @@ def case_mass_save_for_later_body():
 
 
 async def case_mass_route_save_for_later_takes_the_scheduled_branch():
-    """Save for later must never reach send_mass_message (an immediate blast)."""
     aid, posts = "acc_sfl", []
 
     class _Fake:
@@ -182,7 +154,6 @@ async def case_mass_route_save_for_later_takes_the_scheduled_branch():
 
 
 def case_later_route_saves_for_later():
-    """POST /api/of/v2/messages/queue/later forces save_for_later and no date, then takes the mass route."""
     seen = []
 
     async def _fake(request, body):

@@ -1,24 +1,3 @@
-"""
-stats_ops.py — Operations reads, split out of stats.py.
-
-  GET /admin/stats/grok-cost        → grok_daily_cost rollup rows
-  GET /admin/stats/grok-calls       → grok_calls grouped by purpose / model / day
-  GET /admin/stats/per-automation   → sends, revenue and LLM spend per automation
-  GET /admin/stats/automation-runs  → recent automation_runs (most recent first)
-  GET /admin/stats/attribution-coverage(/recent)
-                                    → % of outbound messages with an Employee,
-                                       and the latest ones without
-
-All read rows already written: the Grok runners' cost tables, the automation
-scheduler's runs, the ingest path's messages and transactions.
-
-The routes stood at three spots of stats.py, so there are three routers
-(`router`, `runs_router`, `coverage_router`); stats.py includes each where its
-routes stood (route order). The report zone is read as `stats._report_zone` at
-call time (imported in the route, no import-time cycle), so a patch on `stats`
-reaches these routes as before the split.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -39,7 +18,6 @@ runs_router = APIRouter(dependencies=[Depends(stats_guard)])
 coverage_router = APIRouter(dependencies=[Depends(stats_guard)])
 
 
-# ── Grok daily cost ──────────────────────────────────────────────
 
 @router.get("/admin/stats/grok-cost")
 async def grok_cost(
@@ -66,7 +44,6 @@ async def grok_cost(
         )
         if account_ids is not None:
             q = q.where(GrokDailyCost.account_id.in_(account_ids))
-        # `day` is a TEXT 'YYYY-MM-DD' so lexical compare equals chronological.
         if start:
             q = q.where(GrokDailyCost.day >= start.strftime("%Y-%m-%d"))
         if end:
@@ -89,7 +66,6 @@ async def grok_cost(
     }
 
 
-# ── Grok per-call breakdown (the cost ruler) ────────────────────
 
 @router.get("/admin/stats/grok-calls")
 async def grok_calls(
@@ -118,7 +94,6 @@ async def grok_calls(
     end = _parse_date(to, field="to")
 
     day_expr = func.strftime("%Y-%m-%d", GrokCall.called_at).label("day")
-    # Group key columns vary by `by`; everything else is summed the same way.
     keys: dict[str, Any] = {
         "purpose_model": [GrokCall.purpose.label("purpose"),
                           GrokCall.model.label("model"),
@@ -173,10 +148,7 @@ async def grok_calls(
         })
     total_mc = sum(r["cost_millicents"] for r in out)
     total_calls = sum(r["calls"] for r in out)
-    # Audit rows whose prompt redaction failed and fell back to a stub. The
-    # audit write is deliberately swallowed so it can never take down a live LLM
-    # call — which means a degraded audit is otherwise INVISIBLE. Non-zero here
-    # is the only signal that grok_calls has stopped recording what we sent.
+    # The audit write is swallowed so it never takes down a live LLM call; nonzero here is the only signal grok_calls stopped recording.
     from llm_client import audit_degraded_count
     return {
         "rows": out,
@@ -239,7 +211,6 @@ async def per_automation(
         return agg[kind]
 
     async with get_session() as s:
-        # ── messages_sent by automation_kind ───────────────────────────
         mq = (
             select(
                 Message.automation_kind.label("kind"),
@@ -258,14 +229,12 @@ async def per_automation(
         for r in (await s.execute(mq)).all():
             _bucket(r.kind)["messages_sent"] = int(r.n or 0)
 
-        # ── revenue by automation_kind (the view's rows, from the rollup) ─
         for r in await tx_rollup.window_sums(
                 s, ("automation_kind",), account_ids=account_ids, start=start, end=end,
                 where={"status": TRACKED_STATUSES, "kind": REVENUE_KINDS}):
             if r.automation_kind is not None:
                 _bucket(r.automation_kind)["revenue_cents"] = int(r.gross_cents or 0)
 
-        # ── LLM spend by purpose ───────────────────────────────────────
         gq = (
             select(
                 GrokCall.purpose.label("kind"),
@@ -294,7 +263,6 @@ async def per_automation(
         {**b, "cost_cents": round(b["cost_millicents"] / 100, 4)}
         for b in agg.values()
     ]
-    # Highest earner first; ties broken by send volume.
     rows.sort(key=lambda r: (r["revenue_cents"], r["messages_sent"]), reverse=True)
     total_mc = sum(r["cost_millicents"] for r in rows)
     return {
@@ -309,7 +277,6 @@ async def per_automation(
     }
 
 
-# ── Automation runs ──────────────────────────────────────────────
 
 @runs_router.get("/admin/stats/automation-runs")
 async def automation_runs(
@@ -323,8 +290,7 @@ async def automation_runs(
     async with get_session() as s:
         q = select(AutomationRun)
         if kind:
-            # Deliberately raw: the param filters rows displayed VERBATIM, so a
-            # caller matching a legacy token sees exactly the rows carrying it.
+            # Deliberately raw: the filter matches rows displayed verbatim.
             q = q.where(AutomationRun.kind == kind)
         if account_ids is not None:
             q = q.where(AutomationRun.account_id.in_(account_ids))
@@ -348,11 +314,8 @@ async def automation_runs(
     }
 
 
-# ── Attribution coverage ─────────────────────────────────────────
 
 def _coverage_pct(attributed: int, total: int) -> float:
-    """Percentage with 1-decimal rounding. 0/0 returns 0.0 — the caller
-    decides whether 'no traffic' should be surfaced differently."""
     if total <= 0:
         return 0.0
     return round((attributed / total) * 100.0, 1)
@@ -388,16 +351,11 @@ async def attribution_coverage(
         end = datetime.utcnow()
 
     async with get_session() as s:
-        # Tolerant fallback probe — done before the aggregate so we can
-        # zero the automation bucket if the seed row is missing.
         auto_present_row = (await s.execute(
             select(Employee.id).where(Employee.display_name == "Automation").limit(1)
         )).first()
         automation_employee_present = auto_present_row is not None
 
-        # LEFT JOIN messages → employees so we can bucket on employee
-        # attributes (is_active, display_name) while still counting rows
-        # whose sent_by_employee_id is NULL or points at a deleted employee.
         attributed_expr = case((Message.sent_by_employee_id.is_not(None), 1), else_=0)
         human_expr = case(
             (and_(Message.sent_by_employee_id.is_not(None), Employee.is_active == True), 1),  # noqa: E712
@@ -429,9 +387,6 @@ async def attribution_coverage(
 
         rows = (await s.execute(q)).all()
 
-        # Resolve nicknames for the accounts that showed up. Separate
-        # lookup keeps the aggregate query unchanged and lets accounts
-        # without a row in `accounts` still render (display_name=None).
         acct_ids = [r.account_id for r in rows if r.account_id]
         nickname_by_id: dict[str, str | None] = {}
         if acct_ids:

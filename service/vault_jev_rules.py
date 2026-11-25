@@ -1,54 +1,22 @@
-"""vault_jev_rules.py — the pure half of the Jev v8 vault flags pass: answers in, lane out.
-
-A port of the owner-accepted bench config (D48, `.scratch/jev-vault-bench/`: frozen flags8c +
-`score8.py --veto --promote` + `settle.py nn.10`, CONFIG_HASH 708e26853eaff5a2). Every rule here is a
-copy of the bench function named beside it, with the same thresholds, in the same order; only imports
-and names moved. `tests/test_vault_jev.py` replays the bench's own records through it and asserts the
-bench's lanes on every dev image. Do NOT tune here: a rule change is a new bench session, not an edit.
-
-  derive8(rec)           score8.derive8 with score8.CFG (base_cfg() for flags8*): pass 1 → lane, pass 2
-                         overlay when `need2`, pass L (lower crop) when `needL`. `rec` is the bench record
-                         shape: {"resp": {"answers": ...}, "resp2"?: ..., "respL"?: ...}.
-  nn_veto(d, scores)     score8.nn_veto for ONE image, NN_D34 (veto t .35 + promote tG .50 / tB .40 / gmax .30).
-  settle(d)              settle.py MODE "nn.10" (D42: no human review queue; `review` settles itself).
-  blob(...)              the stored `ai_fields_json["_jev"]` (storage contract, `vault_jev`).
-
-Videos (D53 hr12 maxF, D54; bench `jv-jev.py` / `jv-score.py`): `final` per frame, pass 2 / L only on the top-3
-frames derive8 asks for (`video_targets`), lane = the max frame's (`video_final`); `video_blob` stores the max
-frame's photo-shaped blob plus every frame's answers (`pack`, so the rules re-derive without a refetch).
-
-Not ported (bench decisions): toy pass T (D37, cfg "toy2" off), pass S (D46, rejected).
-"""
+# Port of the owner-accepted bench config: do not tune here, a rule change is a new bench session.
 from __future__ import annotations
 
 from typing import Any
 
 from sqlalchemy import case, func, literal
 
-# The stored blob's version: the question set + rules + settle mode it was made with.
 VERSION = "v8+nn.10"
-# Where the blob lives in `ai_fields_json` (the one definition; every vault module reads it from here).
 JEV_KEY = "_jev"
-# `_jev.review` of a held clip (`vault_jev_pass.held_blob`; `vault_ai_brief`: disputed, never in a free lane).
 HELD = "fetch_failed"
-# `_jev.status` of a clip whose sources kept failing (`vault_jev_pass.RETRY_MAX` holds): no reading (not `current`),
-# never re-read by a sweep, review (never free). The one predicate: `gave_up`.
 GAVE_UP = "jev_gave_up"
-# `_jev.status` of a photo TypeSafe refuses as an image (400 "Invalid image dimensions", e.g. a 630x48 banner):
-# no retry fixes it, so it is a Terminal failure like GAVE_UP. Rows stamped before it carry status `error` and
-# the SDK's 400 text; `rejected` reads both.
+# TypeSafe 400 "Invalid image dimensions" (e.g. a 630x48 banner): no retry fixes it, so it is terminal like GAVE_UP.
 REJECTED = "jev_rejected"
 REJECT_TEXT = ("TypeSafeBadRequestError", "Invalid image")
-# Jev-pass visit statuses about the item, not the sweep (`vault_sweep.NEUTRAL` reads these): a held clip inside its
-# retry backoff (`vault_jev_pass.retry_due`), and an item skipped because TypeSafe's daily cap tripped this sweep.
 RETRY_WAIT = "jev_retry_wait"
 JEV_CAPPED = "jev_capped"
-# The kinds Jev reads (photos: one still; videos: 12 frames, `video_blob`) — the only kinds with flags.
 JEV_KINDS = ("photo", "video")
-# A video blob's frame source + combine (12 frames @720p, top-3 escalation, max lane): `current` needs it too.
 VIDEO_VERSION = "jv1"
 
-# ── score7 (helpers + tag lists) ────────────────────────────────────
 
 
 def P(a, q):
@@ -75,7 +43,6 @@ CHOICES = ["people_count", "added_text", "toy", "outfit", "outfit_color", "setti
            "face_visible", "facing"]
 PAID = ("$10", "$50", "$100")
 
-# ── score8 ──────────────────────────────────────────────────────────
 
 FREE = ("mass", "implied", "lingerie")
 CFG = dict(pen_y=.70, pen_n=.62, topless_vote=True, nude_rule="residual", nude_t=.2, resid_t=.10, probe_twb=9,
@@ -84,7 +51,6 @@ CFG = dict(pen_y=.70, pen_n=.62, topless_vote=True, nude_rule="residual", nude_t
 COVERED = ("sexy_covered", "normal_covered", "sheer_covered")
 NN_D33 = {"t": .35, "cls": ["FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED"]}
 NN_D34 = {**NN_D33, "promote": {"tG": .50, "tB": .40, "gmax": .30}}
-# per-tag Noul cut (D23 calibrated on set2-4); missing → .5
 CUTS = {'butt_bare': 0.35, 'nipple_through_fabric': 0.8, 'topless': 0.65, 'see_through': 0.5, 'watermark': 0.5,
         'censor_edit': 0.75, 'multi_panel': 0.5, 'wears_heels': 0.5, 'wears_stockings_or_fishnets': 0.85,
         'wears_socks': 0.6, 'bare_toes_visible': 0.55, 'soles_visible': 0.4, 'feet_in_water': 0.7,
@@ -95,7 +61,6 @@ CUTS = {'butt_bare': 0.35, 'nipple_through_fabric': 0.8, 'topless': 0.65, 'see_t
 
 
 def lane_rule(a, d, cfg, p1=False):
-    """Lane from answers `a` (pass 1, or pass 1 overlaid with pass 2). Writes lane-critical fields into d, returns lane."""
     band = cfg.get("band", 0) if p1 else 0
     for r in ("breasts", "crotch"):
         st = avgp(a, [f"{r}_state_a", f"{r}_state_b"]); n = avgp(a, NOUL_OF[r]); pb = st["bare"]
@@ -124,7 +89,6 @@ def lane_rule(a, d, cfg, p1=False):
 
 
 def mix(x, y):
-    """D26 avg2: mean of two answers (Noul p / Choice probabilities). Unused by CFG (avg2 False); kept for derive8."""
     if "noul" in x: return {**y, "noul": (x["noul"] + y["noul"]) / 2}
     pr = {k: (x["probabilities"][k] + y["probabilities"][k]) / 2 for k in y["probabilities"]}
     return {**y, "probabilities": pr, "choice": max(pr, key=pr.get)}
@@ -188,7 +152,6 @@ def collapse(x):
 
 
 def nn_veto(d, x, nn=NN_D34):
-    """score8.nn_veto for one derived image `d`; `x` = NudeNet {class: max score} (None = no detection run)."""
     if x is None: d["nn"] = None; return
     d["nn"] = max(x.get(c, 0) for c in nn["cls"]); d["nnB"] = x.get("FEMALE_BREAST_EXPOSED", 0); d["nnG"] = x.get("FEMALE_GENITALIA_EXPOSED", 0)
     if d["lane5"] == "free" and d["nn"] >= nn["t"]: d["lane"] = d["lane5"] = "review"; d["nn_veto"] = True
@@ -198,13 +161,11 @@ def nn_veto(d, x, nn=NN_D34):
         elif d["nnB"] >= pr["tB"] and d["nnG"] < pr.get("gmax", .30): d["lane"] = d["lane5"] = "$10"; d["nn_promote"] = True
 
 
-# ── settle.py, MODE "nn.10" ─────────────────────────────────────────
 
 SETTLE_MODE = "nn.10"
 
 
 def settle(d, mode=SETTLE_MODE):
-    """D42: review → pen unsure $100; else NudeNet both < .10 → free; else crotch y/unsure or nnG ≥ .5 → $50; else $10."""
     if d["lane"] != "review": return
     g = (d.get("nnG") or 0) >= .5
     t = float(mode[2:])
@@ -215,25 +176,18 @@ def settle(d, mode=SETTLE_MODE):
 
 
 def final(rec: dict[str, Any], scores: dict[str, float] | None) -> dict[str, Any]:
-    """The whole frozen config over one image: derive8 → NN_D34 veto/promote → settle nn.10."""
     d = derive8(rec)
     nn_veto(d, scores)
     settle(d)
     return d
 
 
-# ── The stored blob (`ai_fields_json["_jev"]`) ──────────────────────
 
-# Search tags the blob carries: the choice argmaxes, their collapsed classes, and the binary Noul tags
-# (derive8's `P` keys at CUTS).
 _TAG_KEYS = (*[q for q in CHOICES], "feet_detail", "text_any", "toy_any", "feet_any", *COLLAPSE)
-# Choice questions whose full probabilities the blob keeps (`C`) for the Jev-fed describe's facts block
-# (vault_describe_jev.facts). None is in Q2, so pass 1's answer is the pass1+pass2 overlay's.
 FACT_CHOICES = ("toy", "outfit", "people_count", "face_visible", "setting")
 
 
 def overlay(rec: dict[str, Any], d: dict[str, Any]) -> dict[str, Any]:
-    """Pass 1's answers with pass 2's on top where derive8 asked for it (the bench's describe input)."""
     a = rec["resp"]["answers"]
     return {**a, **rec["resp2"]["answers"]} if "resp2" in rec and d.get("need2") else a
 
@@ -246,7 +200,6 @@ def blob(d: dict[str, Any], scores: dict[str, float], *, passes: list[str], tok:
         "v": VERSION, "status": "ok",
         "lane5": d["lane5"], "lane": d["lane"], "settled": d.get("settled") or False,
         "breasts_bare": d["breasts_bare"], "crotch_bare": d["crotch_bare"], "penetration": d["penetration"],
-        # each region's state argmax (bare / *_covered / hidden_not_worn / not_visible): vault_jev_flags reads it
         "state": {r: d[r] for r in ("breasts", "crotch", "butt") if r in d},
         "nn":{"B": scores.get("FEMALE_BREAST_EXPOSED", 0), "G": scores.get("FEMALE_GENITALIA_EXPOSED", 0)},
         "feet_subject": d["P"].get("feet_focus"),
@@ -257,17 +210,13 @@ def blob(d: dict[str, Any], scores: dict[str, float], *, passes: list[str], tok:
 
 
 def gave_up(fields: dict[str, Any] | None) -> bool:
-    """The row's `_jev` is a clip the Jev pass gave up on (`vault_jev_pass.held_blob(terminal=True)`): status
-    GAVE_UP, or the pre-F4 shape of the same stamp (status ok, `review` HELD, no frames, its `retries` count). The
-    sweeps neither fetch nor reselect it; Describe skips it as terminal (`vault_ai_vision_decide.is_terminal`); it is
-    no reading (`current` False: not mapped, not fed, never a duplicate's source)."""
     j = (fields or {}).get(JEV_KEY)
     if not isinstance(j, dict) or j.get("review") != HELD:
         return False
     return j.get("status") == GAVE_UP or (j.get("status") == "ok" and j.get("frames") == [] and "retries" in j)
 
 
-GAVE_UP_MARK = "gave_up"   # `_jev` key a terminal hold sets (`vault_jev_pass.held_blob`); picks / failed re-reads keep it
+GAVE_UP_MARK = "gave_up"
 
 
 REJECT_MARK = "image_rejected"
@@ -310,10 +259,6 @@ def keep_reject(prev_fields: dict[str, Any], blob: dict[str, Any]) -> dict[str, 
 
 
 def current(fields: dict[str, Any] | None) -> bool:
-    """The row carries a successful `_jev` of this VERSION (nothing for a sweep to do). A blob without `state` (made
-    before the region states were stored, same VERSION) is not current: the flags mapper needs it to tell a region
-    out of frame from a covered one, so the photo re-runs (no such reading ever reached prod). A video blob also
-    needs this VIDEO_VERSION and its frames."""
     j = (fields or {}).get(JEV_KEY)
     return (isinstance(j, dict) and j.get("v") == VERSION and j.get("status") == "ok" and "lane5" in j
             and isinstance(j.get("state"), dict)
@@ -322,20 +267,16 @@ def current(fields: dict[str, Any] | None) -> bool:
 
 
 def json_or_empty(col: Any) -> Any:
-    """A JSON text column as SQL JSON1 can read it: its text when valid, else "{}" (NULL / junk reads as no keys)."""
     ai = func.coalesce(col, "")
     return case((func.json_valid(ai), ai), else_=literal("{}"))
 
 
 def current_sql(col: Any) -> Any:
-    """`current` as a SQL predicate (SQLAlchemy, SQLite JSON1) over an ai_fields JSON text column: the same rules,
-    so a listing filter and the Python check agree (tests/test_toolbox case_current_sql)."""
     ai = func.coalesce(col, "")
     ok = json_or_empty(col)
     j = lambda path: func.json_extract(ok, f"$.{JEV_KEY}.{path}")  # noqa: E731
     kind = lambda path: func.json_type(ok, f"$.{JEV_KEY}{path}")  # noqa: E731
     video = func.coalesce(j("kind"), "") == "video"
-    # `gave_up`'s pre-F4 shape (status ok, review HELD, no frames, `retries`)
     legacy_gave_up = ((func.coalesce(j("review"), "") == HELD) & kind(".retries").isnot(None)
                       & (kind(".frames") == "array") & (func.json_array_length(ok, f"$.{JEV_KEY}.frames") == 0))
     return ((func.instr(ai, f'"{JEV_KEY}"') > 0) & (kind("") == "object") & (j("v") == VERSION)
@@ -343,24 +284,19 @@ def current_sql(col: Any) -> Any:
             & (~video | ((j("vv") == VIDEO_VERSION) & (kind(".frames") == "array"))) & ~legacy_gave_up)
 
 
-MANUAL = "manual"   # `_jev["made"]`: a blob built from operator picks alone (`vault_jev_manual`), no Jev reading
+MANUAL = "manual"
 
 
 def ai_read(fields: dict[str, Any] | None) -> bool:
-    """`current` AND a real Jev reading under it. A blob built from operator picks alone (`made` MANUAL) is current
-    for every consumer (lane, flags, tier, pack picker) but not read: the sweeps / Describe still scan it (`_stamp`
-    re-lays the picks over the reading), and it neither feeds a describe nor is a duplicate's source."""
     return current(fields) and (fields or {})[JEV_KEY].get("made") != MANUAL
 
 
-# ── Videos (jv-jev.py / jv-score.py, hr12 maxF) ─────────────────────
 
 TOP_K = 3
 RANK = {"free": 0, "$10": 1, "$50": 2, "$100": 3}
 
 
 def max_rec(recs):
-    """jv-jev.max_rec: per-question max over frames (Noul: max p; Choice: per-option max, not renormalized; choice = argmax)."""
     out = {}
     for q in recs[0]:
         xs = [r[q] for r in recs if q in r]
@@ -374,8 +310,6 @@ def sev(d): return max(d.get("penetration_p", 0), d.get("crotch_pb", 0), d.get("
 
 
 def video_targets(recs: list[dict[str, Any]], need: str, k: int = TOP_K) -> list[int]:
-    """jv-jev.targets over one video's frame records: the top-`k` frames by `sev` among those derive8 asks `need`
-    ("need2" / "needL") for; none asking but the pass-1 per-question max record asking → the top-`k` overall."""
     if not recs:
         return []
     D = [derive8(r) for r in recs]
@@ -385,17 +319,14 @@ def video_targets(recs: list[dict[str, Any]], need: str, k: int = TOP_K) -> list
 
 
 def video_final(recs: list[dict[str, Any]], scores: list[dict[str, float]]) -> tuple[list[dict[str, Any]], int]:
-    """`final` per frame, and the frame whose lane the video takes (maxF): the highest lane, ties to the higher
-    `sev`, then the earlier frame."""
     ds = [final(r, s) for r, s in zip(recs, scores)]
     return ds, max(range(len(ds)), key=lambda i: (RANK[ds[i]["lane5"]], sev(ds[i]), -i))
 
 
-Order = "list[tuple[str, list[str] | None]]"   # (question, its Choice options in spec order | None for a Noul)
+Order = "list[tuple[str, list[str] | None]]"
 
 
 def pack(answers: dict[str, Any], order: Order) -> list[Any]:
-    """One pass's answers, positional: a Noul → p, a Choice → [chosen option's index, p per option], 4 dp."""
     out: list[Any] = []
     for q, opts in order:
         x = answers[q]
@@ -408,7 +339,6 @@ def pack(answers: dict[str, Any], order: Order) -> list[Any]:
 
 
 def unpack(vals: list[Any], order: Order) -> dict[str, Any]:
-    """`pack`'s inverse: the answers shape derive8 reads."""
     out: dict[str, Any] = {}
     for (q, opts), v in zip(order, vals):
         if opts is None:
@@ -419,14 +349,9 @@ def unpack(vals: list[Any], order: Order) -> dict[str, Any]:
 
 
 def order_of(qs: dict[str, dict]) -> Order:
-    """A question spec's (`vault_jev.Q`, …) positional layout: (question, its Choice options | None for a Noul)."""
     return [(k, None if q["type"] == "noul" else list(q["criteria"])) for k, q in qs.items()]
 
 
-# Each pass's positional layout in a STORED video frame (`pack`): a storage contract, so frozen here rather than
-# built from `vault_jev`'s questions — a question change needs a VIDEO_VERSION bump and a new layout. Tests pin it
-# equal to `order_of(vault_jev.Q / Q2 / crop_questions)` AND to a sha256 per VIDEO_VERSION, so an edit under the
-# same version fails (test_vault_jev case_video_order_pinned).
 ORDER: dict[str, Order] = {
   "1": [
     ('person_present', None), ('people_count', ['one', 'two_or_more', 'none']), ('nipple_visible_a', None),
@@ -467,47 +392,34 @@ ORDER: dict[str, Order] = {
     ('vulva_visible_a', None), ('vulva_visible_b', None),
   ],
 }
-RESP = {"1": "resp", "2": "resp2", "L": "respL"}   # pass → its bench record key
-NN = ("FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED")   # the classes NN_D34 reads, stored per frame
+RESP = {"1": "resp", "2": "resp2", "L": "respL"}
+NN = ("FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED")
 
 
 def frame_recs(jev: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
-    """A stored video `_jev`'s frames back as bench records + NudeNet scores: `video_final` over them re-derives
-    the stored lane without a refetch."""
     recs = [{RESP[p]: {"answers": unpack(f[p], ORDER[p])} for p in ORDER if p in f} for f in jev["frames"]]
     return recs, [dict(zip(NN, f["nn"])) for f in jev["frames"]]
 
 
-# The three body answers a free check reads (each must be a plain "n"). A clip's are the WORST over its frames on a
-# free clip (F1b: a clean frame can win the max-frame tie over one with an unsure body, and a free clip must not hide
-# it): `video_blob` stores them stamped `body` BODY_WORST; a stored clip without the stamp re-derives them from its
-# packed frames at read (`body`), no re-read.
 BODY = ("breasts_bare", "crotch_bare", "penetration")
 BODY_WORST = "worst"
-# An operator region pick (`vault_jev_manual`) → the body answer it sets; its inverse says which pick owns one.
 REGION_BODY = {"breasts": "breasts_bare", "crotch": "crotch_bare", "penetration": "penetration"}
 _PICKED = {v: k for k, v in REGION_BODY.items()}
 
 
 def worst(vals: Any) -> str:
-    """The most-bare of some body answers: "y" if any is, "n" only if all are, else "unsure" (missing included)."""
     vals = list(vals)
     return "y" if "y" in vals else "n" if vals and all(v == "n" for v in vals) else "unsure"
 
 
 def worst_body(ds: list[dict[str, Any]]) -> dict[str, str]:
-    """`worst` per BODY answer over derived frames."""
     return {k: worst(d.get(k) for d in ds) for k in BODY}
 
 
-UNDECODED = "undecoded"   # `body`: a stored frame that does not re-derive — no reading at all, not Jev half-seeing
+UNDECODED = "undecoded"
 
 
 def body(jev: dict[str, Any]) -> dict[str, Any]:
-    """The body answers (`BODY`) a free check reads off one current `_jev`: its own, except a free clip stored
-    before `video_blob` kept the worst over its frames (no `body` stamp) — re-derived from its packed frames
-    (`frame_recs`, no refetch; F1b), worse of the two; frames that do not re-derive read UNDECODED (not free, and
-    a dispute: `undecoded`). An operator's pick (`vault_jev_manual`: the lane, or that region) keeps its own answer."""
     own = {k: jev.get(k) for k in BODY}
     op = set(jev.get("op") or ())
     if (jev.get("kind") != "video" or jev.get("body") == BODY_WORST or read_lane(jev) != "free"
@@ -521,22 +433,15 @@ def body(jev: dict[str, Any]) -> dict[str, Any]:
 
 
 def undecoded(jev: Any) -> bool:
-    """A current `_jev` whose stored frames do not re-derive (`body` UNDECODED): a dispute
-    (`vault_ai_brief._contradictions` jev_bare_unflagged), never free."""
     return current({JEV_KEY: jev}) and UNDECODED in body(jev).values()
 
 
 def bare_regions(jev: Any, b: dict[str, Any] | None = None) -> dict[str, bool] | None:
-    """The flag regions (`breasts_vis` / `vulva_vis` / `anus_vis`) a current, settled `_jev` reads bare — what the
-    flags mapper (`vault_jev_flags.reading`) stamps "bare", and what `vault_ai_brief._contradictions` holds stored
-    flags to (jev_bare_unflagged). None when it is not a current reading in a price lane. By the FINAL lane, and a
-    firm `body` "y" is bare in any lane (settle nn.10 can file one free; F1a) unless the operator picked the lane
-    (`vault_jev_manual`: the pick wins). `b`: its `body`, when the caller already has it."""
-    lane = read_lane(jev) if isinstance(jev, dict) else None   # a review clip: what it read
+    lane = read_lane(jev) if isinstance(jev, dict) else None
     if not current({JEV_KEY: jev}) or lane not in (*PAID, "free"):
         return None
     firm = "lane" not in (jev.get("op") or ())
-    b = b if b is not None else body(jev)   # a free clip's: the worst over its frames (F1b)
+    b = b if b is not None else body(jev)
     bare_b = lane == "$10" or (b["breasts_bare"] == "y" and (firm or lane in ("$50", "$100")))
     bare_v = lane == "$50" or (lane == "$100" and jev.get("crotch_bare") != "n") \
         or (firm and b["crotch_bare"] == "y")
@@ -544,21 +449,12 @@ def bare_regions(jev: Any, b: dict[str, Any] | None = None) -> dict[str, bool] |
 
 
 def body_free(jev: dict[str, Any]) -> bool:
-    """FREE GUARD on the body: every `body` answer a plain "n" (y / unsure / missing: not free). The one check the
-    topic folders, the pack picker's free rung and the not-nude listing all read (W30 R1)."""
     return all(v == "n" for v in body(jev).values())
 
 
 def video_blob(ds: list[dict[str, Any]], top: int, recs: list[dict[str, Any]], scores: list[dict[str, float]], *,
                frames: list[dict[str, Any]], passes: list[str], tok: int, px: list[list[int]], at: str, src: str,
                review: str | None, nbytes: int) -> dict[str, Any]:
-    """A video's `_jev`: the max frame's photo-shaped `blob` (the flags mapper and the describe facts read it
-    unchanged) + `kind` video, `vv`, the max `frame`, every frame's packed answers (`frames`), the frame source
-    (`src` preview | 720 | 240 | full | poster), a free clip's body answers the worst over its frames (`BODY`),
-    `review` (why the reading may be too low: no_720 | over_cap | poster_only | long |
-    few_frames; `vault_ai_brief` keeps such a video out of every free lane) and the downloaded `bytes`. A review
-    reading under $100 is `lane5` "review" (an unknown tier: `vault_pack_picker` never prefills it free), its own
-    lane kept as `read_lane5` (`read_lane`, what the flags mapper reads); a $100 one cannot be priced too low."""
     b = blob(ds[top], scores[top], passes=passes, tok=tok, px=px[top], at=at, answers=overlay(recs[top], ds[top]))
     b.update(kind="video", vv=VIDEO_VERSION, frame=top, frames=frames, src=src, review=review or None,
              bytes=int(nbytes), body=BODY_WORST)
@@ -570,6 +466,5 @@ def video_blob(ds: list[dict[str, Any]], top: int, recs: list[dict[str, Any]], s
 
 
 def read_lane(jev: Any) -> Any:
-    """The lane a `_jev` READ: its `lane5`, or a review clip's `read_lane5` (`video_blob`)."""
     lane = (jev or {}).get("lane5")
     return (jev or {}).get("read_lane5") if lane == "review" else lane

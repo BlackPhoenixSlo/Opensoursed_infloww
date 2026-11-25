@@ -1,39 +1,4 @@
-"""Product extension callbacks for relay events and chat mutations.
-
-How a private feature plugs in (shared code never names or imports one; a
-public checkout without the feature simply has nothing registered):
-  - `service/<name>_wiring.py`: imported by `import_wirings()` at server.py's
-    wiring point; at import it appends to the lists below, then `wire(app)`
-    binds its routes there (route precedence kept). `wire` only binds
-    routes and must be safe to run twice (test_route_order probes it).
-  - The lists below: event hooks, background loops, blast scrape gates, fan row
-    fields and other feature words.
-  - `automations/_funnel_walkers.register_walker`: a mass run kind's funnel walker.
-  - `service/db/<name>_models.py`: more tables on `Base` (db/models.py loads them).
-  - App: `app/plugins/<name>/register.ts` (data) and `ui.ts` (components), read
-    through generated barrels by app/lib/chatSlots.ts and chatUiSlots.ts.
-
-Outbound fires on every successful send path (manual, scheduled, automation);
-inbound fires before SSE fan-out; thread head fires after a head-page read;
-failed send fires on any HTTPException from the manual send route, which the
-hook classifies; mute fires only after the platform accepts the change; socket
-reconnected fires when an account's OF socket is open again after a drop (events
-sent meanwhile are lost). Hooks
-run synchronously on the event loop without I/O and must not raise.
-
-Background loops are starters, not event hooks: server.py's event-pump startup
-calls each once (not in test mode) to spawn its task; one that raises fails
-startup, as the inline starts beside it do.
-
-Blast scrape gates are async predicates, not event hooks: webhook_dispatch asks
-them `(session, account_id)` before the after-blast one-fan scrape; any True
-allows it, none registered means no scrape. They may read the DB through the
-session they are given; one that raises is handled (fail closed) by the caller.
-
-Fan row fields: each `(fan) -> dict` is merged last into every fan row fans.py
-serves. Other feature words: whole words naming another feature, which veto the
-help bot's mass draft when the request has no mass word (assistant_draft).
-"""
+# Hooks run synchronously on the event loop without I/O and must not raise; `wire` must be safe to run twice (test_route_order probes it).
 from __future__ import annotations
 
 import importlib
@@ -64,8 +29,6 @@ other_feature_words: list[str] = []
 
 
 def import_wirings() -> list[ModuleType]:
-    """Import every `*_wiring.py` beside this module (sorted), which registers
-    its hooks; returns the modules (server.py then calls each one's `wire`)."""
     return [importlib.import_module(p.stem) for p in sorted(Path(__file__).parent.glob("*_wiring.py"))]
 
 

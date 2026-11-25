@@ -1,25 +1,3 @@
-"""service/accounts_admin_api.py — server.py's session + multi-account admin
-block, moved wholesale.
-
-  POST   /admin/reload-session              hot-swap an account's OFClient
-  GET    /admin/rev/live                    OF's live build + last sign-rule refresh
-  POST   /admin/session/bootstrap           paste-curl session capture
-  POST   /admin/session/fansly              register a Fansly session blob
-  GET    /admin/accounts                    the principal's accounts
-  GET    /admin/accounts/roster-counts      per-model inbox badge counts
-  POST   /admin/view-lease                  renew a tab's View lease (owner or chatter)
-  POST   /admin/accounts/active             default account
-  PATCH  /admin/accounts/{account_id}       rename / recolor
-  DELETE /admin/accounts/{account_id}       remove an account
-  POST   /admin/accounts/{account_id}/active  Deactivate / Activate
-
-Server globals (`_load_client`, `_invalidate_client`, `_get_request_user`,
-the chats-window cache, ...) are relay_host's call-time forwards, never
-`from server import`, so a test's `server._load_client = fake` still reaches
-these routes. `_ROSTER_SCAN_MAX` lives here; server.py's list_chats imports it.
-Included mid-file in server.py for route order (pinned by
-service/tests/test_route_order.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -67,19 +45,8 @@ log = logging.getLogger("of-relay")
 router = APIRouter()
 
 
-# ── Admin ──────────────────────────────────────────────────────
 
 def owned_account_ids() -> list[str]:
-    """The signed-in principal's FULL owned Creator roster as ids — the same
-    non-watcher set GET /admin/accounts lists (registry accounts clamped to the
-    principal's `account_ids`), owner or chatter (union across linked owners), in
-    registry order. Not session-scoped: every Creator the principal holds, even
-    ones with no captured session or deactivated. Empty when nobody is signed in
-    (the ALLOW_ANONYMOUS_ADMIN escape hatch yields None → []).
-
-    Share-to-all and the all-models overview resolve their targets through this;
-    each id it returns is in the principal's set, so `assert_account_owned`
-    passes for every one."""
     ids = require_actor_account_ids()
     if ids is None:
         return []
@@ -110,8 +77,6 @@ def admin_rev_live() -> dict[str, Any]:
     return {
         "live_rev": live_snap.get("rev"),
         "live_fetched_at": live_snap.get("fetched_at"),
-        # The last central sign-rule refresh (sign_rules.refresh): which build,
-        # whose capture it copied, which accounts took it.
         "sign_rules": sign_rules.last(),
     }
 
@@ -120,9 +85,6 @@ class _BootstrapBody(BaseModel):
     mode: str = Field(..., description="'paste-curl'")
     curl: str | None = Field(None, description="Required for mode=paste-curl — `curl …` from DevTools")
     static_param_override: str | None = Field(None, description="Optional override for an unfamiliar OF revision")
-    # Multi-account additions: optional hint/nickname and whether to flip the
-    # newly-captured account to active. account_id is a hint only — the real
-    # account is always determined by the captured user_id (OF's identity).
     account_id: str | None = Field(None, description="Hint: re-capture for this account (uses its stored proxy)")
     nickname: str | None = Field(None, description="Friendly label persisted to the account meta")
     make_active: bool = Field(True, description="Flip the relay's active account to the newly-captured one")
@@ -163,7 +125,6 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
         log.exception("bootstrap failed")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
-    # Resolve which account dir we ended up in (path = .../accounts/<id>/session_*.json)
     actual_aid = path.parent.name
     c = post_bootstrap_hooks(actual_aid)
     return {
@@ -189,7 +150,7 @@ class _FanslySessionBody(BaseModel):
     make_active: bool = Field(True)
 
 
-@router.post("/admin/session/fansly", dependencies=[Depends(credential_write)])  # a session blob
+@router.post("/admin/session/fansly", dependencies=[Depends(credential_write)])
 def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, Any]:
     """Register a Fansly account from a captured session blob.
 
@@ -263,7 +224,6 @@ def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, 
     return {"ok": True, "account_id": account_id, "platform": "fansly", "name": name}
 
 
-# ── Multi-account admin ───────────────────────────────────────
 
 @router.get("/admin/accounts")
 async def admin_accounts_list(response: Response) -> dict[str, Any]:
@@ -285,26 +245,17 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     user = _get_request_user()
     if user is None:
-        # Anonymous caller — expose nothing. Authentication yields the
-        # real, scoped list; leaking the registry here poisoned client
-        # caches across owners.
+        # Anonymous: expose nothing; leaking the registry here poisoned client caches across owners.
         return {"accounts": [], "active_account_id": None, "watchers": []}
-    # One registry scan (each reads every account dir) for the caller's Creators and watchers alike.
     mine = [a for a in account_registry.list_accounts(include_watchers=True) if a.get("id") in user.account_ids]
     all_accounts = [a for a in mine if a.get("role") != account_registry.ROLE_WATCHER]
     watchers = [a for a in mine if a.get("role") == account_registry.ROLE_WATCHER]
-    # Dead-session accounts (automations paused — see account_health.py) are
-    # stamped so the switcher can badge "unlinked" instead of looking idle.
-    # Deactivated Creators stay listed (analytics, grants and history keep
-    # their rows); `is_active` lets the switcher and inbox drop them.
     try:
         dead = await account_health.dead_session_map()
         off = await account_health.deactivated_ids()
     except Exception:
         log.exception("dead_session_map failed")
         dead, off = {}, set()
-    # The Creator's proxy is bad (proxy_health), and why: "down" (DOWN_AFTER counted failures in a row and a
-    # failed confirm probe) or "flapping" (the refusal-rate knob PROXY_FLAP_BAD_PCT, on by default).
     bad = proxy_health.bad_reasons()
     for a in all_accounts + watchers:
         health = dead.get(a.get("id"), account_health.NO_DEAD_SESSION)
@@ -315,7 +266,6 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
         a["proxy_down"] = reason is not None
         if reason:
             a["proxy_bad_reason"] = reason
-    # First paint of each Creator's Freshness (Shared refresher, P1 Contract 4): Relay memory, 0 OF calls. Off: none.
     if shared_refresher.ENABLED:
         for a in all_accounts:
             a["freshness"] = shared_refresher.snapshot(a["id"])
@@ -329,27 +279,10 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
     }
 
 
-# Roster badge reads OF's LIVE chat list — the SAME source the chat-list rows
-# read — over the inbox's first-page window, so the per-model badge matches what
-# you see at a glance and the All-icon sums to the unified header's "Owe reply".
-#
-# Why NOT the local `chats` table (an earlier implementation): it is not a
-# faithful mirror of OF — it accumulates phantom/old rows (one account: ~290 local vs
-# OF's ~106), `last_message_at` ordering is unreliable, and `unread_count` drifts
-# (WS only increments it), so a local scan read 3 "unread" for a model OF reports
-# as 0. Why NOT a deep scan: paginating the whole history over-counted owe-reply
-# vs the inbox (the All-icon read 11 where the unified header showed 5-6). Why NOT
-# OF's `filter=unread` for blue: it proved unreliable — returned 0 for a model
-# (Amia) that had a genuine `unreadMessagesCount=1` chat in its recent window.
-# The badge window MUST equal the inbox's first page (frontend PAGE_SIZE in
-# useChatList.ts) — both are served from the SAME "list_chats" cache entry
-# keyed (25, 0, "recent", None, None, None), which is what guarantees the
-# badge and the visible list can never disagree.
+# Badge window must equal the inbox first page (same list_chats entry); local chats (phantom rows, drifting unread_count), deep scans and filter=unread all disagreed.
 _ROSTER_SCAN_MAX = unread_total_decide.WINDOW
 _ROSTER_WINDOW_KEY = (_ROSTER_SCAN_MAX, 0, "recent", None, None, None)
-ROSTER_COUNT_TTL_S = 300.0   # the `roster_count` entry's TTL (app_open_warm.FRESH_MAX_S is held to it)
-# Per Creator, its last computed count (with `as_of`): what roster-counts serves an unleased Creator
-# whose chats window is no longer held. Bounded by Creator count; a restart forgets it.
+ROSTER_COUNT_TTL_S = 300.0
 _roster_last: dict[str, dict[str, int]] = {}
 
 
@@ -377,20 +310,7 @@ def patch_window(aid: str, changes: dict[int, Callable[[dict], dict]]) -> None:
 def _roster_counts_from_rows(
     rows: list[dict[str, Any]], exclude: frozenset[int] | set[int] = frozenset(),
 ) -> dict[str, int]:
-    """Pure fold of a /chats window into the blue unread count, exactly as the chat-list rows render it:
-    `unreadMessagesCount > 0` (OF's per-chat read state = the inbox's blue unread badge). Amber (`owe_reply`) is
-    `amber_refresh`'s, added by `fold_held_roster_window`.
-
-    Deduped by fan id and capped at the badge window. `exclude` is the account's
-    OF-restricted set (skip_list reason='of_restricted'); a chat
-    `unread_total_decide.excluded_from_badges` excludes never counts as
-    unread. It still occupies a window slot (the list shows its row),
-    which keeps the badge≡first-page parity intact — the frontend chips read the
-    same predicate off the rows' `withUser.badgeExcluded` stamp (see the /chats
-    serve-time annotation).
-
-    `unread_capped` (set only when true): the window is full and every chat in it that counts is unread, so more
-    unread chats may sit past it; the tab shows "N+". `unread` itself stays the window's count (it sorts the tabs)."""
+    # Excluded chat still occupies a window slot (badge parity with the first page) but never counts unread.
     return _window_roster_counts(_window_chats(rows), exclude)
 
 
@@ -411,7 +331,6 @@ def _window_roster_counts(
 
 
 def _window_chats(rows: list[dict[str, Any]]) -> list[tuple[Any, dict[str, Any]]]:
-    """The badge window: `(fan id, row)` deduped by fan, capped at `_ROSTER_SCAN_MAX`."""
     out: list[tuple[Any, dict[str, Any]]] = []
     seen: set[Any] = set()
     for ch in rows:
@@ -426,30 +345,9 @@ def _window_chats(rows: list[dict[str, Any]]) -> list[tuple[Any, dict[str, Any]]
 
 
 async def _compute_roster_count_of(account_id: str, *, bypass: bool = False) -> dict[str, int]:
-    """A model's inbox backlog, derived from the SAME cached chats window the
-    inbox list is served from (namespace "list_chats", the page-0 key the
-    frontend requests). One OF read feeds both surfaces:
-
-      • warm window → the badge is a pure fold over cached rows, zero OF cost;
-      • cold window / `bypass=True` → ONE live scan that also REWARMS the list
-        cache, so the next /api/of/v2/chats read is a warm hit of fresh rows.
-
-    `bypass=True` is the ?bust= path: badge authoritative NOW **and** the list
-    the user is about to open comes from that same read — they cannot disagree.
-
-    Mirror-first: that WS-kept window IS the badge's mirror. Local
-    `chats.unread_count` is not (see the block comment above), so the badge
-    does not read it."""
     client = await asyncio.to_thread(_load_client, account_id)
     if not bypass:
-        # Freshness contract: never fold from a window older than the badge's
-        # pre-unification re-read cadence. A near-expiry window (≤600s) whose
-        # fold is then cached for the roster TTL (300s) could otherwise serve
-        # ~900s-old counts on a WS-dead account. Escalating to a live read
-        # also rewarms the window, so the list gets fresher along with us.
-        # Except while the account's WS has stayed connected since the window
-        # was read: then the window is folded for its whole list TTL (600 s)
-        # rather than 300 s.
+        # Never fold a window older than the re-read cadence: near-expiry plus the 300s roster TTL serves ~900s-old counts on a WS-dead account.
         fetched_at = _chats_window_fetched_at().get(account_id)
         from of_ws import connected_since
         live_since = connected_since(account_id)
@@ -506,9 +404,6 @@ async def fold_held_roster_window(account_id: str, me: str) -> dict[str, int] | 
 
 
 def _amber_set(aid: str, resp: dict[str, Any]) -> int:
-    """The Amber fold of window `resp` with the arrivals after its ask (`asked_at`) overlaid, so a window asked
-    before them and landing after can't undo them; published when the Knob is on and the window's read time is
-    known."""
     import badge_reads
     import unread_total
     me, exclude = _amber_ctx[aid]
@@ -522,7 +417,7 @@ def _amber_set(aid: str, resp: dict[str, Any]) -> int:
     return n
 
 
-_amber_ctx: dict[str, tuple[str, frozenset[int]]] = {}   # Creator -> (me, restricted ids) of its last window fold
+_amber_ctx: dict[str, tuple[str, frozenset[int]]] = {}
 
 
 def amber_creator_id(aid: str) -> str | None:
@@ -531,10 +426,6 @@ def amber_creator_id(aid: str) -> str | None:
 
 
 def amber_refresh(account_id: str) -> int | None:
-    """The Amber circle (creator-badges 0F) re-folded from the held page-0 window (`relay_cache.peek`, no OF call)
-    with the last fold's `me` and restricted ids and Phase C's latest Unread set; a cached `roster_count` answer and
-    the last-known count take it too, so a warm roster-counts read agrees. No window held, or none folded since
-    restart: None, the last amber stays. Never raises."""
     try:
         import unread_total
         aid = str(account_id)
@@ -556,8 +447,6 @@ def amber_refresh(account_id: str) -> int | None:
 def _fold_registry(
     aid: str, rows: list[dict[str, Any]] | None, as_of: int, exclude: frozenset[int], me: str | None = None,
 ) -> list[tuple[Any, dict[str, Any]]]:
-    """The restricted registry as now: R from `badge_reads.rescore` with an Unread set held, else from the window's
-    `rows` as of `as_of` (no window held: R as is); `_amber_ctx` takes the ids, and `me` from a window fold."""
     import badge_reads
     window = _window_chats(rows) if rows is not None else []
     badge_reads.rescore(aid, rows, exclude, as_of)
@@ -569,9 +458,6 @@ def _fold_registry(
 
 
 async def restrict_refresh(account_id: str) -> None:
-    """A landed restrict / unrestrict route (OF sends no frame for either), its registry row written: R
-    (`badge_reads.rescore`, else the held window's fold) and amber re-folded with the registry as now, before the
-    route's bust. 0 OF calls; no window held and no Unread set leaves R as is. Never raises."""
     aid = str(account_id)
     try:
         exclude, _, rows, as_of = await _window_fold_inputs(aid)
@@ -582,8 +468,6 @@ async def restrict_refresh(account_id: str) -> None:
 
 
 async def _held_roster_count(account_id: str) -> dict[str, int] | None:
-    """No OF read (an unleased or Dead-session Creator): its held page-0 chats window folded at any age, else its
-    last-known count, else None (left out of the answer)."""
     resp = held_window(account_id)
     if resp is not None and resp.get("fetched_at") is not None:
         try:
@@ -597,8 +481,6 @@ async def _held_roster_count(account_id: str) -> dict[str, int] | None:
 
 
 def _principal() -> tuple[str, Any, list[str]] | None:
-    """The signed-in principal as (kind, the User/Chatter, its Creator ids in their stored order): the owner User,
-    else the Chatter (its linked owners' union), else None (signed out)."""
     user = _get_request_user()
     if user is not None:
         return "user", user, list(user.account_ids or ())
@@ -609,17 +491,12 @@ def _principal() -> tuple[str, Any, list[str]] | None:
 
 
 def _roster_answer(counts: dict[str, Any], grouped: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
-    """A roster-counts answer: the counts and `now`, this Relay's epoch ms. The app reads only `counts`, as is;
-    `now` and each count's `as_of` stay on the wire. `grouped`: a group-bound chatter's counts, which replace the
-    whole-inbox ones (and the Red circle)."""
     grouped = grouped or {}
     return {"counts": {aid: grouped[aid] if aid in grouped else _red(aid, c) for aid, c in counts.items()},
             "now": int(_time_mod.time() * 1000)}
 
 
 async def _group_counts(counts: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """For a chatter bound to a Split Inbox group: each such Creator's counts folded from the held page-0 window
-    narrowed to that group (zeros while no window is held). Only the window's fans count, so no Red circle."""
     import badge_reads
     out: dict[str, dict[str, Any]] = {}
     chatter_id = split_inbox.acting_chatter_id()
@@ -647,7 +524,6 @@ async def _group_counts(counts: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _red(account_id: str, count: dict[str, Any]) -> dict[str, Any]:
-    """A confirmed Red circle supplies `unread` and `as_of`. Grey slots fall back to the fold."""
     import unread_total
     slot = unread_total.snapshot(account_id)
     if slot is None or slot.get("grey") or slot.get("n") is None:
@@ -689,18 +565,15 @@ async def admin_accounts_roster_counts(
     response.headers["Cache-Control"] = "no-store"
     principal = _principal()
     ids = principal[2] if principal is not None else []
-    # A watcher (a fan account, no Creator) is never in the strip: no OF read on it here,
-    # so this poll can never mark its session dead and pause it.
+    # Watcher is never read here: a dead-session mark would pause it.
     ids = [a for a in ids if not account_registry.is_watcher(a)]
     if not ids:
         return _roster_answer({})
 
     async def _one(aid: str, *, bypass: bool = False) -> tuple[str, dict[str, int]]:
-        client = client_pool.peek(aid)       # the client this read starts on: only it is evicted on a dead session
+        client = client_pool.peek(aid)
         try:
-            # Named async closure, not a lambda: get_or_fetch dispatches sync
-            # fetchers to a thread, and a lambda returning a coroutine would
-            # come back unawaited.
+            # Named async closure, not a lambda: get_or_fetch threads sync fetchers and a lambda's coroutine would go unawaited.
             async def _fetch() -> dict[str, int]:
                 return await _compute_roster_count_of(aid, bypass=bypass)
             value = await relay_cache.get_or_fetch(
@@ -711,18 +584,11 @@ async def admin_accounts_roster_counts(
             return aid, value
         except Exception as e:  # noqa: BLE001 — one bad model must not blank the strip
             log.warning("roster-counts: OF read failed for %s", aid, exc_info=True)
-            # OF rejected the session itself: pause the Creator and tell its owner,
-            # as `_proxy` does. This strip is the read an owner makes even for a
-            # Creator nobody chats on.
             await _flag_dead_session(aid, e, "roster-counts", client)
             return aid, {"unread": 0, "owe_reply": 0, "as_of": 0}
 
-    # OF is read only for a Creator this Relay's View lease holds (`view_lease`, ADR-0031), a `bust`, or the
-    # App-open warm (`rewarm_roster_count`). Any other Creator, and a Dead-session one always, is served with no
-    # OF read (`_held_roster_count`): its held chats window folded at any age, else its last-known count, else it
-    # is left out of `counts`. Every count carries `as_of`, epoch ms of the window it was folded from (0: a
-    # failed read's zeros); the app caches the counts as answered and does not read it.
-    # (A comment, not the docstring: the docstring is the OpenAPI description, pinned by test_route_order.)
+    # Comment, not docstring: the docstring is the OpenAPI description, pinned by test_route_order.
+    # OF read only for leased/bust/App-open-warm Creators; others and Dead-session ones are served from the held window (_held_roster_count).
     import view_lease
     leased = view_lease.leased_ids()
     dead = set(await account_health.dead_session_map())
@@ -732,17 +598,7 @@ async def admin_accounts_roster_counts(
             return await _one(aid)
         return aid, await _held_roster_count(aid)
 
-    # Targeted force-refresh: drop + recompute JUST this model and return only it.
-    # The frontend merges the single entry into its cached map, so a swap / hover /
-    # read costs exactly ONE bounded OF read — not a full-strip rescan, which the
-    # gather would trigger for any *other* model whose cache is cold/expired. Gated
-    # on ownership (a crafted `bust` can't evict another tenant's entry); an id the
-    # principal doesn't own falls through to the normal full-map path.
-    #
-    # bypass=True is the badge↔list bridge: the recompute forces a LIVE OF read
-    # of the shared chats window and REWARMS the "list_chats" page-0 entry, so
-    # the list refetch the frontend chains after this call is a warm hit of the
-    # same rows these counts were folded from.
+    # Ownership-gated: a crafted bust can't evict another tenant's entry; bypass=True forces a live read and rewarms list_chats page 0.
     if bust and bust in ids:
         if bust in dead:
             held = await _held_roster_count(bust)
@@ -763,10 +619,6 @@ async def admin_accounts_roster_counts(
 
 
 async def rewarm_roster_count(account_id: str) -> dict[str, int]:
-    """The `?bust=` recompute for one Creator outside a request (the App-open warm's step 2,
-    server.app_open_warm_reads): one live read of the chats window, rewarming the Fan List's page-0
-    `list_chats` entry, folded into a fresh `roster_count` entry (the route's TTL). Raises what the
-    read raised."""
     relay_cache.invalidate("roster_count", account_id)
 
     async def _fetch() -> dict[str, int]:
@@ -775,13 +627,10 @@ async def rewarm_roster_count(account_id: str) -> dict[str, int]:
                                           fetcher=_fetch)
 
 
-# View lease (ADR-0031, phase-01 1a): the Creators a tab has on screen.
 _VIEW_LEASE_MAX_IDS = 200
 
 
 async def _select_refresh(account_id: str) -> None:
-    """One Select refresh. The Caller kind is set inside the task: spawn_bg labels its task
-    `loop:<name>`, and the innermost label wins."""
     import of_call_counter
     import purchase_poll
     with of_call_counter.caller("select_refresh"):
@@ -849,13 +698,10 @@ class _ActivateBody(BaseModel):
 @router.post("/admin/accounts/active")
 def admin_accounts_activate(body: _ActivateBody = Body(...)) -> dict[str, Any]:
     """Flip which account is the default (no X-Account-Id header → this one)."""
-    # The caller's own Creators only (the id is body-carried: the isolation middleware never sees it). First, so
-    # another Agency's id answers 403 whether it exists or not.
     assert_account_owned(body.account_id if body.account_id is not None
                          else account_registry.get_stored_active_account_id())
     if body.account_id is not None and account_registry.get_account(body.account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {body.account_id!r}")
-    # A watcher (a fan account) is never the default: the registry refuses it.
     if not account_registry.set_active_account_id(body.account_id):
         raise HTTPException(status_code=400, detail="a watcher account cannot be the default")
     _kick_db_sync("accounts-active")
@@ -878,11 +724,7 @@ def admin_accounts_update(account_id: str, body: _AccountUpdateBody = Body(...))
     gate already restricts chatters here to PATCH-only."""
     if account_registry.get_account(account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {account_id!r}")
-    # Explicit ownership gate. The account-isolation middleware only catches
-    # NUMERIC account-id path segments — real OF ids are numeric so owners are
-    # covered, but now that chatters can reach this path we assert ownership at
-    # the handler regardless of id shape (no-op for unauthed curl; the full
-    # registry set clears it for owners/masters).
+    # Assert ownership here: the isolation middleware only checks numeric path segments.
     assert_account_owned(account_id)
     nickname = body.nickname
     if _get_request_user() is None and _get_request_chatter() is not None:
@@ -905,11 +747,7 @@ async def admin_accounts_remove(account_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"unknown account {account_id!r}")
     _stop_account_pump(account_id)
     _invalidate_client(account_id)
-    # Purge both server caches for this account so a re-added account (same
-    # account_id) can't read the prior session's chats/vault, and so the
-    # next caller after the drop goes upstream instead of serving ghost
-    # data. Both are strictly account-scoped — zero collateral on other
-    # accounts. Best-effort: cache cleanup must never fail the delete.
+    # Purge caches so a re-added account can't read the prior session's chats/vault; best-effort.
     try:
         relay_cache.invalidate_account(account_id)
     except Exception as e:  # noqa: BLE001
@@ -919,7 +757,7 @@ async def admin_accounts_remove(account_id: str) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         log.warning("vault_cache: invalidate-on-delete failed for %s: %s", account_id, e)
     try:
-        await notifications_api.drop_pinned(account_id)   # every Agency's pinned row for it goes with it
+        await notifications_api.drop_pinned(account_id)
     except Exception as e:  # noqa: BLE001
         log.warning("notifications: drop-pinned-on-delete failed for %s: %s", account_id, e)
     ok = account_registry.delete_account(account_id)
@@ -966,8 +804,7 @@ async def admin_accounts_set_active(
         _stop_account_pump(account_id)
         _invalidate_client(account_id)
         return {"ok": True, "account_id": account_id, "is_active": False}
-    # Jobs that fell due while it was off are cancelled while the flag still
-    # holds the executor off them, so none fires between here and activate().
+    # Cancel jobs that fell due while off before activate(), while the flag still holds the executor off them.
     off_since = await account_health.deactivated_since(account_id)
     if off_since is not None:
         from automation_executor import cancel_jobs_missed_while_off

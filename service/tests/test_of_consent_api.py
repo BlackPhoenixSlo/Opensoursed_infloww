@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
-"""
-`GET`/`PUT /admin/of-consent/{account_id}` (of_consent_api): a Creator's "Auto-accept
-OnlyFans consent" switch in Settings › OnlyFans consent (of_consent, `of_consent_accepts`).
-
-  case_owner_turns_it_on_and_off_each_change_one_row_with_who_and_when: the
-      owner's PUT appends a row (user id, username, the owner's Employee, time),
-      the same value again appends none, off appends one; GET answers the newest;
-      the audit middleware's `actions` row names the same Employee and account.
-  case_required_follows_the_consent_notice: `required` false on a fresh
-      account, true while consent_notices holds its `consent_required` row (OF
-      refused a send "Consent not accepted"), false again once it clears; the
-      switch itself is answered (and shown) for every account.
-  case_who_may_save: owner only: anonymous 401, a chatter linked to the
-      owner 403, another owner 403, founder impersonation 403; none writes a row.
-  case_a_bad_body_is_422.
-
-Run: ./venv/bin/python service/tests/test_of_consent_api.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
@@ -50,7 +32,7 @@ async def _user(username: str, *, is_admin: bool = False) -> str:
     return uid
 
 
-fx._sandbox_sessions_tree()   # consent_notices.flag files only for a Creator in the registry
+fx._sandbox_sessions_tree()
 
 
 async def _account(account_id: str, *owner_ids: str) -> None:

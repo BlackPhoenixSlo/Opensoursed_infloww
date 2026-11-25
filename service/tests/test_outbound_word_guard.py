@@ -1,31 +1,4 @@
 #!/usr/bin/env python3
-"""Sensitive words enforced server-side on every automation send (S12).
-
-Growth > Sensitive words used to be a browser-only check: the mass-message
-composer and Smart Message/template save refuse a listed word ("Please check
-the contents of the messages"), the 1:1 composer only warns. Automations never
-saw the list. Now:
-
-  • `_wordfilter.load_banned_words(account)` returns the Agency list (every
-    Agency holding the account in user_accounts), so each sender that already
-    filters (autoreply, welcome chatter, mass message, reply funnel) honours
-    it, in block mode.
-  • `automation_executor.run_once` sets `of_client.OUTBOUND_TEXT_GUARD` for the
-    run; OFClient.send_message / send_mass_message / create_post — and the
-    Fansly shim's three — pass their text through it: the floor under every
-    sender, including the ones that never filtered (online blast,
-    PPV, posts, S4S).
-  • block = skip-and-log, one rule whether the sender lets the block abort the
-    run or catches it per fan: the guard's summary (texts_passed_guard /
-    texts_blocked / blocked_hits) lands in the run stats, the run is `skipped`
-    (its own status in the run log) iff something was blocked and nothing
-    passed, and its job is done (never retried). mask = the send goes out masked.
-  • human sends are untouched (no guard outside a run), and a
-    send_purpose="manual" write through of_write_paced (a composer message,
-    deferred via scheduled_send) stands the guard aside.
-
-Run:  ./venv/bin/python service/tests/test_outbound_word_guard.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -57,7 +30,6 @@ _SESSION = {
 
 
 class _WireSpy(OFClient):
-    """A real OFClient whose wire is a list: no network, every POST captured."""
 
     def __init__(self):
         super().__init__(_SESSION)
@@ -67,7 +39,7 @@ class _WireSpy(OFClient):
         self.posts.append(body)
         return {"id": None}
 
-    def _http_call(self, method, url, *, json_body=None):  # create_post's path
+    def _http_call(self, method, url, *, json_body=None):
         self.posts.append(json_body or {})
 
         class _R:
@@ -120,7 +92,7 @@ def case_guard_block_mask_and_empty():
 
 def case_client_sends_pass_the_guard():
     spy = _WireSpy()
-    spy.send_message(1, "my telegram is x")          # no guard set: human lane
+    spy.send_message(1, "my telegram is x")
     assert len(spy.posts) == 1
     token = OUTBOUND_TEXT_GUARD.set(_wordfilter.outbound_guard(["telegram"], "block"))
     try:
@@ -133,7 +105,7 @@ def case_client_sends_pass_the_guard():
             except _wordfilter.OutboundWordsBlocked:
                 pass
         assert len(spy.posts) == 1, "a blocked send must never reach the wire"
-        spy.send_message(1, "")                         # media-only: nothing to scan
+        spy.send_message(1, "")
         assert len(spy.posts) == 2
     finally:
         OUTBOUND_TEXT_GUARD.reset(token)
@@ -150,7 +122,6 @@ _SPY = _WireSpy()
 
 @register("_test_guarded_blast")
 async def _guarded_blast(account_id, payload, *, run_id):
-    # A sender that never filtered: straight to the client, off-thread.
     await asyncio.to_thread(_SPY.send_mass_message, payload["text"], user_lists=["fans"])
     return {"sent": 1}
 
@@ -173,7 +144,6 @@ async def case_run_once_blocks_as_skip_not_error():
 
 @register("_test_guarded_drip")
 async def _guarded_drip(account_id, payload, *, run_id):
-    # Sends one DM per text; `catch` mimics a sender that swallows per-fan errors.
     sent = failed = 0
     for i, text in enumerate(payload["texts"]):
         try:
@@ -189,7 +159,6 @@ async def _guarded_drip(account_id, payload, *, run_id):
 async def case_block_keeps_what_went_out_before_it():
     texts = ["hi", "new set", "my telegram", "never reached"]
     summary = {"texts_passed_guard": 2, "texts_blocked": 1, "blocked_hits": ["telegram"]}
-    # Propagated after two passed: same rule as caught, so the run is ok.
     res = await ax.run_once(ACCT, "_test_guarded_drip", payload={"texts": texts})
     assert res["status"] == "ok", res
     assert {k: res[k] for k in summary} == summary, res
@@ -204,7 +173,7 @@ async def case_block_keeps_what_went_out_before_it():
     assert (caught["sent"], caught["failed"]) == (3, 1), caught
     assert caught["texts_passed_guard"] == 3 and caught["texts_blocked"] == 1, caught
 
-    for catch in (False, True):           # nothing passed: skipped on both paths
+    for catch in (False, True):
         blocked = await ax.run_once(ACCT, "_test_guarded_drip",
                                     payload={"texts": ["telegram?"], "catch": catch})
         assert blocked["status"] == "skipped", (catch, blocked)
@@ -245,10 +214,10 @@ def case_fansly_shim_sends_pass_the_guard():
 
     def _wire(*_a, **_k):
         raise _Reached()
-    shim = FanslyShimClient.__new__(FanslyShimClient)   # no session, no network
-    shim._group_for_send = _wire          # send_message's first wire step
-    shim._main_wall_id = _wire            # create_post's
-    shim._broadcast_group = _wire         # send_mass_message's
+    shim = FanslyShimClient.__new__(FanslyShimClient)
+    shim._group_for_send = _wire
+    shim._main_wall_id = _wire
+    shim._broadcast_group = _wire
     sends = (lambda t: shim.send_message(5, t),
              lambda t: shim.create_post(t),
              lambda t: shim.send_mass_message(t, confirm_live_broadcast=True))
@@ -267,7 +236,7 @@ def case_fansly_shim_sends_pass_the_guard():
                 pass
     finally:
         OUTBOUND_TEXT_GUARD.reset(token)
-    for send in sends:                    # no run, no guard: straight to the wire
+    for send in sends:
         try:
             send("my telegram")
         except _Reached:
@@ -281,7 +250,7 @@ async def case_manual_scheduled_send_is_exempt():
     try:
         manual = await ax.run_once(ACCT, "scheduled_send", payload={
             "fan_id": 5, "text": "my telegram", "send_purpose": "manual"})
-        assert manual["status"] == "sent_no_id", manual   # the spy's wire returns no id
+        assert manual["status"] == "sent_no_id", manual
         assert len(spy.posts) == 1, "a human's deferred message must still send"
         automated = await ax.run_once(ACCT, "scheduled_send", payload={
             "fan_id": 5, "text": "my telegram"})

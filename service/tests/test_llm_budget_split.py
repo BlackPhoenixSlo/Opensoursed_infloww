@@ -1,4 +1,3 @@
-"""Drive real reservations, settlement and chat transport against a temporary DB."""
 import _harness
 _harness.bootstrap()
 
@@ -14,7 +13,6 @@ async def case_split():
         s.add(Account(id=aid))
         await s.flush()
         s.add(AccountAiConfig(account_id=aid, daily_cost_cap_cents=100))
-    # Describe and flags share $1 even when their underlying providers differ.
     hold = await llm.reserve_external(aid, 'deepinfra', 'qwen3-vl-30b', 10000,
                                       purpose='describe_media', request={})
     await hold.done(10000, tokens_in=1, ok=True, latency_ms=1)
@@ -25,7 +23,6 @@ async def case_split():
         pass
     else:
         raise AssertionError('flags escaped describe cap')
-    # Other AI still has its entire separate $1; providers share that allowance.
     other = await llm.reserve_external(aid, 'deepseek', 'deepseek-v4-flash', 10000,
                                        purpose='gen_info', request={})
     await other.done(10000, tokens_in=1, ok=True, latency_ms=1)

@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
-"""GET /auth/fleet/whois, the fleet front's username lookup (service/fleet_api.py,
-.scratch/fleet-sharding/DESIGN.md §10.1).
-
-The seam is the Relay over HTTP. This process mounts the route with a 40-char
-FLEET_SECRET; the not-mounted cases (no secret, a 31-char one) import the
-server again in a child process, since the mount is decided once at import.
-Logins come from the shared two-Agency fixture plus one chatter linked to no
-owner. Nothing here reaches the network.
-
-Run: ./venv/bin/python service/tests/test_fleet_api.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 import os  # noqa: E402
 
 SECRET = "f" * 40
-os.environ["FLEET_SECRET"] = SECRET  # before server (and fleet_api) is imported
+os.environ["FLEET_SECRET"] = SECRET
 
 _harness.bootstrap()
 
@@ -39,7 +28,6 @@ PATH = "/auth/fleet/whois"
 
 
 def _whois(username: str, secret: str | None = SECRET):
-    """The lookup as the front sends it: the name percent-encoded in a header, never in the URL."""
     headers = {"X-Fleet-Username": quote(username, safe="")}
     if secret is not None:
         headers["X-Fleet-Secret"] = secret
@@ -47,7 +35,6 @@ def _whois(username: str, secret: str | None = SECRET):
 
 
 def _status_without_mount(secret: str | None) -> int:
-    """The route's status in a fresh server process with FLEET_SECRET = `secret`."""
     env = {k: v for k, v in os.environ.items() if k != "FLEET_SECRET"}
     if secret is not None:
         env["FLEET_SECRET"] = secret
@@ -93,7 +80,7 @@ def case_an_owner_an_employee_and_a_lone_chatter_exist():
 
 def case_the_username_is_normalized_as_sign_in_does():
     assert _whois("  Agency_A_Owner ").json() == {"exists": True}
-    assert _whois("ågency_a_owner").json() == {"exists": False}  # non-ASCII survives the header
+    assert _whois("ågency_a_owner").json() == {"exists": False}
 
 
 def case_an_unknown_or_empty_name_does_not_exist():
@@ -108,8 +95,6 @@ def case_a_name_over_64_chars_is_refused():
 
 
 def case_it_spends_no_sign_in_throttle_token_and_no_log_line_or_url_has_the_username():
-    """Every log record in the process counts, the test client's own request
-    line (the URL) included, so a name moved back into the query fails here."""
     login_throttle.reset()
     seen: list[str] = []
 

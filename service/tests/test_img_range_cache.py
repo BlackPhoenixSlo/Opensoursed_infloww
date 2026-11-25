@@ -1,33 +1,7 @@
 #!/usr/bin/env python3
-"""`/img` Range requests on small clips — the disk cache answers them. Plain-assert, no pytest (repo convention).
-
-Why: a vault GIF is an OF mp4 (`files.full`) a <video> loops (VaultGifLoop, the Media details panel). A <video>
-always sends Range, and `/img` used to skip its disk cache for Range, so every picker open re-downloaded every
-on-screen GIF through the account's paid proxy (measured in the PR #277 work).
-
-  case_miss_fetches_once_then_disk      — `bytes=0-` miss: one upstream GET (Range forwarded), the whole clip to
-                                          disk, a 206 off disk; the next opens (other ranges, other signatures):
-                                          0 upstream.
-  case_ranges_off_disk                  — a cached clip: `bytes=0-`, open-ended, closed, suffix → 206 with the
-                                          right Content-Range / Accept-Ranges / Content-Length and bytes;
-                                          past the end → 416 `bytes */n`. No upstream, no lane slot.
-  case_partial_of_small_refetches_whole — upstream answers a part (Safari's `bytes=0-1` probe): one more GET
-                                          without Range fetches the whole clip, then disk.
-  case_big_or_unknown_streams_through   — over img_clip.RANGE_CACHE_MAX_BYTES, or no size: today's pass-through
-                                          (upstream's 206 streamed, nothing on disk, every request upstream).
-  case_plain_get_keeps_the_photo_cap    — no Range: a 3 MB object (over the 2 MB photo cap, under the clip cap)
-                                          is still not cached.
-  case_short_body_is_not_cached         — upstream sends fewer bytes than its Content-Range says (a cut
-                                          transfer): a 502, never written to disk, no lane slot kept.
-  case_long_body_is_not_cached          — more bytes than declared: the same 502.
-  case_encoded_body_streams_through     — a Content-Encoding body (decoded size unknown): today's pass-through.
-
-OF's CDN is faked at the client's `http.get`: no request leaves the process.
-Run: ./venv/bin/python service/tests/test_img_range_cache.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import os  # noqa: E402
 import re  # noqa: E402
@@ -48,7 +22,7 @@ import server  # noqa: E402 — after _harness (DB) + IMG_CACHE_DIR are bound
 _harness.bootstrap()
 CLIENT = _harness.make_client()
 
-CLIP = bytes(range(256)) * 400            # 102_400 bytes: a small GIF clip
+CLIP = bytes(range(256)) * 400
 PATH = "https://cdn2.onlyfans.com/files/g/ab/gif_clip.mp4"
 
 
@@ -57,7 +31,6 @@ def _u(sig: str = "s1") -> str:
 
 
 class _Resp:
-    """CloudFront as OF's CDN answers: a Range → 206 + Content-Range; `sized=False` drops the sizes (chunked)."""
 
     def __init__(self, body: bytes, range_: str | None, sized: bool = True, short: int = 0, extra: int = 0):
         n = len(body)
@@ -73,7 +46,7 @@ class _Resp:
             self.status_code, self._body = 200, body
         if sized:
             self.headers["Content-Length"] = str(len(self._body))
-        self._body = self._body[:len(self._body) - short] + b"\0" * extra   # vs the declared size
+        self._body = self._body[:len(self._body) - short] + b"\0" * extra
         self.closed = False
 
     def iter_content(self, chunk_size=65536):
@@ -89,12 +62,12 @@ class _Cdn:
                  extra: int = 0, headers: dict[str, str] | None = None):
         self.body, self.sized, self.partial, self.headers = body, sized, partial, headers or {}
         self.short, self.extra = short, extra
-        self.gets: list[str | None] = []   # the Range each upstream GET carried (None: none)
+        self.gets: list[str | None] = []
 
     def get(self, url, timeout=None, stream=False, headers=None):
         rng = (headers or {}).get("Range")
         self.gets.append(rng)
-        if rng and self.partial:   # a CDN that only ever answers the first 2 bytes of a Range
+        if rng and self.partial:
             rng = "bytes=0-1"
         r = _Resp(self.body, rng, self.sized, self.short, self.extra)
         r.headers.update(self.headers)
@@ -123,7 +96,6 @@ def case_miss_fetches_once_then_disk():
     assert r.content == CLIP
     assert cdn.gets == ["bytes=0-"], cdn.gets
     assert _on_disk()
-    # Reopen: another range, another signature (OF re-signed), the details panel's own <video>: 0 upstream.
     for rng, sig in (("bytes=0-", "s2"), ("bytes=4096-", "s3"), (None, "s4")):
         r = _get(rng, sig)
         assert r.status_code in (200, 206) and r.headers.get("x-img-cache") == "HIT", (rng, r.status_code, r.headers)

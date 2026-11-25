@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
-"""Audit log keeps no credential (W30 F1).
-
-  case_snapshot_*:   audit_log._safe_snapshot — a credential write (keys_only)
-                     keeps names + set/cleared only, nested too; elsewhere secret
-                     names (incl. `*_key`) are redacted at any depth; a pasted curl
-                     over 4 KB is redacted, not stored as raw text.
-  case_single_head / case_upgrade_scrubs_only_credential_rows: migration 0134
-                     scrubs historic rows, leaves every other row, idempotent.
-  case_init_db_scrubs_once: boxes run it through init_db (data_migrations marker).
-
-Run: ./venv/bin/python service/tests/test_audit_credential_scrub.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness
 
 import json  # noqa: E402
 import os  # noqa: E402
@@ -48,7 +36,7 @@ def case_snapshot_credential_write_keeps_names_only():
 def case_snapshot_other_writes_keep_values_but_nested_secrets():
     got = _snap({"name": "hu-1", "proxy": {"password": "pw", "host": "h"}, "code": "1"}, False)
     assert got == {"name": "hu-1", "proxy": {"password": "***", "host": "h"}, "code": "***"}, got
-    got = _snap({"countries": [{"code": "US"}]}, False)      # a nested `code` is data
+    got = _snap({"countries": [{"code": "US"}]}, False)
     assert got == {"countries": [{"code": "US"}]}, got
     got = _snap({"cfg": {"HELP_ASSISTANT_DEEPSEEK_KEY": KEY, "check_key": "c"}, "keys": ["a"]}, False)
     assert got == {"cfg": {"HELP_ASSISTANT_DEEPSEEK_KEY": "***", "check_key": "***"}, "keys": ["a"]}, got
@@ -87,7 +75,6 @@ def case_single_head():
     assert script.get_revision(REV).down_revision == PREV
 
 
-# (action, stored payload, payload after the scrub)
 ROWS = [
     ("PUT /admin/my-llm-keys", {"typesafe": KEY, "deepseek": ""}, {"typesafe": "set", "deepseek": "cleared"}),
     ("PUT /admin/users/u1/llm-keys", {"admin_password": "***", "providers": {"deepseek": KEY}},
@@ -100,10 +87,10 @@ ROWS = [
      {"text": "set", "scheme": "set"}),
     ("POST /admin/session/fansly", {"token": KEY, "check_key": KEY, "accountId": "a1"},
      {"token": "***", "check_key": "set", "accountId": "set"}),
-    ("POST /admin/employees", {"name": KEY}, {"name": KEY}),                  # not a credential write
-    ("GET /admin/my-llm-keys", {"typesafe": KEY}, {"typesafe": KEY}),        # not that action
+    ("POST /admin/employees", {"name": KEY}, {"name": KEY}),
+    ("GET /admin/my-llm-keys", {"typesafe": KEY}, {"typesafe": KEY}),
 ]
-CUT = '{"mode": "paste-curl", "curl": "curl -b \'sess=' + KEY   # an old 4 KB cut: not JSON
+CUT = '{"mode": "paste-curl", "curl": "curl -b \'sess=' + KEY
 
 
 def case_upgrade_scrubs_only_credential_rows():
@@ -126,8 +113,8 @@ def case_upgrade_scrubs_only_credential_rows():
         got = _got()
         want = [(a, json.dumps(w)) for a, _, w in ROWS] + [("POST /admin/session/bootstrap", None)]
         assert got == want, got
-        _alembic(url, command.downgrade, PREV)      # no-op
-        _alembic(url, command.upgrade, REV)         # idempotent
+        _alembic(url, command.downgrade, PREV)
+        _alembic(url, command.upgrade, REV)
         assert _got() == want, _got()
         engine.dispose()
 

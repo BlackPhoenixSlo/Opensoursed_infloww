@@ -1,30 +1,5 @@
 #!/usr/bin/env python3
-"""Full AI Chat Writers (phase 03a, slice A): the two new hosts and the
-one-shot Writer call.
-
-  1. A Writer is tried ONCE with a short timeout (`timeout_s`, `max_attempts`)
-     so a 429 or a stall reaches the next Writer fast, not after three 120 s
-     retries. Proven at the HTTP seam: what the transport was built with and
-     how many requests it saw.
-  2. Every existing caller passes neither kwarg and must see today's request
-     count and timeout (parity).
-  3. Euryale v2.3 (NanoGPT) and Hermes 4 405B (OpenRouter) reach their hosts
-     with the spec's wire ids and bill at the D54/D60 prices; neither takes
-     the JSON lanes.
-  4. `messages_for` per Route (ticket 34), pure: each old constant is its
-     `docs/prompts/old` text, each new one its catalog entry; the sell-off
-     line only on rows `sell_off` / `tease_off`; sext at Heat with her Model
-     info; ai_dare two beats in order; make_right the apology frames, no free
-     item; the cat-sticker block only with `gifs` on; no_send builds nothing;
-     BROKE_JOKE once under any Route's goal when `declines_buying` fired (NEW-154).
-  5. `style_flags` per `style` layer: one layer off turns its switch off alone; an old
-     `text_style` side reads girl = all on, formal = all off; typos never reach the prompt.
-
-Offline: the transport is stubbed, no provider is called.
-
-Run: cd service && ../venv/bin/python tests/test_full_ai_writers.py
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -35,7 +10,6 @@ from db.engine import get_session  # noqa: E402
 from db.models import Account, AccountAiConfig  # noqa: E402
 from llm_client import LLMConfigError, LLMHTTPError, chat  # noqa: E402
 
-# House keys so an orphan account can resolve one (fake values, never real).
 os.environ.setdefault("NANOGPT_API_KEY", "test-nanogpt-house-key")
 os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-house-key")
 
@@ -54,8 +28,6 @@ class _FakeResp:
 
 
 class _TimeoutClient:
-    """Every request times out. Records the timeout each client was built
-    with and how many requests left the process."""
 
     timeouts: list = []
     calls: int = 0
@@ -119,7 +91,6 @@ async def _expect_http_error(model, account_id, client, **kw):
     raise AssertionError("a timed-out call must raise LLMHTTPError")
 
 
-# ── 1. One attempt at the given bound ─────────────────────────────────────
 
 async def case_one_attempt_times_out_at_the_given_bound():
     await _seed_account("acct_writer_once")
@@ -142,7 +113,6 @@ async def case_two_attempts_means_two_requests():
     assert _TimeoutClient.timeouts == [3.0, 3.0], _TimeoutClient.timeouts
 
 
-# ── 2. Parity: no kwargs = today's 3 attempts at 120 s ────────────────────
 
 async def case_default_kwargs_keep_todays_count_and_timeout():
     await _seed_account("acct_writer_parity")
@@ -157,7 +127,6 @@ async def case_default_kwargs_keep_todays_count_and_timeout():
 
 
 async def case_default_kwargs_send_the_same_body():
-    """The kwargs shape the transport, never the request body."""
     await _seed_account("acct_writer_body")
     await _fire("deepseek-v4-flash", "acct_writer_body", _OkClient)
     plain = dict(_OkClient.last_body)
@@ -167,9 +136,6 @@ async def case_default_kwargs_send_the_same_body():
     assert "timeout_s" not in plain and "max_attempts" not in plain, plain
 
 
-# ── 3. The two new Writers: host, wire id, price ──────────────────────────
-# Billed in the internal unit, cents x100. 1M tokens each way so the spec's
-# per-1M dollar prices land exact (10 in / 5 out rounds Euryale to 0).
 _MILLION = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
 
 
@@ -188,7 +154,6 @@ async def case_euryale_goes_to_nanogpt_at_d54_price():
         _OkClient.last_url
     assert _OkClient.last_body.get("model") == "Sao10K/L3.3-70B-Euryale-v2.3", \
         _OkClient.last_body.get("model")
-    # D54: $0.493/M in + $0.493/M out = 98.6 cents.
     assert res.cost_cents == 9860, res.cost_cents
 
 
@@ -198,12 +163,10 @@ async def case_hermes_goes_to_openrouter_at_d60_price():
         _OkClient.last_url
     assert _OkClient.last_body.get("model") == "nousresearch/hermes-4-405b", \
         _OkClient.last_body.get("model")
-    # D60: $1/M in + $3/M out = 400 cents.
     assert res.cost_cents == 40000, res.cost_cents
 
 
 async def case_writers_refuse_json_object_before_firing():
-    """Not offered on the JSON lanes (gen_info, copilot): refused, no request."""
     await _seed_account("acct_writer_json")
     for mid in ("euryale-v2.3", "hermes-4-405b"):
         try:
@@ -226,9 +189,6 @@ async def case_zero_attempts_is_refused_before_anything_fires():
 
 
 async def case_walk_cuts_a_slow_drip_try_at_its_timeout():
-    """A try that runs past its timeout (a slow-drip reply httpx's per-read timeout never trips)
-    is cut there and recorded `timeout`; the walk moves on to the next Writer. With the deadline
-    already passed no try is made."""
     import asyncio
     import time
     calls = []
@@ -250,11 +210,8 @@ async def case_walk_cuts_a_slow_drip_try_at_its_timeout():
     assert calls == [] and res.attempts == [{"writer": "fast", "outcome": "timeout", "ms": 0}], res.attempts
 
 
-# ── 4. The code floor (ticket 33): a reply the next Writer must replace ──
 
 def case_floor_table():
-    """`floor(text, lang)`: each reject reason; CJK only on an English account;
-    normal text passes."""
     from automations.full_ai_writers import floor
     table = [
         ("haha ok i see u, what r u up to tonight", "en", None),
@@ -278,8 +235,6 @@ def case_floor_table():
 
 
 def case_floor_reads_the_reply_without_its_sticker_marker():
-    """`reject`: a marker in any wrapper is not a `bracket` reject; a marker-only reply passes
-    only with GIFs on and a known tag; the body under a marker is still floored."""
     from automations.full_ai_writers import reject
     table = [
         ("haha ok\n[STICKER: kiss]", True, None),
@@ -294,7 +249,6 @@ def case_floor_reads_the_reply_without_its_sticker_marker():
     ]
     for text, gifs, want in table:
         assert reject(text, "en", gifs) == want, (text, gifs, reject(text, "en", gifs), want)
-    # With an offer expected (a Pick's ref) a marker-only reply is no answer: the next Writer is tried.
     offer_table = [
         ("STICKER: kiss", True, 4242, "no_letters"),
         ("[STICKER: kiss]", True, 4242, "no_letters"),
@@ -305,7 +259,6 @@ def case_floor_reads_the_reply_without_its_sticker_marker():
         assert reject(text, "en", gifs, ref) == want, (text, ref, reject(text, "en", gifs, ref), want)
 
 
-# ── messages_for per Route (ticket 34), pure ──────────────────────────────
 from pathlib import Path  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
@@ -338,9 +291,6 @@ def _system(route, row="otherwise", heat=2, persona=wr.PERSONA_FALLBACK, **kw):
 
 
 def case_route_constants_are_their_catalog_text():
-    """Old constants: substrings of their `docs/prompts/old` text. New glue: substrings of
-    `docs/prompts/new/current-repo.md` (the apology frames ride in their NEW entry: the old
-    catalog leaves `make_right._APOLOGY_FRAMES` out of scope)."""
     old = (_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
     for c in (wr.DARE, wr.SEXT_HOT, wr.NO_SELL_OFFERS, wr.STICKER_EXCEPTION.strip()):
         assert c in old, c
@@ -372,21 +322,18 @@ def case_sext_is_old_aic_08_at_heat_with_her_model_info():
     for heat in (1, 2, 3, 4):
         sys_ = _system("sext", "sexual_now", heat, persona, info_fields=[])
         assert wr.SEXT_HOT in sys_ and wr.SEXT_HEAT.format(heat=heat) in sys_, heat
-        assert sys_.startswith(persona), heat              # her Model info leads the prompt
-        assert wr.EXPLICIT_EARLY in sys_                    # verbatim until the owner's OK
+        assert sys_.startswith(persona), heat
+        assert wr.EXPLICIT_EARLY in sys_
         assert wr.KNOW_ENOUGH not in sys_ and wr.FAN_ASKED not in sys_
 
 
 def case_bot_check_is_two_steps():
-    """Step 1 (he asks): the joke alone. Step 2 (his next Turn, `dare_due`): on chat / sext
-    DARE_NEXT is the goal; asked again, the joke then the dare in one reply. While her dare
-    stands, or with no bot check behind, no dare."""
     sys_ = _system("ai_dare", "asks_if_ai")
     assert sys_.count(wr.BRUSH_OFF) == 1 and wr.DARE not in sys_ and wr.DARE_NEXT not in sys_
     for route, row in (("chat", "otherwise"), ("sext", "sexual_now")):
         due = _photo_system(route, row, read=False, dared=False, photo=False, due=True)
         assert wr.DARE_NEXT in due and wr.BRUSH_OFF not in due and wr.DARE not in due, route
-        assert wr.SEXT_HOT not in due, route                              # the dare is the goal
+        assert wr.SEXT_HOT not in due, route
         for kw in ({"dared": False}, {"dared": True}):
             assert wr.DARE_NEXT not in _photo_system(route, row, read=False, photo=False, **kw), (route, kw)
     again = _photo_system("ai_dare", "asks_if_ai", read=False, dared=False, photo=False, due=True)
@@ -406,9 +353,6 @@ def _photo_system(route, row, *, read, dared, photo=True, due=False):
 
 
 def case_bot_check_photo_is_rated_and_never_dared_twice():
-    """NEW-156: his read picture on a bot check gets DARE_RATE in the dare's place; after her dare
-    she does not dare again (brush-off alone, DARE_BLIND with an unread picture); chat / sext
-    right after her dare rate the read picture under the goal; no dare, no picture: as before."""
     for dared in (False, True):
         sys_ = _photo_system("ai_dare", "asks_if_ai", read=True, dared=dared)
         assert wr.DARE_RATE in sys_ and wr.DARE not in sys_ and wr.BRUSH_OFF not in sys_, dared
@@ -417,11 +361,11 @@ def case_bot_check_photo_is_rated_and_never_dared_twice():
     sys_ = _photo_system("ai_dare", "asks_if_ai", read=False, dared=True, photo=False)
     assert wr.BRUSH_OFF in sys_ and wr.DARE not in sys_ and wr.DARE_BLIND not in sys_
     for kw in ({"read": False, "dared": False}, {"read": False, "dared": False, "photo": False}):
-        sys_ = _photo_system("ai_dare", "asks_if_ai", **kw)                     # step 1: the joke
+        sys_ = _photo_system("ai_dare", "asks_if_ai", **kw)
         assert wr.BRUSH_OFF in sys_ and wr.DARE not in sys_, kw
     for route, row in (("chat", "otherwise"), ("sext", "sexual_now")):
         assert wr.DARE_RATE in _photo_system(route, row, read=True, dared=True), route
-        due = _photo_system(route, row, read=True, dared=False, due=True)       # his picture on step 2
+        due = _photo_system(route, row, read=True, dared=False, due=True)
         assert wr.DARE_RATE in due and wr.DARE_NEXT not in due, route
         assert wr.DARE_RATE not in _photo_system(route, row, read=True, dared=False), route
         assert wr.DARE_RATE not in _photo_system(route, row, read=False, dared=True), route
@@ -431,7 +375,6 @@ def case_bot_check_photo_is_rated_and_never_dared_twice():
 
 
 def case_gif_now_only_with_gif_pct():
-    """NEW-157: the sticker block ends with GIF_NOW only when `gif_pct` is set."""
     f = _turn(gifs=True, gif_pct=100)
     assert wr.GIF_NOW in wr.messages_for("chat", "otherwise", 2, f, None, gif_ok=True)[0]["content"]
     assert wr.GIF_NOW not in wr.messages_for("chat", "otherwise", 2, f, None, gif_ok=False)[0]["content"]
@@ -445,7 +388,6 @@ def case_make_right_is_the_apology_with_no_free_item():
     for frame in wr.APOLOGY_FRAMES:
         assert frame.replace("{name}", "Tom") in sys_, frame
     assert "{name}" not in sys_
-    # No name he gave: her lane's fan address, as the old `_fan_first_name` fell back.
     sys_ = _system("make_right", "complains_now")
     assert wr.APOLOGY_FRAMES[0].replace("{name}", "babe") in sys_
 
@@ -467,7 +409,6 @@ def case_route_prompts_replay():
     for route in _ROUTES:
         assert _system(route) == _system(route), route
 
-# ── sell_now (03b, ticket 42), pure ───────────────────────────────────────
 import re  # noqa: E402
 
 from automations.full_ai_sell import Pick, Refusal, Teased  # noqa: E402
@@ -479,27 +420,22 @@ _PICK = Pick(ref=4242, media=(4242,), previews=(), price_cents=5000, list_cents=
 
 
 def _fragments(c: str) -> list[str]:
-    """A template's literal pieces between its `{slots}`."""
     return [x for x in re.split(r"\{[^}]*\}", c) if x.strip()]
 
 
 def case_sell_now_constants_are_their_old_text():
-    """Each sell_now constant (NEW-116's pieces) is its `docs/prompts/old` text: every literal
-    piece between its slots is a substring (OLD-AIC-04/11/12/18, OLD-CORE-33)."""
     old = ((_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
            + (_DOCS / "old" / "core-modules.md").read_text(encoding="utf-8"))
-    # OLD-CORE-33 is quoted as source: join its implicit string concatenations.
     old = (old.replace('"\n                         f"', "").replace('"\n                f"', "")
            .replace('"\n                "', ""))
     for c in (wr.CONTENT_ASK, wr.CLOSE_BY_ID, wr.INTRO_BY_ID, wr.ITEM_LINE, wr.TERMS,
               wr.NO_CUSTOMS, wr.FILMING_MORE, wr.CONTRACT_OFFER):
         for frag in _fragments(c):
             assert frag in old, (c, frag)
-    for c in (wr.MANIFEST, wr.PRICE_BLOCK, wr.WAS_PRICE_BLOCK):    # multi-line: line by line
+    for c in (wr.MANIFEST, wr.PRICE_BLOCK, wr.WAS_PRICE_BLOCK):
         for line in c.split("\n"):
             for frag in _fragments(line):
                 assert frag in old, (c, frag)
-    # Ticket 47: OLD-AIC-05, OLD-AIC-08's step 4 (the catalog spells its leading newline `\n`).
     for c in (wr.ESCALATION, wr.SELL_STEP.removeprefix("\n")):
         for frag in _fragments(c):
             assert frag in old, (c, frag)
@@ -513,8 +449,6 @@ def _sell_system(pick, *, row="sell", offer_piece=None):
 
 
 def case_manifest_test_twin():
-    """F3b (M3 2026-11-16): test / live sell prompts carry MANIFEST_TEST ("already made"); Shadow keeps
-    MANIFEST ("already filmed") byte for byte."""
     assert "already filmed" in wr.MANIFEST and "already filmed" not in wr.MANIFEST_TEST
     assert wr.MANIFEST_TEST == wr.MANIFEST.replace("already filmed", "already made")
     for mode, want, other in (("test", wr.MANIFEST_TEST, wr.MANIFEST), ("live", wr.MANIFEST_TEST, wr.MANIFEST),
@@ -538,7 +472,6 @@ def case_sell_now_with_a_pick_is_the_content_ask_sell_prompt():
     assert sys_.endswith(f"{price}\n\n{wr.CONTRACT_OFFER}"), sys_[-400:]
     assert wr.NO_SELL_OFFERS not in sys_ and wr.SELL_OFF_LINE not in sys_
     assert wr.KNOW_ENOUGH not in sys_ and wr.ASK_HEAD not in sys_
-    # A photo set: the count as its label, no length; no describe text leaves the slot empty.
     s3 = _sell_system(Pick(ref=7, media=(7, 8, 9), previews=(10,), price_cents=1000, list_cents=1000,
                            subject="anything", format="photo", lane="$10", facts={"items": [{}]}))
     assert "- [id 7] photo — 3 photos:  — $10 to unlock" in s3, s3
@@ -555,10 +488,6 @@ def case_sell_section_terms_keep_a_folder_price_cents():
 
 
 def case_haggle_offer_moment_and_hot_sell_prompts():
-    """Ticket 47: the haggle row's price block is OLD-CORE-33's `was_cents` form when it re-offers
-    the open Offer's own piece under that Offer's list (`was_cents_of`; plain at list, on a re-pick,
-    with no open Offer, and on any other row); offer_moment's beat is OLD-AIC-05; `hot`
-    (sexual_now fired) makes any sell row's beat OLD-AIC-08 + step 4, no Heat line."""
     quote = Pick(ref=4242, media=(4242,), previews=(), price_cents=3400, list_cents=5000,
                  subject="anything", format="photo", lane="$50", facts={"items": [{}]})
     offer = Teased("anything", "photo", (4242,), (), 5000)
@@ -582,8 +511,6 @@ def case_haggle_offer_moment_and_hot_sell_prompts():
 
 
 def case_broke_joke_rides_any_goal():
-    """Owner 2026-11-15 ("just be ignorant of this broke stuff"): `broke=True` adds BROKE_JOKE once, after
-    the Route's own goal, on chat and sell_now alike; the rest of the prompt is unchanged. NEW-154."""
     assert "{" not in wr.BROKE_JOKE and not hasattr(wr, "BROKE_SELL")
     for route, row, pick in (("chat", "otherwise", None), ("sell_now", "sell", _PICK)):
         t = _turn("no im broke")
@@ -594,19 +521,19 @@ def case_broke_joke_rides_any_goal():
     for route, row in (("sext", "sexual_now"), ("tease", "tease_price")):
         t = _turn("no im broke")
         assert wr.messages_for(route, row, 2, t, None, broke=True)[0]["content"].count(wr.BROKE_JOKE) == 1, route
-    for route, row in (("make_right", "complains_now"), ("ai_dare", "asks_if_ai")):   # apology / dare untouched
+    for route, row in (("make_right", "complains_now"), ("ai_dare", "asks_if_ai")):
         t = _turn("no im broke")
         assert wr.messages_for(route, row, 2, t, None, broke=True) == wr.messages_for(route, row, 2, t, None), route
     new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
     entry = new[new.index("### NEW-154"):]
-    entry = entry[:entry.index("\n#", 1)]                    # up to the next heading
+    entry = entry[:entry.index("\n#", 1)]
     assert wr.BROKE_JOKE in entry and "2026-11-15" in entry
 
 
 def case_sell_now_refusal_is_chat_with_its_need_line():
     for reason, line in (("no_match", wr.FILMING_MORE), ("all_owned", wr.FILMING_MORE),
                          ("no_priced_items", wr.FILMING_MORE), ("inventory_unknown", None),
-                         ("offer_open", wr.offer_open_line(None))):     # a yes to the open card (M2 2026-11-16)
+                         ("offer_open", wr.offer_open_line(None))):
         sys_ = _sell_system(Refusal(reason))
         assert wr.NO_SELL_OFFERS in sys_ and wr.INTRO_BY_ID not in sys_, reason
         assert "CONTENT YOU CAN ACTUALLY SEND HIM" not in sys_ and ">>OFFER" not in sys_, reason
@@ -614,7 +541,6 @@ def case_sell_now_refusal_is_chat_with_its_need_line():
             assert sys_.endswith(f"{line}\n\n{wr.CONTRACT}"), (reason, sys_[-300:])
         else:
             assert wr.FILMING_MORE not in sys_ and sys_.endswith(wr.CONTRACT), reason
-    # offer_open: the need-line names the open card's kind / count (its row, no vault load).
     for piece, clause in ((Teased("feet", "photo", (4,), (), 5000, 1), " (a photo: call it nothing else)"),
                           (Teased("feet", "video", (4,), (), 5000, 1), " (a video: call it nothing else)"),
                           (Teased("feet", "gif", (4,), (), 5000, 1), " (a video: call it nothing else)"),
@@ -632,19 +558,17 @@ def case_sell_now_refusal_is_chat_with_its_need_line():
 
 
 def case_floor_offer_ref_table():
-    """`floor(text, lang, offer_ref)`: the Pick's whole marker line is stripped first, another
-    ref (or any, with no Pick) rejects, an inline `>>` stays a chevron, a missing marker is fine."""
     from automations.full_ai_writers import floor, strip_offer
     table = [
         ("its $50 to unlock babe 😏\n>>OFFER 4242", 4242, None),
         ("its $50 to unlock babe 😏\n>>OFFER 4242\nSTICKER: wink", 4242, None),
-        ("its $50 to unlock babe 😏", 4242, None),                     # no marker: fine
+        ("its $50 to unlock babe 😏", 4242, None),
         ("its $50 to unlock babe 😏\n>>OFFER 999", 4242, "offer_ref"),
         ("its $50 babe\n>>OFFER 4242\n>>OFFER 999", 4242, "offer_ref"),
-        ("hey babe\n>>OFFER 105", None, "offer_ref"),                  # no Pick: any marker
-        ("babe >>OFFER 4242", 4242, "chevron"),                        # not a line of its own
+        ("hey babe\n>>OFFER 105", None, "offer_ref"),
+        ("babe >>OFFER 4242", 4242, "chevron"),
         ("ok >> no pitch\n>>OFFER 4242", 4242, "chevron"),
-        (">>OFFER 4242", 4242, "no_letters"),                          # nothing but the marker
+        (">>OFFER 4242", 4242, "no_letters"),
         ("so [id 4242] is yours\n>>OFFER 4242", 4242, "bracket"),
     ]
     for text, ref, want in table:
@@ -655,8 +579,8 @@ def case_floor_offer_ref_table():
         ("YOU: hey\nYOU: miss u", "hey\nmiss u"),
         ("FAN: omg yes\nYOU: mhm", "mhm"),
         ("hey\n\nFAN: more\n\nok", "hey\n\nok"),
-        ("you: are trouble", "you: are trouble"),          # her own words, lower case
-        ("thank YOU: really", "thank YOU: really"),        # not at a line start
+        ("you: are trouble", "you: are trouble"),
+        ("thank YOU: really", "thank YOU: really"),
         ("FAN: only his line", ""),
     ]:
         assert strip_labels(raw) == want, (raw, strip_labels(raw))
@@ -664,43 +588,36 @@ def case_floor_offer_ref_table():
     assert strip_offer("its yours\n\n>>OFFER 4242\n\nSTICKER: wink") == "its yours\n\nSTICKER: wink"
 
 
-# ── Leaked meta text (2026-11-16): tags, labels, preambles, refusals, quotes, copies ──
 
 def case_floor_leak_table():
-    """`floor`: the measured leak shapes reject with their reason; natural texting passes."""
     from automations.full_ai_writers import floor
     for text, want in [
-        # bracket: `<tag>` and `{placeholder}`; emoticons open no tag
         ("<ALL RULES FOLLOWED>", "bracket"),
         ("hey babe </reply>", "bracket"),
         ("hey {name} miss u", "bracket"),
         ("ur into {fetishes} right", "bracket"),
         ("love u <3", None), ("hehe >:)", None), ("ugh >.<", None), ("u <3 me > him", None),
-        # label: a meta / speaker label opening a line
         ("a verified creator: sure", "label"),
         ("response:", "label"),
         ("Reply: hey", "label"),
         ("Assistant: hi", "label"),
-        ("hey\nme: i want u", None),                    # pronoun labels: natural texting
+        ("hey\nme: i want u", None),
         ("she: miss u", None),
-        # natural texting labels pass (meta vocabulary trimmed 2026-11-16)
         ("side note: im not wearing anything under this", None),
         ("honest answer: yes", None),
         ("me: dying rn", None),
         ("also me: texting u anyway", None),
         ("good girl: thats me", None),
         ("ur fav girl: me", None),
-        ("Amelia: hey babe", None),                     # persona names are unknown
+        ("Amelia: hey babe", None),
         ("i want this: you on your knees", None),
         ("tell me: are u hard", None),
         ("ok so: what u doing", None),
         ("be honest: do u miss me", None),
         ("9:30 works", None), ("hehe :)", None), ("love u :p", None), ("me:)", None),
-        # colon_tail: a preamble line
         ("got it! here's your reply in the format you specified:\nhey babe", "colon_tail"),
         ("here u go:", "colon_tail"),
         ("see u at 9:", None), ("omg c:", None), ("cant wait D:", None),
-        # ai_self: refusals / AI self-reference
         ("I'm a large language model, I am not able to create content that sexualizes minors.", "ai_self"),
         ("I cannot create content that sexualizes a minor.", "ai_self"),
         ("as an AI i cant do that", "ai_self"),
@@ -716,7 +633,6 @@ def case_floor_leak_table():
         ("against content policy sorry", "ai_self"),
         ("i can't help it babe", None), ("i can't help myself", None), ("i can't wait", None),
         ("i won't tell if u dont", None), ("lol u think im an ai?", None), ("u think im a bot", None),
-        # her joking / saying no as a girl texting (narrowed 2026-11-16): never a refusal shape
         ("i cant create customs babe", None),
         ("lol im not some ai model", None),
         ("do i sound like a language model to u 😂", None),
@@ -729,7 +645,6 @@ def case_floor_leak_table():
 
 
 def case_strip_quotes_table():
-    """`strip_quotes`: one pair wrapping the whole reply goes; inner quotes and two quoted bits stay."""
     from automations.full_ai_writers import strip_quotes
     for raw, want in [
         ('"cumming in my pink dress rn, wish u could see "', "cumming in my pink dress rn, wish u could see"),
@@ -747,8 +662,6 @@ def case_strip_quotes_table():
 
 
 def case_copied_table():
-    """`copied`: 7 words in a row of one prompt piece -> echo; 8 of one of her lines -> repeat;
-    `prompt_pieces` drops her persona and the `- GOOD:` few-shot line, and no run spans a gap."""
     from automations.full_ai_writers import copied, prompt_pieces
     tease = "tease this piece from its description only, make him want it, name no price and don't send it yet:"
     persona = "You are Mia, 22, a bubbly girl from Ohio who loves late night drives and pizza."
@@ -760,18 +673,16 @@ def case_copied_table():
     for text, want in [
         ("tease this piece from its description only, make him want it", "echo"),
         ("coming ur way, a girl holding an american flag fan", "echo"),
-        ("a girl holding an american flag", None),                         # 6 words
-        ("i'm a bubbly girl from ohio who loves late night drives", None),  # her persona
-        ("so what do u do for work?", None),                               # the few-shot line
+        ("a girl holding an american flag", None),
+        ("i'm a bubbly girl from ohio who loves late night drives", None),
+        ("so what do u do for work?", None),
         ("ur gonna love this clip of me in my red dress, its yours", "repeat"),
-        ("ur gonna love this clip of me", None),                           # 7 words of her line
+        ("ur gonna love this clip of me", None),
         ("hey babe what u up to", None),
     ]:
         assert copied(text, prompt, own) == want, (text, copied(text, prompt, own), want)
-    # Without the persona split her own bio echoes; without the GOOD drop the few-shot does.
     assert copied("bubbly girl from ohio who loves late night drives", [system], []) == "echo"
     assert copied("so what do u do for work?", [system], []) == "echo"
-    # No run across two pieces.
     assert copied("one two three four five six seven", ["one two three four", "five six seven"], []) is None
 
 
@@ -793,15 +704,13 @@ def case_nearest_note_honest_lines_pass_copied():
 
 
 def case_reoffers_table():
-    """`reoffers` / `own_lines` (item 8): a Pick re-offering the open Offer's or Pending tease's
-    piece reads no own lines (`repeat` skipped, `echo` kept)."""
     pick = Pick(ref=4, media=(4, 5), previews=(), price_cents=3000, list_cents=3000, subject="feet",
                 format="photo", lane="$30", facts={})
     rows = [_msg_row("out", "my feet all oiled up for u", 1), _msg_row("in", "how much", 2)]
     for offer, tease, want in [
-        (Teased("feet", "photo", (5, 4), (), 3000, 1), None, True),     # haggle over the open card
-        (None, Teased("feet", "photo", (4, 5), (), 3000), True),        # Pending tease re-sold
-        (Teased("feet", "photo", (4,), (), 3000, 1), None, False),       # a different set
+        (Teased("feet", "photo", (5, 4), (), 3000, 1), None, True),
+        (None, Teased("feet", "photo", (4, 5), (), 3000), True),
+        (Teased("feet", "photo", (4,), (), 3000, 1), None, False),
         (None, None, False),
     ]:
         facts = SimpleNamespace(offer_piece=offer, tease=tease, cut_rows=rows)
@@ -818,16 +727,12 @@ def _swap(pairs):
 
 
 def _scripted(replies):
-    """`llm_client.chat` answering each Writer from `replies` (writer -> raw content)."""
     async def chat(*, model, **_):
         return SimpleNamespace(content=replies[model])
     return chat
 
 
 def case_write_strips_then_floors_and_checks_copies():
-    """`write`: labels and wrapping quotes go before the floor (both floor on or off); `echo` reads
-    the system prompt minus her persona, `repeat` her own last lines; each reject is
-    `floor:<reason>` and the next Writer answers."""
     import asyncio
     import time
     persona = "You are Mia, a bubbly girl from Ohio who loves late night drives and pizza."
@@ -860,7 +765,6 @@ def case_write_strips_then_floors_and_checks_copies():
             assert [x["outcome"] for x in res.attempts] == [f"floor:{reason}", "ok"], (first, res.attempts)
             assert res.floor_reason == reason and res.writer == "b", res
             assert res.text == "a bubbly girl from ohio who loves late night drives", res.text
-        # A Pick re-offering the open card's piece: her earlier caption for it is fair (no repeat).
         facts.pick = Pick(ref=4, media=(4,), previews=(), price_cents=3000, list_cents=3000,
                           subject="anything", format="video", lane="$30", facts={})
         facts.offer_piece = Teased("anything", "video", (4,), (), 3000, 1)
@@ -870,9 +774,8 @@ def case_write_strips_then_floors_and_checks_copies():
         assert [x["outcome"] for x in res.attempts] == ["ok"] and res.text == line, res
         saved += _swap([(llm_client, "chat", _scripted({"a": "tease this piece from its description only, make him want it", "b": "hii"}))])
         res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a", "b"]))
-        assert [x["outcome"] for x in res.attempts] == ["floor:echo", "ok"], res.attempts   # echo kept
+        assert [x["outcome"] for x in res.attempts] == ["floor:echo", "ok"], res.attempts
         facts.pick, facts.offer_piece = None, None
-        # floor off: no reject, the strips still run.
         facts.config = {**facts.config, "floor_on": False}
         saved += _swap([(llm_client, "chat", _scripted({"a": "“response: hey”"}))])
         res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a"]))
@@ -883,9 +786,6 @@ def case_write_strips_then_floors_and_checks_copies():
 
 
 def case_offer_details_copied_floor():
-    """rwl3 A8: on row offer_details the OFFER facts lines are hers to restate (no `echo` on them,
-    its head still echoes) and the resolved Offer's caption (`OfferFacts.captions`) is no `repeat`
-    (she answers from it, as on a re-offer); her other lines still are (rwl3 N3)."""
     import asyncio
     import time
     from datetime import datetime
@@ -921,7 +821,6 @@ def case_offer_details_copied_floor():
             saved += _swap([(llm_client, "chat", _scripted({"a": first, "b": "hii"}))])
             res = asyncio.run(wr.write(decision, facts, deadline=time.monotonic() + 30, writers=["a", "b"]))
             assert [x["outcome"] for x in res.attempts] == outcomes, (first, res.attempts)
-        # Any other row: the facts are echo and her line a repeat, as before.
         facts.offer_facts = None
         decision.row = "otherwise"
         for first, reason in [("its 1 vid, me in a red dress by the pool at sunset babe", "echo"),
@@ -1029,33 +928,28 @@ _FREE = Pick(ref=77, media=(77, 78), previews=(), price_cents=0, list_cents=1000
 
 
 def case_tease_and_free_constants_are_their_catalog_text():
-    """The FREE terms and the goal head are old text (OLD-AIC-12, OLD-CORE-24); the tease goal line
-    is its NEW-123 catalog entry, marked DRAFT there."""
     old = ((_DOCS / "old" / "upseller-pipeline.md").read_text(encoding="utf-8")
            + (_DOCS / "old" / "core-modules.md").read_text(encoding="utf-8"))
     assert wr.FREE_TERMS in old and wr.GOAL_HEAD.strip() in old
     new = (_DOCS / "new" / "current-repo.md").read_text(encoding="utf-8")
     entry = new[new.index("### NEW-123"):]
-    entry = entry[:entry.index("\n#", 1)]                    # up to the next heading
+    entry = entry[:entry.index("\n#", 1)]
     assert wr.TEASE_GOAL.strip() in entry and "DRAFT" in entry
 
 
 def case_tease_with_a_pick_describes_it_without_a_price():
-    for row in ("tease_price",):            # the only tease row since 2026-11-14
+    for row in ("tease_price",):
         sys_ = wr.messages_for("tease", row, 2, _turn("how much?"), _PICK)[0]["content"]
         goal = (wr.GOAL_HEAD + wr.TEASE_GOAL
                 + "- [id 4242] video 1:35 — untitled: her in a red bikini by the pool")
-        assert goal + "\n" in sys_, sys_                         # the item line, no terms after it
-        # The offers slot stays empty (ASSUMPTION: OLD-AIC-17's "never pitch a piece" fights the goal).
+        assert goal + "\n" in sys_, sys_
         assert wr.SELF_BAN + wr.READ_ALL in sys_ and sys_.endswith(wr.CONTRACT), row
         for absent in ("$", "to unlock", "THE PRICE", "SELLING RULES", ">>OFFER", "FREE",
                        wr.NO_SELL_OFFERS, wr.SELL_OFF_LINE, wr.INTRO_BY_ID, wr.KNOW_ENOUGH, wr.ASK_HEAD):
             assert absent not in sys_, (row, absent)
-    # A tease Refusal is chat plus its need-line, like sell_now's (spec 03b › Refusal).
     for reason, line in (("no_match", wr.FILMING_MORE), ("inventory_unknown", None)):
         sys_ = wr.messages_for("tease", "tease_price", 2, _turn("how much?"), Refusal(reason))[0]["content"]
         assert wr.TEASE_GOAL not in sys_ and sys_.endswith(f"{line}\n\n{wr.CONTRACT}" if line else wr.CONTRACT)
-    # No Pick: the 03a tease (chat) prompt, byte for byte.
     t = _turn("how much?")
     assert wr.TEASE_GOAL not in wr.messages_for("tease", "tease_price", 2, t, None)[0]["content"]
 
@@ -1072,29 +966,25 @@ def case_make_right_with_a_free_item():
                    wr.NO_SELL_OFFERS, wr.INTRO_BY_ID):
         assert absent not in sys_, absent
     assert wr.SELF_BAN + wr.READ_ALL in sys_ and sys_.endswith(wr.CONTRACT)
-    # A priced Pick on make_right is never labelled FREE: the apology-only prompt.
     t = _turn("this is a scam")
     assert wr.messages_for("make_right", "complains_now", 2, t, _PICK) == wr.messages_for(
         "make_right", "complains_now", 2, t, None)
 
 
 def case_spend_line_only_without_a_pick():
-    """The spend line (OLD-AIC-22) joins the facts block on every Turn but one carrying a Pick
-    (rwl fa3 S3: the price check allows no other amount); with no purchase there is none."""
     spent = [SimpleNamespace(kind="ppv_message", amount_cents=1000, occurred_at=None)]
     line = wr.spend_line(spent)
     assert line and line.startswith("he's spent: unlocked 1 PPV ($10 total, biggest $10)"), line
     rows = [
-        # (route, pick, spent, has the line)
         ("sell_now", _PICK, spent, False),
         ("sell_now", Refusal("all_owned"), spent, True),
         ("chat", None, spent, True),
-        ("chat", _PICK, spent, True),           # a Pick handed to another Route is ignored
+        ("chat", _PICK, spent, True),
         ("sext", None, spent, True),
-        ("tease", _PICK, spent, False),         # a teased or free item is a Pick too (ticket 46)
+        ("tease", _PICK, spent, False),
         ("tease", None, spent, True),
         ("make_right", _FREE, spent, False),
-        ("make_right", _PICK, spent, True),     # a priced Pick there is ignored
+        ("make_right", _PICK, spent, True),
         ("sell_now", _PICK, [], False),
         ("chat", None, [], False),
     ]
@@ -1115,7 +1005,6 @@ TAIL = " — talk like you remember it, never like he's never paid."
 
 
 def _old_buyer_facts(ppv_n, ppv_total, ppv_max, tip_rows):
-    """The old bot's `_buyer_facts` text block, pasted verbatim (ai_chatter.py:5470-5487)."""
     tip_total = sum(int(x or 0) for x in tip_rows)
     tip_n = sum(1 for x in tip_rows if int(x or 0) > 0)
     if tip_total <= 0 and ppv_n <= 0:
@@ -1134,7 +1023,6 @@ def _old_buyer_facts(ppv_n, ppv_total, ppv_max, tip_rows):
 
 
 def case_spend_line_tips_table():
-    """OLD-AIC-22's tip part (ticket 88): verbatim, joined by " and "; tips alone give the line."""
     for spent, tips, want in [
         ([], (), None),
         ([], [0], None),
@@ -1154,8 +1042,6 @@ def case_spend_line_tips_table():
 
 
 def case_tips_reach_the_prompt_not_the_selling():
-    """A TurnFacts with tips and no PPV buys: the chat Writer carries the tip line; make_right does
-    not sell and the price Jev's `bought_before` stays false (tippers out of PPV pricing)."""
     import asyncio
     from automations import full_ai_turn as ft
     facts = ft.TurnFacts(account_id="acct_msgs", fan_id=1, mode="live", anchor_key="42", state={},
@@ -1184,7 +1070,6 @@ def case_tips_reach_the_prompt_not_the_selling():
     finally:
         ft._price_jev.state = saved
     assert seen.get("bought_before") is False, seen
-    # Beside a Pick no spend line, tips included (the price check allows no other amount).
     user = wr.messages_for("sell_now", "sell", 3, facts, _PICK)[1]["content"]
     assert "he's spent" not in user, user
 
@@ -1201,7 +1086,6 @@ def case_style_flags_one_switch_per_layer():
         assert got == {**on, flag: False}, (layer, got)
     assert wr.style_flags({"text_style": "girl"}) == on
     assert wr.style_flags({"text_style": "formal"}) == dict.fromkeys(_FLAG_OF.values(), False)
-    # Typos are a post-pass on her bubbles: the Writer prompt is the all-on one.
     typo_off = {**DEFAULTS["style"], "typos": False}
     for route in _ROUTES:
         assert _system(route, style=typo_off) == _system(route), route
@@ -1209,8 +1093,6 @@ def case_style_flags_one_switch_per_layer():
 
 
 def case_open_card_kind_one_word():
-    """rwl3 A7: the open card's kind reads one way for the need-line and for a yes to it: a voice
-    note is no photo, so "yes send the pic" over one is no yes to the card."""
     from automations import full_ai_turn
     from automations.full_ai_decide import Decision
     d = Decision("sell_now", 2, "sell", frozenset({"says_yes_to_offer"}))

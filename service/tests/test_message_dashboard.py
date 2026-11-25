@@ -1,40 +1,7 @@
 #!/usr/bin/env python3
-"""
-Message dashboard (roadmap 5.7) filters and reply time, and mass-message sales
-attribution from local rows (5.8). No network: everything reads the temp DB.
-
-  case_text_price_unsent_filters:
-      `q` searches the body, `min/max_price_cents` bound the price,
-      `unsent_only` keeps only unsent rows.
-  case_sender_type_splits_employee_from_automation:
-      employee = outbound with no automation_kind; automation = the rest of
-      outbound; inbound never matches either.
-  case_kind_direct_vs_mass:
-      direct drops every mass row (and the summary); mass keeps only the
-      summary row.
-  case_reply_time_against_the_fans_previous_message:
-      a reply 90s after the fan's message reads 90; a follow-up after our own
-      message reads None; a blast in between does not break the reply.
-  case_mass_summary_carries_local_sales:
-      the collapsed run row counts bought copies once per fan, at the price;
-      a bought funnel follow-up and a refunded copy stay out, a pending one
-      counts; the follow-up does not move the row's send time.
-  case_filters_pick_runs_but_totals_cover_every_copy:
-      an unsent filter that matches one copy shows the run with its full
-      recipient count and sales.
-  case_mass_list_purchased_and_earnings:
-      Settings/Smart Messages' sent list gets purchasedCount/earningsCents
-      from the run's copies AND untagged copies carrying OF's queueId; other
-      queues and unbought copies stay out.
-  case_bad_filter_values_are_400:
-      a short or over-long `q`, a negative price, an unknown sender_type or
-      kind refuse.
-
-Run: ./venv/bin/python service/tests/test_message_dashboard.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -113,7 +80,6 @@ async def case_sender_type_splits_employee_from_automation():
 
 async def _add_run(aid: str, *, run_id: int, queue_id: int, ago: timedelta,
                    fans: list[int], price_cents: int, bought: set[int]) -> int:
-    """A run with one placeholder copy per fan; `bought` fans' copies paid."""
     synth = mass_placeholder_message_id(run_id)
     async with get_session() as s:
         s.add(MassRun(id=run_id, account_id=aid, queue_id=queue_id,
@@ -143,7 +109,6 @@ async def case_reply_time_against_the_fans_previous_message():
     await _add(aid, 1, 401, ago=base, direction="in", body="hey")
     await _add(aid, 1, 402, ago=base - timedelta(seconds=90), body="hi babe")
     await _add(aid, 1, 403, ago=base - timedelta(seconds=300), body="u there?")
-    # Fan 2: the fan writes, a blast lands, then the chatter answers.
     async with get_session() as s:
         s.add(MassRun(id=4001, account_id=aid, audience_filter="{}"))
     await _add(aid, 2, 411, ago=base, direction="in", body="hello")
@@ -170,12 +135,11 @@ async def case_mass_summary_carries_local_sales():
     await _seed_account(aid)
     synth = await _add_run(aid, run_id=5001, queue_id=95001, ago=timedelta(hours=2),
                            fans=[1, 2, 3, 4], price_cents=1200, bought={1, 3, 4})
-    # Fan 2 bought the funnel's follow-up step, which rides the run's id: that
-    # is the follow-up's sale, not the blast's.
     await _add(aid, 2, 50002, ago=timedelta(hours=1), body="step 2", price_cents=900,
                mass_run_id=5001, funnel_step=2, is_paid=True)
-    await _add_tx(aid, 1, synth, "pending")      # pending counts (owner rule)
-    await _add_tx(aid, 4, synth, "chargedback")  # refunded / charged back does not
+    # pending counts as revenue (owner rule); refunded/charged back does not
+    await _add_tx(aid, 1, synth, "pending")
+    await _add_tx(aid, 4, synth, "chargedback")
     m = next(r for r in await _fetch(aid) if r["is_mass_summary"])
     assert m["purchased_count"] == 2, m
     assert m["earnings_cents"] == 2400, m
@@ -201,16 +165,12 @@ async def case_mass_list_purchased_and_earnings():
     aid = "md_masslist"
     await _seed_account(aid)
     sent = _NOW - timedelta(hours=6)
-    # Queue A: our run (two placeholder copies, one bought) plus an untagged
-    # scraped copy carrying OF's queueId (bought), plus that buyer's
-    # placeholder still standing beside it (must count once).
     await _add_run(aid, run_id=6001, queue_id=96001, ago=timedelta(hours=6),
                    fans=[1, 2, 3], price_cents=1000, bought={1, 3})
     await _add(aid, 3, 70003, ago=timedelta(hours=6), body="blast", price_cents=1000,
                is_paid=True, raw_json=json.dumps({"id": 70003, "queueId": 96001}))
     await _add(aid, 4, 70004, ago=timedelta(hours=6), body="blast", price_cents=1000,
                is_paid=True, raw_json=json.dumps({"id": 70004, "queueId": 96001}))
-    # Queue B: a copy bought, but of another broadcast; and an unbought copy.
     await _add(aid, 5, 70005, ago=timedelta(hours=6), body="other", price_cents=800,
                is_paid=True, raw_json=json.dumps({"id": 70005, "queueId": 96002}))
     await _add(aid, 6, 70006, ago=timedelta(hours=6), body="other", price_cents=800,

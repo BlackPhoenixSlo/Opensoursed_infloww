@@ -1,40 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_asked_count — the get-to-know Asked count comes from her sent reply (spec
-phase-01-full-ai-offer-details E, NEW-168): the Writer names the fact it asked or led to on a final
-`ASKED: <id>` line, stripped before he sees anything; only a printed id counts.
-
-   case_asked_marker_table           pure strip table: caps `ASKED` / a line-opening `asked` with a
-                                     separator goes to end of line (or the next STICKER marker),
-                                     whatever follows, its first value token counted when printed;
-                                     mid-line `asked` only with a separator and a printed id / none
-                                     ending the line; the no-separator form only for caps / line-
-                                     opening; several all go; a printed `[id]` echo goes; prose stays
-   case_pick_counts_named_fact       pick home_city: the lead line carries [home_city], the contract
-                                     ASKED_EXCEPTION; `ASKED: home_city` -> +1, `none` / `city` /
-                                     no marker -> unchanged; `asked_marker` raw; never in parts
-   case_list_counts_named_key        list mode, presented {location, hobbies}: marker hobbies ->
-                                     hobbies +1, location unchanged
-   case_no_ask_no_contract_line      no ask block (`none` pick, sext): no ids, no ASKED_EXCEPTION,
-                                     no `asked_marker` key; a volunteered marker still stripped
-   case_lone_gif_or_dropped          a sticker-only reply / a chain-dropped draft -> no count; her
-                                     text + inline `ASKED: <id> STICKER: <tag>`: text and gif ship,
-                                     no ASKED, +1
-   case_dare_keeps_ids_with_goal     `_dare_beat` keeps the ids with the goal (DARE_RATE under it),
-                                     drops them with it (DARE_NEXT, ai_dare)
-   case_marker_only_draft_falls_through  reject floors a marker-only draft (`no_letters`), passes
-                                     a reply whose only extra line is the marker, a lowercase
-                                     inline marker or a printed `[id]` echo (`asked=` ids); the
-                                     next Writer's marker counts, stripped
-   case_quoted_marker_counted_never_leaks  `"<text>"` + marker: unwrapped, +1, no ASKED, no quote
-   case_heat_rewrite_strips          the Heat check's rewrite: both drafts' markers gone from parts
-   case_live_cut_counts_nothing      live: every bubble landed -> +1; bubble 2 fails (`cut`) -> no
-                                     count, the raw marker still recorded
-
-Run: ./venv/bin/python service/tests/test_full_ai_asked_count.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_chat_helpers import (
     _CHAIN_KEYS, _GIF_TAG, A, DEEPSEEK, NANO, OK_LINE, OPENROUTER, OWNER_A, TURN, ZAI, _agency_keys,
@@ -51,8 +18,8 @@ from _full_ai_live_fixtures import LINE3, LiveOF  # noqa: E402 — after the cha
 from _full_ai_live_helpers import dm_turn, fan_row, live_rows, reply, seed_live  # noqa: E402
 
 OFFERED = frozenset({"home_city"})
-LINE = OK_LINE.removeprefix("ok:")          # her text; "ok:" + LINE + marker is one Writer answer
-CITY = wr.LEAD_HEAD + "[home_city] " + wr.LEAD_LINES["location"]    # the lead block on a home_city pick
+LINE = OK_LINE.removeprefix("ok:")
+CITY = wr.LEAD_HEAD + "[home_city] " + wr.LEAD_LINES["location"]
 
 
 def case_asked_marker_table():
@@ -66,7 +33,6 @@ def case_asked_marker_table():
         ("lol same\nASKED: none", OFFERED, ("lol same", None, "none")),
         ("which part?\nASKED: city", OFFERED, ("which part?", None, "city")),
         ("which part?\nASKED: home_city", frozenset(), ("which part?", None, "home_city")),
-        # Any case, anywhere, any wrapper, `:` / `-` / `=` or no separator: the value decides.
         ("what do u do for fun? asked: hobbies", both, ("what do u do for fun?", "hobbies", "hobbies")),
         ("where u from Asked: home_city", both, ("where u from", "home_city", "home_city")),
         ("where u from?\n*asked: home_city*", both, ("where u from?", "home_city", "home_city")),
@@ -75,30 +41,24 @@ def case_asked_marker_table():
         ("where u from?\nASKED - home_city", both, ("where u from?", "home_city", "home_city")),
         ("where u from?\nASKED = hobbies", both, ("where u from?", "hobbies", "hobbies")),
         ("where u from?\nASKED home_city", both, ("where u from?", "home_city", "home_city")),
-        ("where u from?\nasked: city", both, ("where u from?", None, "city")),   # its own line
-        # The printed `[id]` echoed into her text goes too (not a marker: nothing counted by it).
+        ("where u from?\nasked: city", both, ("where u from?", None, "city")),
         ("[hobbies] what do u do for fun?", both, ("what do u do for fun?", None, None)),
         ("what do u do for fun? [Hobbies]\nASKED: hobbies", both, ("what do u do for fun?", "hobbies", "hobbies")),
-        ("[city] which part?", both, ("[city] which part?", None, None)),               # never printed
-        # Several marker lines: every one goes, the last names the key.
+        ("[city] which part?", both, ("[city] which part?", None, None)),
         ("hey\nASKED: none\nwhat do u do?\nASKED: home_city", OFFERED,
          ("hey\n\nwhat do u do?", "home_city", "home_city")),
         ("hey u\n\nASKED: home_city\n\nASKED: none", OFFERED, ("hey u", None, "none")),
-        # No marker: text as it was, nothing counted; prose "asked" stays when the value is not an
-        # id, or when an id runs on into more words.
         ("what city r u in?", OFFERED, ("what city r u in?", None, None)),
         ("since u asked: im in leeds", OFFERED, ("since u asked: im in leeds", None, None)),
         ("since u asked: im 24", both, ("since u asked: im 24", None, None)),
-        ("omg u ASKED: and i answered", both, ("omg u", None, "and")),       # caps: to end of line
+        ("omg u ASKED: and i answered", both, ("omg u", None, "and")),
         ("u asked name already lol", both, ("u asked name already lol", None, None)),
         ("i asked hobbies not that", both, ("i asked hobbies not that", None, None)),
         ("he asked: name and age", both, ("he asked: name and age", None, None)),
         ("unasked: hobbies", both, ("unasked: hobbies", None, None)),
-        # Mid-line lowercase / title-case `asked` with no separator is her prose, id or not.
         ("lol u asked name", both, ("lol u asked name", None, None)),
         ("lol u asked age?", both | {"age"}, ("lol u asked age?", None, None)),
-        ("lol u asked: name?", both, ("lol u", "name", "name")),             # a separator: a marker
-        # The contract shape with a tail: the line goes whatever follows; the first value token counts.
+        ("lol u asked: name?", both, ("lol u", "name", "name")),
         ("where u from?\nASKED: location, hobbies", frozenset({"location", "hobbies"}),
          ("where u from?", "location", "location")),
         ("what do u do?\nASKED: hobbies (he mentioned golf)", both, ("what do u do?", "hobbies", "hobbies")),
@@ -108,10 +68,8 @@ def case_asked_marker_table():
         ("where u from?\nASKED: [hobbies, location]", both, ("where u from?", "hobbies", "hobbies")),
         ("where u from?\nasked: hobbies cause he golfs", both, ("where u from?", "hobbies", "hobbies")),
         ("hey\nASKED:", OFFERED, ("hey", None, "")),
-        # A house marker after it on the line survives for its own pass (the gif still lands).
         ("what do u do? ASKED: hobbies STICKER: shy", both, ("what do u do? STICKER: shy", "hobbies", "hobbies")),
         ("what do u do? *ASKED: none* *sticker: shy*", both, ("what do u do? *sticker: shy*", None, "none")),
-        # Only the marker's line changes: her other lines keep their spacing.
         ("hey  \n  what do u do?\nASKED: none", both, ("hey  \n  what do u do?", None, "none")),
         ("", OFFERED, ("", None, None)),
     ):
@@ -123,12 +81,10 @@ def case_asked_marker_table():
 
 
 def _turn(pair, text, *, nano, rest=f"ok:{LINE}", info=None, fake_j=None, heat=None):
-    """One Test chat Turn, the first Writer (NANO) answering `nano`, the others `rest`; `heat` the
-    Heat check's client: (response json, the row's reply_json, the Writers' system prompts)."""
     fw = FakeWriterHTTP({OPENROUTER: rest, ZAI: rest, DEEPSEEK: rest, NANO: nano})
     with _agency_keys(_CHAIN_KEYS), _guarded(), fw.on(), \
             _fake_jev(fake_j or FakeJev((QUIET, 1.0)), info or FakeInfoJev()):
-        if heat is not None:                # `_fake_jev` restores the real client on exit
+        if heat is not None:
             _heat_jev._client = lambda key: heat
         r = OWNER_A.post(TURN, json=_body(pair, 1, text))
     assert r.status_code == 200, r.text
@@ -194,7 +150,6 @@ def case_lone_gif_or_dropped():
         _store_config(A, {})
     assert got["status"] == "sent" and [set(p) for p in got["parts"]] == [{"gif", "tag"}], got
     assert rep["asked"] == {} and rep["asked_marker"] == "home_city", rep
-    # Her text, then ASKED and STICKER inline on its line: the text ships with the gif, no ASKED.
     _store_config(A, {"checkpoint": {**DEFAULTS, "gifs": True}})
     try:
         got, rep, _ = _turn("p-ask-gif-inline", "hey you", info=FakeInfoJev(({}, "home_city")),
@@ -211,8 +166,6 @@ def case_lone_gif_or_dropped():
 
 
 def case_dare_keeps_ids_with_goal():
-    """`_dare_beat` keeps the ask ids only while it keeps the goal: DARE_RATE under it keeps them,
-    DARE_NEXT in its place and every ai_dare beat drop them."""
     ask = wr.Need(CITY, ("home_city",))
     assert wr._dare_beat("chat", ask, None, False) == ask
     rated = wr._dare_beat("chat", ask, "seen", True)
@@ -223,24 +176,20 @@ def case_dare_keeps_ids_with_goal():
 
 
 def case_marker_only_draft_falls_through():
-    # `write` strips the marker (and the prompt's printed ids) before the shared floor; the floor
-    # itself keeps rejecting an `ASKED:` line, as the caption needs (#808).
     def floor(text, ids=frozenset()):
         return wr.reject(wr.asked_marker(text, ids).text, "en", False)
 
     assert floor(f"{LINE}\nASKED: home_city") is None
-    assert floor(f"{LINE}\nASKED: [home_city]") is None      # not a `bracket`
+    assert floor(f"{LINE}\nASKED: [home_city]") is None
     assert floor("ASKED: home_city") == "no_letters"
-    assert floor(f"{LINE}\nASKED: [hobbies, location]") is None    # not a `bracket`
+    assert floor(f"{LINE}\nASKED: [hobbies, location]") is None
     assert floor(f"{LINE}\nASKED: none - just vibing") is None
     ids = frozenset({"home_city", "hobbies"})
-    assert floor(f"{LINE} asked: hobbies", ids) is None      # a lowercase mid-line marker
-    assert floor(f"[hobbies] {LINE}", ids) is None           # an `[id]` echo
-    assert floor(f"[hobbies] {LINE}") == "bracket"           # not printed: the floor's
-    assert wr.reject(f"{LINE}\nASKED: [home_city]", "en", False) == "bracket"   # unstripped: rejected
+    assert floor(f"{LINE} asked: hobbies", ids) is None
+    assert floor(f"[hobbies] {LINE}", ids) is None
+    assert floor(f"[hobbies] {LINE}") == "bracket"
+    assert wr.reject(f"{LINE}\nASKED: [home_city]", "en", False) == "bracket"
     assert wr.reject(f"{LINE}\nASKED:", "en", False) is not None
-    # NANO answers the marker alone (empty once stripped, before the floor); the next Writer's
-    # LINE + marker counts, stripped.
     got, rep, systems = _turn("p-ask-floor", "hey you", info=FakeInfoJev(({}, "home_city")),
                               nano="ok:ASKED: home_city", rest=f"ok:{LINE}\nASKED: home_city")
     assert got["status"] == "sent" and len(systems) == 2 and systems[0] == systems[1], got
@@ -249,16 +198,12 @@ def case_marker_only_draft_falls_through():
 
 
 def case_quoted_marker_counted_never_leaks():
-    """#808's quote strip runs on the text the marker left: one wrapped reply + its marker ships
-    unwrapped, counted once, no `ASKED`; the floor gets no stray quote or marker."""
     got, rep, _ = _turn("p-ask-quoted", "hey you", info=FakeInfoJev(({}, "home_city")),
                         nano=f'ok:"{LINE}"\nASKED: home_city')
     assert got["status"] == "sent" and [a["outcome"] for a in rep["attempts"]] == ["ok"], rep["attempts"]
     assert rep["asked"] == {"home_city": 1} and rep["asked_marker"] == "home_city", rep
     text = _texts(got["parts"])
     assert "ASKED" not in text and '"' not in text, got["parts"]
-    # Wrapped whole, marker line inside the quotes (any marker shape, any quote kind): unwrapped
-    # before the marker goes. A stray closing quote after the marker of an unwrapped reply goes too.
     for i, raw in enumerate((f'"{LINE}\nASKED: home_city"', f'"{LINE}\nASKED home_city"',
                              f"'{LINE}\nASKED: home_city'", f'“{LINE}\nASKED: home_city”',
                              f'YOU: "{LINE}\nASKED: home_city"', f'{LINE}\nASKED: home_city"')):
@@ -270,7 +215,6 @@ def case_quoted_marker_counted_never_leaks():
 
 
 class _Heat:
-    """`_heat_jev._client`: one scripted level per call."""
 
     def __init__(self, *scores):
         self.scores = list(scores)

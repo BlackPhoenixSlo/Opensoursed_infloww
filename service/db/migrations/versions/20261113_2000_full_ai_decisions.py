@@ -1,13 +1,3 @@
-"""ai_decisions — Full AI Chat's Decision ledger (Phase 01, Shadow mode)
-
-One NEW table, written only by the `full_ai_chat` shadow runner; no existing row is touched. `create_all()`
-brings it (and its three indexes, declared on the model) to a booting box; this file keeps the alembic chain
-linear. The table and each index are created only when the inspector lacks them; downgrade drops the table.
-
-Revision ID: 0117_full_ai_decisions
-Revises: 0116_scrape_history_deferred
-Create Date: 2026-11-13
-"""
 from __future__ import annotations
 
 from typing import Sequence

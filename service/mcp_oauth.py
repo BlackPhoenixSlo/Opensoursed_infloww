@@ -1,34 +1,3 @@
-"""service/mcp_oauth.py — sign in to the MCP server from the MCP client's browser (OAuth 2.1
-authorization code + PKCE; how to connect: docs/runbooks/mcp-connect.md).
-
-The access token it issues IS an owner access token (owner_tokens), minted by the same inner
-`POST /admin/owner-tokens` as the MCP login tool (mcp_api.mint), named
-`MCP <client name> <UTC time>`. So `/admin/mcp` checks it like any other token, it shows on the
-Access tokens card, revoking it there cuts it off, and it expires as cards' tokens do
-(owner_tokens.DEFAULT_DAYS). No refresh token: once it expires the 401 sends the client back here.
-
-  GET  /.well-known/oauth-protected-resource[/admin/mcp]  RFC 9728: the MCP endpoint's resource
-  GET  /.well-known/oauth-authorization-server            RFC 8414: this host is the issuer
-  POST /auth/oauth/register   RFC 7591, public clients only. Stateless: client_id is the client's
-                              name and redirect URIs, signed (session_stamps.sign). Throttled per
-                              address (login_throttle.take_client_register).
-  GET  /auth/oauth/authorize  a bad client_id, redirect_uri, response_type, PKCE or state → an error
-                              page, never a redirect; no session → /login?next=<this URL>; an
-                              employee or an impersonating owner → a refusal page; an owner → the
-                              consent page
-  POST /auth/oauth/authorize  Allow / Cancel. The form carries a CSRF value signed over the
-                              session cookie and every parameter; Allow stores a one-time code
-                              (CODE_TTL_S) and 303s to redirect_uri?code&state. Only these two
-                              buttons ever send the browser to redirect_uri.
-  POST /auth/oauth/token      form body; the code is burned on first use, then client_id,
-                              redirect_uri, expiry and PKCE S256 are checked; mints the token
-
-Codes live in this process (`_grants`): the relay runs one uvicorn worker (login_throttle's buckets
-rely on the same). The session cookie a code holds is kept only until the code is used or, once expired, the next
-authorize / Allow / token request.
-The password, code, verifier and token are never logged; the three POST paths are audit-skipped
-(audit_log._AUDIT_SKIP_PATHS: the token form body would land in the audit row as plain text).
-"""
 from __future__ import annotations
 
 import base64
@@ -62,26 +31,28 @@ router = APIRouter()
 
 PRM_PATH = "/.well-known/oauth-protected-resource"
 AS_PATH = "/.well-known/oauth-authorization-server"
-# Who serves these with no principal: server.py's share gate lets exactly these paths through.
+# server.py's share gate lets exactly these paths through with no principal
 PUBLIC_PATHS = frozenset({PRM_PATH, token_auth.PRM_MCP_PATH, AS_PATH})
 REGISTER_PATH = "/auth/oauth/register"
 AUTHORIZE_PATH = "/auth/oauth/authorize"
 TOKEN_PATH = "/auth/oauth/token"
 
 CODE_TTL_S = 60
-MAX_GRANTS = 1000  # codes waiting for their token request; past it Allow drops the oldest
-MAX_GRANTS_PER_OWNER = 3  # past it Allow drops that owner's oldest
+MAX_GRANTS = 1000
+MAX_GRANTS_PER_OWNER = 3
 MAX_FORM = 16 * 1024
-MAX_NAME = 40  # "MCP " + name + " " + 19-char time fits the token's 64-char name
+# "MCP " + name + " " + 19-char time must fit the token's 64-char name
+MAX_NAME = 40
 MAX_URIS = 4
 MAX_URI = 200
 MAX_STATE = 1024
 NAME_FALLBACK = "client"
 
-_CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")  # base64url(sha256), no padding
+_CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")
 _VERIFIER = re.compile(r"[A-Za-z0-9._~-]{43,128}")
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
-_RESERVED = frozenset({"code", "state", "error", "iss"})  # what the callback adds: a redirect_uri may not carry them
+# what the callback adds: a redirect_uri may not carry them
+_RESERVED = frozenset({"code", "state", "error", "iss"})
 
 WHAT_IT_CAN = ("It can read this Agency's data; make OnlyFans vault folders and add media to any of them; make "
                "bio pages and change any of them (add links, set avatar and background pictures); and propose "
@@ -95,7 +66,6 @@ STALE_FORM = "This page is out of date: start again from the app."
 BAD_REQUEST = "This app's sign-in request is incomplete or not supported: start again from the app or update it."
 
 
-# ── client_id: the registration, signed ────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Client:
@@ -104,7 +74,6 @@ class Client:
 
 
 def _same(a: str, b: str) -> bool:
-    """Constant-time equality for any text (compare_digest refuses non-ASCII str)."""
     return hmac.compare_digest(a.encode(), b.encode())
 
 
@@ -122,7 +91,6 @@ def client_id(client: Client) -> str:
 
 
 def parse_client_id(value: str | None) -> Client | None:
-    """The client a client_id names, or None when it is not one this server signed."""
     if not value or len(value) > 4096 or value.count(".") != 1:
         return None
     payload, sig = value.split(".")
@@ -136,16 +104,12 @@ def parse_client_id(value: str | None) -> Client | None:
 
 
 def clean_name(raw: Any) -> str:
-    """client_name: printable characters only, spaces collapsed, at most MAX_NAME."""
     text = raw if isinstance(raw, str) else ""
     text = " ".join("".join(c if c.isprintable() else " " for c in text).split())
     return text[:MAX_NAME].strip() or NAME_FALLBACK
 
 
 def redirect_ok(uri: Any) -> bool:
-    """http://localhost[:port]/…, http://127.0.0.1[:port]/…, http://[::1][:port]/… or https://…; no userinfo, no
-    fragment, no spaces or control characters, no code / state / error / iss query key (the
-    callback's own), at most MAX_URI characters."""
     if not isinstance(uri, str) or not uri or len(uri) > MAX_URI:
         return False
     if any(c <= " " or c in "\\\x7f" for c in uri):
@@ -164,16 +128,15 @@ def redirect_ok(uri: Any) -> bool:
     return u.scheme == "http" and u.hostname in _LOOPBACK
 
 
-# ── responses ──────────────────────────────────────────────────────────────────
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _PAGE_HEADERS = {
     **_NO_STORE,
-    # No form-action: Chrome applies it to the redirect after the POST (to the client's own address).
+    # No form-action: Chrome applies it to the redirect after the POST (to the client's own address)
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
-    # same-origin, not no-referrer: under no-referrer Chrome sends the Allow POST as `Origin: null`.
+    # same-origin, not no-referrer: under no-referrer Chrome sends the Allow POST as Origin: null
     "Referrer-Policy": "same-origin",
 }
 
@@ -205,7 +168,6 @@ def _error_page(message: str, status: int = 400) -> HTMLResponse:
 
 
 def _back(redirect_uri: str, **params: str | None) -> RedirectResponse:
-    """303 to the client's redirect_uri with `params` (None dropped) added to its query."""
     sep = "&" if urlsplit(redirect_uri).query else ("" if redirect_uri.endswith("?") else "?")
     q = urlencode({k: v for k, v in params.items() if v is not None})
     return RedirectResponse(f"{redirect_uri}{sep}{q}", status_code=303, headers=_NO_STORE)
@@ -219,7 +181,6 @@ def _oauth_error(error: str, description: str, status: int = 400) -> JSONRespons
     return _json({"error": error, "error_description": description}, status)
 
 
-# ── metadata ───────────────────────────────────────────────────────────────────
 
 def _base(request: Request) -> str | None:
     return toolbox.Creds.from_request(request).public_base()
@@ -259,7 +220,6 @@ async def authorization_server(request: Request) -> Response:
     })
 
 
-# ── registration ───────────────────────────────────────────────────────────────
 
 @router.post(REGISTER_PATH, include_in_schema=False)
 async def register(request: Request) -> Response:
@@ -280,14 +240,12 @@ async def register(request: Request) -> Response:
                                                     f"https://, at most {MAX_URI} characters, with no fragment and no "
                                                     "code / state / error / iss query key")
     client = Client(clean_name(meta.get("client_name")), tuple(dict.fromkeys(uris)))
-    # A public client: whatever auth method it asked for, it gets "none" (RFC 7591 lets the server choose).
     return _json({"client_id": client_id(client), "client_id_issued_at": int(time.time()),
                   "client_name": client.name, "redirect_uris": list(client.redirect_uris),
                   "grant_types": ["authorization_code"], "response_types": ["code"],
                   "token_endpoint_auth_method": "none"}, 201)
 
 
-# ── authorize ──────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class _Grant:
@@ -300,7 +258,8 @@ class _Grant:
     owner: str
 
 
-_grants: dict[str, _Grant] = {}  # sha256(code) → its grant
+# In-process: the relay runs one uvicorn worker. Token/authorize POSTs are audit-skipped (audit_log._AUDIT_SKIP_PATHS) so the form body never lands in an audit row.
+_grants: dict[str, _Grant] = {}
 _clock = time.monotonic
 
 
@@ -318,8 +277,6 @@ def _csrf(session: str, cid: str, redirect_uri: str, challenge: str, state: str)
 
 
 def _owner_session(request: Request) -> tuple[str, Any] | str:
-    """(session cookie, owner) for an owner signed in as themself, else the refusal page's text
-    ("" = nobody signed in)."""
     user, session = auth.get_request_user(), request.cookies.get(auth.COOKIE_NAME)
     if user is not None and session:
         return IMPERSONATING if auth.get_impersonation() is not None else (session, user)
@@ -332,15 +289,14 @@ def _client_and_redirect(cid: str | None, redirect_uri: str | None) -> tuple[Cli
     client = parse_client_id(cid)
     if client is None:
         return _error_page(BAD_CLIENT)
-    # the asked address passes redirect_ok first: a client_id signed before a rule (F9's callback keys) still obeys it
+    # redirect_ok runs first: a client_id signed before a rule change still obeys it.
     if not redirect_ok(redirect_uri) or not any(_registered(r, redirect_uri) for r in client.redirect_uris):
         return _error_page(BAD_REDIRECT)
     return client, redirect_uri
 
 
 def _registered(registered: str, asked: str) -> bool:
-    """Exact match, except a loopback http address matches on any port: a native app picks a free
-    port at sign-in time (RFC 8252 §7.3). `asked` already passed redirect_ok."""
+    # A loopback http address matches on any port: a native app picks a free port at sign-in (RFC 8252 7.3).
     if asked == registered:
         return True
     a, r = urlsplit(asked), urlsplit(registered)
@@ -360,14 +316,12 @@ def _hidden(**fields: str) -> str:
 
 @router.get(AUTHORIZE_PATH, include_in_schema=False)
 async def authorize(request: Request) -> Response:
-    _purge(_clock())  # an expired code (it holds a session cookie) goes on any sign-in traffic, not only Allow
+    _purge(_clock())  # an expired code holds a session cookie: purge on any sign-in traffic, not only Allow
     q = request.query_params
     found = _client_and_redirect(q.get("client_id"), q.get("redirect_uri"))
     if isinstance(found, HTMLResponse):
         return found
     client, redirect_uri = found
-    # Not sent back to redirect_uri: anyone can register any https:// address, so before a signed-in
-    # owner presses Allow or Cancel this host never redirects there (no open redirect).
     state = q.get("state")
     challenge = q.get("code_challenge") or ""
     if (q.get("response_type") != "code" or (state is not None and len(state) > MAX_STATE)
@@ -380,6 +334,7 @@ async def authorize(request: Request) -> Response:
     if isinstance(who, str):
         return _error_page(who, 403)
     session, user = who
+    # Never redirect to redirect_uri before a signed-in owner presses Allow/Cancel: anyone can register any https address (no open redirect).
     cid = q["client_id"]
     agency = await _agency_name(user)
     form = _hidden(client_id=cid, redirect_uri=redirect_uri, code_challenge=challenge, state=state or "",
@@ -387,7 +342,6 @@ async def authorize(request: Request) -> Response:
     e = html.escape
     u = urlsplit(redirect_uri)
     host = u.netloc
-    # A loopback address is the app on this computer; any other host gets the access, so say so.
     warn = "" if u.hostname in _LOOPBACK else (
         f'<p class="warn">This sends access to <strong>{e(u.hostname or host)}</strong>. '
         f"Allow only if you started this yourself.</p>")
@@ -402,7 +356,6 @@ async def authorize(request: Request) -> Response:
 
 
 def _form(raw: bytes | None) -> dict[str, str] | None:
-    """A urlencoded body as single values; None when too big, unreadable or a key repeats."""
     if raw is None:
         return None
     try:
@@ -423,15 +376,12 @@ def _origin_host(origin: str) -> str | None:
 
 
 def _request_host(request: Request) -> str | None:
-    """The host the browser addressed: X-Forwarded-Host's first hop (behind Next), else Host."""
     h = request.headers
     host = (h.get("x-forwarded-host") or "").split(",")[0].strip() or h.get("host") or ""
     return host.lower() or None
 
 
 def _store(code: str, grant: _Grant, now: float) -> None:
-    """Keep `code`; never refuse: past MAX_GRANTS_PER_OWNER that owner's oldest goes, past MAX_GRANTS
-    the oldest of all (codes share one TTL, so insertion order is expiry order)."""
     _purge(now)
     mine = [k for k, g in _grants.items() if g.owner == grant.owner]
     for key in mine[:max(0, len(mine) - MAX_GRANTS_PER_OWNER + 1)]:
@@ -443,8 +393,7 @@ def _store(code: str, grant: _Grant, now: float) -> None:
 
 @router.post(AUTHORIZE_PATH, include_in_schema=False)
 async def authorize_decision(request: Request) -> Response:
-    # The session-bound CSRF value is the check; Origin only refuses a browser that says it came from
-    # another host than this request's own (any hostname this app answers on works).
+    # The session-bound CSRF value is the check; Origin only refuses a browser that says it came from another host.
     origin = request.headers.get("origin")
     if origin is not None and _origin_host(origin) != _request_host(request):
         return _error_page(STALE_FORM, 403)
@@ -473,7 +422,6 @@ async def authorize_decision(request: Request) -> Response:
     return _back(redirect_uri, code=code, state=state or None)
 
 
-# ── token ──────────────────────────────────────────────────────────────────────
 
 def pkce_ok(verifier: str, challenge: str) -> bool:
     if not _VERIFIER.fullmatch(verifier):
@@ -492,7 +440,8 @@ async def token(request: Request) -> Response:
     code, verifier = f.get("code") or "", f.get("code_verifier") or ""
     if not code or not verifier:
         return _oauth_error("invalid_request", "code and code_verifier are required")
-    grant = _grants.pop(_digest(code), None)  # burned on any attempt: a replay finds nothing
+    # Burned on any attempt: a replay finds nothing.
+    grant = _grants.pop(_digest(code), None)
     if grant is None or grant.expires <= _clock():
         return _oauth_error("invalid_grant", "the code is unknown, used or expired")
     if not _same(f.get("client_id") or "", grant.client_id):
@@ -511,6 +460,5 @@ async def token(request: Request) -> Response:
 
 
 def reset() -> None:
-    """Forget every waiting code (tests)."""
     _grants.clear()
 

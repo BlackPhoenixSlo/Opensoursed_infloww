@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""POST /api/of/v2/posts extras, post labels, and the pin/like toggles.
-
-The relay's create-post body keeps our snake_case names; of_client.create_post
-is the one place they become OF's own keys, as OF's composer
-(`MakeFeedPost getDataObject`, build 202610091632) sends them. Pin and like
-are toggles on OF: unpin and unlike send the same POST again. Plain-assert,
-OF faked (no request leaves the process).
-
-  case_text_only_body_has_no_extras
-  case_schedule_is_is_scheduled_plus_scheduled_date
-  case_save_for_later_has_no_date
-  case_vault_carrier_keeps_the_live_verified_posted_at
-  case_expiry_target_labels
-  case_poll_and_quiz
-  case_create_post_logs_the_poll_never_its_text
-  case_route_forwards_every_field
-  case_create_label_posts_name
-  case_label_route_is_registered
-  case_pin_and_unpin_are_the_same_post
-  case_like_and_unlike_are_the_same_post
-  case_unlike_route_forwards_the_author
-
-Run: ./venv/bin/python service/tests/test_create_post_body.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -38,7 +14,6 @@ OLD_KEYS = {"postedAt", "expirePeriod", "fundRaisingTarget", "votingDueDate"}
 
 
 def _client():
-    """An OFClient whose every request is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = "4242"
     c.sent = []
@@ -72,9 +47,8 @@ def case_save_for_later_has_no_date():
     assert "scheduledDate" not in body, body
 
 
+# the vault carrier stays on the postedAt body it was verified live on; the scheduling keys are not verified live
 def case_vault_carrier_keeps_the_live_verified_posted_at():
-    # The vault carrier stays on the `postedAt` body it was verified live on;
-    # the new scheduling keys are not verified live yet.
     c = _client()
     c.create_post("Synthetic post", carrier_posted_at=AT, auto_tag=False)
     (_m, _p, kw), = c.sent
@@ -111,7 +85,7 @@ def case_poll_and_quiz():
                       voting_correct_index=0)
     assert body["votingType"] == 1 and body["votingOptions"] == ["Yes", "No"], body
     assert body["votingDue"] == 7, body
-    assert "votingCorrectIndex" not in body, body  # a poll has no correct answer
+    assert "votingCorrectIndex" not in body, body
     body = _post_body(voting_type=2, voting_options=["A", "B", "C"], voting_due=7,
                       voting_correct_index=2)
     assert body["votingType"] == 2 and body["votingCorrectIndex"] == 2, body
@@ -119,7 +93,6 @@ def case_poll_and_quiz():
 
 
 class _Tap(logging.Handler):
-    """The of-client logger's formatted records."""
 
     def __init__(self):
         super().__init__(logging.DEBUG)
@@ -144,10 +117,8 @@ def _logged_create(**kw) -> list[tuple[int, str]]:
     return [(lvl, m) for lvl, m in tap.lines if m.startswith("create_post ")]
 
 
+# the log must prove a poll went out without caption or options (fan-facing content stays out of logs)
 def case_create_post_logs_the_poll_never_its_text():
-    # 02-gaps G2: the relay log has to prove a poll went out, without the
-    # caption or the options (fan-facing content stays out of logs): the exact
-    # line leaves no room for either.
     (lvl, line), = _logged_create(voting_type=1, voting_options=["Yes", "No"], voting_due=7)
     assert lvl == logging.INFO, lvl
     assert line == "create_post has_voting=True options_count=2 of_post_id=9911", line
@@ -210,12 +181,12 @@ def case_like_and_unlike_are_the_same_post():
     c = _client()
     c.like_post(77)
     c.unlike_post(77)
+    # unliking another creator's post toggles his favorite, not mine
     want = ("POST", f"{of_client.API_BASE}/posts/77/favorites/4242", {})
     assert c.sent == [want, want], c.sent
 
 
 def case_unlike_route_forwards_the_author():
-    # wave6 B9: unliking another creator's post toggles HIS favorite, not mine.
     c = _client()
     orig = server._get_client
     server._get_client = lambda: c

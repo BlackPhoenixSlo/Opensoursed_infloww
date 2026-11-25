@@ -1,98 +1,3 @@
-"""service/script_fill_api.py — Fill one Growth > Scripts Sequence with the Creator's own vault media
-(docs/spec/phase-01-fill-engine-and-describe-target.md, sub-phase 1b; ADR-0048, ADR-0046).
-
-  POST /admin/saved-replies/fill/plan?account_id=   {sequence}               -> 200 FillPlan
-  POST /admin/saved-replies/fill/apply?account_id=  {sequence, fingerprint?} -> 200 {status, plan, applied, undo}
-                                                                              | 409 {error: stale, plan}
-  POST /admin/saved-replies/fill/undo?account_id=   {sequence, undo: [UndoEntry]} -> 200 {undone, kept}
-
-`script_fill_decide` decides; this module loads, gates and writes. Every route: `account_id` required and
-non-empty (400 `account_id_required`), then `assert_account_owned` (403), then `assert_owner_scope`
-(403 `folder_not_allowed`: Fill needs Whole-vault access). `sequence` is the `script_id`; no rows -> 404
-`sequence_not_found`; vault unreadable (`full_ai_sell.load_rows` Refusal) -> 503 `inventory_unknown`, nothing
-written. Every non-`ok` status is a 200 with zero writes. Role enforcement maps the routes to the Scripts page
-(`/admin/saved-replies/` prefix); `permissions` only gains `route_refusal`, the middleware's decision
-factored out unchanged so the blocked sentence below reads the same rule.
-
-Inputs `script_fill_decide.plan_over_vault` gets (it gates, builds Shoots and plans): the Sequence rows; the
-Creator's live vault (`load_rows` rows stamped with `account_id`, `review_state`, `operator_overrides_json`,
-laid over by `script_fill_decide.effective`), its dupe sets and prints; every live media id; media on the
-Creator's other Sequences (`script_fill_decide.sequence_media_ids`); the Creator's `standard_folders` and
-`solo_sequences` switches;
-coverage (`vault_ai_vision.describe_coverage` at `DESCRIBE_TARGET`); the blocked sentence; and
-`template_prices` (below).
-
-Blocked sentence, first that applies: the caller's role would refuse describe-all
-(`permissions.route_refusal`, the role middleware's own decision) -> "no Vault Pro access"; then the describe
-plan route's own sentences: missing vision key / spent Describe cap (`vault_ai_vision._vision_budget`), then
-Jev not ready (`vault_jev_pass.plan`).
-ASSUMPTION: "no Vault Pro access" follows the role middleware's own decision for POST describe-all (its
-opt-in branch, then `require_permission`, which reads `granted_pages` and also a stored-false action key)
-rather than `granted_pages` alone as the spec words it, so the sentence appears exactly when describe-all
-would 403 (rung 3, the spec's stated intent). `/growth/vault-pro` is not in `OPT_IN_PAGES` today. Overturned
-if the owner wants an action-key denial to leave `can_describe` true.
-
-Template prices: {script_step: highest saved price > 0 at that step} of the same-named Sequence on ONE other
-Creator of the same Agency — a Creator of the Agency the caller acts in for this Creator (`agency_context`:
-an owner its own Agency, a chatter the house tie-break; never a second owner's Creators), and one the caller
-holds. Several have it: the one with the most priced steps, then the lowest account id.
-ASSUMPTION: a caller whose Agency does not hold this Creator (the Master; an anonymous caller under
-`ALLOW_ANONYMOUS_ADMIN`) borrows from the Creator's first
-owner by id (the `_sorted_holder_owner_ids` tie-break), so one Agency still lends (rung 3). Overturned if the
-Master should borrow nothing.
-ASSUMPTION: one source Creator (not a per-step mix) so the borrowed prices climb as that Creator's do, and
-"most priced steps, then lowest account id" picks it (rung 5). Overturned if the owner names another rule.
-ASSUMPTION: a step whose Options carry several prices lends the highest (rung 6). Overturned with the above.
-
-Apply (write path): the describe block and the acting Agency are read before the write lock (the describe
-block can change a status between `not_enough_content` and `no_fit`, never a write, and is not
-fingerprinted). Then one `immediate_session`: the Sequence rows, the other Sequences' media, the template
-prices and the vault's live `vault_items` columns are read on the locked session, `full_ai_sell.load_rows`
-and `vault_settings.load` on their own (neither takes a session; BEGIN IMMEDIATE bars every other writer, WAL
-readers see the last commit), `script_fill_decide.plan_over_vault` re-runs, the fingerprint is compared, and
-only empty media-Role Options are written (`media_json` as house VaultMedia `{id, type, files:{thumb:{url}}}`
-with previews first, `previews_json`, `price_cents` where Fill set it,
-`updated_at`), then `sync_sequences` and commit. `plan` is synchronous over the whole vault, so both routes
-run it with `asyncio.to_thread` (the house pattern for blocking work, e.g. `vault_dupes.find_duplicates`):
-the event loop stays free while it runs. Only the pure plan moves; every session is opened, used and
-committed on the loop's task (the sessions are aiosqlite-backed `AsyncSession`s bound to the loop's engine,
-so they cannot be moved into a thread), and the thread touches no session. The Python a vault load leaves
-(`_load_vault`'s row merge) stays on the loop, short next to the plan.
-ASSUMPTION: `load_rows`' and `vault_settings.load`'s own pool checkouts stay inside the lock (moving them onto
-the locked session means changing `full_ai_sell`, `vault_scripts`, `vault_dupes`, `vault_folder_prices` and
-`vault_settings`, outside this ticket; reading them before the lock would let a vault change land between the
-read and the write). Under pool pressure each can wait up to `db.engine.SPILL_AFTER_S` (2 s); the lock-hold
-bar is measured without it. Overturned if a contended lock-hold measure goes over 2,000 ms: then those
-loaders take a session.
-Plan gate: one plan at a time per process (`_plan_gate`, a Semaphore(1)). The plan route holds it from its
-first load to the end of its `to_thread`; apply takes it BEFORE `immediate_session` and holds it until the
-transaction ends, so no other plan loads or computes while the write lock is held. Order is always gate, then
-write lock; the plan route never takes the write lock, so the two cannot deadlock. Undo computes no plan and
-takes no gate. The gate is per running loop (house pattern: `vault_stills._fetch_slot`, `admission`), which is
-per process under uvicorn's one loop.
-ASSUMPTION: plan requests queue behind one another (and an apply behind queued plans) rather than run side by
-side (coordinator ruling). Overturned if plan p95 wait becomes user-visible.
-ASSUMPTION: the plan route's gate also covers its loads, not only its `to_thread` as ruled: with the gate
-around `to_thread` alone, plans never computed at once yet the hold beside 4 plans measured median 4.7 s / max
-6.3 s on 12k items (the other plans' vault loads run Python on the loop between apply's awaits); with the loads
-inside, max 1.8 s (test_script_fill_lock_hold.py). Rung 1 against the ruling's means, kept to its end (no plan
-work under the write lock). Overturned if the loads move off the loop.
-ASSUMPTION: a plan request cancelled mid-compute releases the gate while its thread finishes (the thread holds no
-session and writes nothing), so one more plan may compute beside it for that tail (rung 5). Overturned if
-cancelled plans show up next to lock holds over the bar.
-ASSUMPTION: the describe block is read outside the lock (coordinator ruling: keep the write transaction
-short); the spec's Write path lists coverage inside. Overturned if a status must follow a describe that lands
-between the read and the lock.
-
-Undo: one `immediate_session`; a reserved FM Sequence name (`is_reserved_name`) keeps every entry as
-`reserved` and writes nothing (Fill never touches one, so neither does its undo). Otherwise per entry
-`script_fill_decide.undo_check` against the row as it is now (another account's row reads as missing); `ok`
-rows get media and previews emptied, price 0 only when `price_set`, `updated_at` bumped; the rest are
-reported `{id, reason}`.
-ASSUMPTION: undo also answers 404 `sequence_not_found` when the Sequence has no rows left (spec Contracts:
-"All three Fill routes"), so a whole-Sequence rename after a Fill is a 404, not a per-row `moved`. Overturned
-if the button needs the per-row report there.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -138,15 +43,14 @@ class _UndoEntry(BaseModel):
     id: int
     media_ids: list[int] = Field(default_factory=list)
     previews: list[int] = Field(default_factory=list)
-    price_cents: int = 0          # the row's price after apply, always compared
-    price_set: bool = False       # Fill wrote that price: undo zeroes it only then
+    price_cents: int = 0
+    price_set: bool = False
 
 
 class _UndoBody(_PlanBody):
     undo: list[_UndoEntry] = Field(..., max_length=IDS_MAX)
 
 
-# ── Gate ──────────────────────────────────────────────────────────────
 
 async def _gate(account_id: str) -> str:
     account_id = (account_id or "").strip()
@@ -158,9 +62,6 @@ async def _gate(account_id: str) -> str:
 
 
 async def _vault_pro_denied(account_id: str) -> bool:
-    """The caller's enforced role would refuse POST describe-all for `account_id`: the role middleware's own
-    decision (`permissions.route_refusal`; owners and enforcement off: never). A refusal that is not a 403
-    (an Agency context's 503) is raised, not read as no access."""
     pages = permissions.route_pages(_DESCRIBE_ALL, "POST") or ()
     refusal, _ = await permissions.route_refusal(pages, "POST", _DESCRIBE_ALL, [account_id])
     if refusal is not None and refusal.status_code != 403:
@@ -185,23 +86,18 @@ async def _describe_inputs(account_id: str) -> tuple[dict[str, Any], str | None]
             await _blocked_reason(account_id))
 
 
-# ── Plan gate ─────────────────────────────────────────────────────────
 
-# Per loop: the test harness runs each case (and TestClient each request) on its own loop, and a Semaphore that
-# has parked a waiter belongs to that loop. Weak keys, so a finished loop takes its gate with it.
 _PLAN_GATES: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
 
 def _plan_gate() -> asyncio.Semaphore:
-    """One plan computation at a time (module docstring › Plan gate)."""
     loop = asyncio.get_running_loop()
     gate = _PLAN_GATES.get(loop)
-    if gate is None:                          # no await between check and set
+    if gate is None:
         gate = _PLAN_GATES[loop] = asyncio.Semaphore(1)
     return gate
 
 
-# ── Loaders ───────────────────────────────────────────────────────────
 
 def _row_dict(r: SavedReply) -> dict[str, Any]:
     return {"id": r.id, "script_id": r.script_id, "script_step": r.script_step, "text": r.text,
@@ -219,7 +115,6 @@ async def _sequence(s: Any, account_id: str, sequence: str) -> list[SavedReply]:
 
 
 async def _used_ids(s: Any, account_id: str, sequence: str) -> set[int]:
-    """Media (and previews) on the Creator's other Sequences."""
     got = (await s.execute(select(SavedReply.media_json, SavedReply.previews_json).where(
         SavedReply.account_id == account_id, SavedReply.script_id.is_not(None),
         SavedReply.script_id != sequence))).all()
@@ -227,16 +122,12 @@ async def _used_ids(s: Any, account_id: str, sequence: str) -> set[int]:
 
 
 async def _agency(account_id: str) -> str | None:
-    """users.id of the Agency the caller acts in for `account_id` (`agency_context`; a chatter's Mirror
-    Employee is created on first use, as on every chatter route that resolves one); None for an anonymous
-    caller (`ALLOW_ANONYMOUS_ADMIN`, unclamped)."""
     if require_actor_account_ids() is None:
         return None
     return (await agency_context(account_id=account_id)).agency_user_id
 
 
 async def _template_prices(s: Any, account_id: str, sequence: str, agency: str | None) -> dict[int, int]:
-    """{step: cents} from one other Creator of `agency` (module docstring)."""
     owners = sorted((await s.execute(select(UserAccount.user_id).where(
         UserAccount.account_id == account_id))).scalars().all())
     if not owners:
@@ -263,21 +154,17 @@ async def _template_prices(s: Any, account_id: str, sequence: str, agency: str |
 
 
 class _Vault:
-    """The Creator's live vault as Fill reads it."""
 
     def __init__(self, items: list[dict[str, Any]], groups: list[list[int]], prints: dict[int, Any],
                  live: dict[int, tuple[str, str | None]], standard_folders: bool,
                  solo_sequences: bool) -> None:
         self.items, self.groups, self.prints = items, groups, prints
-        self.live = live                      # {media_id: (kind, thumb_url)} of every live row
+        self.live = live
         self.standard_folders = standard_folders
         self.solo_sequences = solo_sequences
 
 
 async def _load_vault(account_id: str, s: Any = None) -> _Vault:
-    """The vault `plan` reads. The live `vault_items` columns are read on `s` when given (apply: the locked
-    session), else on a session of their own opened after `load_rows` (plan: no checkout held while
-    `load_rows` takes its own). `load_rows` and `vault_settings.load` open their own sessions (they take none)."""
     got = await fs.load_rows(account_id)
     if isinstance(got, fs.Refusal):
         raise HTTPException(status_code=503, detail={"error": "inventory_unknown"})
@@ -297,7 +184,7 @@ async def _load_vault(account_id: str, s: Any = None) -> _Vault:
     items = []
     for r in rows:
         if int(r["media_id"]) not in extra:
-            continue                          # no live vault_items row read: not in Fill's vault (closed)
+            continue
         rs, ov, _kind, _thumb = extra[int(r["media_id"])]
         items.append(decide.effective({**r, "account_id": account_id, "review_state": rs,
                                        "operator_overrides_json": ov}))
@@ -306,7 +193,7 @@ async def _load_vault(account_id: str, s: Any = None) -> _Vault:
 
 
 def _vault_media(mid: int, vault: _Vault) -> dict[str, Any]:
-    kind, thumb = vault.live[mid]             # KeyError inside the write transaction: rollback
+    kind, thumb = vault.live[mid]
     entry: dict[str, Any] = {"id": mid, "type": kind}
     if thumb:
         entry["files"] = {"thumb": {"url": thumb}}
@@ -314,36 +201,32 @@ def _vault_media(mid: int, vault: _Vault) -> dict[str, Any]:
 
 
 class _PlanInputs(NamedTuple):
-    recs: list[SavedReply]                    # the Sequence's rows (apply writes these)
-    used: set[int]                            # media on the Creator's other Sequences
-    template: dict[int, int]                  # {step: cents} from the Agency's same-named Sequence
+    recs: list[SavedReply]
+    used: set[int]
+    template: dict[int, int]
 
 
 async def _plan_inputs(s: Any, account_id: str, sequence: str, agency: str | None) -> _PlanInputs:
-    """Every Sequence-side input `plan_over_vault` reads, on `s`: the one chain plan and apply share, so a new
-    input can't reach one route only (a one-sided input would make every fingerprinted apply 409 `stale`)."""
     return _PlanInputs(await _sequence(s, account_id, sequence), await _used_ids(s, account_id, sequence),
                        await _template_prices(s, account_id, sequence, agency))
 
 
 async def _plan(inputs: _PlanInputs, vault: _Vault, cov: dict[str, Any], blocked: str | None,
                 account_id: str) -> dict[str, Any]:
-    """`plan_over_vault` over these inputs, off the loop."""
     return await asyncio.to_thread(
         decide.plan_over_vault, [_row_dict(r) for r in inputs.recs], vault.items, inputs.used, vault.groups,
         vault.prints, cov, blocked, account_id=account_id, standard_folders=vault.standard_folders,
         solo_sequences=vault.solo_sequences, live_ids=set(vault.live), template_prices=inputs.template)
 
 
-# ── Routes ────────────────────────────────────────────────────────────
 
 @router.post("/fill/plan")
 async def fill_plan(body: _PlanBody = Body(...), account_id: str = Query("")) -> dict[str, Any]:
     """The read-only Fill plan of one Sequence (spec › Contracts FillPlan). Writes nothing."""
     account_id = await _gate(account_id)
     agency = await _agency(account_id)
-    cov, blocked = await _describe_inputs(account_id)   # outside the gate, as apply: no vault-row work in it
-    async with _plan_gate():                  # loads too: their row work runs on the loop (module docstring)
+    cov, blocked = await _describe_inputs(account_id)
+    async with _plan_gate():
         async with get_session() as s:
             inputs = await _plan_inputs(s, account_id, body.sequence, agency)
         vault = await _load_vault(account_id)
@@ -357,7 +240,7 @@ async def fill_apply(body: _ApplyBody = Body(...), account_id: str = Query("")) 
     account_id = await _gate(account_id)
     cov, blocked = await _describe_inputs(account_id)
     agency = await _agency(account_id)
-    async with _plan_gate(), immediate_session() as s:   # gate first, released after the transaction ends
+    async with _plan_gate(), immediate_session() as s:
         inputs = await _plan_inputs(s, account_id, body.sequence, agency)
         recs = inputs.recs
         vault = await _load_vault(account_id, s)
@@ -394,7 +277,7 @@ async def fill_undo(body: _UndoBody = Body(...), account_id: str = Query("")) ->
     kept: list[dict[str, Any]] = []
     async with immediate_session() as s:
         await _sequence(s, account_id, body.sequence)
-        if is_reserved_name(body.sequence):   # FM Sequence: every entry kept, nothing written (module docstring)
+        if is_reserved_name(body.sequence):
             return {"undone": [], "kept": [{"id": e.id, "reason": "reserved"} for e in body.undo]}
         ids = sorted({e.id for e in body.undo})
         rows: dict[int, SavedReply] = {}

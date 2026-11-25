@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""
-env_knob.env_float — the one float-knob parse (purchase_poll_decide, view_lease, app_open_warm, transaction_ingest).
-
-  case_table:          unset / blank -> the default, quietly; malformed, non-finite or under `lo` -> the default with
-                       one warning naming the knob; else the value (`lo` itself included).
-  case_view_lease_ttl: VIEW_LEASE_TTL_S zero or negative -> 60 (a zero TTL would lease nothing); a real value read.
-
-Run: ./venv/bin/python service/tests/test_env_knob.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness
 
 import importlib  # noqa: E402
 import logging  # noqa: E402
@@ -50,10 +41,10 @@ def case_table():
             ("nan", -math.inf, 30.0, True),
             ("inf", -math.inf, 30.0, True),
             ("-inf", -math.inf, 30.0, True),
-            ("2", 5.0, 30.0, True),             # under the floor: the default, not the floor
-            ("5", 5.0, 5.0, False),             # the floor itself is allowed
+            ("2", 5.0, 30.0, True),
+            ("5", 5.0, 5.0, False),
             ("45.5", 5.0, 45.5, False),
-            ("0", -math.inf, 0.0, False),       # an explicit zero, no floor: honoured (a disable switch)
+            ("0", -math.inf, 0.0, False),
             ("-3", -math.inf, -3.0, False),
         ]:
             grab.lines.clear()

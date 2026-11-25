@@ -55,5 +55,5 @@ async def ask_one(client_of: Any, account_id: str | None, st: dict[str, Any], qu
         return res, int((time.perf_counter() - t0) * 1000)
     except error:
         raise
-    except Exception as e:
+    except Exception as e:      # SDK missing, HTTP, timeout
         raise error(f"{type(e).__name__}: {e}"[:300]) from e

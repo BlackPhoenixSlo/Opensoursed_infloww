@@ -1,13 +1,3 @@
-"""client perf-log ingest table
-
-Revision ID: 0004_perf_events
-Revises: 0003_wall_media_scan
-Create Date: 2026-05-21
-
-Backing store for /admin/perflog/ingest — append-only telemetry rows
-batched from the frontend perfLog client. Pruned by the relay's
-background evictor; safe to wipe at any time (no FKs depend on it).
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -16,6 +6,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
+# append-only telemetry, no FKs depend on it: safe to wipe at any time
 revision: str = "0004_perf_events"
 down_revision: str | Sequence[str] | None = "0003_wall_media_scan"
 branch_labels: str | Sequence[str] | None = None

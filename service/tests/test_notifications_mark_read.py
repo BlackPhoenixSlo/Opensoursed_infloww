@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""
-POST /api/of/v2/users/notifications/read — the bell's mark-read, OF web's `setNotificationsReadByType`.
-
-The chat page's Notifications badge is OF's own counter (`/users/notifications/count` `all`); only this write lowers
-it. Covered:
-  case_client_sends_ofs_exact_request   POST {API_BASE}/users/notifications/read, no body, no trailing slash
-  case_route_calls_of_busts_cache_returns_counters
-  case_of_error_is_502_and_keeps_cache  a non-2xx from OF: surfaced, cached count untouched (badge not zeroed)
-  case_fansly_shim_sends_bundle_ack     POST /notifications/ack {beforeAnd: <newest row id>, type: ""}, zeroed counters
-  case_fansly_shim_nothing_unread_sends_nothing
-  case_fansly_route_marks_read_busts_cache  the route on a real FanslyShimClient: no more 501
-  case_fansly_ack_error_keeps_cache     a Fansly non-2xx raises (app handler: 502), cached count untouched
-  case_client_without_read_flip_answers_501
-  case_routes_registered                the path is on the app (no typed variant)
-
-Run: ./venv/bin/python service/tests/test_notifications_mark_read.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -61,7 +44,6 @@ def _reset() -> None:
 
 
 async def _seed_cache() -> None:
-    """A badge of 7 and a feed page held in the relay's cache, as a recent bell open leaves them."""
     async def count():
         return {"all": 7, "tip": 2}
 
@@ -106,7 +88,6 @@ async def case_of_error_is_502_and_keeps_cache():
     assert relay_cache.peek("notifications_count", _AID, ()) == {"all": 7, "tip": 2}, "failed write dropped the badge"
 
 
-# Fansly's feed, newest first, as `GET /notifications` answers it (ids/types invented; shape from RECIPES.md).
 _ROWS = [
     {"id": "9300", "type": 3003, "acknowledgedAt": None, "createdAt": 1790000300},
     {"id": "9200", "type": 1002, "acknowledgedAt": 1790000250, "createdAt": 1790000200},
@@ -116,8 +97,6 @@ _ZEROS = {"subscribes": 0, "tips": 0, "comments": 0, "mentions": 0, "hearts": 0,
 
 
 def _shim(rows: list[dict], fail: bool = False, ignored: bool = False) -> tuple[FanslyShimClient, list[tuple]]:
-    """The real shim class, no session: `_request` is the wire, recorded. An ack acks every row,
-    unless Fansly `ignored` it (2xx, nothing changed)."""
     sent: list[tuple] = []
     shim = FanslyShimClient.__new__(FanslyShimClient)
     rows = [dict(r) for r in rows]
@@ -137,8 +116,6 @@ def _shim(rows: list[dict], fail: bool = False, ignored: bool = False) -> tuple[
 
 
 def case_fansly_shim_sends_bundle_ack():
-    """Fansly web's `acknowledgeAllNotifications` (main.14d24b3e179efdb7.js `BJ`): POST /notifications/ack
-    `{beforeAnd: <newest notification id>, type: <selected types joined, "" = all>}`."""
     shim, sent = _shim(_ROWS)
     got = shim.notifications_read()
     assert ("POST", "/notifications/ack", {"beforeAnd": "9300", "type": ""}) in sent, sent
@@ -147,7 +124,6 @@ def case_fansly_shim_sends_bundle_ack():
 
 
 def case_fansly_ack_ignored_keeps_the_count():
-    """A 2xx ack that changed nothing (the body is bundle-derived): the answer is the feed re-read, not zeros."""
     shim, sent = _shim(_ROWS, ignored=True)
     got = shim.notifications_read()
     assert got["counters"]["all"] == 2, got
@@ -155,7 +131,6 @@ def case_fansly_ack_ignored_keeps_the_count():
 
 
 def case_fansly_shim_nothing_unread_sends_nothing():
-    """Fansly web skips the write when its unread count is 0 or it holds no rows; so does the shim."""
     for rows in ([], [dict(r, acknowledgedAt=1790000400) for r in _ROWS]):
         shim, sent = _shim(rows)
         assert shim.notifications_read() == {"counters": _ZEROS}
@@ -185,7 +160,7 @@ async def case_fansly_ack_error_keeps_cache():
     try:
         await server.of_notifications_mark_read()
     except FanslyAPIError:
-        pass   # the app's FanslyAPIError handler answers it 502
+        pass
     else:
         raise AssertionError("a rejected Fansly ack answered 2xx")
     finally:

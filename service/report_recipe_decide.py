@@ -1,14 +1,3 @@
-"""service/report_recipe_decide.py — the report recipe's pure half (no DB, no
-I/O): the dataset CATALOGUE, the per-dataset kind maps, `parse_recipe` (one
-error per field, so a model can repair its own recipe), `resolve_window`,
-`clamp_creators`, `shape` and `filename`. `report_recipe.run`/`build_file` execute a
-parsed recipe; the help bot's Do mode renders `catalogue_text` into its
-prompt (docs/plans/ultra-mode/issues/01-report-recipe.md).
-
-A recipe names a dataset and enum keys only; code builds every query:
-  {dataset, window: {preset} | {from, to}, creators?, employees?, kinds?,
-   group_by?, metrics?, sort?, limit?}
-"""
 from __future__ import annotations
 
 import difflib
@@ -18,10 +7,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-MAX_CREATORS = 50  # stats_window.MAX_ACCOUNTS
-MAX_LIMIT = 50_000  # csv_export.CSV_MAX_ROWS
+MAX_CREATORS = 50
+MAX_LIMIT = 50_000
 JSON_MAX_ROWS = 200
-HOUR_MAX_DAYS = 31  # by hour, at most 744 buckets
+HOUR_MAX_DAYS = 31
 FORMATS = ("csv", "xlsx", "json")
 TIME_UNITS = ("day", "week", "month", "hour")
 PRESETS = ("today", "yesterday", "this_week", "this_month",
@@ -34,8 +23,8 @@ FIELDS = ("dataset", "window", "creators", "employees", "kinds", "group_by", "me
 @dataclass(frozen=True)
 class Metric:
     label: str
-    unit: str  # "money" (cents in, dollars out) | "count" | "rate" (percent)
-    source: tuple[str, ...]  # the cell key summed; a rate's (numerator, denominator)
+    unit: str
+    source: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -47,10 +36,10 @@ class Dataset:
     max_days: int
     default_group_by: tuple[str, ...]
     default_metrics: tuple[str, ...]
-    employees: bool = False  # takes an `employees` restriction
+    employees: bool = False
     fixed_group_by: bool = False
-    sql_sorted: bool = False  # sorted + cut in SQL (fan_spend): sorts by a metric only
-    refuses_co_owned: bool = False  # refuses a Creator another Agency co-owns (attribution reads one Agency)
+    sql_sorted: bool = False
+    refuses_co_owned: bool = False
 
 
 CATALOGUE: dict[str, Dataset] = {
@@ -102,21 +91,17 @@ KIND_LABELS = {"ppv": "PPV", "tip": "Tips", "post": "Posts", "subscription": "Su
                "rebill": "Rebills", "custom": "Custom", "other": "Other"}
 UNATTRIBUTED = "Unattributed"
 
-# Asks the catalogue has no dataset for, and the nearest one it has.
 _NEAREST = {"revenue": "sales", "earnings": "sales", "income": "sales", "creator": "sales", "model": "sales",
             "employee": "employee_sales", "chatter": "employee_sales", "commission": "employee_sales",
             "message": "chat_activity", "chat": "chat_activity", "ppv": "chat_activity", "unlock": "chat_activity",
             "fan": "fan_spend", "subscriber": "fan_spend", "spender": "fan_spend", "whale": "fan_spend",
             "churn": "fan_spend", "departed": "fan_spend", "tipper": "fan_spend"}
 
-# Every ledger kind (attribution_backfill.REVENUE_KINDS + sales_attribution.SUBSCRIPTION_KINDS).
 LEDGER_KINDS = ("ppv", "ppv_message", "ppv_post", "ppv_stream", "tip", "tip_post", "tip_stream", "custom",
                 "subscription", "rebill", "referral")
 
 
 def sales_kind(kind: str | None) -> str:
-    """`sales`' kind of a ledger kind: `stats_per_model._kind_bucket`, the
-    Creator reports' buckets (feed-post sales are `post`)."""
     if not kind:
         return "custom"
     if kind in ("ppv_post", "tip_post"):
@@ -131,9 +116,6 @@ def sales_kind(kind: str | None) -> str:
 
 
 def ledger_kind(kind: str | None) -> str:
-    """`employee_sales`' and `fan_spend`'s kind of a ledger kind, as Fan
-    reports bucket them (`stats_fans.fan_spend_q`: PPV_KINDS, TIP_KINDS,
-    subscription + rebill); anything else is `other`."""
     if kind and kind.startswith("ppv"):
         return "ppv"
     if kind and kind.startswith("tip"):
@@ -144,14 +126,13 @@ def ledger_kind(kind: str | None) -> str:
 
 
 def ledger_kinds(keys: tuple[str, ...]) -> tuple[str, ...]:
-    """The ledger kinds of `ledger_kind` keys, for a SQL filter."""
     return tuple(k for k in LEDGER_KINDS if ledger_kind(k) in keys)
 
 
 @dataclass(frozen=True)
 class Recipe:
     dataset: str
-    window: tuple[str, ...]  # ("preset", name) | ("range", from, to)
+    window: tuple[str, ...]
     creators: tuple[str, ...] = ()
     employees: tuple[int, ...] = ()
     kinds: tuple[str, ...] = ()
@@ -203,7 +184,6 @@ def _parse_window(v: Any) -> tuple[tuple[str, ...] | None, str | None]:
 
 
 def parse_recipe(raw: Any) -> tuple[Recipe | None, dict[str, str]]:
-    """`raw` (a JSON object) as a Recipe, or None with one error per field."""
     if not isinstance(raw, dict):
         return None, {"recipe": "must be an object"}
     errors = {k: "unknown field" for k in raw if k not in FIELDS}
@@ -276,12 +256,10 @@ def parse_recipe(raw: Any) -> tuple[Recipe | None, dict[str, str]]:
 
 
 def dataset_error(name: Any) -> str:
-    """The refusal for a dataset the catalogue lacks: the nearest one, and the list."""
     return f"not available; nearest is {nearest_dataset(str(name or ''))}; one of " + ", ".join(sorted(CATALOGUE))
 
 
 def nearest_dataset(ask: str) -> str:
-    """The catalogue's nearest dataset to an ask it has no dataset for."""
     low = ask.lower()
     for word, ds in _NEAREST.items():
         if word in low:
@@ -295,14 +273,10 @@ def time_unit(group_by: tuple[str, ...]) -> str | None:
 
 
 def sort_key(recipe: Recipe) -> str:
-    """The key a report is ordered by: `sort`, else the time key, else the
-    first metric. The one source for `shape` and fan_spend's SQL ORDER BY
-    (whose `parse_recipe` admits a metric only)."""
     return recipe.sort or time_unit(recipe.group_by) or recipe.metrics[0]
 
 
 def order_label(recipe: Recipe) -> str:
-    """`sort_key` in plain words for the plan card: a metric high to low, a key A to Z."""
     key = sort_key(recipe)
     ds = CATALOGUE[recipe.dataset]
     if key in recipe.metrics:
@@ -315,9 +289,6 @@ def week_start_of(day: date, week_start: str) -> date:
 
 
 def resolve_window(recipe: Recipe, today: date, week_start: str = "monday") -> tuple[tuple[date, date] | None, str | None]:
-    """The recipe's window as local [from, to] days (presets as
-    app/lib/dateRange.ts: "last N days" ends today), or its refusal: over the
-    dataset's cap, or by hour over HOUR_MAX_DAYS."""
     if recipe.window[0] == "preset":
         p = recipe.window[1]
         if p == "today":
@@ -344,17 +315,12 @@ def resolve_window(recipe: Recipe, today: date, week_start: str = "monday") -> t
 
 
 def today_in(zone: ZoneInfo | None, now: datetime) -> date:
-    """The local day of naive UTC `now` in `zone` (UTC when None)."""
     at = now.replace(tzinfo=timezone.utc)
     return (at.astimezone(zone) if zone else at).date()
 
 
 def clamp_creators(named: tuple[str, ...], owned: set[str], *, co_owned: set[str] | frozenset = frozenset(),
                    refuse_co_owned: bool = False) -> tuple[list[str] | None, str | None]:
-    """The Creators a run reads: the named ones when all are the Agency's
-    (`owned`), else every owned one; refused for a foreign Creator, more than
-    MAX_CREATORS, or (`refuse_co_owned`) one another Agency co-owns. Empty
-    when the Agency owns none: the caller then reads nothing."""
     if foreign := [c for c in named if c not in owned]:
         return None, f"not one of your Creators: {foreign[0]}"
     ids = sorted(set(named)) if named else sorted(owned)
@@ -366,8 +332,6 @@ def clamp_creators(named: tuple[str, ...], owned: set[str], *, co_owned: set[str
 
 
 def period_label(day: str, unit: str, week_start: str = "monday") -> str:
-    """A local 'YYYY-MM-DD' day's label by `unit` (day, week = its week's
-    first day, month = 'YYYY-MM')."""
     if unit == "week":
         return week_start_of(date.fromisoformat(day), week_start).isoformat()
     if unit == "month":
@@ -376,7 +340,6 @@ def period_label(day: str, unit: str, week_start: str = "monday") -> str:
 
 
 def edge_label(edge: datetime, zone: ZoneInfo | None, unit: str) -> str:
-    """A bucket's label from its naive UTC start (`stats_window.bucket_edges`)."""
     at = edge.replace(tzinfo=timezone.utc)
     local = at.astimezone(zone) if zone else at
     return local.strftime({"month": "%Y-%m", "hour": "%Y-%m-%d %H:00"}.get(unit, "%Y-%m-%d"))
@@ -405,11 +368,6 @@ def _value(m: Metric, sums: dict[str, int]) -> float | int | None:
 
 def shape(recipe: Recipe, cells: list[dict[str, Any]],
           names: dict[str, dict[Any, str]] | None = None) -> tuple[list[str], list[list[Any]]]:
-    """The table of `cells` (dicts of the group_by keys and the metrics'
-    source sums, in cents): summed per the recipe's group_by, a rate after
-    summing (none with no denominator), money in dollars, sorted (a metric
-    high to low, a key A to Z; by default the time key, else the first
-    metric) and cut to `limit`. Labels from `names` {dim: {key: label}}."""
     ds = CATALOGUE[recipe.dataset]
     names = names or {}
     sources = {s for m in recipe.metrics for s in ds.metrics[m].source}
@@ -444,7 +402,6 @@ def filename(dataset: str, frm: date | str, to: date | str, fmt: str) -> str:
 
 
 def catalogue_text() -> str:
-    """The catalogue as prompt text, sorted, no account data: byte-stable."""
     lines = []
     for name in sorted(CATALOGUE):
         ds = CATALOGUE[name]
@@ -456,7 +413,6 @@ def catalogue_text() -> str:
 
 
 def catalogue_json() -> dict[str, Any]:
-    """The catalogue for GET /admin/reports/catalogue."""
     return {"datasets": [
         {"dataset": name, "about": ds.about, "group_by": list(ds.group_by), "fixed_group_by": ds.fixed_group_by,
          "metrics": [{"metric": k, "label": m.label, "unit": m.unit} for k, m in ds.metrics.items()],

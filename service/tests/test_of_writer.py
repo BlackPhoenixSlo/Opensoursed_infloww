@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""db/of_writer — group commit for the OF-cache rows.
-
-  • ops queued together commit in ONE transaction; a caller resumes after it
-  • DMs of one chat coalesce (one fans + one chats upsert) and a re-delivered
-    frame does not bump unread a second time
-  • per-chat order holds: DM, mark-read, DM -> unread 1
-  • a bad op in a batch fails alone; the rest of the batch still commits
-  • stop() flushes what is queued
-
-Run:  ./venv/bin/python service/tests/test_of_writer.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -34,7 +23,7 @@ async def _noop(*_a, **_k):
 
 webhook_dispatch.on_inbound_message = _noop  # type: ignore[assignment]
 webhook_dispatch.on_inbound_image = _noop    # type: ignore[assignment]
-messages.assert_account_owned = lambda _aid: None  # no request scope in a unit test
+messages.assert_account_owned = lambda _aid: None
 
 
 def _dm(fan: int, mid: int, body: str = "hi") -> dict:
@@ -65,7 +54,6 @@ async def case_one_transaction_and_coalesced_unread():
     await _setup()
     before = write_telemetry._cur.ow_batches
     fan = 501
-    # Three frames of one chat queued at once, the third a re-delivery.
     await asyncio.gather(et.transcode(_dm(fan, 10)), et.transcode(_dm(fan, 11)),
                          et.transcode(_dm(fan, 10)))
     if write_telemetry.ENABLED:
@@ -73,7 +61,7 @@ async def case_one_transaction_and_coalesced_unread():
         assert write_telemetry._cur.ow_ops - write_telemetry._cur.ow_entries >= 2, "coalesced"
     assert await _n_msgs(fan) == 2
     assert await _unread(fan) == 2, "a re-delivered frame must not count twice"
-    await et.transcode(_dm(fan, 11))  # a later replay, alone
+    await et.transcode(_dm(fan, 11))
     assert await _unread(fan) == 2
     await of_writer.stop()
 
@@ -111,7 +99,7 @@ async def case_stop_flushes_queued():
     await _setup()
     fan = 504
     tasks = [asyncio.create_task(et.transcode(_dm(fan, 40 + i))) for i in range(5)]
-    await asyncio.sleep(0)  # queued, not yet committed
+    await asyncio.sleep(0)
     await of_writer.stop()
     await asyncio.gather(*tasks, return_exceptions=True)
     assert await _n_msgs(fan) == 5, "stop() writes what was queued"

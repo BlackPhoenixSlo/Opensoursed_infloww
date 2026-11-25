@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
-"""What skips the account's residential proxy, and what must not.
-
-Infloww's desktop sends OF's unsigned static hosts direct (bypassRules.ts); /img
-does the same, through a bare session that carries nothing of the account: a
-request from the relay's own IP with the account's cookies or headers would link
-the account to that IP. Everything else stays on the account's proxy: the CDN
-media URLs OF signs with `AWS:SourceIp`, and the of2transcoder S3 uploads (the
-relay's one IP is shared by every account, so a direct PUT would link them).
-
-  case_s3_puts_keep_the_proxy            — single-part and multipart PUTs
-  case_img_static_hosts_are_direct       — static*/public.onlyfans.com via /img,
-                                           on the bare session, never the account's
-  case_the_direct_session_is_bare        — no cookies kept or sent, no headers, no proxy
-  case_img_signed_cdn_keeps_the_proxy    — cdn2.onlyfans.com (IP-signed) does not
-
-OF is faked: no request leaves the process.
-Run: ./venv/bin/python service/tests/test_direct_egress.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import asyncio  # noqa: E402
 import os  # noqa: E402
@@ -55,7 +37,6 @@ class _Mime:
 
 
 class _Wire:
-    """Everything upload_media sends, with the kwargs each call carried."""
 
     def __init__(self):
         self.puts: list[dict] = []
@@ -70,7 +51,6 @@ class _Wire:
         c.vault_media_lookup_hash = lambda *_a, **_k: None
         c._proxy_retry = lambda fn, **_k: fn()
         c.post_json = self._post_json
-        # The session the account's OF calls ride: proxied, as in production.
         c.http = SimpleNamespace(proxies=dict(PROXY), put=self._put, post=self._post)
         return c
 
@@ -151,8 +131,6 @@ class _ImgResp:
 
 
 def _img(u: str) -> dict[str, list]:
-    """GET /img?u=u with a browser that sends Range and the account header;
-    returns the calls each session got."""
     seen: dict[str, list] = {"account": [], "direct": []}
 
     def _get(who):
@@ -170,9 +148,9 @@ def _img(u: str) -> dict[str, list]:
     try:
         req = SimpleNamespace(headers={"range": "bytes=0-", "x-account-id": "acct-1"})
 
-        async def _fetch():   # draining releases the fetch slot the stream holds
+        async def _fetch():
             resp = await img_api.proxy_image(req, u=u)
-            if hasattr(resp, "body_iterator"):   # a FileResponse (a small Range answer, off disk) has none
+            if hasattr(resp, "body_iterator"):
                 async for _ in resp.body_iterator:
                     pass
         asyncio.run(_fetch())
@@ -187,7 +165,7 @@ def case_img_static_hosts_are_direct():
         seen = _img(u)
         assert seen["account"] == [], (u, "the account's session must not fetch a direct host")
         (call,) = seen["direct"]
-        # Only the browser's Range rides along: no cookie, UA, x-bc, user-id or other account header.
+        # Only the browser's Range rides along: no cookie, UA, x-bc or account header leaks to a direct host.
         assert call["headers"] == {"Range": "bytes=0-"}, call
         assert "proxies" not in call and "cookies" not in call, call
 
@@ -204,7 +182,7 @@ def case_img_signed_cdn_keeps_the_proxy():
               "https://static2.onlyfans.com.evil.example/x.png"):
         try:
             seen = _img(u)
-        except server.HTTPException as e:   # not an allowed CDN host at all
+        except server.HTTPException as e:
             assert e.status_code == 400, (u, e)
             continue
         assert seen["direct"] == [], (u, seen)

@@ -1,14 +1,3 @@
-"""service/tests/_gc_fixtures.py — the gather-close suites' shared bench.
-
-FakeOF (records sends, serves a fake vault), the LLM stub, and the row seeders,
-extracted VERBATIM from test_gather_close.py on 2026-08-30 when the ask-route
-cases pushed that file past 1,000 lines. test_gather_close.py sits on it (the
-ask-route suite went when welcome_chatter_for_info stopped sending the
-gather-close PPV).
-
-NOT a test file: no `case_*`, no `_harness.run()`. Importers bootstrap
-`_harness` FIRST (the temp-DB footgun), then import this.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -25,11 +14,8 @@ from db.models import (
 _T0 = datetime(2026, 6, 4, 12, 0, 0)
 
 
-# ── Fakes (no network) ────────────────────────────────────────────────
 
 class FakeOF:
-    """Records sends (with kwargs — the price is the point here) and serves a
-    fake vault: `folders` maps name → {"id": int, "media": [{"id", "type"}, …]}."""
 
     def __init__(self, folders: dict | None = None):
         self.sent: list[tuple[int, str, dict]] = []
@@ -77,7 +63,6 @@ def _patch_llm(reply: str = "heyy what are you up to tonight? 😏") -> None:
     llm_client.chat = _fake_chat  # type: ignore[attr-defined]
 
 
-# ── Seeding ───────────────────────────────────────────────────────────
 
 async def _seed_account(aid: str) -> None:
     async with get_session() as s:
@@ -93,10 +78,6 @@ async def _seed_fan(aid: str, fan_id: int) -> None:
 
 async def _add_msgs(aid: str, fan_id: int, msgs: list[tuple[str, str]],
                     *, base: int = 0, at: datetime | None = None) -> None:
-    """`base` offsets the message ids — `_seed_graduate` already claims
-    `fan_id * 1000`, and two rows with one id is a PK clash, not a fixture.
-    `at` overrides the start of the run; the thread's OLDEST row is what the
-    him-block window measures, so a case about age has to place it."""
     start = at or _T0
     async with get_session() as s:
         for i, (direction, body) in enumerate(msgs):

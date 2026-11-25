@@ -1,33 +1,3 @@
-"""service/mcp_api.py — the hosted MCP server: `POST /admin/mcp`, hand-rolled JSON-RPC 2.0
-(docs/plans/ultra-mode/issues/05-mcp-server.md; how to connect: docs/runbooks/mcp-connect.md).
-
-Streamable HTTP answering plain JSON: no SSE, no `Mcp-Session-Id`; GET/DELETE 405; a batch is
--32600. No `mcp` package (it clashes with the pinned starlette). Methods: initialize, ping,
-tools/list, tools/call; every notification (and a client's JSON-RPC response) is 202, no body.
-
-Who may call:
-- `Authorization: Bearer ifw_…` (owner access token; the session middleware already signed it
-  in or 401'd it) → the Toolbox's non-send tools, each run by `toolbox.call` as that owner, plus
-  the token `BUILTINS` `propose_plan` / `plan_status` (ultra_run: a plan the owner OKs in the
-  browser; the only way a send tool is ever named here). Send tools are never listed nor callable.
-- No credential at all → initialize, ping, tools/list and the anonymous `BUILTINS`: `sign_in` (listed first; its
-  call is the 401 below, which opens the client's browser sign-in; with a token it answers "signed in"), `connect_account`
-  (the register / log-in links), `register_account` and `login` (ticket 05 owner amendment: the
-  /auth/register or /auth/sign-in (+ /auth/2fa/login) route run in-process as the caller's address —
-  same validation, per-address throttle (login_throttle: sign-in and sign-up) and 2FA — then
-  POST /admin/owner-tokens with that fresh session; the answer is the token). Employee logins get
-  none; a closed fleet shard (`_registration_closed`: env only, MCP_SIGNUP_URL ≠ OI_ORIGIN) refuses
-  register_account with the open shard's link. Any Toolbox tool or token builtin answers the
-  connect link as `isError`. The isolation middleware and share gate let exactly this path
-  through with no principal (`anonymous_surface`). No OnlyFans login tool: logins are pasted on the
-  Connect card (logins_url).
-- A Cookie or any other Authorization → 401: this is not a browser endpoint.
-- Any `Origin` header → 403 (DNS rebinding; MCP clients send none).
-
-Audit: the path is audit-ineligible (audit_log._AUDIT_SKIP_PATHS, exact); each tool's inner request is
-audited as itself, `via="token <name>"`. No DB session is held across `toolbox.call`'s inner request
-(spike: an open one stalls it); the plan builtins open their own, with no inner request.
-"""
 from __future__ import annotations
 
 import dataclasses
@@ -50,27 +20,24 @@ import ultra_decide as ud
 import ultra_run
 import ultra_schema as us
 from brand import BRAND_NAME
-from login_paste import LOGINS_PAGE  # the Connect card: paste OnlyFans logins
+from login_paste import LOGINS_PAGE
 from toolbox_args import Args
 
 router = APIRouter()
 
 PATH = token_auth.MCP_PATH
-OTHER_METHODS = token_auth.MCP_OTHER_METHODS  # answered 405 (mcp_other), to a token too
-# Who serves a request with no principal (server.py: the isolation middleware and the share gate
-# both ask `anonymous_surface`): this exact path, POST plus the 405-only methods (an MCP client
-# probes GET for an SSE stream; a 401 there would send it into an OAuth flow). A new handler on
-# this path serves anonymous callers too: never one that names an account.
+OTHER_METHODS = token_auth.MCP_OTHER_METHODS
+# Anonymous callers reach exactly this path: GET gets 405 not 401 (a 401 sends MCP clients into OAuth); a new handler here must never name an account.
 ANON_METHODS = ("POST", *OTHER_METHODS)
 
 
 def anonymous_surface(method: str, path: str) -> bool:
     return path == PATH and method in ANON_METHODS
 
-VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")  # newest first: the answer to an unknown one
+VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")  # newest first: the answer to an unknown version
 SERVER_VERSION = "1.0"
-NEXT = "/settings/ai-keys"  # where a new owner mints the access token (Access tokens card)
-ACCOUNT_PAGE = "/settings/account"  # where the Agency's name is set
+NEXT = "/settings/ai-keys"
+ACCOUNT_PAGE = "/settings/account"
 
 INSTRUCTIONS = (
     f"{BRAND_NAME}: read one Agency's own data — Creators, per-Creator stats, vault search, OnlyFans "
@@ -124,12 +91,10 @@ SIGN_IN_NEEDED = ("sign-in needed: this MCP client should now open the browser s
 SIGNED_IN = ("Signed in: this MCP client has an access token. If it still shows only the sign-in tools (sign_in, "
              "connect_account, register_account, login), it must reload this server's tool list: reconnect this "
              "server or restart the client.")
-MAX_BODY = 256 * 1024  # one JSON-RPC message; the endpoint answers anonymous callers too
+MAX_BODY = 256 * 1024
 
 
 class _Json(JSONResponse):
-    """Every MCP answer: a lone UTF-16 surrogate echoed from the request (id, method, tool name; json.loads
-    accepts "\\ud800") has no utf-8 form, so such a body is sent \\u-escaped (the id still round-trips)."""
 
     def render(self, content: Any) -> bytes:
         try:
@@ -150,18 +115,14 @@ def _ok(rid: Any, result: dict[str, Any]) -> JSONResponse:
 
 
 def _origin(env: str) -> str:
-    """Env var `env` as an origin: trimmed, no trailing slash, lower case ("" when unset)."""
     return (os.environ.get(env) or "").strip().rstrip("/").lower()
 
 
 def _signup_base() -> str:
-    """`MCP_SIGNUP_URL`: a fleet's open shard ("" off a fleet: this host signs up)."""
     return _origin("MCP_SIGNUP_URL")
 
 
 def connect_links(creds: toolbox.Creds) -> dict[str, str]:
-    """register_url on `_signup_base()` (closed shards 403 /auth/register), else this host; login_url
-    always this host. Both land on the Access tokens card."""
     here = creds.public_base() or ""
     signup = _signup_base() or here
     nxt = quote(NEXT, safe="")
@@ -170,10 +131,7 @@ def connect_links(creds: toolbox.Creds) -> dict[str, str]:
 
 
 def _registration_closed() -> bool:
-    """A fleet shard other than the open one, from server config only: `MCP_SIGNUP_URL` set and this
-    shard's own origin (`OI_ORIGIN`, the fleet template sets both) unset or different. Never from a
-    request header (X-Forwarded-Host is the caller's to forge). Caddy's 403 on POST /auth/register
-    does not see an in-process call, so this is the gate."""
+    # Server config only, never a request header (X-Forwarded-Host is forgeable); Caddy's 403 on /auth/register can't see an in-process call.
     signup = _signup_base()
     return bool(signup) and _origin("OI_ORIGIN") != signup
 
@@ -186,10 +144,6 @@ def _connect_result(creds: toolbox.Creds, *, refused: bool) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class Builtin:
-    """A tool answered here with no route behind it: its args model, `run(creds, args)` → the tool
-    result, and who sees it (`token` False: only a caller with no credential; True: only a token, and a call with
-    no credential is the 401 sign-in challenge). `listed_anon`: a token builtin listed to callers with no
-    credential instead (sign_in: calling it is that challenge)."""
     name: str
     description: str
     args: type[BaseModel]
@@ -206,17 +160,13 @@ async def _connect(creds: toolbox.Creds, _args: Any) -> dict[str, Any]:
     return _connect_result(creds, refused=False)
 
 
+# Password/code go only into the inner request body: never a result, error, log or audit; the fresh session cookie is dropped with the call (no per-session revoke).
 async def _signed_in(creds: toolbox.Creds, _args: Any) -> dict[str, Any]:
     user = auth.get_request_user()
     return {"signed_in": True, "username": user.username if user else None, "next_step": SIGNED_IN,
             "open_url": f"{creds.public_base() or ''}{NEXT}"}
 
 
-# ── register_account / login: the sign-in routes in-process, then an owner token ──────────────
-# The password and code go only into the inner request's JSON body: never into a result, an error,
-# a log line or the audit (/admin/mcp is audit-skipped; the inner /auth/* row redacts them).
-# The fresh session cookie stays in this call (it never reaches the client) and is dropped with it;
-# there is no per-session revoke (/auth/logout only clears the browser cookie; revoke-all would sign the owner out everywhere).
 
 class RegisterArgs(Args):
     username: str = Field(min_length=1, max_length=64, description=(
@@ -241,8 +191,6 @@ SIGNUP_CLOSED = "sign-up is closed on this server: register at register_url (the
 
 
 def _inner_detail(status: int, body: Any) -> str:
-    """A refused inner request's detail, safe to show: a string or a dict's `message`; anything else (a
-    422's list may hold the input) becomes a generic line."""
     d = body.get("detail") if isinstance(body, dict) else None
     if isinstance(d, str):
         return d
@@ -252,14 +200,11 @@ def _inner_detail(status: int, body: Any) -> str:
 
 
 def _refused(status: int, body: Any) -> dict[str, Any]:
-    """A refused inner request as the tool's error (a non-error status that is no answer: 502)."""
     return td.error(status if status >= 400 else 502, _inner_detail(status, body))
 
 
 async def _inner(creds: toolbox.Creds, method: str, path: str, body: dict[str, Any] | None,
                  cookie: str | None = None) -> tuple[int, Any, Any]:
-    """(status, body, response cookies) of one isolated inner request as `creds`' client address,
-    carrying no credential but `cookie` (the fresh session)."""
     anon = dataclasses.replace(creds, authorization=None,
                                cookie=f"{auth.COOKIE_NAME}={cookie}" if cookie else None)
     r = await toolbox.raw(td.Request(method, path, {}, body, {}), anon)
@@ -267,15 +212,11 @@ async def _inner(creds: toolbox.Creds, method: str, path: str, body: dict[str, A
 
 
 def token_name(client: str = "") -> str:
-    """`MCP [<client>] <UTC time>`: seconds, so two logins in a minute differ. No second "MCP" when the
-    client's name starts with that word (mcp-remote: "MCP CLI Proxy")."""
     prefix = "" if (client.split() or [""])[0].upper() == "MCP" else "MCP"
     return " ".join(p for p in (prefix, client, f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}") if p)
 
 
 async def mint(creds: toolbox.Creds, session: str, name: str) -> tuple[int, Any]:
-    """(status, body) of minting an owner token named `name` with an owner session (owner_tokens_api,
-    as the Access tokens card does). Also mcp_oauth's token endpoint."""
     status, body, _ = await _inner(creds, "POST", "/admin/owner-tokens", {"name": name}, session)
     return status, body
 
@@ -311,7 +252,7 @@ async def _register(creds: toolbox.Creds, args: RegisterArgs) -> dict[str, Any]:
                                 session)
         name_saved = 200 <= st < 300
     out = await _token_for(creds, session, body.get("username") or args.username)
-    if name_saved is False and "token" in out:  # the account and token stand; only the name is missing
+    if name_saved is False and "token" in out:
         out = {**out, "agency_name_saved": False,
                "next_step": f"{out['next_step']} The Agency's name was not saved: set it in the browser "
                             f"({creds.public_base() or ''}{ACCOUNT_PAGE})."}
@@ -335,15 +276,14 @@ async def _login(creds: toolbox.Creds, args: LoginArgs) -> dict[str, Any]:
         if status != 200 or not isinstance(body, dict):
             return {**_refused(status, body), **fail}
     if body.get("kind") != "user":
-        return {**td.error(403, EMPLOYEE_REFUSED), **fail}  # its employee session cookie is dropped here
+        return {**td.error(403, EMPLOYEE_REFUSED), **fail}
     session = _session(cookies)
     if not session:
         return {**td.error(502, "sign-in set no session"), **fail}
-    return await _token_for(creds, session, args.username.strip().lower())  # as stored; sign-in's body carries only `kind`
+    return await _token_for(creds, session, args.username.strip().lower())
 
 
 def _send_tool_lines() -> str:
-    """Each send tool and its args, from the registry (they are in no tools/list)."""
     lines = []
     for t in td.TOOLS:
         if t.effect == "send":
@@ -418,12 +358,10 @@ if _shared := sorted(set(BUILTINS) & {t.name for t in td.TOOLS}):
 
 
 def _builtins(token: bool) -> list[Builtin]:
-    """The builtins a caller may run."""
     return [b for b in BUILTINS.values() if b.token == token]
 
 
 def _listed(token: bool) -> list[Builtin]:
-    """The builtins in a caller's tools/list (sign_in first for a caller with no credential)."""
     return [b for b in BUILTINS.values() if (b.token and not b.listed_anon) == token]
 
 
@@ -436,8 +374,6 @@ async def _run_builtin(b: Builtin, args: dict[str, Any] | None, creds: toolbox.C
 
 
 async def capped_body(request: Request, cap: int) -> bytes | None:
-    """The request body, or None once it passes `cap` bytes (announced: refused unread; or streamed).
-    Also mcp_oauth's form / JSON bodies."""
     cl = request.headers.get("content-length")
     if cl is not None and cl.isdigit() and int(cl) > cap:
         return None
@@ -465,7 +401,6 @@ async def _call(params: dict[str, Any], rid: Any, token: bool, creds: toolbox.Cr
         return _ok(rid, _tool_result(await _run_builtin(b, args, creds)))
     if not token:
         if any(t.name == name for t in td.token_tools()) or any(b.name == name for b in _builtins(True)):
-            # A 401 naming the resource metadata: the MCP client offers its browser sign-in (mcp_oauth).
             return _rpc_error(-32001, SIGN_IN_NEEDED if name == SIGN_IN else NEEDS_TOKEN, rid, status=401, data=_connect_result(creds, refused=True),
                               **{"WWW-Authenticate": token_auth.challenge_for(creds.public_base())})
         return _rpc_error(-32602, f"Unknown tool: {name}", rid)
@@ -511,7 +446,7 @@ async def mcp_post(request: Request) -> Response:
         return _rpc_error(-32600, f"Unsupported MCP-Protocol-Version: {pv}", status=400)
     token = auth.get_request_token() is not None
     if not token and ("authorization" in h or "cookie" in h):
-        # A browser session or a foreign scheme: refused, never served as the anonymous surface.
+        # A browser session or foreign scheme is refused, never served as the anonymous surface.
         return _rpc_error(-32001, "use an access token: Authorization: Bearer ifw_…", status=401,
                           **{"WWW-Authenticate": token_auth.challenge(h, request.url.scheme)})
     body = await capped_body(request, MAX_BODY)
@@ -519,23 +454,23 @@ async def mcp_post(request: Request) -> Response:
         return _rpc_error(-32600, f"request body over {MAX_BODY // 1024} KB", status=413)
     try:
         msg = json.loads(body)
-    except (ValueError, UnicodeDecodeError, RecursionError):  # RecursionError: nesting past the C stack
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return _rpc_error(-32700, "Parse error", status=400)
     if isinstance(msg, list):
         return _rpc_error(-32600, "batches are not supported", status=400)
     if not isinstance(msg, dict):
         return _rpc_error(-32600, "Invalid Request: not a JSON-RPC 2.0 object", status=400)
-    rid = msg.get("id") if _valid_id(msg.get("id")) else None  # JSON-RPC 2.0: echoed whenever readable
+    rid = msg.get("id") if _valid_id(msg.get("id")) else None
     if msg.get("jsonrpc") != "2.0":
         return _rpc_error(-32600, "Invalid Request: not a JSON-RPC 2.0 object", rid, status=400)
     if "method" not in msg:
         if rid is not None and ("result" in msg or "error" in msg):
-            return Response(status_code=202)  # a client's answer; we never ask, so nothing to match
+            return Response(status_code=202)
         return _rpc_error(-32600, "Invalid Request: no method", rid, status=400)
     if not isinstance(msg["method"], str):
         return _rpc_error(-32600, "Invalid Request: method must be a string", rid, status=400)
     if "id" not in msg:
-        return Response(status_code=202)  # a notification (notifications/initialized, …)
+        return Response(status_code=202)
     if not _valid_id(msg["id"]):
         return _rpc_error(-32600, "Invalid Request: id must be a string or integer", status=400)
     return await _dispatch(msg, token, toolbox.Creds.from_request(request))

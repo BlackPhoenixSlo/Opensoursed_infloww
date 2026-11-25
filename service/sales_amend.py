@@ -1,27 +1,3 @@
-"""sales_amend — the owner's amends to who a sale credits (Sales records'
-Reassign; roadmap W6 6.5, Infloww's `/amend/employee/transactions`).
-
-  POST /admin/ingest/transactions/{id}/attribute  {employee_id}
-       → {id, account_id, kind, amount_cents, attributed_employee_id}: one sale.
-  POST /admin/ingest/transactions/attribute
-       {employee_id, tx_ids[1..500]}  or  {employee_id, clock_event_id}
-       → {updated, attributed_employee_id, tx_ids, skipped_split}: a batch,
-       every sale or none (any refusal writes nothing). With `clock_event_id`
-       the sales are that Clock event's (`sales_attribution.event_sales`: the shares
-       credited to its Employee inside its time on a Creator, the Timesheet's
-       rule), so Shift records' "Reassign sales" moves one shift's sales; a
-       sale split with other Employees (Shift schedule) is left as it is and
-       counted in `skipped_split`, so their shares stay theirs.
-
-`employee_id` is an Employee id (the override `transactions.attributed_employee_id`
-names it), `"no_one"` (the override `sales_attribution.NO_ONE`: credited to
-nobody, whatever the rules say) or null (the override cleared, so the Sales
-Settings rules credit the sale again). Owner or Master sessions only (a
-chatter 403, no session 401); a sale outside the caller's Creators is 404;
-an Employee outside a sale's Agency is 400. Each sale's write adds one
-`sales.reassign` action in the same commit (`reassign`).
-"""
-
 from __future__ import annotations
 
 import json
@@ -49,7 +25,6 @@ _MISSING = object()
 
 
 def parse_employee(payload: dict[str, Any]) -> int | None:
-    """The body's `employee_id`: an int, `NO_ONE` for "no_one", None to clear."""
     raw = payload.get("employee_id", _MISSING)
     if raw is _MISSING:
         raise HTTPException(status_code=400, detail='employee_id required (an id, "no_one" or null)')
@@ -67,36 +42,10 @@ def parse_employee(payload: dict[str, Any]) -> int | None:
 
 
 async def reassign(s, ctx, tx_ids: list[int], employee_id: int | None) -> list[Any]:
-    """Set the override of every sale in `tx_ids` to `employee_id` (see
-    `parse_employee`) in session `s`, each with its `sales.reassign` action,
-    or refuse before writing anything. Returns the sales' rows (id, kind,
-    account_id, amount_cents) in `tx_ids` order.
-
-    Each action's payload holds the actor (`owner:<id>` or `master:<id>`),
-    the old and new override `employee_id` (`NO_ONE` for "No one") and
-    `shown_before`, the Employee the attribution view credited at write time
-    (null for nobody).
-
-    ASSUMPTION: the old and new `employee_id` (`before`, `after`) are the
-    override column's (`attributed_employee_id`), the value this route
-    writes, so clearing an override records `after: null` even where the
-    Rule then credits someone; beside them `shown_before` holds the Employee
-    the attribution view credited at write time (what the Sales records row
-    showed; null for an unassigned sale or one the view does not carry), so
-    the change is traceable either way. Rung 5. Overturned if the audit
-    should also record the Employee the view credits after the write.
-
-    ASSUMPTION: for the Master the sale's Agency is any owner holding its
-    Creator in `user_accounts`; for an owner it is that owner's own Agency.
-    Rung 1 (Employees belong to one owner, `employees.user_id`; the Master's
-    Creators are every Agency's, auth._master_account_ids). Overturned if a
-    Creator shared by two Agencies should accept either's Employees from an
-    owner session."""
 
     t = Transaction
     found = {r.id: r for r in (await s.execute(
         select(t.id, t.kind, t.account_id, t.amount_cents, t.attributed_employee_id,
-               # The view's answer, materialised on the row (tx_rollup.py), for a sale the view carries.
                t.credit_employee_id,
                (t.status.in_(TRACKED_STATUSES) & t.kind.in_(REVENUE_KINDS)).label("in_view"))
         .where(t.id.in_(tx_ids))
@@ -106,10 +55,6 @@ async def reassign(s, ctx, tx_ids: list[int], employee_id: int | None) -> list[A
         raise HTTPException(status_code=404, detail="sale not found")
 
     if employee_id not in (None, NO_ONE):
-        # An owner's Creators are its own `user_accounts` rows
-        # (auth.AuthedUser.account_ids), so the 404 above already proves it
-        # holds these: its Agency is itself. Only the Master, whose Creators
-        # are every Agency's, needs each Creator's holders looked up.
         agency_of: dict[str, set[str]] = {}
         for aid in {found[tid].account_id for tid in tx_ids}:
             agency_of[aid] = {ctx.agency_user_id} if not ctx.is_master else set((await s.execute(

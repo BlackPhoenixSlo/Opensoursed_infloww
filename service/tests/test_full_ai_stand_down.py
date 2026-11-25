@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_stand_down — Get to know fans and Auto-reply skip a Fan Full AI claims (spec 04b ticket 77),
-through each Lane's real job `run` (run_once) with a faked OF client and a patched LLM.
-
-  case_wcfi_skips_claimed          live, rule on, Fans list: the claimed Fan 0 sends / 0 LLM calls, the one off
-                                   the list answered; stats full_ai_claimed 1 (and a second Creator without the
-                                   rule: his Fans answered, no full_ai_claimed key)
-  case_wcfi_forced_still_skipped   only_fan_ids + force_ids + turn_handoff_ids naming the claimed Fan: 0 sends
-  case_autoreply_skips_claimed     both past silence_min: claimed 0 sends, the other answered; limit applies to
-                                   the Fans left (a claimed Fan never eats the budget)
-  case_no_send_turn_stays_claimed  an ai_decisions no_send row (a says_under_18 Turn): neither Lane answers him
-  case_top_spend_and_walk_claimed  over the Top spend limit / in an advancing walk: who_owns stops, still claimed,
-                                   neither Lane answers
-  case_off_is_today                rule off, FULL_AI_CHAT_OFF on, `_live` false: both Lanes send and report exactly
-                                   what they do with no Stand-down at all (same sends, same stats dict)
-  case_claimed_ids_raising         the Lane treats nobody as claimed and logs once
-  case_bad_config_claims_nobody    an unparsable Full AI config: nobody claimed, both Lanes answer, live stands down
-  case_stand_down_reuses_client    Auto-reply's folder client is handed to the Fans list read
-  case_no_forbidden_edits          funnel / wcfi_decide unchanged vs origin/main (webhook_dispatch left the
-                                   list in W30: the sweep's batch pending-job read lives beside the one-fan one)
-
-Run: ./venv/bin/python service/tests/test_full_ai_stand_down.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -46,15 +24,13 @@ from db.models import (  # noqa: E402
     Account, AccountAiConfig, AiDecision, AutomationRule, Fan, FunnelState, MassRun, Message,
 )
 
-LIST = 777                      # the Fans list's include list
+LIST = 777
 _mid = iter(range(5_000_000, 10**9))
 _n = 0
-# Stats keys that differ run to run whatever the code does.
 _VOLATILE = {"status", "run_id", "job_id", "duration_ms"}
 
 
 class FakeOF:
-    """Every OF call both Lanes make here: sends recorded, the Fans list's members served."""
 
     def __init__(self, members: list[int] | None = None):
         self.sent: list[tuple[int, str]] = []
@@ -89,7 +65,6 @@ class FakeOF:
 
 @contextlib.contextmanager
 def _world(members: list[int] | None = None, *, live: bool = True):
-    """A FakeOF as every client, an LLM that records its calls, `_live` patched; all put back."""
     fake, calls = FakeOF(members), []
     real_client, real_chat, real_live = ax._make_client, llm_client.chat, io._live
 
@@ -114,8 +89,6 @@ def _mentions(calls: list[dict], needle: str) -> int:
 
 
 async def _account(*, rule: bool | None = True, listed: bool = True) -> str:
-    """A Creator with Auto-reply on (silence 5 min, realism off), its full_ai_chat rule on / off / absent,
-    and (`listed`) a Fans list include [LIST]."""
     global _n
     _n += 1
     aid = f"acc-sd-{_n}"
@@ -133,7 +106,6 @@ async def _account(*, rule: bool | None = True, listed: bool = True) -> str:
 
 
 async def _waiting(aid: str, fan: int, line: str, *, spend: int = 0) -> None:
-    """A Fan who wrote last (`line`, 30 min ago, after our opener): Get to know fans' and Auto-reply's candidate."""
     now = datetime.utcnow()
     async with get_session() as s:
         s.add(Fan(account_id=aid, fan_id=fan, of_display_name="Jack", lifetime_spend_cents=spend,
@@ -159,7 +131,6 @@ async def case_wcfi_skips_claimed():
     assert fake.fans() == {102}, fake.sent
     assert _mentions(calls, "claimed line aaa") == 0 and _mentions(calls, "free line bbb") >= 1, calls
     assert res["full_ai_claimed"] == 1 and res["replies_sent"] == 1, res
-    # a second Creator without the rule, same Fans: both answered, no full_ai_claimed key
     other = await _account(rule=None)
     await _waiting(other, 101, "claimed line aaa")
     await _waiting(other, 102, "free line bbb")
@@ -187,7 +158,6 @@ async def case_autoreply_skips_claimed():
     assert fake.fans() == {302}, (fake.sent, res)
     assert [c.get("fan_id") for c in calls] == [302], calls
     assert res["full_ai_claimed"] == 1 and res["sent"] == 1, res
-    # limit 1 with the claimed Fan among three: one send, never him (he does not eat the budget)
     lim = await _account()
     for f in (311, 312, 313):
         await _waiting(lim, f, f"ar line {f}")
@@ -248,8 +218,6 @@ async def _seed_pair(*, rule: bool | None = True) -> str:
 
 
 async def _off_run(*, rule: bool | None = True, live: bool = True, stub: bool = False) -> tuple:
-    """Each Lane on its own fresh Creator (a Get to know fans reply would end Auto-reply's wait): (sent
-    fans, stats) per Lane. `stub`: the Stand-down seam replaced by its pre-ticket no-op = today."""
     real = io.stand_down
 
     async def noop(account_id, fan_ids, *, lane, client=None):
@@ -278,14 +246,14 @@ async def case_off_is_today():
         assert _stats(w) == _stats(w0) and _stats(a) == _stats(a0), (_stats(w), _stats(w0), _stats(a), _stats(a0))
         assert "full_ai_claimed" not in w and "full_ai_claimed" not in a
 
-    same(await _off_run(rule=False))                     # rule off
-    same(await _off_run(rule=None))                      # rule gone
+    same(await _off_run(rule=False))
+    same(await _off_run(rule=None))
     os.environ["FULL_AI_CHAT_OFF"] = "1"
     try:
-        same(await _off_run())                           # global switch
+        same(await _off_run())
     finally:
         del os.environ["FULL_AI_CHAT_OFF"]
-    same(await _off_run(live=False))                     # `_live` false (main today)
+    same(await _off_run(live=False))
 
 
 class _Count(logging.Handler):
@@ -319,8 +287,6 @@ async def case_claimed_ids_raising():
 
 
 async def case_bad_config_claims_nobody():
-    """F13: a stored Full AI blob that will not parse claims nobody (one reader, `full_ai_config.loaded`):
-    both Lanes answer him, `load` lists nobody, the live job stands down without raising."""
     from automations import full_ai_live
     for blob in ("{not json", "[1, 2]"):
         for kind in ("welcome_chatter_for_info", "autoreply"):
@@ -339,7 +305,6 @@ async def case_bad_config_claims_nobody():
 
 
 async def case_stand_down_reuses_client():
-    """Auto-reply hands its folder client on: the Fans list read builds no second OF client."""
     real, seen = io.claimed_ids, []
 
     async def spy(account_id, fan_ids, *, client=None):

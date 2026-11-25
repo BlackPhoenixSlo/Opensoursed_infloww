@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""bio_profiles.background_image migration (0122) matches create_all on temp SQLite, keeps rows, is idempotent,
-downgrades, and is the one head; the bio service reads a page before the relay has added the column (no 503)."""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness
 
 import asyncio  # noqa: E402
 import os  # noqa: E402
@@ -30,7 +28,6 @@ def _cfg() -> Config:
 def _cols(path) -> tuple:
     con = sqlite3.connect(path)
     try:
-        # sorted: ADD COLUMN appends, create_all places it after `avatar`
         return tuple(sorted((r[1], r[2], r[3], r[4]) for r in con.execute("PRAGMA table_info(bio_profiles)")))
     finally:
         con.close()
@@ -47,7 +44,7 @@ def _alembic(url: str, fn, rev: str) -> None:
 
 def case_single_head():
     script = ScriptDirectory.from_config(_cfg())
-    heads = script.get_heads()  # later revisions chain after REV; still one head, REV on its line
+    heads = script.get_heads()
     assert len(heads) == 1 and REV in {r.revision for r in script.iterate_revisions(heads[0], PREV)}, heads
     assert script.get_revision(REV).down_revision == PREV
 
@@ -62,7 +59,7 @@ def case_upgrade_and_downgrade():
             con.execute(sa.text("CREATE TABLE accounts (id VARCHAR PRIMARY KEY)"))
             con.execute(sa.text("CREATE TABLE alembic_version (version_num VARCHAR NOT NULL)"))
             con.execute(sa.text("INSERT INTO alembic_version VALUES ('0114_tracking_click_labels')"))
-        _alembic(url, command.upgrade, BIO_REV)  # bio_profiles as 0115 made it
+        _alembic(url, command.upgrade, BIO_REV)
         with engine.begin() as con:
             con.execute(sa.text("INSERT INTO users VALUES ('u1')"))
             con.execute(sa.text("INSERT INTO bio_profiles (id, owner_user_id, username) VALUES ('p1', 'u1', 'alice')"))
@@ -77,7 +74,6 @@ def case_upgrade_and_downgrade():
         assert "background_image" not in {c["name"] for c in sa.inspect(engine).get_columns("bio_profiles")}
         with engine.connect() as con:
             assert con.execute(sa.text("SELECT username FROM bio_profiles")).all() == [("alice",)]
-        # Inspector guard: a DB that already has the column (create_all / init_db catch-up) upgrades cleanly.
         with engine.begin() as con:
             con.execute(sa.text("ALTER TABLE bio_profiles ADD COLUMN background_image VARCHAR NOT NULL DEFAULT ''"))
         _alembic(url, command.upgrade, REV)
@@ -87,7 +83,6 @@ def case_upgrade_and_downgrade():
 
 
 def case_bio_reads_before_the_column():
-    """A deploy starts the bio service beside the relay; only the relay's init_db adds the column."""
     from bio_pages import store
     con = sqlite3.connect(_harness.DB_PATH)
     try:

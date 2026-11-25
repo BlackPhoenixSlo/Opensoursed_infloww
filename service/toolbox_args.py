@@ -1,4 +1,3 @@
-"""service/toolbox_args.py — the Toolbox args base, a leaf: toolbox_decide (reads) and toolbox_writes import it."""
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict

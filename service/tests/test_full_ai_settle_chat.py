@@ -29,7 +29,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_settle_chat.py  (exit 0 = pass
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, IDS, OWNER_A, PICS, _body, _db, _guarded, _no_offer, _post, _ppvs, _put_draft, _reply, _rows,
@@ -65,11 +65,9 @@ def _user(fw, i: int = 0) -> str:
     return fw.requests[i]["body"]["messages"][1]["content"]
 
 
-# ── Pure: folds + the PPV thread mapping ─────────────────────────────
 
 def _row(rid: int, n: int, at: datetime, his: str, parts: list[dict], *, price=None, media=(), previews=(),
          ref=None, outcome=None, outcome_at=None) -> AiDecision:
-    """A test row as `send` + `settle` leave it (never added to a session)."""
     offer = {}
     if price is not None:
         offer = dict(offer_price_cents=price, offer_list_cents=price,
@@ -89,7 +87,6 @@ def _ppv_part(text: str, ref: int, price: int, media: list[int], previews: list[
 
 
 def _exchange() -> list[AiDecision]:
-    """Chat, a bought $10 Offer, a declined $20 one, a Free item, an unsettled $50 one."""
     bought_at = T0 - timedelta(hours=3, minutes=30)
     return [
         _row(1, 1, T0 - timedelta(hours=5), "hey you", [{"text": "heyy"}]),
@@ -108,26 +105,22 @@ def _exchange() -> list[AiDecision]:
 def case_folds_table():
     rows = _exchange()
     t = full_ai_test
-    assert t.owned_of(rows) == {11, 12, 31}, t.owned_of(rows)                 # bought ∪ Free item
+    assert t.owned_of(rows) == {11, 12, 31}, t.owned_of(rows)
     assert t.sent_media_of(rows) == {11, 12, 13, 21, 31, 41, 42}, t.sent_media_of(rows)
     assert [(b.kind, b.amount_cents, b.occurred_at) for b in t.bought_of(rows)] == [
         ("ppv_message", 1000, rows[1].outcome_at)], t.bought_of(rows)
     assert t.open_offer_of(rows) is rows[4], t.open_offer_of(rows)
     assert t.pending_offer_text(rows, T0) == "locked $50 message: u will love it", t.pending_offer_text(rows, T0)
-    # Bought or declined only (the open one settled, the Free item unpriced): "none".
     settled = rows[:4] + [_row(5, 5, rows[4].created_at, "x", json.loads(rows[4].reply_json)["parts"],
                                price=5000, media=[41], ref=404, outcome="declined", outcome_at=T0)]
     assert t.open_offer_of(settled) is None and t.pending_offer_text(settled, T0) == "none"
-    assert t.owned_of(settled) == {11, 12, 31}, t.owned_of(settled)           # a decline owns nothing
-    # An older unsettled Offer under a newer settled one is still the open Offer.
+    assert t.owned_of(settled) == {11, 12, 31}, t.owned_of(settled)
     older = rows[:3] + [_row(3, 3, rows[2].created_at, "more", json.loads(rows[2].reply_json)["parts"],
                              price=2000, media=[21], ref=202)] + settled[4:]
     assert t.open_offer_of(older).id == 3 and t.pending_offer_text(older, T0) == "locked $20 message: this one"
-    # No rows, chat only: nothing.
     for rs in ([], rows[:1]):
         assert (t.owned_of(rs), t.sent_media_of(rs), t.bought_of(rs), t.open_offer_of(rs),
                 t.pending_offer_text(rs, T0)) == (set(), set(), [], None, "none"), rs
-    # Her gif is an outbound line, read as the GIF-only marker (rwl fa3 S5): alone or after text.
     gif = {"gif": "g1", "tag": "laugh"}
     for parts, want in (([gif], [("in", "hi cutie"), ("out", router.GIF_ONLY)]),
                         ([{"text": "haha"}, gif], [("in", "hi cutie"), ("out", "haha"), ("out", router.GIF_ONLY)])):
@@ -137,14 +130,11 @@ def case_folds_table():
 
 
 def case_test_thread_ppv_equals_the_db():
-    """The exchange's PPV bubbles map to priced outbound rows: the Turn after them reads the same
-    Jev state as the DB path for the same messages + purchase, through the real Router."""
     rows = _exchange()
     lines = full_ai_test.test_thread(rows)
     priced = [(m.body, m.price_cents, m.media_count, m.is_paid, m.purchased_at) for m in lines if m.price_cents]
     assert priced == [("just for u", 1000, 2, True, rows[1].outcome_at), ("this one", 2000, 1, False, None),
                       ("u will love it", 5000, 1, False, None)], priced
-    # The real Router PPV note on the mapped rows (no attribute error).
     notes = [router._ppv(m) for m in lines if m.price_cents]
     assert notes == ["locked $10 message, he bought it", "locked $20 message, he has not bought it",
                      "locked $50 message, he has not bought it"], notes
@@ -178,7 +168,6 @@ def case_test_thread_ppv_equals_the_db():
     assert [e.get("ppv") for e in st["thread"] if e.get("ppv")] == notes, st["thread"]
 
 
-# ── Via the API ───────────────────────────────────────────────────────
 
 def case_buy_then_same_ask():
     pair, vault = "s-buy", {101: "$10", 202: "$50"}
@@ -196,13 +185,11 @@ def case_buy_then_same_ask():
     assert isinstance(p1, full_ai_sell.Pick) and isinstance(p2, full_ai_sell.Pick), (p1, p2)
     assert p2.ref != p1.ref and not set(p2.media) & set(p1.media), (p1, p2)
     assert _ppvs(r2.json()["parts"]) == [len(r2.json()["parts"]) - 1], r2.json()
-    # The next Turn's Jev state: the unlock on her PPV line, his purchase, no Pending offer.
     st = _state(_rows(pair)[1])
     price = p1.price_cents // 100
     assert any(e.get("ppv") == f"locked ${price} message, he bought it" for e in st["thread"]), st["thread"]
     assert st["last_purchase"].startswith(f"he bought a locked message for ${price}, "), st
     assert st["pending_offer"] == "none", st
-    # A Turn carrying a Pick has no spend line (rwl fa3 S3: the price check allows no other amount).
     assert "he's spent" not in _user(fw2), _user(fw2)
     # Buy the second one too: nothing left → all_owned, the "filming more soon" line, no PPV.
     with _sell_draft(), _vault(vault):
@@ -231,7 +218,7 @@ def case_decline_reoffers():
     st = _state(row2)
     assert st["pending_offer"] == "none" and st["last_purchase"] == "none in the last 7 days", st
     assert any(e.get("ppv") == "locked $10 message, he has not bought it" for e in st["thread"]), st["thread"]
-    assert p2.ref == 101 and r2.json()["offer"]["ref"] == 101, (p2, r2.json())      # re-offerable
+    assert p2.ref == 101 and r2.json()["offer"]["ref"] == 101, (p2, r2.json())
     assert "he's spent" not in _user(fw2), _user(fw2)
 
 
@@ -243,27 +230,20 @@ def case_settle_refusals():
         o2, _, _ = _post(_body(pair, n=3), "ok:mm ok here is another")
     chat_id, o1_id, o2_id = chat.json()["row_id"], o1.json()["row_id"], o2.json()["row_id"]
     assert o1.json()["offer"] and o2.json()["offer"], (o1.json(), o2.json())
-    # An older unsettled Offer can be settled, not only the newest; then the newest.
     assert _settle(pair, o1_id, "bought").status_code == 200
     assert _settle(pair, o2_id, "declined").status_code == 200
-    # Second settle: 409 with the stored outcome; never flipped.
     r = _settle(pair, o1_id, "declined")
     assert r.status_code == 409 and r.json() == {"detail": "already_settled", "outcome": "bought"}, r.text
-    # A chat row: 422.
     r = _settle(pair, chat_id, "bought")
     assert r.status_code == 422 and r.json() == {"detail": "not_a_priced_offer"}, r.text
-    # A Free item row (price 0): 422.
     free_id = _db(lambda: _free_item_row(pair))
     r = _settle(pair, free_id, "bought")
     assert r.status_code == 422 and r.json() == {"detail": "not_a_priced_offer"}, r.text
-    # Another session's row: the other side, another pair, an unknown id: 404.
     for p, side, rid in ((pair, "checkpoint", o2_id), ("s-other", "draft", o2_id), (pair, "draft", 999_999)):
         r = _settle(p, rid, "bought", side=side)
         assert r.status_code == 404 and r.json() == {"detail": "not_this_session"}, (p, side, r.text)
-    # Another owner's account: 403 before any read.
     r = _settle(pair, o2_id, "bought", account=IDS["creator_b"])
     assert r.status_code == 403, r.text
-    # A bad outcome is refused by the body model.
     with _guarded():
         r = OWNER_A.post(SETTLE, json={"account_id": A, "pair": pair, "side": "draft", "row_id": o2_id,
                                        "outcome": "refunded"})
@@ -275,7 +255,6 @@ def case_settle_refusals():
 
 
 async def _free_item_row(pair: str) -> int:
-    """A Free item (make_right, price 0) as the draft session's next row."""
     n = len(await full_ai_test.session_rows(A, pair, "draft")) + 1
     async with get_session() as s:
         row = AiDecision(account_id=A, fan_id=full_ai_test.test_fan_id(pair), mode="test", trigger_kind="test",
@@ -314,7 +293,6 @@ def case_each_window_owns_its_own():
         assert _settle(pair, left.json()["row_id"], "bought", side="checkpoint").status_code == 200
         right, _, (pr,) = _post(_body(pair, side="draft"), "ok:mm ok i have something for u")
         left2, _, picks2 = _post(_body(pair, side="checkpoint", n=2), "ok:not right now babe")
-    # The draft session owns nothing: the same item is offered there; the checkpoint owns it.
     assert pr.ref == 101 and right.json()["offer"]["ref"] == 101, (pr, right.json())
     assert picks2 == [] and left2.json()["offer"] is None, left2.json()
     left_rows = [x for x in _rows(pair) if x.trigger_key.startswith("test:" + full_ai_test.session_key(pair, "checkpoint"))]

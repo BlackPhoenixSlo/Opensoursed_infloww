@@ -1,16 +1,4 @@
-"""service/owner_tokens_api.py — Settings → AI keys → Access tokens.
-
-An Agency owner mints, lists and revokes their own owner access tokens
-(owner_tokens): `Authorization: Bearer ifw_…` for a non-browser caller such as
-an MCP client. Owner session only: the user id comes from the session, never
-the request, as tenant_keys_api. A token reaches only the MCP endpoint, the
-MCP tools' own routes and report-file downloads (token_auth.allowlist); every
-other route, these included, answers it 403, so a leaked token cannot mint its
-successor, sign in, or touch logins, keys or sharing.
-The plaintext is returned once, by POST; only its sha256 and a hint are kept.
-Ticket: docs/plans/ultra-mode/issues/03-owner-tokens.md.
-"""
-
+# Owner session only: the user id comes from the session, never the request.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -25,6 +13,7 @@ from auth import require_user
 from db.engine import get_session
 from db.models import OwnerToken
 
+# A token reaches only the MCP endpoint, its tools' routes and report downloads (token_auth.allowlist); every route here answers it 403 so a leaked token cannot mint its successor. Plaintext is returned once, by POST.
 router = APIRouter(prefix="/admin/owner-tokens", tags=["owner-tokens"])
 
 _SIGN_IN = "sign in as an account owner to manage access tokens"

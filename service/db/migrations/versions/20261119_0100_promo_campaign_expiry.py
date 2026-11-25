@@ -1,13 +1,3 @@
-"""promo_campaigns.finish_days + expires_at — Keep running re-checks a promo when it expires
-
-Two nullable columns: finish_days (Integer, the offer expiration sent to OF, NULL = not sent) and
-expires_at (DateTime, naive UTC, NULL = unknown). The relay DB's additive-column catch-up
-(`db.engine.init_db`) adds them too. Self-contained, inspector-guarded + idempotent.
-
-Revision ID: 0125_promo_campaign_expiry
-Revises: 0124_vault_account_settings
-Create Date: 2026-11-19
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-"""
-Chatter access to the roster badges + per-model color picker.
-
-Plain-assert standalone script (no pytest), run via:
-
-    ./venv/bin/python service/tests/test_chatter_roster_color.py
-
-A chatter-only session may now reach exactly TWO surfaces under
-/admin/accounts (every other one stays owner-only):
-
-  • GET   /admin/accounts/roster-counts  → the unread / owe-reply badges,
-    scoped to the chatter's account union.
-  • PATCH /admin/accounts/{id}           → recolor a model. The handler forces
-    every field except `color` to None for a chatter, so a crafted body can't
-    rename a model.
-
-Fixture (mirrors the real velvetvoice chatter):
-    owner A "velvetvoice"  → accAva, accCelest
-    owner C "stranger"       → accForeign
-    chatter "sensui"         → linked to owner A only (union = accAva, accCelest)
-
-Cases:
-  case_chatter_sees_badges        — GET roster-counts: 200, only the union's
-                                     accounts, never accForeign.
-  case_chatter_recolor_color_only — PATCH a union account: 200, and upsert was
-                                     called with ONLY color (nickname / incog
-                                     forced to None even though the body sent them).
-  case_chatter_recolor_foreign_403 — PATCH an account outside the union → 403.
-  case_chatter_still_blocked      — the rest of /admin/accounts stays shut to
-                                     chatters: GET list, POST active, DELETE.
-  case_owner_keeps_full_patch     — negative: an OWNER PATCH still applies
-                                     nickname (proves color-only is chatter-only).
-
-Exit 0 = all pass.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -44,8 +9,6 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-# ── 1. Hard-bind a throwaway DB BEFORE importing any service module (unset
-# env can fall back to PROD — same incident guard as the other auth tests).
 _TMP_DB = Path(tempfile.gettempdir()) / f"chatterly_rostercolor_{uuid.uuid4().hex}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB}"
 os.environ["CHATTERLY_DB_URL"] = f"sqlite:///{_TMP_DB}"
@@ -76,9 +39,6 @@ import server  # noqa: E402
 import accounts_admin_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 
-# ── In-process registry so the DB-seeded (non-numeric) test ids are
-# recognised by get_account / list_accounts. upsert_account is replaced by a
-# capture so we can assert exactly which fields the handler forwarded.
 _TEST_ACCOUNTS = {"accAva", "accCelest", "accForeign"}
 _orig_get_account = account_registry.get_account
 
@@ -108,21 +68,15 @@ def _patched_upsert(account_id, *, nickname=None, color=None):
 
 account_registry.get_account = _patched_get_account
 account_registry.list_accounts = _patched_list_accounts
-# The isolation middleware asks per-candidate (one stat, no descriptor).
 account_registry.is_account = lambda aid: aid in _TEST_ACCOUNTS
 account_registry.upsert_account = _patched_upsert
 
-# Don't touch OF — the badge fetcher returns a fixed count per account.
-# Async, mirroring the real signature (it now derives from the shared
-# "list_chats" window and takes the bust path's bypass flag).
 async def _fixed_roster_count(aid, *, bypass=False):
     return {"unread": 1, "owe_reply": 2}
 accounts_admin_api._compute_roster_count_of = _fixed_roster_count
-# Keep the post-write DB sync from doing real work in the test process.
 server._kick_db_sync = lambda *_a, **_k: None
 
 
-# ── 2. Seeders ───────────────────────────────────────────────────────
 
 async def _seed_user(username: str, password: str = "secretpw") -> str:
     uid = uuid.uuid4().hex
@@ -153,7 +107,6 @@ async def _link_chatter(chatter_id: str, user_id: str) -> None:
         s.add(ChatterUser(chatter_id=chatter_id, user_id=user_id, created_at=datetime.utcnow()))
 
 
-# ── 3. Harness ───────────────────────────────────────────────────────
 
 FAILURES: list[str] = []
 
@@ -179,7 +132,6 @@ def _login_chatter(username: str, password: str = "secretpw") -> TestClient:
     return c
 
 
-# ── 4. Fixture ───────────────────────────────────────────────────────
 
 async def _setup() -> None:
     owner_a = await _seed_user("velvetvoice")
@@ -188,13 +140,11 @@ async def _setup() -> None:
     await _seed_account("accCelest", owner_a, "Celest2")
     await _seed_account("accForeign", owner_c, "not yours")
     cid = await _seed_chatter("sensui")
-    await _link_chatter(cid, owner_a)  # no ChatterAccountAccess rows ⇒ full union
+    await _link_chatter(cid, owner_a)
 
 
-# ── 5. Cases ─────────────────────────────────────────────────────────
 
 def case_chatter_sees_badges() -> None:
-    # Leased (ADR-0031: an unleased Creator with no held window is left out), the foreign one too: scope still holds.
     import view_lease
     holder = ("user", "lease-test", "tab")
     view_lease.renew(holder, ["accAva", "accCelest", "accForeign"], None)
@@ -218,7 +168,7 @@ def case_chatter_recolor_color_only() -> None:
     chatter = _login_chatter("sensui")
     r = chatter.patch("/admin/accounts/accAva", json={
         "color": "#ff0000",
-        "nickname": "HACKED",                 # must be ignored for a chatter
+        "nickname": "HACKED",
     })
     _expect("chatter PATCH a union account → 200", r.status_code == 200,
             detail=f"got {r.status_code} {r.text[:120]}")
@@ -263,8 +213,6 @@ def case_owner_keeps_full_patch() -> None:
 
 
 def case_chatter_roster_marks_the_watcher() -> None:
-    """/chatter/me/accounts stamps `role` "watcher" on a watcher account (the app keeps
-    it out of every Creator roster and lists it in OF Manager only); a Creator has none."""
     saved = account_registry.get_role
     account_registry.get_role = lambda aid: account_registry.ROLE_WATCHER if aid == "accCelest" else None
     try:
@@ -278,7 +226,6 @@ def case_chatter_roster_marks_the_watcher() -> None:
         account_registry.get_role = saved
 
 
-# ── 6. Runner ────────────────────────────────────────────────────────
 
 def _main() -> int:
     asyncio.run(_setup())

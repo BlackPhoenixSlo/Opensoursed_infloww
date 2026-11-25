@@ -1,15 +1,3 @@
-"""full_ai_test_chat — Full AI Chat's Test chat reply and settings JSON
-
-Two nullable TEXT columns, no new table or index: `ai_decisions.reply_json` (a test row's
-bubbles, Writer attempts, side, wait and session fold) and `account_ai_config.full_ai_config_json`
-(the settings JSON, {checkpoint, previous, draft, rev}). No existing row is touched. init_db's
-additive-column catch-up brings both to a booting box; this file keeps the alembic chain linear.
-Inspector-guarded + idempotent.
-
-Revision ID: 0119_full_ai_test_chat
-Revises: 0118_owner_tokens
-Create Date: 2026-11-14
-"""
 from __future__ import annotations
 
 from typing import Sequence

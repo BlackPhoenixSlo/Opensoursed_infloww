@@ -1,4 +1,3 @@
-"""Conservative English check for skipping Google on already-English chat text."""
 import re
 WORDS = frozenset("""
 i you me to u and it that my for the a what your are do this of just like want can with how on all have not now im be if love get would ur but know wanna s

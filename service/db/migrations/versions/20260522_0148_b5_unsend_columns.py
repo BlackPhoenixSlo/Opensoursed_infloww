@@ -1,21 +1,3 @@
-"""b5_unsend_columns
-
-Revision ID: 0010_b5_unsend_columns
-Revises: 0009_phase_a_indexes
-Create Date: 2026-05-22
-
-Adds the five `messages` columns deferred from 0005-0009 (T-A2 audit fields
-declared in models.py without a paired migration — this revision restores
-model/schema parity so `/admin/messages` stops 500ing).
-
-  • unsent_by_employee_id (Integer, FK employees.id ON DELETE SET NULL)
-  • unsent_reason (Text)
-  • unsent_at (DateTime)
-  • is_promise (Boolean NOT NULL, server_default='0' — required so the
-    SQLite batch rebuild can backfill existing message rows; without it
-    the migration aborts the same way 0005's JSON columns would have)
-  • promise_due_date (DateTime)
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -36,6 +18,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("unsent_reason", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("unsent_at", sa.DateTime(), nullable=True))
         batch_op.add_column(
+            # server_default required: the SQLite batch rebuild must backfill existing rows.
             sa.Column("is_promise", sa.Boolean(), nullable=False, server_default="0")
         )
         batch_op.add_column(sa.Column("promise_due_date", sa.DateTime(), nullable=True))

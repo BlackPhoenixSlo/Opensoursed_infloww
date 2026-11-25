@@ -158,6 +158,7 @@ def _row_is_named_human(row: OutRow, rules: CopyRules) -> bool:
 
 
 async def is_broadcast_copy(row: OutRow, rules: CopyRules) -> bool:
+    """A mass reaching him, not someone talking to him."""
     if row.mass_run_id is not None:
         return row.funnel_step is None
     if row.automation_kind is not None or _row_is_named_human(row, rules):

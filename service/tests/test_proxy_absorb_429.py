@@ -1,23 +1,6 @@
-"""
-server._proxy queues OF's 429 behind the Creator's 429 gate (of_pacing.absorb_429) instead
-of answering it: owner, a 429 is paused on in the relay, never shown to the person.
-
-  case_get_absorbs_429:          a GET (a person's or X-Priority: background) that 429s twice
-                                 answers OF's third reply; the lane is free while it waits.
-  case_get_past_budget_answers_429: 429s past READ_BUDGET_S: 502 upstream 429, as before.
-  case_write_not_retried:        a non-GET is sent once (a multi-request write could repeat).
-  case_send_retry_429:           send=True (the fan send: one POST OF refuses whole) is
-                                 resent after the cooldown and answers OF's 200; past
-                                 READ_BUDGET_S it keeps waiting (SEND_BUDGET_S).
-  case_requestless_not_retried:  no request (a server-side caller): sent once.
-
-OFClient.from_account is stubbed; no network; tiny waits.
-
-Run: ./venv/bin/python service/tests/test_proxy_absorb_429.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
@@ -48,7 +31,6 @@ class _Resp:
 
 
 def _calls(n429: int):
-    """A call that 429s `n429` times, then answers {"ok": True}; returns (call, count list)."""
     n: list[int] = []
 
     def call():

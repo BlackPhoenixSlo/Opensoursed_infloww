@@ -1,19 +1,3 @@
-"""resolution_log + make_right_config_json — the Resolution Agent (make_right)
-
-Revision ID: 0050_resolution_log
-Revises: 0049_vault_ai_actions
-Create Date: 2026-07-21
-
-Two additive changes for the make_right ("Resolution Agent") safety net:
-  1. `account_ai_config.make_right_config_json` — the per-account config blob
-     (DISABLED + preview-only by default).
-  2. `resolution_log` — one row per detected wrong-content incident (headline:
-     charged twice for the same content). `incident_key` (unique per account) is
-     the idempotency key; the "up to twice per fan" cap is a COUNT of
-     status='resolved' rows for the fan.
-
-Additive + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -33,7 +17,6 @@ def upgrade() -> None:
     inspector = sa.inspect(bind)
     names = inspector.get_table_names()
 
-    # (1) additive column on account_ai_config — guard on existing columns.
     if "account_ai_config" in names:
         cols = {c["name"] for c in inspector.get_columns("account_ai_config")}
         if "make_right_config_json" not in cols:
@@ -42,7 +25,6 @@ def upgrade() -> None:
                 sa.Column("make_right_config_json", sa.Text(), nullable=True),
             )
 
-    # (2) the resolution_log ledger.
     if "resolution_log" not in names:
         op.create_table(
             "resolution_log",

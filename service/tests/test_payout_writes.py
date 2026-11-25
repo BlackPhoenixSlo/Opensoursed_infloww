@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""POST and PATCH /api/of/v2/payouts/requests — OF Manager's Statements writes.
-
-"Request withdrawal" sends OF's POST /api2/v2/payouts/requests {withdrawal_amount}
-and the payout frequency select OF's PATCH /api2/v2/payouts/requests
-{withdrawalPeriod}, exactly as OF's statements bundle does (app.js module 874727).
-An OF refusal surfaces as the usual structured 502 with OF's body. Plain-assert,
-OF faked.
-
-  case_routes_are_registered
-  case_withdrawal_passes_amount
-  case_period_passes_code
-  case_client_sends_ofs_requests
-  case_of_refusal_is_502
-  case_bad_bodies_are_rejected
-
-Run: ./venv/bin/python service/tests/test_payout_writes.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -26,7 +9,7 @@ from pydantic import ValidationError  # noqa: E402
 import of_client  # noqa: E402
 import server  # noqa: E402
 
-# OF's answer to a withdrawal below the balance/minimum (captured live, account balance $4.40, minimum $20).
+# OF's answer to a withdrawal below the balance/minimum (captured live).
 REFUSAL = '{"error":{"code":0,"message":"Not enough funds to request a payout"}}'
 
 

@@ -1,52 +1,7 @@
 #!/usr/bin/env python3
-"""
-GET /api/of/v2/users/notifications — TTL cache + in-flight coalescing, and the
-invalidation half that keeps a MONEY feed honest.
-
-`of_notifications` was the only member of its family with no cache: `init`,
-`labels`, `my_settings` and its own next-door neighbour
-`/users/notifications/count` all go through `relay_cache` + `relay_coalesce`,
-while this one was a bare `_proxy`. It is also the most fanned-out of them —
-`MoneyRail` asks for 2 money types x N accounts on every hard load and the bell
-repeats the same keys — so one page load cost N x 2 live OF round-trips at
-~630 ms each.
-
-Caching a money feed is only safe with the other half. `NotificationToaster` is
-SSE-driven, not polled: it drops its `["notif-list", aid]` query on every money
-event it hears (a `toasts` frame, an inbound `api2_chat_message`, a
-`purchase_notified`). A server-side TTL with no matching server-side
-invalidation would make that client refetch return the SAME stale body — the
-toast fires instantly and the list behind it lags a whole TTL. So each of those
-three client triggers has a server-side counterpart, via
-`relay_cache.invalidate_money_feeds` — which drops the FEED, its badge counts
-and `init` together, because OF serves all three off one upstream state.
-
-Covered — the cache half:
-  case_hit_is_served_without_a_second_of_call
-  case_money_types_do_not_share_an_entry      (type=tip vs type=purchases)
-  case_untyped_and_paged_reads_do_not_collide
-  case_concurrent_identical_calls_coalesce
-  case_refresh_bypasses_the_cache
-…and the invalidation half, one case per money lane:
-  case_inbound_tip_drops_the_entry            (api2_chat_message)
-  case_ppv_unlock_event_drops_the_entry       (paidMessage/messageUnlock/purchase)
-  case_purchase_notification_drops_the_entry  (purchase_notified — the LIVE lane)
-  case_toast_drops_the_entry                  (toasts)
-  case_typing_event_does_not_drop_the_entry   (over-invalidation guard)
-  case_a_purchase_busts_the_badge_too (the whole set, not just the feed)
-  case_a_purchase_drops_the_cached_pins       (chat_pinned: a pinned PPV's lock)
-  case_invalidation_is_account_scoped
-…and the Money rail's combined read (`/users/notifications/money`): the per-type entries, no extra OF call
-  case_money_cold_reads_each_type_once / case_money_both_cached_costs_of_nothing /
-  case_money_one_cached_reads_only_the_other / case_money_reads_only_the_asked_types /
-  case_money_coalesces_with_a_per_type_read_in_flight / case_money_one_failed_type_answers_the_other /
-  case_money_rejects_other_types
-
-Run: ./venv/bin/python service/tests/test_notifications_cache.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -66,8 +21,6 @@ from db.models import Account  # noqa: E402
 _AID = "8801001"
 _OTHER_AID = "8801002"
 
-# ── fire-and-forget dispatch hooks: no-op so transcode()'s background tasks
-#    can't do DB work or raise while a case is asserting.
 async def _noop(*_a, **_k):
     return None
 
@@ -78,8 +31,6 @@ webhook_dispatch.on_inbound_image = _noop    # type: ignore[assignment]
 
 
 class _FakeOF:
-    """Counts live OF round-trips and echoes the request back, so a cached
-    body can be told apart from a fresh one."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[int, int, str | None]] = []
@@ -98,9 +49,6 @@ _current_aid = _AID
 
 @contextlib.contextmanager
 def _as_account(aid: str):
-    """Serve the next calls as `aid`. Beats reassigning a module global at each
-    step: the case reads as "this account, then that one", and the id is
-    restored even if an assert fires mid-block."""
     global _current_aid
     prev = _current_aid
     _current_aid = aid
@@ -109,15 +57,11 @@ def _as_account(aid: str):
     finally:
         _current_aid = prev
 
-# The endpoint resolves the account twice (once for the cache key, once inside
-# _proxy) and `_get_client` resolves it again — patch the single choke point.
 server._resolve_account_id = lambda _req=None: _current_aid  # type: ignore[assignment]
 server._load_client = lambda _aid: _fake                     # type: ignore[assignment]
 
 
 async def _call(*, limit: int = 20, offset: int = 0, type=None, refresh: bool = False):
-    """Invoke the handler directly — no TestClient, so the coalescing case can
-    hold five callers in flight at once."""
     return await server.of_notifications(limit=limit, offset=offset, type=type,
                                          related_user=None, refresh=refresh)
 
@@ -140,13 +84,11 @@ async def _seed_accounts() -> None:
 
 
 async def _drain() -> None:
-    """Let transcode()'s fire-and-forget tasks settle."""
     pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-# ── the cache half ────────────────────────────────────────────────────
 
 async def case_hit_is_served_without_a_second_of_call():
     _reset()
@@ -162,7 +104,6 @@ async def case_money_types_do_not_share_an_entry():
     purchases = await _call(type="purchases")
     assert len(_fake.calls) == 2, f"types collided: {_fake.calls}"
     assert tip != purchases, "tip and purchases served the same body"
-    # And each is independently cached afterwards.
     assert await _call(type="tip") == tip
     assert await _call(type="purchases") == purchases
     assert len(_fake.calls) == 2, f"second round refetched: {_fake.calls}"
@@ -170,7 +111,7 @@ async def case_money_types_do_not_share_an_entry():
 
 async def case_untyped_and_paged_reads_do_not_collide():
     _reset()
-    await _call(type=None)          # the bell's "all" filter
+    await _call(type=None)
     await _call(type="tip")
     await _call(type="tip", offset=20)
     await _call(type="tip", limit=10)
@@ -179,14 +120,10 @@ async def case_untyped_and_paged_reads_do_not_collide():
 
 async def case_concurrent_identical_calls_coalesce():
     _reset()
-    # threading.Event, not asyncio.Event: the fetcher runs in a worker
-    # thread (asyncio.to_thread), where awaiting is not an option.
     slow = threading.Event()
     real = _fake.notifications
 
     def _slow(**kw):
-        # Block in the worker thread until the test releases it, so all five
-        # callers are genuinely in flight together.
         slow.wait()
         return real(**kw)
 
@@ -208,16 +145,13 @@ async def case_refresh_bypasses_the_cache():
     forced = await _call(type="tip", refresh=True)
     assert len(_fake.calls) == 2, f"refresh=1 was served from cache: {_fake.calls}"
     assert forced != first, "refresh=1 returned the stale body"
-    # The forced fetch must WRITE BACK, so the next plain caller sees it.
     again = await _call(type="tip")
     assert again == forced, f"refresh did not write back: {again} != {forced}"
     assert len(_fake.calls) == 2, f"write-back missing: {_fake.calls}"
 
 
-# ── the invalidation half ─────────────────────────────────────────────
 
 async def _assert_dropped(fire, label: str) -> None:
-    """Warm the entry, fire a money event, assert the next read goes upstream."""
     _reset()
     await _seed_accounts()
     warm = await _call(type="tip")
@@ -289,10 +223,6 @@ async def case_toast_drops_the_entry():
 
 
 async def case_typing_event_does_not_drop_the_entry():
-    """Over-invalidation guard. EVERY OF WS frame reaches `transcode` — typing
-    and online frames are the highest-volume of them by far. Busting on the
-    generic fall-through branch would keep this cache permanently cold and
-    hand back the 630 ms round-trip we just removed."""
     _reset()
     await _seed_accounts()
     warm = await _call(type="tip")
@@ -304,20 +234,8 @@ async def case_typing_event_does_not_drop_the_entry():
 
 
 async def case_a_purchase_busts_the_badge_too():
-    """The regression that named `invalidate_money_feeds`.
-
-    OF serves the feed and its per-category badge (`notifications_count`) off
-    one upstream state, so a sale changes both. Spelling the set out by hand at
-    each event path is how the purchase lane — the ONLY one that fires in
-    production — ended up busting the feed alone: the badge lagged 30s behind a
-    real sale, with the toast already on screen. Pin the whole set, not just
-    the feed.
-    """
     _reset()
     ttl = 300.0
-    # Spelled out, NOT read from relay_cache._MONEY_FEED_NAMESPACES: a test
-    # that sources the set from the code under test cannot catch the set
-    # itself being wrong, which is the exact bug this case exists for.
     money = ("notifications", "notifications_count")
     for ns in money:
         await relay_cache.get_or_fetch(ns, _AID, (), ttl, lambda: {"warm": True})
@@ -333,9 +251,6 @@ async def case_a_purchase_busts_the_badge_too():
 
 
 async def case_a_purchase_drops_the_cached_pins():
-    """A pinned PPV shows its lock/price (app/lib/ofMirrorThread.ts) and a fan's
-    payment flips it with no write of ours: a sale drops the account's cached
-    pins (server's `chat_pinned`, every chat), so the reopened chat shows it paid."""
     _reset()
     for chat in (777008, 777009):
         await relay_cache.get_or_fetch("chat_pinned", _AID, (chat,), 300.0, lambda: {"warm": True})
@@ -354,8 +269,6 @@ async def case_a_purchase_drops_the_cached_pins():
 
 
 async def case_a_purchase_drops_the_cached_ledger():
-    """W30 #16: the ledger reads (`payouts`, up to a 15 min TTL) show money too: a sale drops the
-    account's cached `payouts` entries, never another model's."""
     _reset()
     key = ("of_transactions", ("limit", 20))
     await relay_cache.get_or_fetch("payouts", _AID, key, 900.0, lambda: {"warm": True})
@@ -373,7 +286,6 @@ async def case_a_purchase_drops_the_cached_ledger():
 
 
 async def case_invalidation_is_account_scoped():
-    """A tip landing on one model must not cost the other model its entry."""
     _reset()
     await _seed_accounts()
     warm_a = await _call(type="tip")
@@ -399,7 +311,6 @@ async def case_invalidation_is_account_scoped():
     assert len(_fake.calls) == 3, f"expected a refetch for {_AID}: {_fake.calls}"
 
 
-# ── the Money rail's combined read (/users/notifications/money) ───────
 
 async def _money(types: str = "purchases,tip"):
     return await server.of_notifications_money(types=types, limit=20, offset=0)
@@ -409,7 +320,6 @@ async def case_money_cold_reads_each_type_once():
     _reset()
     got = await _money()
     assert sorted(_fake.calls) == [(20, 0, "purchases"), (20, 0, "tip")], _fake.calls
-    # Each the exact body the per-type route answers, out of the same entry.
     assert got["tip"] == await _call(type="tip") and got["purchases"] == await _call(type="purchases")
     assert len(_fake.calls) == 2, f"the per-type route missed the combined read's entries: {_fake.calls}"
 
@@ -438,7 +348,6 @@ async def case_money_reads_only_the_asked_types():
 
 async def case_money_coalesces_with_a_per_type_read_in_flight():
     _reset()
-    # Each case runs on its own loop: drop the single-flight locks an earlier case's contention bound to its loop.
     relay_cache._locks.clear()
     relay_cache._registry_lock = asyncio.Lock()
     slow = threading.Event()
@@ -486,7 +395,6 @@ async def case_money_one_failed_type_answers_the_other():
 
 
 def _proxy_passthrough(real):
-    """`_proxy` with an HTTPException the fake raises let through as is (its own mapping is not what's under test)."""
     def proxy(fn, *a, **kw):
         try:
             return real(fn, *a, **kw)

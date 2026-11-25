@@ -1,11 +1,3 @@
-"""service/tests/_relay_contract.py — the shared bench for a Phase's Relay route contract test.
-
-Used by test_of_mirror_content_writes.py (Phase 2) and test_go_live_stream.py (Phase 4); each keeps its own
-`assert_contract`. On import: seeds the two-Agency bench, stubs the account registry so the seeded Creators resolve
-(they have a directory but no session metadata), and logs in Agency A's owner and chatter.
-
-NOT a test file: no `case_*`, no `_harness.run()`. Importers bootstrap `_harness` FIRST, then import this.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -34,8 +26,6 @@ class _Refused:
 
 
 def fake_of(refuse: bool = False):
-    """An OFClient that skips __init__ and records (method, url, json_body) instead of calling OF, a read's (get_json)
-    as ("GET", url?params, None); `refuse`: OF answers 400 "Synthetic refusal"."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = CREATOR
     c.sent = []
@@ -54,9 +44,7 @@ def fake_of(refuse: bool = False):
 
 
 def send(client, method: str, path: str, body, account: str | None, refuse: bool = False):
-    """One Relay request with OF faked: (response, the OF calls made)."""
     c = fake_of(refuse)
-    # The client loader is faked, not `_get_client`: the Creator is still resolved (and refused) as in production.
     orig = server._load_client
     server._load_client = lambda *_a, **_k: c
     try:
@@ -68,7 +56,6 @@ def send(client, method: str, path: str, body, account: str | None, refuse: bool
 
 
 def roles(role_id: str, enforce: bool, pages: dict) -> None:
-    """Assign chatter_a one role granting `pages`, enforced or not."""
     blob = {"enforce": enforce, "roles": [{"id": role_id, "name": f"Fixture {role_id}", "description": "",
                                             "permissions": pages, "scope": "self"}],
             "assignments": {str(EMP_A): role_id}}

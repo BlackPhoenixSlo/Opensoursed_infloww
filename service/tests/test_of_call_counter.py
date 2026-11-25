@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""service/tests/test_of_call_counter.py — the OF call counter (service/of_call_counter.py).
-
-Every signed OF request `OFClient._http_call` sends lands in the counter, keyed by
-(Caller kind, "METHOD folded-path", Creator, status class); a refused call never does.
-The Relay persists the cumulative counts to a file beside the DB (`start`), and a
-process that never calls `start` counts in memory only.
-
-Seam 1: a bare OFClient (via __new__) with a recording fake `http`, driven through
-get_json / request_json / request, read back through `of_call_counter.snapshot()`.
-Each case uses its own Creator id, so cases never read each other's rows.
-Seam 2: child processes (a restart is a new process with empty module state), as
-test_priority_lane_accounting.py does.
-
-Plain-assert script:  ./venv/bin/python service/tests/test_of_call_counter.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -55,8 +40,6 @@ class _Resp:
 
 
 def _client(answers=None, account_id=None):
-    """A bare OFClient whose transport answers from `answers` (a list of statuses or
-    exceptions, consumed in order; then 200). Returns (client, sent)."""
     queue = list(answers or [])
     sent: list[tuple[str, str]] = []
 
@@ -83,7 +66,6 @@ def _client(answers=None, account_id=None):
 
 
 def _rows(account_id: str) -> dict[tuple[str, str, str], int]:
-    """(caller, path, status) -> count for one Creator, from the public snapshot."""
     out: dict[tuple[str, str, str], int] = {}
     for caller, path, aid, status, n in of_call_counter.snapshot()["rows"]:
         if aid == account_id:
@@ -105,7 +87,6 @@ def _swallow(fn, *a, **k):
         pass
 
 
-# ── seam 1: the transport ───────────────────────────────────────────────────
 
 def case_one_row_per_call_with_its_status_class():
     c, sent = _client([200, 204, 301, 302, 401, 403, (429, "Please allow 1 seconds"), 404, 500, 502, 503])
@@ -121,7 +102,6 @@ def case_one_row_per_call_with_its_status_class():
 
 
 def case_every_public_entry_point_is_counted():
-    """get_json never passes request_json (get -> _http_call): each entry point counts once."""
     c, sent = _client()
     c.get_json("/api2/v2/users/me")
     c.request_json("POST", "/api2/v2/messages/queue", json_body={"text": "x"})
@@ -180,7 +160,7 @@ def case_a_refused_call_is_not_counted():
             raise AssertionError("a deactivated Creator's write went out")
         except OFDeactivatedError:
             pass
-        c.request("GET", "/api2/v2/users/me")   # its reads stay open, and count
+        c.request("GET", "/api2/v2/users/me")
     finally:
         account_health._writes_off = before
     assert sent == [("GET", f"{API_BASE}/users/me")], sent
@@ -189,7 +169,7 @@ def case_a_refused_call_is_not_counted():
 
 def case_a_proxy_failure_is_one_error_and_connect_retries_count_once():
     pe = curl_requests.exceptions.ProxyError
-    tok = of_client.INTERACTIVE_READ.set(True)   # 2 tries, a 0.1-0.2 s pause
+    tok = of_client.INTERACTIVE_READ.set(True)
     try:
         c, sent = _client([pe("CONNECT 403"), 200])
         c.request("GET", "/api2/v2/users/me")
@@ -232,8 +212,6 @@ def case_a_429_retried_by_the_pacer_counts_twice():
 
 
 def case_the_fallback_caller_kinds():
-    """With no label: a call on the event loop is `task:<its task's name>`, one from a bare
-    thread (or a worker thread) `unlabelled`."""
     c, _ = _client()
 
     async def on_loop():
@@ -284,7 +262,7 @@ def case_a_label_follows_child_tasks_and_to_thread_but_not_a_bare_thread():
             th = threading.Thread(target=c.request, args=("GET", "/api2/v2/users/me"))
             th.start()
             await asyncio.to_thread(th.join)
-        await t   # started inside the scope, still labelled after it closed
+        await t
     asyncio.run(main())
     got = _rows(c.account_id)
     assert got == {("auto:parent", "GET /api2/v2/lists", "2xx"): 1,
@@ -332,7 +310,6 @@ def case_caller_kinds_fold_ids_so_one_code_site_is_one_kind():
     assert got == {"task:mass-recipients-{}": 2, "task:media-dims-{}-{}": 1, "task:reconcile-chats-{}": 1,
                    "loop:mass-recipients-{}": 2, "route:GET /api/accounts/{}/chats/{}": 1,
                    "loop:job-{}": 1}, got
-    # a plain name is left alone
     with of_call_counter.caller("loop:link-figures-prewarm"):
         c.request("GET", "/api2/v2/users/me")
     assert "loop:link-figures-prewarm" in _callers(c.account_id), _callers(c.account_id)
@@ -358,7 +335,7 @@ def case_the_request_hook_labels_route_method_and_folded_path():
         await of_call_counter.label_request_calls(req("GET", "/api/of/v2/users/notifications/count"), call_next)
         return of_call_counter.caller_kind()
     after = asyncio.run(main())
-    assert after.startswith("task:"), after          # the label ends with the request
+    assert after.startswith("task:"), after
     assert _callers(c.account_id) == {"route:GET /api/of/v2/chats/{}/messages": 2,
                                       "route:POST /api/of/v2/users/{}/block": 1,
                                       "route:GET /api/of/v2/users/notifications/count": 1}, _rows(c.account_id)
@@ -384,7 +361,7 @@ def case_the_row_cap_folds_new_keys_into_other():
     rows = snap["rows"]
     assert len(rows) <= used + 5 + len(creators) * 8, (len(rows), used)
     mine = [r for r in rows if r[2] in creators]
-    assert sum(r[4] for r in mine) == 200, sum(r[4] for r in mine)       # nothing dropped
+    assert sum(r[4] for r in mine) == 200, sum(r[4] for r in mine)
     other = [r for r in mine if r[0] == "other"]
     assert other and all(r[1] == "other" for r in other), other
     assert {(r[2], r[3]) for r in other} <= {(a, s) for a in creators for s in ("2xx", "4xx", "5xx")}, other
@@ -393,16 +370,12 @@ def case_the_row_cap_folds_new_keys_into_other():
 
 
 def case_record_never_raises():
-    of_call_counter.record(None, "GET", None, None)          # nonsense in, no raise
+    of_call_counter.record(None, "GET", None, None)
     of_call_counter.record("x", None, "not a url", "weird")
 
 
-# ── seam 2: persistence across processes ────────────────────────────────────
 
 def _child(body: str, *, env: dict | None = None, server: bool = False, db_dir: Path | None = None) -> dict:
-    """Run `body` in a fresh interpreter (its DB in `db_dir`, so the default counter path
-    is that dir's). `server=True` imports server first, as the Relay boots. Returns the
-    JSON the child prints last."""
     db_dir = db_dir or Path(tempfile.mkdtemp(prefix="occ-"))
     e = dict(os.environ)
     for k in ("OF_CALL_STATS_PATH", "OF_CALL_STATS_FLUSH_S", "OF_CALL_STATS_MAX_ROWS"):
@@ -460,7 +433,7 @@ def case_a_quiet_process_is_flushed_on_the_interval():
         "c = json.loads(open(" + repr(str(p)) + ").read())\n"
         "print(json.dumps({'a': a, 'b': b, 'c': c}))\n",
         env={"OF_CALL_STATS_FLUSH_S": "0.3"}, db_dir=d)
-    assert out["a"]["rows"] == [] and out["a"]["boots"] == 1, out["a"]      # start writes at once
+    assert out["a"]["rows"] == [] and out["a"]["boots"] == 1, out["a"]
     assert out["b"]["rows"] == [["unlabelled", "GET /api2/v2/chats", "acct-q", "5xx", 1]], out["b"]
     assert out["c"]["flushed_at"] > out["b"]["flushed_at"] > out["a"]["flushed_at"], out
 
@@ -469,16 +442,15 @@ _V1 = '{"v": 1, "started_at": 1.0, "boots": 9, "folded": 0, "rows": [["x", "GET 
 
 
 def case_a_bad_or_other_version_file_starts_a_fresh_window():
-    """Anything but a wholly valid v1 file: a fresh window, never its valid part under the old started_at."""
     for content in ('{"v": 0, "started_at": 1.0, "boots": 9, "rows": [["x", "GET /a", "acct-v", "2xx", 50]]}',
                     "{not json", '["a list"]',
-                    _V1 % (', ["x", "GET /a", "acct-v", "2xx", "7"]', ""),     # one malformed row
+                    _V1 % (', ["x", "GET /a", "acct-v", "2xx", "7"]', ""),
                     _V1 % (', ["x", "GET /a", "acct-v"]', ""),
                     _V1 % ("", ', "boots": true'), _V1 % ("", ', "folded": -1'),
                     _V1.replace('"started_at": 1.0', '"started_at": "1.0"') % ("", ""),
-                    _V1.replace('"started_at": 1.0', '"started_at": 1' + "0" * 400) % ("", ""),   # too large for a float
+                    _V1.replace('"started_at": 1.0', '"started_at": 1' + "0" * 400) % ("", ""),
                     _V1 % ("", ', "boots": 1' + "0" * 400),
-                    '{"v": 1, "started_at": 1.0, "boots": 9, "folded": 0}'):     # no rows
+                    '{"v": 1, "started_at": 1.0, "boots": 9, "folded": 0}'):
         d = Path(tempfile.mkdtemp(prefix="occ-bad-"))
         p = d / "stats.json"
         p.write_text(content)
@@ -488,7 +460,7 @@ def case_a_bad_or_other_version_file_starts_a_fresh_window():
         assert out["started_at"] >= t0 - 1, (content, out["started_at"], t0)
         assert out["rows"] == [["unlabelled", "GET /api2/v2/users/me", "acct-r", "2xx", 3]], (content, out)
         assert json.loads(p.read_text())["boots"] == 1
-    d = Path(tempfile.mkdtemp(prefix="occ-ok-"))                          # control: a valid v1 file folds in
+    d = Path(tempfile.mkdtemp(prefix="occ-ok-"))
     p = d / "stats.json"
     p.write_text(_V1 % ("", ""))
     out = _child(f"of_call_counter.start({str(p)!r})\n" + _REC3, db_dir=d)
@@ -497,22 +469,20 @@ def case_a_bad_or_other_version_file_starts_a_fresh_window():
 
 
 def case_the_downtime_tally_adds_each_boots_gap_and_restarts_when_unknown():
-    """unobserved_s += boot time - the loaded flushed_at; a gap it cannot measure (no tally in the file, a flush
-    in the future) restarts the tally at this boot (a new unobserved_since: unknown to a reader, never 0)."""
     now = time.time()
     tally = ', "flushed_at": %r, "unobserved_s": 5.0, "unobserved_since": 2.0'
     for extra, want in ((tally % (now - 100), "added"), (tally % (now + 1000), "restart"),
                         (', "flushed_at": %r' % (now - 100), "restart"),
                         (tally.replace("5.0", "-1") % (now - 100), "restart"),
-                        (tally.replace("5.0", "1" + "0" * 400) % (now - 100), "restart"),   # too large for a float:
-                        (tally.replace("2.0", "1" + "0" * 400) % (now - 100), "restart"),   # the tally only, the
-                        (tally.replace("%r", "1" + "0" * 400), "restart")):                 # window carries on
+                        (tally.replace("5.0", "1" + "0" * 400) % (now - 100), "restart"),
+                        (tally.replace("2.0", "1" + "0" * 400) % (now - 100), "restart"),
+                        (tally.replace("%r", "1" + "0" * 400), "restart")):
         d = Path(tempfile.mkdtemp(prefix="occ-unobs-"))
         p = d / "stats.json"
         p.write_text(_V1 % ("", extra))
         t0 = time.time()
         out = _child(f"of_call_counter.start({str(p)!r})\n" + _REC3, db_dir=d)
-        assert (out["boots"], out["started_at"]) == (10, 1.0), (extra, out)         # the counts carry on either way
+        assert (out["boots"], out["started_at"]) == (10, 1.0), (extra, out)
         if want == "added":
             assert out["unobserved_since"] == 2.0 and 104 < out["unobserved_s"] < 160, (extra, out)
         else:
@@ -563,7 +533,7 @@ def case_knobs_are_read_with_defaults():
     assert out == {"flush": 2.0, "rows": 50, "path": "/tmp/x/y.json"}, out
     out = _child("print(json.dumps({'path': of_call_counter.stats_path()}))\n", env={"OF_CALL_STATS_PATH": ""})
     assert out == {"path": None}, out
-    for bad in ("inf", "nan", "-5", "x"):                                 # never a failed import (the Relay boot)
+    for bad in ("inf", "nan", "-5", "x"):
         out = _child("print(json.dumps({'flush': of_call_counter.FLUSH_S, 'rows': of_call_counter.MAX_ROWS}))\n",
                      env={"OF_CALL_STATS_FLUSH_S": bad, "OF_CALL_STATS_MAX_ROWS": bad})
         assert out == {"flush": 30.0, "rows": 20000}, (bad, out)

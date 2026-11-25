@@ -1,33 +1,3 @@
-"""service/ultra_run.py — Ultra plans: store, OK, run, cancel, recover (docs/plans/ultra-mode/issues/06).
-
-  propose   validate (ultra_decide) + the send chain on every send's text (send_chain), then validate the
-            post-chain plan again (a chained text must not look like a reference) → an `awaiting_ok` row
-            holding the post-chain plan and its sha256. A chain refusal names the step and the stage.
-  submit    the same check for an in-app `planning` row (ultra_plan) → that row `awaiting_ok`.
-  approve   the owner's OK (cookie, the sha256 the card showed) → `running` + the executor task.
-  view      the owner's plan with its card and step states (each: state, error, open_url); an
-            `awaiting_ok` plan past ultra_decide.OK_TTL is `expired` here (a flip from awaiting_ok only). A
-            `planning` row adds its progress (turns, last tool), never model text.
-  cancel    `planning` → `cancelled` (the loop stops at its next turn);
-            `awaiting_ok` → `cancelled` now (steps skipped); `running` → a flag the executor reads before each step
-            (and toolbox.call right before its request goes out: that step skipped, never sent); a
-            `running` plan with no executor in this process (its end could not be saved) → `interrupted`;
-            `needs_you` → the flag + wakes the run (no run here → `interrupted`).
-  pick      the owner's ids for a `needs_you` judge (cookie) → that step `done`, the plan `running`, the run woken.
-  recover   on relay start: `running` / `planning` / `needs_you` → `interrupted`, `started` steps → `uncertain`.
-  flip      one status-guarded row update (`frm` → values); also the planning loop's (ultra_plan) progress and end.
-
-The executor is an in-memory asyncio task holding the approving owner's Cookie (never stored). It runs the
-steps in order through `toolbox.call`, writing each step `started` BEFORE the call, so a crash or a lost
-answer leaves `uncertain`, never a silent resend. Each save lands only while the row is running / needs_you;
-a miss (ended elsewhere) stops the run before any further call. A send that may have gone out stops the run
-and is never retried; neither route takes an idempotency key, so that record is the guard. No DB session is held across
-a call (toolbox module doc). A judge step (ultra_judge) picks media ids with one model call (≤ the run's
-upd.MAX_SPEND_MC); `confirm` parks the run `needs_you` (one `ultra_needs_you` notification) on an in-memory
-Event until `pick` or `cancel`, no timeout. A send using its picks has them written into its `started` state
-(`resolved`) before the call (ultra_decide.may_send). A saved end files one `ultra_done` notification. A cancelled executor task (shutdown)
-saves `interrupted` (closed steps) and re-raises; no notification.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -53,10 +23,10 @@ from db.models import Account, BioProfile, UltraPlan
 log = logging.getLogger("of-relay.ultra")
 
 OWNER_UNREAD = "could not read whose bio page this is; nothing was changed"
-STEP_TIMEOUT_S = 180.0  # one step's call; a send past it is uncertain (it may still finish)
-_TASKS: dict[str, asyncio.Task | None] = {}  # this process's runs; None = an OK flipping it to running
+STEP_TIMEOUT_S = 180.0
+_TASKS: dict[str, asyncio.Task | None] = {}
 _CANCEL: set[str] = set()
-_WAIT: dict[str, asyncio.Event] = {}  # runs parked `needs_you`: set by pick / cancel
+_WAIT: dict[str, asyncio.Event] = {}
 
 
 def _plan(row: UltraPlan) -> ud.Plan:
@@ -85,12 +55,10 @@ async def _chained(plan: ud.Plan) -> ud.Plan:
 
 
 async def checked(raw: Any, owned: frozenset[str]) -> ud.Plan:
-    """Validate, run the send chain, validate the post-chain plan again. PlanError when refused."""
     return ud.validate_plan((await _chained(ud.validate_plan(raw, owned))).raw(), owned)
 
 
 def _stored(pid: str, plan: ud.Plan, now: datetime) -> dict[str, Any]:
-    """An `awaiting_ok` row's columns for a checked plan (its OK window starts `now`)."""
     body = plan.as_json()
     return {"plan_json": json.dumps(body), "plan_sha256": ud.digest(body, pid), "status": "awaiting_ok",
             "created_at": now, "step_states": json.dumps(ud.initial_states(plan))}
@@ -102,8 +70,6 @@ def _proposed(pid: str, plan: ud.Plan, now: datetime) -> dict[str, Any]:
 
 
 async def propose(raw: Any, owner_user_id: str, owned: frozenset[str], source: str) -> dict[str, Any]:
-    """Store a valid plan as `awaiting_ok`: {plan_id, status, expires_at, steps} of the stored row. PlanError
-    when refused (nothing stored)."""
     plan, pid, now = await checked(raw, owned), secrets.token_hex(16), datetime.utcnow()
     async with get_session() as s:
         s.add(UltraPlan(id=pid, owner_user_id=owner_user_id, source=source, **_stored(pid, plan, now)))
@@ -111,8 +77,6 @@ async def propose(raw: Any, owner_user_id: str, owned: frozenset[str], source: s
 
 
 async def submit(plan_id: str, raw: Any, owned: frozenset[str]) -> dict[str, Any] | None:
-    """A `planning` row's plan: checked like `propose`, then that row → `awaiting_ok` (as propose's answer).
-    PlanError when refused (row unchanged); None when the row is no longer `planning` (cancelled)."""
     plan, now = await checked(raw, owned), datetime.utcnow()
     return _proposed(plan_id, plan, now) if await flip(plan_id, "planning", _stored(plan_id, plan, now)) else None
 
@@ -122,7 +86,7 @@ async def _row(plan_id: str, owner_user_id: str) -> UltraPlan | None:
         row = await s.get(UltraPlan, plan_id)
         if row is None or row.owner_user_id != owner_user_id:
             return None
-        if ud.expired(row.status, row.created_at, datetime.utcnow()):  # only from awaiting_ok: an OK may win
+        if ud.expired(row.status, row.created_at, datetime.utcnow()):
             await s.execute(update(UltraPlan).where(UltraPlan.id == plan_id, UltraPlan.status == "awaiting_ok")
                             .values(status="expired", finished_at=datetime.utcnow())
                             .execution_options(synchronize_session=False))
@@ -140,7 +104,6 @@ async def _names(ids: set[str]) -> dict[str, str]:
 
 
 async def view(plan_id: str, owner_user_id: str) -> dict[str, Any] | None:
-    """The owner's plan, or None (unknown or another owner's)."""
     row = await _row(plan_id, owner_user_id)
     if row is None:
         return None
@@ -151,7 +114,6 @@ async def view(plan_id: str, owner_user_id: str) -> dict[str, Any] | None:
            "sha256": row.plan_sha256, "steps": list(plan.steps), "card": uc.card(plan, names),
            "step_states": states,
            "created_at": row.created_at.isoformat() + "Z",
-           # no plan yet (planning, or a loop that ended without one) → no OK window
            "expires_at": (row.created_at + ud.OK_TTL).isoformat() + "Z" if row.plan_sha256 else None,
            "approved_at": row.approved_at.isoformat() + "Z" if row.approved_at else None,
            "finished_at": row.finished_at.isoformat() + "Z" if row.finished_at else None}
@@ -168,7 +130,6 @@ class Refused(Exception):
 
 
 async def approve(plan_id: str, owner_user_id: str, sha256: str, creds: toolbox.Creds) -> None:
-    """The OK: start the run, or Refused (404 not the owner's; 409 expired, not awaiting OK, wrong or stale hash)."""
     row = await _row(plan_id, owner_user_id)
     if row is None:
         raise Refused(404, "plan not found")
@@ -176,18 +137,18 @@ async def approve(plan_id: str, owner_user_id: str, sha256: str, creds: toolbox.
         raise Refused(409, f"this plan is {row.status}; it can no longer be approved")
     if sha256 != row.plan_sha256:
         raise Refused(409, "the plan changed since this card was shown; reload it and check again")
-    if ud.digest(json.loads(row.plan_json), plan_id) != row.plan_sha256:  # stored before F8, or edited since
+    if ud.digest(json.loads(row.plan_json), plan_id) != row.plan_sha256:
         raise Refused(409, "this plan was stored in an older form; propose it again")
     if plan_id in _TASKS:
         raise Refused(409, "this plan was already approved or cancelled")
-    _TASKS[plan_id] = None  # claimed before the flip: a cancel in between sees a live run, not a lost one
+    _TASKS[plan_id] = None
     won = 0
     try:
-        async with get_session() as s:  # one OK wins: the status flips only from awaiting_ok
+        async with get_session() as s:
             rc = (await s.execute(update(UltraPlan).where(UltraPlan.id == plan_id, UltraPlan.status == "awaiting_ok")
                                   .values(status="running", approved_at=datetime.utcnow()))).rowcount
-        won = rc  # only once committed
-    finally:  # lost or failed (the commit too): no run starts, so the placeholder goes (the plan can be OK'd again)
+        won = rc
+    finally:
         if won != 1:
             _TASKS.pop(plan_id, None)
     if won != 1:
@@ -196,32 +157,30 @@ async def approve(plan_id: str, owner_user_id: str, sha256: str, creds: toolbox.
 
 
 async def flip(plan_id: str, frm: ud.PlanStatus, values: dict[str, Any], *also: Any) -> bool:
-    """`frm` → `values` only if the plan is still `frm` (and every `also` clause holds); whether it was."""
     async with get_session() as s:
         return (await s.execute(update(UltraPlan).where(UltraPlan.id == plan_id, UltraPlan.status == frm, *also)
                                 .values(**values))).rowcount == 1
 
 
 async def cancel(plan_id: str, owner_user_id: str) -> None:
-    """Cancel, or Refused (404 not the owner's; 409 already over)."""
     row = await _row(plan_id, owner_user_id)
     if row is None:
         raise Refused(404, "plan not found")
     if row.status == "planning":
         if await flip(plan_id, "planning", {"status": "cancelled", "finished_at": datetime.utcnow()}):
             return
-        row = await _row(plan_id, owner_user_id) or row  # its plan landed first
+        row = await _row(plan_id, owner_user_id) or row
     if row.status == "awaiting_ok":
         if await flip(plan_id, "awaiting_ok", {"status": "cancelled", "finished_at": datetime.utcnow(),
                                                 "step_states": json.dumps(ud.close(json.loads(row.step_states)))}):
             return
-        row = await _row(plan_id, owner_user_id) or row  # an OK (or expiry) got there first
+        row = await _row(plan_id, owner_user_id) or row
     if row.status in ud.RUN_LIVE and plan_id in _TASKS:
         _CANCEL.add(plan_id)
         if plan_id in _WAIT:
             _WAIT[plan_id].set()
         return
-    if row.status in ud.RUN_LIVE:  # no executor here: its end was never saved
+    if row.status in ud.RUN_LIVE:
         if await flip(plan_id, row.status, {"status": "interrupted",
                                             "step_states": json.dumps(ud.close(json.loads(row.step_states))),
                                             "finished_at": datetime.utcnow()}):
@@ -231,7 +190,6 @@ async def cancel(plan_id: str, owner_user_id: str) -> None:
 
 
 async def pick(plan_id: str, owner_user_id: str, step_id: str, ids: Any) -> None:
-    """The owner's picks for the `needs_you` judge `step_id`, or Refused (404; 409 not waiting; 422 bad ids)."""
     row = await _row(plan_id, owner_user_id)
     if row is None:
         raise Refused(404, "plan not found")
@@ -242,7 +200,7 @@ async def pick(plan_id: str, owner_user_id: str, step_id: str, ids: Any) -> None
     if why := uj.owner_pick(states[i], ids):
         raise Refused(422, why)
     states[i] = uj.done(step_id, ids, "owner")
-    # only over the states read: a stale tab's pick never lands on a later judge
+    # Only over the states read: a stale tab's pick never lands on a later judge.
     if not await flip(plan_id, "needs_you", {"status": "running", "step_states": json.dumps(states)},
                       UltraPlan.step_states == row.step_states):
         raise Refused(409, "this plan is no longer waiting for your pick")
@@ -257,7 +215,6 @@ async def _states(plan_id: str) -> list[dict[str, Any]]:
 
 async def _judge(plan_id: str, owner_user_id: str, i: int, step: dict[str, Any], states: list[dict[str, Any]],
                  results: dict[str, Any], spent: int) -> tuple[ud.PlanStatus | None, list[dict[str, Any]], int]:
-    """Run judge step `i`: (a stop status or None, the states, the run's spend). Its ids land in results."""
     sid = step["id"]
     if spent >= upd.MAX_SPEND_MC:
         states[i] = uj.failed(sid, upd.RUN_SPEND_CAPPED)
@@ -269,10 +226,10 @@ async def _judge(plan_id: str, owner_user_id: str, i: int, step: dict[str, Any],
             f"${r['step']}.{r['path']}" for r in step["refs"]))
         return "failed", states, spent
     await _save(plan_id, [*states[:i], {"id": sid, "state": "started"}, *states[i + 1:]])
-    states[i] = {"id": sid, "state": "started"}  # only once saved: a failed save leaves it pending (skipped)
+    states[i] = {"id": sid, "state": "started"}
     v = await ultra_judge.ask(step, cands, owner_user_id)
     spent += v.cost_mc
-    if plan_id in _CANCEL:  # cancelled during the call: its picks are dropped, no needs_you, no notification
+    if plan_id in _CANCEL:
         states[i] = {"id": sid, "state": "skipped"}
         return "cancelled", states, spent
     if v.ids is None:
@@ -281,7 +238,7 @@ async def _judge(plan_id: str, owner_user_id: str, i: int, step: dict[str, Any],
     if not step["confirm"]:
         states[i] = uj.done(sid, v.ids, "ai")
     else:
-        _WAIT[plan_id] = ev = asyncio.Event()  # before the save: a cancel from here on wakes it
+        _WAIT[plan_id] = ev = asyncio.Event()
         try:
             states[i] = uj.needs_you(step, cands, v.ids)
             await _save(plan_id, states, "needs_you")
@@ -291,29 +248,27 @@ async def _judge(plan_id: str, owner_user_id: str, i: int, step: dict[str, Any],
                 await ev.wait()
         finally:
             _WAIT.pop(plan_id, None)
-        states = await _states(plan_id)  # the pick wrote the step done (and the plan running)
+        states = await _states(plan_id)
         if plan_id in _CANCEL or states[i]["state"] != "done":
             return "cancelled", states, spent
     results[sid] = {"ids": states[i]["result"]["ids"]}
     return None, states, spent
 
 
-_OWNED_BY = {"bio_page": BioProfile}  # ud.OwnerCheck.kind → the table whose row's account_id is its Creator
+_OWNED_BY = {"bio_page": BioProfile}
 
 
 async def _owner(check: ud.OwnerCheck) -> str | None:
-    """The Creator of the row a step names (ud.owner_check), None when no such row."""
     table = _OWNED_BY[check.kind]
     async with get_session() as s:
         return (await s.execute(select(table.account_id).where(table.id == str(check.ref)))).scalar()
 
 
 class _Lost(Exception):
-    """The row is no longer running / needs_you (something else ended it): the run stops, nothing more is called."""
+    pass
 
 
 async def _save(plan_id: str, states: list[dict[str, Any]], status: ud.PlanStatus = "running") -> None:
-    """Write the run's states (and status) only while the row is still running / needs_you; else _Lost."""
     values: dict[str, Any] = {"step_states": json.dumps(states), "status": status}
     if status in ud.FINAL:
         values["finished_at"] = datetime.utcnow()
@@ -327,7 +282,6 @@ async def _save(plan_id: str, states: list[dict[str, Any]], status: ud.PlanStatu
 
 async def _step(tool: td.Tool, args: dict[str, Any], creds: toolbox.Creds, key: str,
                 owner: str) -> dict[str, Any] | None:
-    """The call's result, or None when it raised or ran past STEP_TIMEOUT_S (shielded: a send keeps going)."""
     try:
         pid = key.partition(":")[0]
         return await asyncio.wait_for(asyncio.shield(toolbox.call(tool, args, creds, plan_step=key, plan_owner=owner,
@@ -372,13 +326,13 @@ async def _run(plan_id: str, owner_user_id: str, plan: ud.Plan, creds: toolbox.C
                     break
             start = ud.started(step, args)
             await _save(plan_id, [*states[:i], start, *states[i + 1:]])
-            if plan_id in _CANCEL:  # a cancel landed during that save: never called, left pending (skipped)
+            if plan_id in _CANCEL:
                 status = "cancelled"
                 break
-            states[i] = start  # only once saved: a failed save leaves it pending (skipped), never uncertain
+            states[i] = start
             result = await _step(tool, args, creds, f"{plan_id}:{step['id']}", owner_user_id)
             if result is not None and (result.get("error") or {}).get("detail") == toolbox.NOT_LIVE:
-                states[i] = {"id": step["id"], "state": "skipped"}  # cancelled before it went out: never called
+                states[i] = {"id": step["id"], "state": "skipped"}
                 status = "cancelled"
                 break
             states[i] = ud.step_end(step["id"], tool.effect, result, resolved=states[i].get("resolved"),
@@ -387,9 +341,9 @@ async def _run(plan_id: str, owner_user_id: str, plan: ud.Plan, creds: toolbox.C
                 status = "failed"
                 break
             results[step["id"]] = result
-    except _Lost:  # cancelled / interrupted elsewhere: its end is not ours to write (no save, no notification)
+    except _Lost:
         log.warning("ultra plan %s: no longer running; executor stops", plan_id)
-    except asyncio.CancelledError:  # not an Exception: the task was cancelled (shutdown) mid-run; never `done`
+    except asyncio.CancelledError:
         log.warning("ultra plan %s: executor cancelled", plan_id)
         status = "interrupted"
         raise
@@ -399,22 +353,22 @@ async def _run(plan_id: str, owner_user_id: str, plan: ud.Plan, creds: toolbox.C
     finally:
         states, saved = ud.close(states), False
         try:
-            await asyncio.shield(_save(plan_id, states, status))  # a second cancel must not lose the end
+            await asyncio.shield(_save(plan_id, states, status))
             saved = True
-        except _Lost:  # its end is not ours to write
+        except _Lost:
             pass
-        except Exception:  # row left as is: a `running` one is ended by a cancel (no executor here) or the next start
+        except Exception:
             log.exception("ultra plan %s: could not save its end", plan_id)
         finally:
             _CANCEL.discard(plan_id)
             _TASKS.pop(plan_id, None)
-    if saved:  # the notification says what the page shows: only a saved end
+    if saved:
         await _notify(owner_user_id, plan_id, uc.report_text(plan.summary, status, states))
 
 
 async def _notify(owner_user_id: str, plan_id: str, text: str, kind: str = "ultra_done", key: str = "") -> None:
     try:
-        from notifications_api import Notice, notify  # lazy: notifications_api imports settings
+        from notifications_api import Notice, notify
         await notify(owner_user_id, [Notice(kind, text, data={"href": ud.plan_path(plan_id)},
                                             dedupe=f"{kind}:{key or plan_id}")])
     except Exception:
@@ -422,7 +376,6 @@ async def _notify(owner_user_id: str, plan_id: str, text: str, kind: str = "ultr
 
 
 async def recover() -> int:
-    """Relay start: every `running` / `planning` / `needs_you` plan → `interrupted` (`started` steps `uncertain`)."""
     async with get_session() as s:
         rows = (await s.execute(select(UltraPlan).where(
             UltraPlan.status.in_(sorted(ud.LIVE))))).scalars().all()

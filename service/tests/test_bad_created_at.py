@@ -1,32 +1,7 @@
 #!/usr/bin/env python3
-"""
-One corrupt `messages.created_at` cell must never silence a whole account.
-
-The 2026-07-22 outage: a single message row for account 800000075 held the
-EMPTY STRING in created_at. SQLAlchemy converts a DateTime column while
-materialising the result set, so that one cell raised
-`ValueError: Invalid isoformat string: ''` inside str_to_datetime — inside
-.execute(), before a single row reached the consuming loop. The engine that
-answered fans then scanned the whole account in ONE query, so the account
-stopped replying entirely while the run log still read errors=0.
-
-Acceptance covered here:
-
-  case_bad_cell_still_kills_the_naive_read:
-      pins the MECHANISM — selecting the mapped DateTime column over a '' cell
-      still raises. If this ever stops raising the fix below is redundant, not
-      broken, and the reason for it should be re-read before deleting it.
-  case_created_at_text_defers_the_parse:
-      created_at_text() reads the same rows as raw text without raising, and
-      emits the same SQL (WHERE/ORDER BY on created_at keep working).
-  case_parse_ts_shapes:
-      parse_ts() unit table — good, NULL, '', junk, 'Z'-suffixed, tz-aware.
-
-Run: ./venv/bin/python service/tests/test_bad_created_at.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -70,7 +45,6 @@ async def _add_msg(aid: str, fan_id: int, msg_id: int, direction: str, body: str
 
 
 async def _corrupt_ts(aid: str, fan_id: int, msg_id: int, value: str = "") -> None:
-    """Write the bad cell the way the ingest did — raw SQL, no ORM coercion."""
     async with get_session() as s:
         await s.execute(
             text("UPDATE messages SET created_at = :v WHERE account_id = :a "
@@ -79,7 +53,6 @@ async def _corrupt_ts(aid: str, fan_id: int, msg_id: int, value: str = "") -> No
 
 
 async def _seed_dirty_account(aid: str) -> None:
-    """Fan 701 owns a corrupt row; fan 702's thread is clean and owed a reply."""
     now = datetime.utcnow()
     await _seed_account(aid)
     await _seed_fan(aid, 701)
@@ -92,7 +65,6 @@ async def _seed_dirty_account(aid: str) -> None:
     await _corrupt_ts(aid, 701, 701002)
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 def case_bad_cell_still_kills_the_naive_read():
     async def go():
@@ -120,8 +92,7 @@ def case_created_at_text_defers_the_parse():
             rows = (await s.execute(
                 select(Message.fan_id, created_at_text())
                 .where(Message.account_id == aid)
-                # ORDER BY on the REAL column must still be legal — type_coerce
-                # changes the Python-side type only, never the emitted SQL.
+                # ORDER BY on the real column stays legal: type_coerce changes the Python type only.
                 .order_by(Message.fan_id, Message.created_at))).all()
         assert len(rows) == 3, rows
         vals = [r[1] for r in rows]
@@ -140,8 +111,7 @@ def case_parse_ts_shapes():
     assert parse_ts("   ") is None
     assert parse_ts("not a date") is None
     assert parse_ts(0) is None
-    # tz-aware input is normalised to NAIVE UTC — the callers do `utcnow() - ts`
-    # arithmetic, which raises on an aware operand.
+    # Callers do utcnow() - ts, which raises on an aware operand.
     z = parse_ts("2026-07-22T10:30:00Z")
     assert z == good and z.tzinfo is None, z
     off = parse_ts("2026-07-22T12:30:00+02:00")

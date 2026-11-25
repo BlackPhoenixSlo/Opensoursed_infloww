@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""Clock in and out, auto clock-out and the Owner edit on the Relay
-(docs/spec/phase-02, tickets 11 and 13, as amended by w4-a: the inactivity-
-only sweep). The w4-a additions (the agency-wide clock, the role gate,
-clock-status, the heartbeat and the clock-records read) are in
-test_clock_status_api.py.
-
-The seam is the Relay over HTTP with real session cookies from the shared
-two-Agency fixture (`/auth/login`, `/chatter/login`): every assertion is on a
-status code, a response body or the rows an endpoint leaves behind.
-
-Clocking happens at the server's "now", so each Shift here is laid around
-the real clock (an hour either side), never at a fixed date. Each case has
-its own chatters, seeded below, so one open Clock event never leaks into
-another case. Time tracking is set per case through the owner's
-PUT /admin/settings/time-tracking, the endpoint the Time tracking Panel saves to.
-
-Run: ./venv/bin/python service/tests/test_clock_api.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 _harness.bootstrap()
 
@@ -43,10 +25,6 @@ from employees import get_or_create_mirror_employee  # noqa: E402
 
 IDS = fx.seed_two_agencies()
 
-# ASSUMPTION: this file seeds its own second Creator of Agency A, roster
-# Employees and chatters, as test_shifts_api.py and test_agency_context.py
-# do. Rung 3. Kept per-file because the three files seed different subsets;
-# overturned when two files need the same rows and drift.
 CREATOR_A2 = "1000013"
 
 
@@ -63,10 +41,6 @@ async def _seed() -> dict[str, int]:
             out[key] = row.id
     async with get_session() as s:
         s.add(UserAccount(user_id=IDS["agency_a_owner"], account_id=CREATOR_A2))
-        # ASSUMPTION: Agency A allows multiple employees per shift, so the
-        # Shifts laid around now on Creator A are not refused by the overlap
-        # rule (test_shifts_api.py tests that rule). Rung 5. Overturned if a
-        # clock case needs the rule on in Agency A.
         s.add(SettingsVersion(user_id=IDS["agency_a_owner"], tab="sales", effective_from=SETTINGS_EPOCH,
                               config_json=json.dumps({"multi_employee_shift": True})))
     return out
@@ -76,8 +50,6 @@ EMP = asyncio.run(_seed())
 
 
 def _stored_time_tracking(blob: dict) -> None:
-    """Agency A's `time-tracking` blob written straight into the store: an odd
-    value the PUT now refuses, as if saved before Phase 4 validated it."""
     fx.store_blob(IDS["agency_a_owner"], "time-tracking", blob)
 
 
@@ -89,7 +61,6 @@ def _sales(client, blob: dict) -> None:
 TT_OFF = {"detail": {"error": "time_tracking_off", "message": "time tracking is off"}}
 OWNER_ACTS = {"detail": "owner sessions act as the agency"}
 
-# The clock cases' own chatters, each linked to Agency A only.
 _CLOCK_CHATTERS = (
     "clock_link", "clock_tie", "clock_free", "clock_off", "clock_odd",
     "clock_dup", "clock_race", "clock_out", "clock_other", "clock_idle",
@@ -108,8 +79,6 @@ async def _seed_clock_chatters() -> dict[str, int]:
     async with get_session() as s:
         for name in _CLOCK_CHATTERS:
             s.add(ChatterUser(chatter_id=chatter_ids[name], user_id=IDS["agency_a_owner"], created_at=now))
-    # Each one's Mirror Employee in Agency A, so a Shift can be assigned to it
-    # before it first clocks in.
     return {name: await get_or_create_mirror_employee(chatter_ids[name], IDS["agency_a_owner"],
                                                       display_name=name, color=None)
             for name in _CLOCK_CHATTERS}
@@ -124,9 +93,6 @@ async def _ab_mirrors() -> dict[str, int]:
             for owner in ("agency_a_owner", "agency_b_owner")}
 
 
-# Since w5-a nobody clocks until "Enable clock in and clock out for" is saved (Infloww's never-saved list is all
-# unticked), so these cases' time tracking ticks the built-in Chatter, and every clocking chatter holds it in its
-# Agency (test_clock_status_api.py tests the role gate itself).
 ON = {**_ON, "role_ids": ["chatter"]}
 _AB = asyncio.run(_ab_mirrors())
 fx.store_blob(IDS["agency_a_owner"], "roles", {"roles": [], "assignments": {
@@ -170,8 +136,6 @@ def _open_count(employee_id: int) -> int:
 
 
 def case_clock_endpoints_are_401_signed_out_and_an_owner_is_403_until_its_role_is_enabled():
-    # Rewritten for w4-a: owners clock as their own row once Owner is ticked
-    # (test_clock_status_api.py); with `role_ids` never saved they are 403.
     anon = _harness.make_client()
 
     def _calls(client):
@@ -189,13 +153,13 @@ def case_clock_endpoints_are_401_signed_out_and_an_owner_is_403_until_its_role_i
     role_off = {"detail": {"error": "role_not_enabled", "message": "clock in is not enabled for your role"}}
     for name in ("agency_a_owner", "agency_master"):
         owner = fx.login_owner(name)
-        _time_tracking(owner, ON)  # time tracking off is refused first (`_clock_gate`)
+        _time_tracking(owner, ON)
         for body in ({"account_id": IDS["creator_a"]}, {}, {"nope": 1}):
             r = owner.post("/admin/shifts/clock-in", json=body)
             assert r.status_code == 403 and r.json() == role_off, f"clock-in {body} as {name}: {r.status_code} {r.text}"
         r = owner.get("/admin/shifts/me")
         assert r.status_code == 403 and r.json() == OWNER_ACTS, f"me as {name}: {r.status_code} {r.text}"
-        r = _clock_out(owner, 1)  # not its own row's event
+        r = _clock_out(owner, 1)
         assert r.status_code == 404, f"clock-out as {name}: {r.status_code} {r.text}"
     async def _owner_rows():
         async with get_session() as s:
@@ -229,7 +193,6 @@ def case_clock_in_inside_an_assigned_occurrence_links_it_and_clock_out_closes_it
     (row,) = asyncio.run(_clock_rows(emp))
     assert row.out_utc is not None and row.close_reason == "manual", row
 
-    # Both writes carry their own audit row, with the employee as actor.
     rows = asyncio.run(_clock_audit(ev["clock_event_id"]))
     assert [a["action"] for a in rows] == ["clock.in", "clock.out"], rows
     for a in rows:
@@ -245,7 +208,7 @@ def case_clock_in_takes_the_earliest_starting_occurrence_then_the_lowest_id():
     _time_tracking(owner_a, ON)
     emp = MIRROR["clock_tie"]
     mine = {"employee_ids": [emp], "account_ids": [IDS["creator_a"]]}
-    two_hours_ago = _around_now(2, 1)  # once, so `same` below starts on the very same minute
+    two_hours_ago = _around_now(2, 1)
     lower = _create(owner_a, **two_hours_ago, **mine)["shift_id"]
     earlier = _create(owner_a, **_around_now(3, 1), **mine)["shift_id"]
     chatter = fx.login_chatter("clock_tie")
@@ -255,7 +218,6 @@ def case_clock_in_takes_the_earliest_starting_occurrence_then_the_lowest_id():
         f"earliest start should win over the lower id {lower}: {r.status_code} {r.text}"
     assert _clock_out(chatter, r.json()["clock_event_id"]).status_code == 200
 
-    # Same start: the lower id wins. (Cancelled Shifts are not candidates.)
     assert owner_a.post(f"/admin/shifts/{earlier}/cancel").status_code == 200
     same = _create(owner_a, **two_hours_ago, **mine)["shift_id"]
     assert same > lower
@@ -263,7 +225,6 @@ def case_clock_in_takes_the_earliest_starting_occurrence_then_the_lowest_id():
     assert r.status_code == 200 and r.json()["shift_id"] == lower, f"lowest id: {r.status_code} {r.text}"
     assert _clock_out(chatter, r.json()["clock_event_id"]).status_code == 200
 
-    # An explicit shift_id that is one of the matching occurrences is taken as named.
     r = _clock_in(chatter, IDS["creator_a"], shift_id=same)
     assert r.status_code == 200 and r.json()["shift_id"] == same, f"explicit: {r.status_code} {r.text}"
     assert _clock_out(chatter, r.json()["clock_event_id"]).status_code == 200
@@ -273,8 +234,6 @@ def case_clock_in_outside_any_shift_has_no_link_and_an_unassigned_shift_id_is_42
     owner_a, owner_b = fx.login_owner("agency_a_owner"), fx.login_owner("agency_b_owner")
     _time_tracking(owner_a, ON)
     emp = MIRROR["clock_free"]
-    # Someone else's Shift now on Creator A, this Employee's own Shift on Creator A
-    # tomorrow, a cancelled one now, and Agency B's Shift now: none of them is it.
     others = _create(owner_a, **_around_now(1, 1), employee_ids=[EMP["emp_a1"]],
                      account_ids=[IDS["creator_a"]])["shift_id"]
     later = _create(owner_a, **_around_now(-23, 25), employee_ids=[emp], account_ids=[IDS["creator_a"]])["shift_id"]
@@ -296,7 +255,6 @@ def case_clock_in_outside_any_shift_has_no_link_and_an_unassigned_shift_id_is_42
     assert r.status_code == 200 and r.json()["shift_id"] is None, f"no Shift: {r.status_code} {r.text}"
     (row,) = asyncio.run(_clock_rows(emp))
     assert row.shift_id is None and row.account_id == IDS["creator_a"], row
-    # A Creator outside the chatter's Agencies is refused before anything else.
     r = _clock_in(chatter, IDS["creator_b"])
     assert r.status_code == 403, f"Agency B's Creator: {r.status_code} {r.text}"
     assert _clock_out(chatter, row.id).status_code == 200
@@ -315,7 +273,6 @@ def case_time_tracking_off_refuses_clock_in_but_closes_an_open_event_and_stops_i
         seen = next(row.last_seen_utc for row in asyncio.run(_clock_rows(emp)) if row.id == open_id)
         _stored_time_tracking(blob)
 
-        # A heartbeat no longer renews the event, so the sweep can close it.
         assert chatter.post("/admin/shifts/clock-heartbeat").status_code == 200
         row = next(row for row in asyncio.run(_clock_rows(emp)) if row.id == open_id)
         assert row.last_seen_utc == seen, f"heartbeat while {label} renewed the event: {row.last_seen_utc}"
@@ -327,7 +284,6 @@ def case_time_tracking_off_refuses_clock_in_but_closes_an_open_event_and_stops_i
         me = r.json()
         assert [a["time_tracking_enabled"] for a in me["accounts"]] == [False] * len(me["accounts"]), me
         assert [c["clock_event_id"] for c in me["open_clocks"]] == [open_id], me
-        # The caller still closes its own open event.
         r = _clock_out(chatter, open_id)
         assert r.status_code == 200 and r.json()["close_reason"] == "manual", \
             f"clock-out, {label}: {r.status_code} {r.text}"
@@ -338,8 +294,6 @@ def case_time_tracking_off_refuses_clock_in_but_closes_an_open_event_and_stops_i
 def case_odd_stored_time_tracking_values_fall_back_and_do_not_break_clocking():
     owner_a = fx.login_owner("agency_a_owner")
     chatter = fx.login_chatter("clock_odd")
-    # The invalid field is dropped; the rest of the stored blob still applies
-    # (`enabled`, and `clock_in_reminder` where it is stored as true).
     for blob, label, want in (({"enabled": True, "auto_clock_out_minutes": "soon", "clock_in_reminder": "yes"},
                                "minutes a string", (True, False)),
                               ({"enabled": True, "auto_clock_out_minutes": 0}, "minutes 0", (True, False)),
@@ -369,9 +323,7 @@ def case_a_second_clock_in_is_409_and_two_concurrent_ones_leave_one_open_event()
             f"second on {acc}: {r.status_code} {r.text}"
     assert _open_count(MIRROR["clock_dup"]) == 1
 
-    # Two tabs, one click each, at the same instant. The two requests do not
-    # always meet inside the database, so the race is run several times; each
-    # round must leave exactly one open event, which is then closed.
+    # the two requests do not always meet inside the DB, so the race runs several times
     for round_no in range(8):
         clients = [fx.login_chatter("clock_race"), fx.login_chatter("clock_race")]
         barrier = threading.Barrier(len(clients))
@@ -381,7 +333,7 @@ def case_a_second_clock_in_is_409_and_two_concurrent_ones_leave_one_open_event()
             barrier.wait()
             try:
                 results[i] = _clock_in(clients[i], IDS["creator_a"])
-            except Exception as e:  # a 500 raised through the TestClient
+            except Exception as e:
                 results[i] = e
         threads = [threading.Thread(target=_fire, args=(i,)) for i in range(len(clients))]
         for t in threads:
@@ -404,7 +356,6 @@ def case_invalid_clock_outs_are_refused():
     chatter = fx.login_chatter("clock_out")
     other = fx.login_chatter("clock_other")
 
-    # Nothing open: a missing id is 404, and a body without an id is 422.
     r = _clock_out(chatter, 987654)
     assert r.status_code == 404, f"none open: {r.status_code} {r.text}"
     for body in ({}, {"clock_event_id": "1"}, {"clock_event_id": True}):
@@ -412,7 +363,6 @@ def case_invalid_clock_outs_are_refused():
         assert r.status_code == 422, f"body {body}: {r.status_code} {r.text}"
 
     theirs = _clock_in(other, IDS["creator_a"]).json()["clock_event_id"]
-    # Another Employee's open event, in the same Agency or from Agency B: 404, still open.
     for client, label in ((chatter, "same Agency"), (fx.login_chatter("chatter_b"), "Agency B's chatter")):
         r = _clock_out(client, theirs)
         assert r.status_code == 404, f"someone else's, {label}: {r.status_code} {r.text}"
@@ -435,8 +385,6 @@ def case_an_inactive_mirror_employee_cannot_clock():
     open_id = r.json()["clock_event_id"]
     r = owner_a.delete(f"/admin/employees/{MIRROR['clock_idle']}")
     assert r.status_code == 200, f"deactivate: {r.status_code} {r.text}"
-    # Deactivating an Employee with a login unlinks it from the Agency and signs
-    # it out (account_security.revoke_if_unlinked): it cannot clock in or out.
     r = _clock_out(chatter, open_id)
     assert r.status_code == 401, f"clock-out inactive: {r.status_code} {r.text}"
     r = _clock_in(chatter, CREATOR_A2)
@@ -453,7 +401,6 @@ def case_a_chatter_in_both_agencies_files_time_under_the_creators_agency_and_rea
     _time_tracking(owner_b, {**ON, "enabled": False})
     ab = fx.login_chatter("chatter_ab")
 
-    # Off in B, on in A, reported per Creator.
     r = ab.get("/admin/shifts/me")
     assert r.status_code == 200, f"me: {r.status_code} {r.text}"
     flags = {a["account_id"]: (a["display_name"], a["time_tracking_enabled"], a["clock_in_reminder"])
@@ -484,13 +431,11 @@ def case_a_chatter_in_both_agencies_files_time_under_the_creators_agency_and_rea
     assert emps == {on_a["employee_id"]: IDS["agency_a_owner"], on_b["employee_id"]: IDS["agency_b_owner"]}, \
         "each Agency's time is not on its own Mirror Employee"
 
-    # Its own Shift in A, plus another Employee's Shift and open event on the
-    # same Creator: the read holds the first and none of the others.
     own = _create(owner_a, **_around_now(-24, 26), employee_ids=[on_a["employee_id"]],
                   account_ids=[IDS["creator_a"]])["shift_id"]
     _create(owner_a, **_around_now(-24, 26), employee_ids=[MIRROR["clock_other"]], account_ids=[IDS["creator_a"]])
     _create(owner_a, **_around_now(-24 * 9, 24 * 9 + 2), employee_ids=[on_a["employee_id"]],
-            account_ids=[IDS["creator_a"]])  # nine days out: past the read's eight
+            account_ids=[IDS["creator_a"]])
     other = _clock_in(fx.login_chatter("clock_other"), IDS["creator_a"])
     assert other.status_code == 200, other.text
     me = ab.get("/admin/shifts/me").json()
@@ -502,7 +447,6 @@ def case_a_chatter_in_both_agencies_files_time_under_the_creators_agency_and_rea
     assert set(me["occurrences"][0]) >= {"shift_id", "occurrence_start", "occurrence_end", "account_id"}, me
     assert "employees" not in me["occurrences"][0], "another Employee's name reached the chatter"
 
-    # Agency B's owner sees only B's event among its rows; each closes on its own.
     for ev in (on_a, on_b):
         r = _clock_out(ab, ev["clock_event_id"])
         assert r.status_code == 200 and r.json()["close_reason"] == "manual", f"{r.status_code} {r.text}"
@@ -521,13 +465,12 @@ def case_the_reminder_needs_time_tracking_and_the_reminder_on_a_started_shift_an
     mine = {"employee_ids": [emp], "account_ids": [IDS["creator_a"]]}
     two_hours_ago = _around_now(2, 2)
     sid = _create(owner_a, **two_hours_ago, **mine)["shift_id"]
-    later = _create(owner_a, **_around_now(1, 1), **mine)["shift_id"]  # also contains now, starts later
+    later = _create(owner_a, **_around_now(1, 1), **mine)["shift_id"]
     chatter = fx.login_chatter("clock_remind")
     expected = {"shift_id": sid, "occurrence_start": two_hours_ago["start_utc"],
                 "occurrence_end": two_hours_ago["end_utc"], "tz": "UTC", "account_id": IDS["creator_a"]}
     assert later != sid
 
-    # Each of the four conditions alone withholds it; only literal `true` counts.
     for blob, label in (({**ON, "clock_in_reminder": False}, "reminder off"),
                         ({**ON, "enabled": False, "clock_in_reminder": True}, "time tracking off"),
                         ({**ON, "clock_in_reminder": "true"}, "reminder the string 'true'"),
@@ -544,7 +487,6 @@ def case_the_reminder_needs_time_tracking_and_the_reminder_on_a_started_shift_an
     assert _clock_out(chatter, r.json()["clock_event_id"]).status_code == 200
     assert _reminder(chatter) == expected, "clocked out again inside the Shift: the reminder returns"
 
-    # A cancelled Shift no longer reminds; the next started one takes over.
     assert owner_a.post(f"/admin/shifts/{sid}/cancel").status_code == 200
     assert _reminder(chatter)["shift_id"] == later, "a cancelled Shift still reminded"
 
@@ -555,7 +497,7 @@ def case_no_reminder_for_a_shift_that_has_not_started_or_belongs_to_someone_else
     _create(owner_a, **_around_now(-1, 3), employee_ids=[MIRROR["clock_later"]], account_ids=[IDS["creator_a"]])
     _create(owner_a, **_around_now(1, 1), employee_ids=[MIRROR["clock_loose"]], account_ids=[IDS["creator_a"]])
     me = fx.login_chatter("clock_later").get("/admin/shifts/me").json()
-    assert len(me["occurrences"]) == 1, me  # its Shift is listed, starting in an hour
+    assert len(me["occurrences"]) == 1, me
     assert me["reminder"] is None, f"a Shift that starts in an hour reminded: {me['reminder']}"
 
 
@@ -582,7 +524,7 @@ def case_clocked_in_lists_the_agencys_open_events_for_owners_and_is_403_for_chat
     sid = _create(owner_a, **occ, employee_ids=[emp], account_ids=[IDS["creator_a"]])["shift_id"]
     seen = fx.login_chatter("clock_seen")
     ev = _clock_in(seen, IDS["creator_a"]).json()
-    loose = _clock_in(fx.login_chatter("clock_idle"), CREATOR_A2).json()  # outside any Shift
+    loose = _clock_in(fx.login_chatter("clock_idle"), CREATOR_A2).json()
     closed = _clock_in(fx.login_chatter("clock_later"), IDS["creator_a"]).json()
     assert _clock_out(fx.login_chatter("clock_later"), closed["clock_event_id"]).status_code == 200
 
@@ -602,7 +544,6 @@ def case_clocked_in_lists_the_agencys_open_events_for_owners_and_is_403_for_chat
     assert closed["clock_event_id"] not in rows, "a closed event is listed as clocked in"
     assert [r["in_utc"] for r in a["clocked_in"]] == sorted(r["in_utc"] for r in a["clocked_in"]), a
 
-    # Agency B and the Master see none of Agency A's events; time tracking is per Agency.
     b = _clocked_in(owner_b)
     assert b["time_tracking_enabled"] is False, b
     master = _clocked_in(fx.login_owner("agency_master"))
@@ -610,7 +551,6 @@ def case_clocked_in_lists_the_agencys_open_events_for_owners_and_is_403_for_chat
         leaked = {r["clock_event_id"] for r in body["clocked_in"]} & {ev["clock_event_id"], loose["clock_event_id"]}
         assert not leaked, f"{label} sees Agency A's open events: {leaked}"
 
-    # A cancelled Shift no longer names the occurrence; the link itself stays.
     assert owner_a.post(f"/admin/shifts/{sid}/cancel").status_code == 200
     row = {r["clock_event_id"]: r for r in _clocked_in(owner_a)["clocked_in"]}[ev["clock_event_id"]]
     assert row["shift_id"] == sid and row["shift"] is None, f"a cancelled Shift is still named: {row}"
@@ -620,13 +560,6 @@ def case_clocked_in_lists_the_agencys_open_events_for_owners_and_is_403_for_chat
     assert ev["clock_event_id"] not in {r["clock_event_id"] for r in _clocked_in(owner_a)["clocked_in"]}
 
 
-# ── Auto clock-out and the Owner edit (ticket 13) ───────────────────────
-#
-# Abandoned events are seeded straight into `clock_events` (and `actions` for
-# the last activity) with past timestamps, so the deadline has already passed
-# when a request arrives and no clock is mocked. Each event belongs to its own
-# roster Employee of Agency A, seeded here, so one case's events never meet
-# another's.
 
 def _naive(z: str) -> datetime:
     return datetime.strptime(z, "%Y-%m-%dT%H:%M:%SZ")
@@ -657,24 +590,19 @@ async def _set_seen(event_id: int, at: datetime) -> None:
 
 
 def _seen(event_id: int, at: datetime) -> None:
-    """The event's last heartbeat (`last_seen_utc`), as POST /clock-heartbeat leaves it."""
     asyncio.run(_set_seen(event_id, at))
 
 
 def case_an_abandoned_event_on_a_long_ended_shift_closes_auto_at_its_last_activity_plus_the_minutes():
-    # Rewritten for w4-a: the Shift's end no longer decides; Infloww clocks
-    # out on inactivity only.
     owner_a, owner_b = fx.login_owner("agency_a_owner"), fx.login_owner("agency_b_owner")
     _time_tracking(owner_a, {**ON, "auto_clock_out_minutes": 30})
     emp = _employee("sweep_shift")
-    occ = _around_now(6, -4)  # ended four hours ago
+    occ = _around_now(6, -4)
     sid = _create(owner_a, **occ, employee_ids=[emp], account_ids=[IDS["creator_a"]])["shift_id"]
     ev_id = _event(emp, _naive(occ["start_utc"]) + timedelta(minutes=10), shift_id=sid)
-    # Activity three hours after the Shift ended: it, not the occurrence end, decides.
     active = _utc_now() - timedelta(hours=1)
     _activity(emp, active)
 
-    # Agency B's request sweeps only Agency B.
     _clocked_in(owner_b)
     assert _row(ev_id).out_utc is None, "Agency B's request closed Agency A's event"
 
@@ -693,7 +621,6 @@ def case_an_abandoned_event_on_a_long_ended_shift_closes_auto_at_its_last_activi
     assert audit["payload"]["after"]["out_utc"] == _z(row.out_utc), audit
     assert audit["payload"]["after"]["close_reason"] == "auto", audit
 
-    # A later request finds nothing more to close and writes no second row.
     _clocked_in(owner_a)
     assert len(asyncio.run(_clock_audit(ev_id))) == 1
 
@@ -702,13 +629,12 @@ def case_an_abandoned_event_with_no_shift_closes_at_last_activity_plus_the_minut
     owner_a = fx.login_owner("agency_a_owner")
     _time_tracking(owner_a, {**ON, "auto_clock_out_minutes": 45})
     now = _utc_now()
-    # A chatter's own request sweeps its Agency too.
     emp = MIRROR["clock_sweep"]
     ev_id = _event(emp, now - timedelta(hours=5))
-    _activity(emp, now - timedelta(hours=6))  # before the clock-in: the clock-in is later
-    _activity(emp, now - timedelta(hours=3))  # the latest audit row
+    _activity(emp, now - timedelta(hours=6))
+    _activity(emp, now - timedelta(hours=3))
     other = _employee("sweep_quiet")
-    quiet_id = _event(other, now - timedelta(hours=5))  # nothing after its clock-in
+    quiet_id = _event(other, now - timedelta(hours=5))
 
     r = fx.login_chatter("clock_sweep").get("/admin/shifts/me")
     assert r.status_code == 200, f"me: {r.status_code} {r.text}"
@@ -723,28 +649,21 @@ def case_an_abandoned_event_with_no_shift_closes_at_last_activity_plus_the_minut
 
 
 def case_an_event_not_yet_past_its_deadline_stays_open_past_its_shift_end_and_the_sweep_runs_with_time_tracking_off():
-    # Rewritten for w4-a: the event past its Shift's end stays open because
-    # its heartbeat is recent, not because of a grace after the Shift.
     owner_a = fx.login_owner("agency_a_owner")
     _time_tracking(owner_a, {**ON, "enabled": False, "auto_clock_out_minutes": 30})
     now = _utc_now()
-    fresh = _event(_employee("sweep_fresh"), now - timedelta(minutes=20))  # deadline in ten minutes
-    stale = _event(_employee("sweep_stale"), now - timedelta(minutes=40))  # deadline ten minutes ago
-    # A Shift that ended fifteen minutes ago, its event clocked in near two
-    # hours ago and seen five minutes ago: its deadline is 25 minutes away.
+    fresh = _event(_employee("sweep_fresh"), now - timedelta(minutes=20))
+    stale = _event(_employee("sweep_stale"), now - timedelta(minutes=40))
     emp = _employee("sweep_grace")
     occ = _around_now(2, -0.25)
     sid = _create(owner_a, **occ, employee_ids=[emp], account_ids=[IDS["creator_a"]])["shift_id"]
     grace = _event(emp, _naive(occ["start_utc"]) + timedelta(minutes=5), shift_id=sid)
     _seen(grace, now - timedelta(minutes=5))
-    # The same, last seen 40 minutes ago: closed at that heartbeat plus 30.
     emp = _employee("sweep_gone")
     sid = _create(owner_a, **occ, employee_ids=[emp], account_ids=[IDS["creator_a"]])["shift_id"]
     gone = _event(emp, _naive(occ["start_utc"]) + timedelta(minutes=5), shift_id=sid)
     _seen(gone, now - timedelta(minutes=40))
 
-    # Fired through the schedule read, so the sweep on the Shift router (not
-    # only the Clock one) is what closes the stale event.
     r = owner_a.get("/admin/shifts", params={"from": _z(now - timedelta(days=1)), "to": _z(now + timedelta(days=1))})
     assert r.status_code == 200, f"GET /admin/shifts: {r.status_code} {r.text}"
     assert _row(fresh).out_utc is None and _row(grace).out_utc is None
@@ -760,7 +679,6 @@ def case_an_event_not_yet_past_its_deadline_stays_open_past_its_shift_end_and_th
 
 
 def case_a_non_number_or_missing_stored_minutes_makes_the_sweep_use_10():
-    # Rewritten for w4-a: the default is Infloww's 10 minutes, not 60.
     owner_a = fx.login_owner("agency_a_owner")
     for i, (blob, label) in enumerate((({**ON, "auto_clock_out_minutes": "soon"}, "a string"),
                                        ({"enabled": True}, "missing"),
@@ -797,13 +715,12 @@ def case_an_owner_edit_corrects_times_and_closing_an_open_event_marks_it_owner_e
     row = _row(closed)
     assert (row.in_utc, row.out_utc) == (now - timedelta(hours=5, minutes=30), now - timedelta(hours=3, minutes=30))
 
-    # One side alone: the other keeps its stored time.
     r = _owner_edit(owner_a, closed, out_utc=_z(now - timedelta(hours=3)))
     assert r.status_code == 200, f"edit out only: {r.status_code} {r.text}"
     assert (_row(closed).in_utc, _row(closed).out_utc) == (now - timedelta(hours=5, minutes=30),
                                                           now - timedelta(hours=3))
 
-    opened = _event(emp, now - timedelta(minutes=20))  # inside its 60-minute deadline
+    opened = _event(emp, now - timedelta(minutes=20))
     r = _owner_edit(owner_a, opened, in_utc=_z(now - timedelta(minutes=25)))
     assert r.status_code == 200 and r.json()["out_utc"] is None, f"open, in only: {r.status_code} {r.text}"
     r = _owner_edit(owner_a, opened, out_utc=_z(now - timedelta(minutes=5)))
@@ -829,7 +746,6 @@ def case_an_owner_edit_is_refused_in_the_future_inverted_overlapping_or_outside_
     emp = _employee("edit_refused")
     first = _event(emp, now - timedelta(hours=5), now - timedelta(hours=4))
     second = _event(emp, now - timedelta(hours=3), now - timedelta(hours=2))
-    # Another Employee's event over the same hours does not count as an overlap.
     _event(_employee("edit_neighbour"), now - timedelta(hours=5), now - timedelta(hours=1))
 
     for body, label in (({"out_utc": _z(now + timedelta(minutes=5))}, "ends in the future"),
@@ -846,16 +762,13 @@ def case_an_owner_edit_is_refused_in_the_future_inverted_overlapping_or_outside_
     row = _row(second)
     assert (row.in_utc, row.out_utc) == (now - timedelta(hours=3), now - timedelta(hours=2)), "a refused edit wrote"
     assert asyncio.run(_clock_audit(second)) == [], "a refused edit wrote an audit row"
-    # Touching is not overlapping.
     r = _owner_edit(owner_a, second, in_utc=_z(now - timedelta(hours=4)))
     assert r.status_code == 200, f"touching the other event: {r.status_code} {r.text}"
-    # An open event runs on to now: an earlier one may not be stretched over it.
     opened = _event(emp, now - timedelta(minutes=30))
     r = _owner_edit(owner_a, second, out_utc=_z(now - timedelta(minutes=10)))
     assert r.status_code == 409, f"overlap with an open event: {r.status_code} {r.text}"
     assert _row(opened).out_utc is None
 
-    # Another Agency's owner, the Master, a missing id: 404. A chatter: 403. Signed out: 401.
     for client, label in ((fx.login_owner("agency_b_owner"), "Agency B"), (fx.login_owner("agency_master"), "Master")):
         r = _owner_edit(client, first, out_utc=_z(now - timedelta(hours=4, minutes=30)))
         assert r.status_code == 404, f"{label}: {r.status_code} {r.text}"
@@ -871,7 +784,6 @@ def case_an_owner_edit_is_refused_in_the_future_inverted_overlapping_or_outside_
     row = _row(first)
     assert (row.in_utc, row.out_utc) == (now - timedelta(hours=5), now - timedelta(hours=4)), "a refused edit wrote"
 
-    # Agency B's owner edits its own event.
     b_ev = _event(_employee("edit_b", "agency_b_owner"), now - timedelta(hours=2), now - timedelta(hours=1),
                   owner="agency_b_owner")
     r = _owner_edit(fx.login_owner("agency_b_owner"), b_ev, out_utc=_z(now - timedelta(minutes=50)))

@@ -1,43 +1,7 @@
 #!/usr/bin/env python3
-"""
-funnels_api — CRUD routes over `mass_message_funnels` (W8 FUNNEL-API lane).
-
-Drives the route coroutines directly (no HTTP) against the temp DB. Funnels are
-GLOBAL (no account scoping), so there's no owner gate to exercise here — the
-focus is the step-shape validation + the DELETE-409 guard against orphaning a
-live funnel_state.
-
-Funnel TEXT is global; funnel MEDIA is per-account and lives in a separate table
-(funnel_account_media — covered by test_funnel_account_media.py). So these CRUD
-cases are TEXT-ONLY: a PPV step carries price/copy/locked_text but NO media_files
-(the API no longer validates or requires step media).
-
-  case_create_round_trip:
-      create a funnel (opener + a reply step + a text-only PPV step) → it
-      persists with the right step_count, lists in the summary, round-trips full.
-  case_reject_step_missing_messages:
-      a reply step with neither static `messages` nor `prompt`/`generate` → 422.
-  case_reject_bad_intervals:
-      a reply step with a non-positive `check_intervals_min` → 422.
-  case_reject_unknown_step_type:
-      a step with an unknown `type` → 422 (media is NO LONGER validated here).
-  case_unique_name_conflict:
-      a second funnel with the same name → 409.
-  case_update_partial:
-      PUT rewrites opening_message + steps, leaves untouched fields alone.
-  case_delete_409_when_referenced:
-      DELETE returns 409 while a mass_run references the funnel; succeeds once
-      the reference is gone.
-  case_list_account_stats:
-      `?account_id=` adds that model's stats: last sent start, distinct pending
-      fans, still listening; other accounts' / failed / unsent runs don't count;
-      no account_id → no stats key.
-
-Run: ./venv/bin/python service/tests/test_funnels_api.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -64,7 +28,6 @@ _PPV_STEP = {
 }
 
 
-# ── create → list → get ───────────────────────────────────────────────
 
 async def case_create_round_trip():
     out = await create_funnel(FunnelCreate(
@@ -75,8 +38,6 @@ async def case_create_round_trip():
     assert out["id"] and out["name"] == "strokes_test", out
     assert out["step_count"] == 2, out
     assert out["opening_message"] == "How many strokes? 😈", out
-    # full GET round-trips the parsed steps verbatim (text-only; media is
-    # per-account and lives in funnel_account_media, not on the step).
     full = await get_funnel(out["id"])
     assert full["steps"][0]["messages"][0].startswith("bet you"), full
     assert full["steps"][1]["type"] == "paid_ppv", full
@@ -87,19 +48,17 @@ async def case_create_round_trip():
     assert row["step_count"] == 2 and "steps" not in row, ("summary is lean", row)
 
 
-# ── validation: a reply step missing its text ─────────────────────────
 
 async def case_reject_step_missing_messages():
     try:
         await create_funnel(FunnelCreate(
             name="bad_no_msg", opening_message="hi",
-            steps=[{"step": 1, "check_intervals_min": [2, 4]}],  # no messages/prompt
+            steps=[{"step": 1, "check_intervals_min": [2, 4]}],
         ))
         assert False, "expected 422 for a step with no messages/prompt"
     except HTTPException as e:
         assert e.status_code == 422, e
 
-    # a generated step (prompt only) is fine — no static messages required.
     ok = await create_funnel(FunnelCreate(
         name="gen_ok", opening_message="hi",
         steps=[{"step": 1, "check_intervals_min": [2], "prompt": "tease them"}],
@@ -107,7 +66,6 @@ async def case_reject_step_missing_messages():
     assert ok["step_count"] == 1, ok
 
 
-# ── validation: malformed intervals ───────────────────────────────────
 
 async def case_reject_bad_intervals():
     for bad in ([2, -4, 10], [0], "soon", []):
@@ -121,10 +79,8 @@ async def case_reject_bad_intervals():
             assert e.status_code == 422, (bad, e)
 
 
-# ── validation: unknown step type rejected; media NO LONGER validated ─
 
 async def case_reject_unknown_step_type():
-    # an unknown step `type` is rejected.
     try:
         await create_funnel(FunnelCreate(
             name="bad_type", opening_message="hi",
@@ -134,8 +90,6 @@ async def case_reject_unknown_step_type():
     except HTTPException as e:
         assert e.status_code == 422, e
 
-    # Media is per-account now: a step that still carries `media_files` is NOT
-    # rejected — it passes through untouched (back-compat) and the API ignores it.
     ok = await create_funnel(FunnelCreate(
         name="legacy_media_ok", opening_message="hi",
         steps=[{"step": 1, "type": "paid_ppv", "price": 5,
@@ -144,11 +98,8 @@ async def case_reject_unknown_step_type():
     assert ok["step_count"] == 1, ok
 
 
-# ── branching: `next` maps validate shape + target existence ──────────
 
 async def case_next_branch_valid():
-    """A well-formed `next` map (bought/ignored/default + a keyword map) whose
-    targets all reference existing steps is accepted and round-trips verbatim."""
     out = await create_funnel(FunnelCreate(
         name="branch_ok", opening_message="hi",
         steps=[
@@ -166,13 +117,11 @@ async def case_next_branch_valid():
 
 
 async def case_reject_next_dangling_target():
-    """A `next` target that names a step number with no matching step → 422 (a
-    dangling route would strand a fan mid-storyline)."""
     for bad_next in (
-        {"default": 9},               # no step 9
-        {"bought": 4},                # no step 4
-        {"keyword": {"more": 7}},     # keyword target missing
-        {"ignored": 0},               # step numbers are >=1
+        {"default": 9},
+        {"bought": 4},
+        {"keyword": {"more": 7}},
+        {"ignored": 0},
     ):
         try:
             await create_funnel(FunnelCreate(
@@ -190,17 +139,15 @@ async def case_reject_next_dangling_target():
 
 
 async def case_reject_next_bad_shape():
-    """Malformed `next` maps are rejected: not an object, an unknown key, a
-    non-int target, or an empty/blank-keyword keyword map."""
     good_steps = [{"step": 2, "check_intervals_min": [2], "messages": ["s2"]}]
     for bad_next in (
-        "step2",                       # not an object
-        {"maybe": 2},                  # unknown key
-        {"default": "2"},              # non-int target
-        {"default": 1.5},              # fractional target
-        {"keyword": {}},               # empty keyword map
-        {"keyword": {"  ": 2}},        # blank keyword
-        {"keyword": {"more": "2"}},    # non-int keyword target
+        "step2",
+        {"maybe": 2},
+        {"default": "2"},
+        {"default": 1.5},
+        {"keyword": {}},
+        {"keyword": {"  ": 2}},
+        {"keyword": {"more": "2"}},
     ):
         try:
             await create_funnel(FunnelCreate(
@@ -214,7 +161,6 @@ async def case_reject_next_bad_shape():
             assert e.status_code == 422, (bad_next, e)
 
 
-# ── unique name ───────────────────────────────────────────────────────
 
 async def case_unique_name_conflict():
     await create_funnel(FunnelCreate(name="dup", opening_message="a"))
@@ -225,7 +171,6 @@ async def case_unique_name_conflict():
         assert e.status_code == 409, e
 
 
-# ── partial update ────────────────────────────────────────────────────
 
 async def case_update_partial():
     created = await create_funnel(FunnelCreate(
@@ -239,11 +184,9 @@ async def case_update_partial():
     ))
     assert patched["opening_message"] == "new opener", patched
     assert patched["step_count"] == 2, patched
-    # untouched fields survive a partial PUT.
     assert patched["name"] == "edit_me" and patched["description"] == "orig", patched
 
 
-# ── delete is blocked while a mass_run references the funnel ───────────
 
 async def case_delete_409_when_referenced():
     created = await create_funnel(FunnelCreate(
@@ -257,14 +200,12 @@ async def case_delete_409_when_referenced():
         await s.flush()
         s.add(MassRun(account_id="acc_funnel", funnel_id=fid, status="ok"))
 
-    # A live mass_run anchors funnel_state → delete is refused.
     try:
         await delete_funnel(fid)
         assert False, "expected 409 while a mass_run references the funnel"
     except HTTPException as e:
         assert e.status_code == 409, e
 
-    # Drop the reference → the delete now goes through.
     async with get_session() as s:
         from sqlalchemy import delete as sa_delete
         await s.execute(sa_delete(MassRun).where(MassRun.funnel_id == fid))
@@ -278,13 +219,12 @@ async def case_delete_409_when_referenced():
         assert e.status_code == 404, e
 
 
-# ── list ?account_id= → per-model stats (Auto Funnel Status / Fans) ──
 
 async def case_list_account_stats():
     import os
     from datetime import datetime, timedelta
     from db.models import FunnelState
-    os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # the account gate is test_account_isolation_gate's job
+    os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
     live = (await create_funnel(FunnelCreate(name="stats_live", opening_message="hi", steps=[_REPLY_STEP])))["id"]
     old = (await create_funnel(FunnelCreate(name="stats_old", opening_message="hi", steps=[_REPLY_STEP])))["id"]
     never = (await create_funnel(FunnelCreate(name="stats_never", opening_message="hi", steps=[_REPLY_STEP])))["id"]
@@ -309,7 +249,7 @@ async def case_list_account_stats():
             FunnelState(mass_run_id=r_new, fan_id=1, status="pending"),
             FunnelState(mass_run_id=r_new, fan_id=2, status="pending"),
             FunnelState(mass_run_id=r_new, fan_id=3, status="done"),
-            FunnelState(mass_run_id=r_unsent, fan_id=1, status="pending"),  # same fan, other run: counted once
+            FunnelState(mass_run_id=r_unsent, fan_id=1, status="pending"),
             FunnelState(mass_run_id=r_unsent, fan_id=4, status="pending"),
             FunnelState(mass_run_id=r_failed, fan_id=5, status="pending"),
             FunnelState(mass_run_id=r_old, fan_id=6, status="done"),

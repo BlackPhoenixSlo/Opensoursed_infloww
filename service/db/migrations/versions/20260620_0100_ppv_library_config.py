@@ -1,19 +1,3 @@
-"""ppv_library_config — premade PPV Library store + price-matrix knobs
-
-Revision ID: 0037_ppv_library_config
-Revises: 0036_fan_is_muted
-Create Date: 2026-06-20
-
-One additive change: `account_ai_config.ppv_library_config_json` TEXT NULL.
-
-Holds the per-account PPV Library: up to ~20 premade PPVs (vault media ids +
-caption-pool key + base price + preview options + sends_per_week + resend_monthly)
-plus the global spend-by-recency price matrix. Consumed by the `ppv_send`
-automation; the config API upserts one `ppv_send` rule per enabled PPV on save.
-
-Additive + nullable + idempotent (inspector-guarded, house convention so a
-create_all-built DB whose alembic_version lags doesn't trip).
-"""
 from __future__ import annotations
 
 from typing import Sequence

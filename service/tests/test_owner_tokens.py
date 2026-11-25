@@ -1,34 +1,7 @@
 #!/usr/bin/env python3
-"""Owner access tokens (docs/plans/ultra-mode/issues/03-owner-tokens.md).
-
-Cases:
-  case_pure_mint_digest_verdict — `ifw_` token, sha256 digest, hint, verdict table.
-  case_allowlist                — token_auth.allowlist() = a literal list (the Toolbox's non-send routes +
-                                  the report download + /admin/mcp, its GET/DELETE/PUT a 405), each a real (method, route template) in
-                                  server.app.routes; a send tool's route is never on it.
-  case_api_create_list_revoke   — /admin/owner-tokens: plaintext once, days 30|90|365
-                                  (default 90), own rows only, revoke.
-  case_bearer_resolves          — a bearer alone signs the owner in (allowlisted route); last_used_at set.
-  case_bearer_beats_cookie      — another owner's cookie + a valid bearer = the bearer's owner.
-  case_bad_bearer_401           — unknown / revoked / expired / pre-"log out others" bearer
-                                  with a valid cookie: 401, never the cookie.
-  case_master_clamped           — a Master's token sees its own Agency only; master gates refuse.
-  case_blocked_routes_http      — sign-in/credential/token/SSE routes 403 (JSON) with a token.
-  case_revoke_escape            — a token cannot make an Employee login (it would outlive a revoke).
-  case_every_route_refused      — every route in server.app.routes but the allowlist 403s with a token.
-  case_admin_password_refuses_token — the founder password gate refuses token requests.
-  case_chatter_cookie_suppressed — a chatter cookie beside a bearer resolves no chatter; the route sees
-                                  no Cookie / X-Employee-Id header at all (stripped from the ASGI scope).
-  case_employee_header_ignored  — X-Employee-Id dropped; the row lands on the owner's
-                                  Employee with via="token <name>"; cookie rows keep via NULL.
-
-No network: the account registry is stubbed.
-
-Run: ./venv/bin/python service/tests/test_owner_tokens.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -54,7 +27,7 @@ from db.models import Account, Action, Chatter, ChatterUser, Employee, OwnerToke
 
 client = _harness.make_client()
 
-A, B = "610001", "610002"  # A: alice's Creator; B: bob's
+A, B = "610001", "610002"
 _ACCOUNTS = (A, B)
 account_registry.get_account = lambda aid: {"id": aid} if aid in _ACCOUNTS else None
 account_registry.list_accounts = lambda **_: [{"id": a, "has_session": True} for a in _ACCOUNTS]
@@ -63,7 +36,7 @@ account_registry.account_ids = lambda: frozenset(_ACCOUNTS)
 account_registry.get_active_account_id = lambda: A
 
 LEAK_RE = re.compile(r"ifw_[A-Za-z0-9_-]{40,}")
-ALICE, BOB, BOSS = (uuid.uuid4().hex for _ in range(3))  # BOSS: a Master linked to A only
+ALICE, BOB, BOSS = (uuid.uuid4().hex for _ in range(3))
 CHATTER = uuid.uuid4().hex
 
 
@@ -103,7 +76,6 @@ def _me(headers=None, cookies=None):
 
 
 def _ids(headers=None, cookies=None):
-    """The Creators GET /admin/accounts (creators_list, allowlisted) lists for this credential."""
     r = client.get("/admin/accounts", headers=headers or {}, cookies=cookies or {})
     return r.status_code, ([a["id"] for a in r.json()["accounts"]] if r.status_code == 200 else r.text)
 
@@ -138,19 +110,19 @@ def case_pure_mint_digest_verdict() -> None:
     assert V(**{**base, "last_used_at": now - timedelta(seconds=301)}) == "touch"
     assert V(**{**base, "revoked_at": now - timedelta(seconds=1)}) == "refuse"
     assert V(**{**base, "expires_at": now}) == "refuse"
-    assert V(**{**base, "valid_after": now - timedelta(hours=1)}) == "refuse"  # logged out others after minting
+    assert V(**{**base, "valid_after": now - timedelta(hours=1)}) == "refuse"
     assert V(**{**base, "valid_after": now - 2 * day}) == "ok"
     assert owner_tokens.DAYS == (30, 90, 365) and owner_tokens.DEFAULT_DAYS == 90
 
 
 def case_allowlist() -> None:
-    want = {  # literal: a route a token newly reaches shows up here as a reviewed diff
+    want = {
         ("GET", "/admin/accounts"), ("GET", "/admin/automation-kinds"), ("GET", "/admin/automation-rules"),
         ("GET", "/admin/bio-pages"), ("POST", "/admin/bio-pages"), ("GET", "/admin/bio-pages/{pid}"),
         ("POST", "/admin/bio-pages/{pid}/avatar/vault"), ("POST", "/admin/bio-pages/{pid}/background/vault"),
         ("POST", "/admin/bio-pages/{pid}/links"),
         ("POST", "/admin/bio-pages/{pid}/links/{lid}/background/vault"), ("POST", "/admin/mcp"),
-        ("GET", "/admin/mcp"), ("DELETE", "/admin/mcp"), ("PUT", "/admin/mcp"),  # mcp_other: its 405 only
+        ("GET", "/admin/mcp"), ("DELETE", "/admin/mcp"), ("PUT", "/admin/mcp"),
         ("GET", "/admin/reports/catalogue"), ("POST", "/admin/reports/files"), ("GET", "/admin/reports/files/{file_id}"),
         ("POST", "/admin/reports/run"), ("GET", "/admin/stats/per-model"), ("GET", "/admin/vault-ai/describe-all/plan"),
         ("GET", "/admin/vault-ai/describe-all/status"),
@@ -163,7 +135,7 @@ def case_allowlist() -> None:
     saved = td.TOOLS
     td.TOOLS = saved + (send,)
     try:
-        assert ("POST", "/admin/zz-send") not in token_auth.allowlist()  # a send tool runs from a plan only
+        assert ("POST", "/admin/zz-send") not in token_auth.allowlist()
     finally:
         td.TOOLS = saved
 
@@ -229,7 +201,7 @@ def case_bad_bearer_401() -> None:
     assert _me(None, _cookie(BOB))[1]["username"] == "bob"
     unknown = "ifw_" + "A" * 43
     for tok in (unknown, "ifw_", expired["token"], revoked["token"]):
-        for probe in (_me, _ids):  # 401 before the allowlist: a bad token is a bad token anywhere
+        for probe in (_me, _ids):
             status, body = probe(_bearer(tok), _cookie(BOB))
             assert status == 401, (tok[:8], status, body)
 
@@ -239,7 +211,7 @@ def case_bad_bearer_401() -> None:
     asyncio.run(log_out_others())
     try:
         assert _ids(_bearer(stale["token"]), _cookie(BOB))[0] == 401
-        assert _ids(_bearer(made["token"]))[0] == 200  # minted after the revoke
+        assert _ids(_bearer(made["token"]))[0] == 200
     finally:
         async def undo():
             async with get_session() as s:
@@ -249,7 +221,6 @@ def case_bad_bearer_401() -> None:
 
 def case_master_clamped() -> None:
     tok = _mint(BOSS)["token"]
-    # The Master's cookie reaches bob's Creator B; its token does not.
     assert _ids(None, _cookie(BOSS)) == (200, [A, B])
     assert _ids(_bearer(tok)) == (200, [A])
     rules = "/admin/automation-rules"
@@ -274,15 +245,13 @@ def case_blocked_routes_http() -> None:
         ("POST", "/admin/employees/1/password", {"password": "x"}), ("POST", "/admin/employees/1/2fa/reset", {}),
         ("POST", "/admin/link-shares", {}), ("PATCH", "/api/of/v2/users/me/settings/security", {}),
         ("PUT", "/api/of/v2/users/me/settings/security", {}), ("POST", "/admin/reports/files/x", None),
-        ("GET", "/admin/reports/filesx", None), ("PATCH", "/admin/mcp", None),  # GET/DELETE/PUT: its 405
+        ("GET", "/admin/reports/filesx", None), ("PATCH", "/admin/mcp", None),
     ]:
         r = client.request(method, path, json=body, headers=_bearer(tok))
         assert r.status_code == 403 and "access token" in r.json()["detail"], (method, path, r.status_code, r.text[:120])
 
 
 def case_revoke_escape() -> None:
-    """Measured before the allowlist: a token minted an Employee login, which stayed signed in after the
-    token was revoked. Now the route never runs."""
     tok = _mint(ALICE)["token"]
     r = client.post("/admin/employees/login", json={"username": "escapee", "password": "pw123456"},
                     headers=_bearer(tok))
@@ -304,14 +273,14 @@ def case_every_route_refused() -> None:
     checked, leaks = 0, []
     for route in server.app.routes:
         if isinstance(route, WebSocketRoute):
-            continue  # no http middleware; a websocket gets no identity from a bearer
+            continue
         if isinstance(route, Mount):
             pairs = [("GET", route.path + "/x")]
         else:
             path = _PARAM.sub(lambda m: _SAMPLE.get(m.group(2) or "", "x1"), route.path)
             pairs = [(m, path) for m in sorted(route.methods) if (m, route.path) not in allowed]
         for method, path in pairs:
-            body = None if method in ("GET", "HEAD", "DELETE") else b"{}"  # a sized body: the batch-cap hook 411s none
+            body = None if method in ("GET", "HEAD", "DELETE") else b"{}"
             r = client.request(method, path, content=body, headers=_bearer(tok))
             checked += 1
             if r.status_code != 403 or (method != "HEAD" and "access token" not in r.text):
@@ -323,13 +292,12 @@ def case_every_route_refused() -> None:
 def case_admin_password_refuses_token() -> None:
     tok = _mint(BOSS)["token"]
     body = {"account_id": "999999999", "admin_password": "test-admin-password"}
-    # Founder grant gates on the password alone: an owner token with the right password is refused.
     alice_tok = _mint(ALICE)["token"]
     for t in (tok, alice_tok):
         r = client.post(f"/admin/users/{BOB}/accounts", json=body, headers=_bearer(t))
         assert r.status_code == 403, (r.status_code, r.text)
     r = client.post(f"/admin/users/{BOB}/accounts", json=body, cookies=_cookie(ALICE))
-    assert r.status_code != 403, (r.status_code, r.text)  # the cookie path still reaches the handler
+    assert r.status_code != 403, (r.status_code, r.text)
 
 
 def case_chatter_cookie_suppressed() -> None:
@@ -339,7 +307,7 @@ def case_chatter_cookie_suppressed() -> None:
     tok = _mint(ALICE)["token"]
     probe = td.Tool("zz_tok_hdr", "test", "GET", "/admin/zz-tok/hdr", td.NoArgs, "read")
     saved = td.TOOLS
-    td.TOOLS = saved + (probe,)  # allowlisted for this case only
+    td.TOOLS = saved + (probe,)
     try:
         r = client.get("/admin/zz-tok/hdr", cookies={**chat, **_cookie(BOB)},
                        headers={**_bearer(tok), "X-Employee-Id": "7"})

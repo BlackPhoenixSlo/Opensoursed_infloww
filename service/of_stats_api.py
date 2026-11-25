@@ -1,18 +1,3 @@
-"""service/of_stats_api.py — server.py's analytics block, moved wholesale: the
-OF mirror's read-only Statistics / Statements / Reach routes (`/api/of/v2/...`
-charts, tops, lists, streaks, referrals) and `/admin/stats/referrals`, plus the
-read-only Settings reads that sat in that block (`/users/me/profile/views/qr`,
-`/sessions`, `/streams/users/blocked`, `/users/me/start-date-model`,
-`/users/settings/notifications/{transport}`) and `/posts/bookmarks/all`.
-
-Server-global helpers (`_proxy`, `_get_client`, `_load_client`,
-`_priority_lane_background`) are relay_host's call-time forwards, so a test's
-`server._get_client = fake` still reaches these routes; `_account_ttl` resolves
-once, at import, so import this module only after (or from) server.py.
-
-Included mid-file in server.py for route order (pinned by
-service/tests/test_route_order.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -42,13 +27,10 @@ log = logging.getLogger("of-relay")
 
 router = APIRouter()
 
-# ── Analytics (Statistics > Earnings/Engagement/Reach tabs) ────────
-# All accept startDate/endDate as ISO with space (OF spec). Default = 30d window.
 
 _CHART_FILTER_KEY = re.compile(r"^[a-z][a-z_]{0,40}$")
 
 def _chart_filter(filter: str | None) -> list[str] | None:
-    """Comma-separated series names → OF's filter[k]=k keys (422 on junk)."""
     if not filter:
         return None
     keys = [k.strip() for k in filter.split(",") if k.strip()]
@@ -72,9 +54,6 @@ def of_earnings_chart(
     return _proxy(lambda: _get_client().earnings_chart(
         start=start, end=end, filter=keys, monthly_total=bool(monthlyTotal)))
 
-# /posts/chart and /posts/top stay in server.py, above /posts/{post_id}
-# (its "Posts shortcuts" section), so the int-typed dynamic route doesn't
-# shadow them. Nothing here.
 
 @router.get("/api/of/v2/users/me/stats/overview")
 @_account_ttl("me_stats", 120)
@@ -117,14 +96,12 @@ def of_sessions():
     sessions (OF's DELETE /sessions) is server.py's of_close_all_sessions."""
     return _proxy(lambda: _get_client().sessions())
 
-# ticket 69
 @router.get("/api/of/v2/users/social/buttons")
 def of_social_buttons():
     """Settings > Social media's buttons: OF's GET /users/social/buttons (a list). Adding and
     removing one is server.py's of_add_social_button / of_delete_social_button."""
     return _proxy(lambda: _get_client().social_buttons())
 
-# ticket 69
 @router.get("/api/of/v2/init")
 def of_init():
     """Social media's Add button providers: OF's GET /init, only `{socialMediaProviders}` (of_reads
@@ -149,10 +126,6 @@ def of_chargebacks_ratio(start: str | None = Query(None), end: str | None = Quer
     """Chargeback-rate risk metric."""
     return _proxy(lambda: _get_client().chargebacks_ratio(start=start, end=end))
 
-# ── Statistics pages: lists, tops, streaks (OF app.js module 977600) ──
-# Read-only GETs, one per call OF's own Statistics pages make; paths and query
-# params copied from OF's client. `start`/`end` are 'YYYY-MM-DD HH:MM:SS' and
-# default to the last 30 days, like every other analytics route here.
 
 @router.get("/api/of/v2/payouts/chargebacks")
 @_account_ttl("payouts", 60)
@@ -207,9 +180,7 @@ def of_messages_chart(type: str = Query("group", pattern="^(group|direct)$"),
     filter[{type}_messages] and filter[{type}_messages_purchases], withTotal."""
     return _proxy(lambda: _get_client().messages_chart(type, start=start, end=end))
 
-# The queue id rides in the query, not the path, so the permission map can give
-# this read to Statistics alone: a `/messages/queue/{id}/...` path could only be
-# mapped through the `/messages/queue` prefix, which also carries the queue's writes.
+# Queue id rides in the query, not the path, so the permission map can give this read to Statistics alone.
 @router.get("/api/of/v2/messages/queue/buyers")
 def of_mass_message_buyers(queue_id: int = Query(..., ge=1, description="The mass message's queue id"),
                            limit: int = Query(10, ge=1, le=50),
@@ -289,9 +260,6 @@ def of_trials_stats(start: str | None = Query(None), end: str | None = Query(Non
     return _proxy(lambda: _get_client().trials_stats(
         start=start, end=end, limit=limit, offset=offset))
 
-# Reach's "claimed" / subscribers lists, one per row, paged by 10 like OF's
-# user-list modal. The row id rides in the query: `/promotions/{id}`,
-# `/trials/{id}` and `/campaigns/{id}` are OF settings' writes.
 @router.get("/api/of/v2/promotions/claims")
 def of_promotion_claims(promo_id: int = Query(..., ge=1), limit: int = Query(10, ge=1, le=50),
                         offset: int = Query(0, ge=0)):
@@ -315,7 +283,6 @@ def of_campaign_claimers(campaign_id: int = Query(..., ge=1), limit: int = Query
     return _proxy(lambda: _get_client().campaign_claimers(
         campaign_id, limit=limit, offset=offset, query=query))
 
-# Charts OF's Statistics pages draw (module 977600; campaigns via 616150).
 @router.get("/api/of/v2/payouts/chart")
 @_account_ttl("payouts", 60)
 def of_payouts_chart(start: str | None = Query(None), end: str | None = Query(None)):
@@ -329,14 +296,10 @@ def of_referrals_chart(start: str | None = Query(None), end: str | None = Query(
     return _proxy(lambda: _get_client().referrals_chart(start=start, end=end))
 
 
-# The referrals fan-out's overall budget: a Creator OF has not answered for by
-# then is listed `unavailable` and the rest return. Its read keeps running
-# (parked below, not cancelled) and lands in the cache for the next ask.
+# Over-budget Creators are listed `unavailable`; their read keeps running (parked, not cancelled) and lands in the cache.
 _REFERRALS_BUDGET_S = max(1.0, float(os.environ.get("REFERRALS_BUDGET_S", "10")))
 _referrals_running: set[asyncio.Task] = set()
-# Creators with a referrals read in flight, one at a time each: a miss for
-# another window while one runs is `unavailable` rather than a second read, so
-# flipping through date ranges cannot stack OF reads up behind the slots.
+# One read per Creator at a time: another window while one runs is `unavailable`, so flipping ranges can't stack OF reads.
 _referrals_reading: set[str] = set()
 
 
@@ -376,7 +339,6 @@ async def admin_stats_referrals(
                 return _load_client(aid).referrals_chart(start=start, end=end)
 
         async def fetch():
-            # Only a cache miss takes a slot: a hit never queues behind OF reads.
             if aid in _referrals_reading:
                 raise RuntimeError("a read for another window is still running")
             _referrals_reading.add(aid)
@@ -396,7 +358,7 @@ async def admin_stats_referrals(
     unavailable: list[str] = [a for a in ids if a in off]
     for t, aid in tasks.items():
         if t in late:
-            _referrals_running.add(t)  # deliberately NOT cancelled
+            _referrals_running.add(t)
             t.add_done_callback(_referrals_running.discard)
             unavailable.append(aid)
         elif t.exception() is not None:
@@ -440,10 +402,6 @@ def of_streams_chart(by: str = Query("purchases", pattern="^(purchases|tips|view
     """Engagement › Streaming chart for one tab: {<by>|duration: {chart, total, delta}}."""
     return _proxy(lambda: _get_client().streams_chart(by=by, start=start, end=end))
 
-# The stream / story stats popup's Viewers and Tippers lists. The id rides in the
-# query (as on /messages/queue/buyers) so the permission map can give these reads
-# to Statistics: `/streams/{id}/...` and `/stories/{id}/...` could only be mapped
-# through `/streams` and `/stories`, which are Go live's and Home's / New post's.
 @router.get("/api/of/v2/streams/viewers")
 def of_stream_viewers(stream_id: int = Query(..., ge=1), limit: int = Query(10, ge=1, le=50),
                       offset: int = Query(0, ge=0),
@@ -486,7 +444,6 @@ def of_my_referrals(onlyPerformers: int = Query(0, ge=0, le=1,
     return _proxy(lambda: _get_client().referrals(
         start=start, end=end, offset=offset, marker=marker, only_performers=bool(onlyPerformers)))
 
-# ── Bookmarks (Collections → Bookmarks tab) ────────────────────────
 
 @router.get("/api/of/v2/posts/bookmarks/all")
 def of_bookmarks_all(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
@@ -494,7 +451,6 @@ def of_bookmarks_all(limit: int = Query(10, ge=1, le=50), offset: int = Query(0,
     return _proxy(lambda: _get_client().bookmarks_all(limit=limit, offset=offset))
 
 
-# ── Referrals ──────────────────────────────────────────────────────
 
 @router.get("/api/of/v2/payments/referrals/balance")
 def of_referrals_balance():
@@ -510,7 +466,6 @@ def of_referral_payouts(limit: int = Query(10, ge=1, le=50), offset: int = Query
     return _proxy(lambda: _get_client().referral_payouts(
         limit=limit, offset=offset, start=start, end=end, marker=marker))
 
-# ── Notification transports (Settings > Notifications, read-only) ──
 
 
 @router.get("/api/of/v2/users/settings/notifications/{transport}")

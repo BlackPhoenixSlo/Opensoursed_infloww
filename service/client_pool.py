@@ -1,26 +1,3 @@
-"""
-The relay's one OFClient pool.
-
-Why this module exists: a client per call was an fd per call. Under a proxy
-swap every IP-signed vault url died at once, every tile took the re-sign path,
-and the relay hit EMFILE.
-
-So clients are pinned per account. A client's ManagedSession leases a handle
-per in-flight request (signed calls at most OFClient.SIGNED_SLOTS) and the
-registry sweeps idle ones, so handles follow concurrency, not request count.
-An evicted client refuses new signed calls (`close_signed_sessions`).
-
-It lives in its own module rather than in `server.py` or
-`automation_executor.py` because both of those need it and importing either
-from the other is a cycle. It previously lived in both — `server._clients` for
-HTTP routes and nothing at all for the automation lane — which meant an
-invalidation had to remember two homes. There is one home now.
-
-Eviction is the price of pinning: a pinned client holds the session cookies,
-`x_of_rev` and `x_hash` it was built with, so anything that changes what's on
-disk (re-bootstrap, proxy edit, re-capture) must evict. See `evict()`.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -32,26 +9,16 @@ from of_client import OFClient
 log = logging.getLogger("of-relay.client_pool")
 
 _POOL: dict[str, OFClient] = {}
-# Guards the miss branch and `evict()`. 50-odd call sites reach `get()` through
-# `asyncio.to_thread`, and `from_account()` does disk I/O — so without this,
-# a cold pool under a stampede (exactly the post-proxy-swap case) lets N
-# threads each build a client and orphan N-1 of them, unclosed.
+# Guards the miss branch and evict(): from_account() does disk I/O and get() is reached via to_thread, so a cold-pool stampede would build N clients and orphan N-1 unclosed.
 _LOCK = threading.Lock()
 
 
 def get(account_id: str) -> OFClient:
-    """The pinned OFClient for `account_id`, built on first use.
-
-    Raises whatever `OFClient.from_account` raises (FileNotFoundError for a
-    missing session, ValueError for incomplete signing rules) — callers that
-    face a user translate those; the pool has no opinion. A failed build is
-    not cached.
-    """
     c = _POOL.get(account_id)
     if c is not None:
         return c
     with _LOCK:
-        # Re-check: another thread may have built it while we waited.
+        # Re-check: another thread may have built it while we waited. A failed build is not cached.
         c = _POOL.get(account_id)
         if c is None:
             c = _POOL[account_id] = OFClient.from_account(account_id)
@@ -61,28 +28,12 @@ def get(account_id: str) -> OFClient:
 
 
 def peek(account_id: str) -> OFClient | None:
-    """The pooled OFClient for `account_id`, or None; never builds one. A requestless read takes it before it
-    starts, so its failure evicts only that client (`evict(only=)`)."""
     return _POOL.get(account_id)
 
 
+# `only`: evict only while the pool still holds that exact client, so a failure on an already-replaced client can't retire the fresh one. `is None`, not truthiness: a falsy typo must not dump every account's client.
+# Under _LOCK: a build that read the old proxy before a registry write would otherwise land after the pop and pin the old route.
 def evict(account_id: str | None = None, *, only: OFClient | None = None) -> bool:
-    """Drop pooled client(s) so the next `get()` re-reads session + proxy from
-    disk. `None` evicts every account — a proxy edit can affect any of them.
-
-    `only` (with an `account_id`): evict only while the pool still holds that
-    exact client. A call that failed on a client someone already replaced must
-    not drop, and retire, the fresh one other calls are on.
-
-    Explicitly `is None` and not a truthiness test: the failure mode of a
-    falsy-but-not-None argument slipping through is silently dumping every
-    account's client, which is the worst possible reading of a typo.
-
-    False only when `only` lost to a replacement client the pool now holds
-    (nothing evicted); True otherwise.
-    """
-    # Under _LOCK: a build that read the OLD proxy before a registry write
-    # would otherwise land in the pool after this pop and pin the old route.
     with _LOCK:
         if account_id is None:
             retired = list(_POOL.values())
@@ -92,13 +43,11 @@ def evict(account_id: str | None = None, *, only: OFClient | None = None) -> boo
         else:
             old = _POOL.pop(account_id, None)
             retired = [old] if old is not None else []
-    relay_coalesce.forget(account_id)   # no caller joins a flight on the evicted client
+    relay_coalesce.forget(account_id)
     for client in retired:
         client.close_signed_sessions()
-    # Backend modules pool their own clients; invalidation keeps ONE home here so a
-    # re-capture or proxy edit can't leave a stale Shim behind. Lazy and guarded:
-    # `platforms` imports every Backend module, and eviction must not fail on one.
     try:
+        # Backends pool their own clients; invalidate them here so a re-capture or proxy edit leaves no stale Shim. Guarded: eviction must not fail on one.
         import platforms
     except Exception:
         return True

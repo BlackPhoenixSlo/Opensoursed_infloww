@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""`cdn_resign` re-signs by LISTING WINDOW: one OF `vault/media?sort=asc&limit=100` read re-signs the 100 media around
-the one asked for, at the offset the mirror counts for it. Plain-assert, no pytest (repo convention).
-
-Why: a download of N expired files was N by-id reads (AE 2026-11-10: 118 files, 118 reads, 429 at file 92). The
-same selection spans 6 listing windows.
-
-  case_window_resigns_its_neighbours — the media at mirror offset 130: one read at offset 100; every other media
-                                       of that window then re-signs with no OF call, and its mirror row carries
-                                       the fresh url; offset 5 reads window 0.
-  case_removed_rows_not_counted      — a mirror row stamped removed is not counted toward the offset.
-  case_drift_reads_the_neighbour     — the mirror still lists 10 media OF deleted: the window misses, its range
-                                       says "earlier", the neighbour holds it: 2 reads, no by-id.
-  case_absent_falls_back_by_id       — inside its window's range but not listed: one by-id read.
-  case_no_mirror_row_by_id           — no mirror row: by-id, no listing read.
-  case_herd_one_window_read          — 30 media of one window at once: one read.
-  case_eviction_keeps_newest         — past _CAP the OLDEST remembered urls go, not all of them.
-  case_stale_window_rereads          — after an egress switch the cached window's urls 403 too: that window is
-                                       read again once, no by-id read; the window's other media then cost nothing.
-                                       A url OF really refuses (same signature back): one re-read per window, then
-                                       by id, not a window read per file.
-
-OF is faked: no request leaves the process.
-Run: ./venv/bin/python service/tests/test_cdn_resign_page.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -58,11 +34,10 @@ def _media(i: int, sig: str = "new") -> dict:
 
 
 class _OF:
-    """OF's listing in (createdAt, id) asc order; `gone` = media OF deleted (the mirror may not know)."""
 
     def __init__(self, gone: set[int] = frozenset()):
         self.gone = set(gone)
-        self.sig = "new"   # the egress the urls are signed for
+        self.sig = "new"
         self.reads: list = []
         self.lock = threading.Lock()
 
@@ -128,21 +103,21 @@ def case_window_resigns_its_neighbours():
 def case_removed_rows_not_counted():
     _reset(removed={1, 2, 3})
     of = _OF(gone={1, 2, 3})
-    assert _resign(of, 102) == _url(_mid(102), "new")   # live offset 99: window 0
+    assert _resign(of, 102) == _url(_mid(102), "new")
     assert of.reads == ["p0"], of.reads
 
 
 def case_drift_reads_the_neighbour():
     _reset()
-    of = _OF(gone=set(range(10)))       # the mirror still has them live
-    assert _resign(of, 205) == _url(_mid(205), "new")   # mirror offset 205, OF index 195
+    of = _OF(gone=set(range(10)))
+    assert _resign(of, 205) == _url(_mid(205), "new")
     assert of.reads == ["p200", "p100"], of.reads
 
 
 def case_absent_falls_back_by_id():
     _reset()
     of = _OF(gone={50})
-    assert _resign(of, 50) == _url(_mid(50), "new")     # by id (this fake still answers it)
+    assert _resign(of, 50) == _url(_mid(50), "new")
     assert of.reads == ["p0", _mid(50)], of.reads
 
 
@@ -169,18 +144,18 @@ def case_stale_window_rereads():
     of = _OF()
     of.sig = "ip1"
     assert _resign(of, 130) == _url(_mid(130), "ip1") and of.reads == ["p100"], of.reads
-    of.sig = "ip2"   # the account moved proxy: every ip1 url now 403s, the cached window still holds them
+    of.sig = "ip2"
+    # A cached window must not answer "hit" with a dead url, or every file in it falls to a by-id read.
     stale = cdn_resign.current(AID, _url(_mid(130), "old"))
     assert stale == _url(_mid(130), "ip1")
     got = asyncio.run(cdn_resign.resign(AID, _mid(130), stale, of, "t"))
-    # Bug: the cached window answered "hit" with the same dead url, so every file of it fell to a by-id read.
     assert got == _url(_mid(130), "ip2"), got
     assert of.reads == ["p100", "p100"], ("one window re-read, no by-id", of.reads)
     assert cdn_resign.current(AID, _url(_mid(150), "ip1")) == _url(_mid(150), "ip2")
     assert _resign(of, 150) == _url(_mid(150), "ip2") and of.reads == ["p100", "p100"], of.reads
 
     _reset()
-    of = _OF()   # no egress switch: OF keeps signing the urls that 403
+    of = _OF()
     assert _resign(of, 130) == _url(_mid(130), "new") and of.reads == ["p100"], of.reads
     for i in (130, 150):
         assert asyncio.run(cdn_resign.resign(AID, _mid(i), _url(_mid(i), "new"), of, "t")) is None

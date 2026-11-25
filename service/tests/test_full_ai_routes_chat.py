@@ -21,7 +21,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_routes_chat.py  (exit 0 = pass
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_fixtures import _shape_drop  # noqa: E402
 from _full_ai_chat_helpers import A, OWNER_A, _GIF_TAG, _body, _db, _post, _reply, _rows, _store_config
@@ -34,7 +34,6 @@ from db.engine import get_session
 from db.models import AccountAiConfig
 
 
-# ── Every Route (ticket 34) ───────────────────────────────────────────
 from automations import cat_stickers  # noqa: E402
 from db.models import Blacklist, SkipList  # noqa: E402
 
@@ -69,8 +68,8 @@ def case_every_route_via_api():
     _set_model_notes(A, notes)
     try:
         cases = [
-            ("chat", _hot(), "chat", "otherwise", w.SELL_OFF_LINE),   # selling off: never a promise
-            ("sext", _hot(sexual_now=0.9), "sext", "sexual_now", w.SEXT_HOT_TEST),   # test Mode's twin
+            ("chat", _hot(), "chat", "otherwise", w.SELL_OFF_LINE),
+            ("sext", _hot(sexual_now=0.9), "sext", "sexual_now", w.SEXT_HOT_TEST),
             ("dare", _hot(asks_if_ai=0.9), "ai_dare", "asks_if_ai", w.BRUSH_OFF),
             ("mr", _hot(complains_now=0.9), "make_right", "complains_now", w.MAKE_RIGHT_HEAD),
         ]
@@ -87,14 +86,14 @@ def case_every_route_via_api():
                 route, row, "euryale-v2.3", "sent"), tag
             system = _system_of(fw)
             assert beat in system, tag
-            assert notes in system, tag                      # her Model info, every Route
+            assert notes in system, tag
             if route == "chat":
                 assert not any(x in system for x in (w.SEXT_HOT, w.SEXT_HOT_TEST, w.BRUSH_OFF, w.MAKE_RIGHT_HEAD))
             if route == "sext":
                 assert got["heat"] == 3 and w.SEXT_HEAT.format(heat=3) in system, got
-            if route == "ai_dare":                           # step 1: the joke, no dare yet
+            if route == "ai_dare":
                 assert w.DARE not in system and w.DARE_NEXT not in system, system
-            if route == "make_right":                        # the apology, no item
+            if route == "make_right":
                 assert w.MAKE_RIGHT_TAIL in system and w.APOLOGY_FRAMES[0].replace("{name}", "babe") in system
                 assert all(set(p) == {"text"} for p in got["parts"]), got["parts"]
     finally:
@@ -107,16 +106,15 @@ def case_every_route_via_api():
         assert r.status_code == 200, r.text
         assert (got["route"], got["route_row"], got["status"], got["writer"], got["parts"]) == (
             "no_send", q, "no_send", None, []), got
-        assert fw.requests == [], fw.requests                # no Writer call
+        assert fw.requests == [], fw.requests
         (stored,) = _rows(A, pair)
         assert (stored.route, stored.route_row, stored.writer_model, stored.status) == (
             "no_send", q, None, "no_send")
         assert _reply(stored)["parts"] == [] and _reply(stored)["attempts"] == []
-        assert _exclude_counts() == before                   # no exclude list touched
+        assert _exclude_counts() == before
 
 
 def case_r10_via_api():
-    """DEFAULTS lock selling off (`sell_on` false)."""
     assert DEFAULTS["sell_on"] is False and DEFAULTS["sext_on"] is True
     w = full_ai_writers
     cases = [
@@ -131,8 +129,6 @@ def case_r10_via_api():
         assert r.status_code == 200 and got["status"] == "sent", r.text
         assert (got["route"], got["route_row"], got["dropped"]) == (route, row, dropped), (tag, got)
         system = _system_of(fw)
-        # Selling off in test Mode: no Turn promises a piece (NO_SELL_OFFERS never); a scene Turn
-        # gets SELL_OFF_SCENE, every other SELL_OFF_LINE.
         scene = w.SEXT_SCENE in system
         assert w.NO_SELL_OFFERS not in system, tag
         assert (w.SELL_OFF_SCENE in system, w.SELL_OFF_LINE in system) == (scene, not scene), (tag, scene)
@@ -169,16 +165,13 @@ def case_gifs_on_carry_a_gif_part():
         assert set(gif) == {"gif", "tag"} and gif["tag"] == _GIF_TAG and gif["gif"] in gifs, gif
         (stored,) = _rows(A, pair)
         assert _reply(stored)["parts"] == got["parts"]
-        # The session read returns it; the next Turn's thread reads her text only.
         s = OWNER_A.get("/admin/full-ai/test/session", params={"account_id": A, "pair": pair}).json()
         assert s["rows"][0]["parts"] == got["parts"], s
-        # A sticker-only reply is the gif alone.
         pair = "p-gif-solo"
         r, *_ = _post(OWNER_A, _body(pair), f"ok:STICKER: {_GIF_TAG}", jev=(GIF_FITS, 1.0))
         got = r.json()
         assert got["status"] == "sent" and got["writer"] == "euryale-v2.3", got
         assert [set(p) for p in got["parts"]] == [{"gif", "tag"}], got["parts"]
-        # A draft the chain drops stays failed: its sticker does not carry the Turn.
         pair = "p-gif-drop"
         with _shape_drop("banned"):
             r, *_ = _post(OWNER_A, _body(pair), f"ok:hii\nSTICKER: {_GIF_TAG}", jev=(GIF_FITS, 1.0))
@@ -188,7 +181,6 @@ def case_gifs_on_carry_a_gif_part():
         assert _reply(row)["dropped_reason"] == "banned" and _reply(row)["parts"] == [], _reply(row)
     finally:
         _store_config(A, {})
-    # GIFs off (DEFAULTS): no sticker block, the marker still stripped, no gif part.
     pair = "p-gif-off"
     r, fw, _, _ = _post(OWNER_A, _body(pair), f"ok:omg ur funny\nSTICKER: {_GIF_TAG}")
     got = r.json()

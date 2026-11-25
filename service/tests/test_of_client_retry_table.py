@@ -1,14 +1,3 @@
-"""service/tests/test_of_client_retry_table.py — of_client.retry_step, the pure
-decision `_proxy_retry` makes after each failed attempt, as a table; plus the
-wiring: `_proxy_retry` sleeps what it says, records proxy_health what it says,
-and `_http_call` reads `of_client.INTERACTIVE_RETRY` at call time (slop's
-faults reassign it). Pauses are equal jitter: the table pins rng to 1.0 (the
-ceiling); the jitter table pins other draws; _Spy pins of_client.random.
-
-A bare OFClient via __new__ with a fake fn, so nothing reaches the network.
-
-Run:  ./venv/bin/python service/tests/test_of_client_retry_table.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -28,27 +17,22 @@ from of_client import (  # noqa: E402
 F, I = FULL_RETRY, INTERACTIVE_RETRY
 NOCOUNT = FULL_RETRY._replace(counts=False)
 
-# (policy, attempt, exc_kind, proxied) -> expected, at rng() == 1.0 (the ceiling)
 TABLE = [
-    # ProxyError: retried with a doubling ceiling (the sticky IP: same session)...
     (F, 0, "proxy", True, Retry(0.4)),
     (F, 1, "proxy", True, Retry(0.8)),
     (F, 2, "proxy", True, Retry(1.6)),
     (F, 3, "proxy", True, Retry(3.2)),
     (F, 3, "proxy", False, Retry(3.2)),
     (I, 0, "proxy", True, Retry(0.2)),
-    # ...until the last try, whose failure counts only under a counting policy.
     (F, 4, "proxy", True, Raise(True)),
     (F, 4, "proxy", False, Raise(True)),
     (I, 1, "proxy", True, Raise(False)),
     (NOCOUNT, 4, "proxy", True, Raise(False)),
     (I._replace(counts=True), 1, "proxy", True, Raise(True)),
-    # curl 7 (couldn't connect): never retried; counts only when proxied.
     (F, 0, "couldnt_connect", True, Raise(True)),
     (F, 0, "couldnt_connect", False, Raise(False)),
     (I, 0, "couldnt_connect", True, Raise(False)),
     (F, 2, "couldnt_connect", True, Raise(True)),
-    # Any other ConnectionError: raised, never counted.
     (F, 0, "connection", True, Raise(False)),
     (I, 0, "connection", False, Raise(False)),
 ]
@@ -66,7 +50,6 @@ def case_full_pauses_double_over_five_tries():
     assert pauses == [0.4, 0.8, 1.6, 3.2], pauses
 
 
-# (policy, attempt, rng draw) -> pause: uniform in [ceiling/2, ceiling).
 JITTER = [
     (F, 0, 0.0, 0.2),
     (F, 0, 0.5, 0.3),
@@ -82,10 +65,8 @@ def case_retry_step_equal_jitter_table():
     for policy, attempt, draw, want in JITTER:
         got = retry_step(policy, attempt, "proxy", True, rng=lambda d=draw: d)
         assert isinstance(got, Retry) and abs(got.pause - want) < 1e-9, (policy, attempt, draw, got, want)
-    # The default rng (random.random): always inside [ceiling/2, ceiling), never lockstep.
     pauses = {retry_step(F, 3, "proxy", True).pause for _ in range(200)}
     assert all(1.6 <= p < 3.2 for p in pauses) and len(pauses) > 100, sorted(pauses)[:5]
-    # Attempt counts are untouched: still Raise on the last try, whatever the draw.
     assert retry_step(F, 4, "proxy", True, rng=lambda: 0.0) == Raise(True)
 
 
@@ -98,8 +79,6 @@ def _bare(proxy_url="http://u:p@host:1234"):
 
 
 class _Spy:
-    """Captures of_client.time.sleep and of_client.proxy_health.record; pins
-    the jitter draw to 1.0 so a sleep is its ceiling."""
     def __enter__(self):
         self.sleeps, self.records = [], []
         self._sleep, self._record = of_client.time.sleep, of_client.proxy_health.record
@@ -170,8 +149,6 @@ def case_proxy_retry_other_connection_error_not_counted():
 
 
 def case_proxy_retry_reraises_same_object_and_passes_others_through():
-    """One except clause for ProxyError|ConnectionError: the caller still gets
-    the very exception raised, and anything else leaves untouched on try one."""
     errs = (requests.exceptions.ProxyError("p"),
             requests.exceptions.ConnectionError("c", code=CurlECode.COULDNT_CONNECT),
             requests.exceptions.ConnectionError("r", code=CurlECode.RECV_ERROR),
@@ -204,7 +181,6 @@ def case_proxy_retry_recovers_after_a_blip():
 
 
 def case_interactive_retry_global_read_at_call_time():
-    """slop/lib/faults.py reassigns of_client.INTERACTIVE_RETRY; _http_call must see it."""
     sent = []
 
     def _get(url, *a, **kw):

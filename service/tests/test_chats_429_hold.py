@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-OF's 429 on a chats page is held a few seconds per page key (chats_page.ThrottleHold), so the
-UI's re-asks answer it from RAM instead of 429-ing OF again.
-
-  case_hold_clamped:            OF's wait clamped to [HOLD_MIN_S, HOLD_MAX_S].
-  case_hold_expires:            past its hold a key reads None and is dropped.
-  case_hold_prunes_on_write:    expired keys leave the map on the next hold.
-  case_route_holds_429:         GET /api/of/v2/chats: a 429 page, re-asked inside the hold,
-                                answers the same 429 without reading OF; another page still reads.
-  case_route_reads_after_hold:  once the hold ends the page reads OF again.
-  case_route_non_429_not_held:  any other upstream error is never held.
-  case_hold_serves_cache_and_gates_swr: the hold gates the upstream fetch only: a cached
-                                window is served during it (a ?refresh=1 that 429s too), an SWR
-                                refresh inside it reads nothing.
-  case_held_copy_served_past_swr: a window expired past its SWR grace (still held) is served
-                                when OF 429s; none held: OF's 429 as before.
-
-Run: ./venv/bin/python service/tests/test_chats_429_hold.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401 — MUST be first (binds a temp DB)
@@ -76,7 +57,6 @@ _KW = dict(limit=25, order="recent", filter=None, list_id=None, query=None, sear
 
 
 def _patched(status: int, text: str):
-    """Route wired to a fake page reader that always raises OF's `status`; returns (reads, clock, undo)."""
     reads: list[int] = []
     clk = _Clock()
 
@@ -143,9 +123,6 @@ async def case_route_non_429_not_held():
 
 
 async def case_hold_serves_cache_and_gates_swr():
-    """W30 #6: the hold sits at the upstream fetch. A ?refresh=1 429 holds the page and is
-    answered the cached window, as is a plain re-ask (no 502); a stale window's SWR refresh
-    inside the hold reads OF nothing."""
     import asyncio
     import time as _t
     reads, _clk, undo = _patched(429, "Please allow 3 seconds")
@@ -159,17 +136,17 @@ async def case_hold_serves_cache_and_gates_swr():
         return real(client, **kw)
     server._assemble_chats_page = _assemble
     try:
-        await server.list_chats(refresh=False, offset=0, **_KW)          # cached
+        await server.list_chats(refresh=False, offset=0, **_KW)
         ok["on"] = False
-        got = await server.list_chats(refresh=True, offset=0, **_KW)     # 429 -> held, cached served
+        got = await server.list_chats(refresh=True, offset=0, **_KW)
         assert got["list"] == [] and reads[-1] == 0, (got, reads)
         assert server._CHATS_429_HOLD.check(("list_chats", _AID, 25, 0, "recent", None, None, None)), "held"
         n = len(reads)
-        got = await server.list_chats(refresh=False, offset=0, **_KW)    # cache hit during the hold
+        got = await server.list_chats(refresh=False, offset=0, **_KW)
         assert got["list"] == [], got
         key = next(k for k in relay_cache._cache if k[0] == "list_chats" and k[1] == _AID)
-        relay_cache._cache[key] = (relay_cache._cache[key][0], _t.monotonic() - 1)   # stale, inside SWR
-        await server.list_chats(refresh=False, offset=0, **_KW)          # stale served, SWR starts
+        relay_cache._cache[key] = (relay_cache._cache[key][0], _t.monotonic() - 1)
+        await server.list_chats(refresh=False, offset=0, **_KW)
         await asyncio.sleep(0.2)
         assert len(reads) == n, f"SWR refresh read OF during the hold: {reads[n:]}"
     finally:
@@ -183,7 +160,7 @@ async def case_held_copy_served_past_swr():
     try:
         await server.list_chats(refresh=False, offset=0, **_KW)
         key = next(k for k in relay_cache._cache if k[0] == "list_chats" and k[1] == _AID)
-        relay_cache._cache[key] = (relay_cache._cache[key][0], -1e9)    # long past SWR, still held
+        relay_cache._cache[key] = (relay_cache._cache[key][0], -1e9)
         server._assemble_chats_page = real
         got = await server.list_chats(refresh=False, offset=0, **_KW)
         assert [r["withUser"]["id"] for r in got["list"]] == [7] and reads == [0], (got, reads)
@@ -194,8 +171,6 @@ async def case_held_copy_served_past_swr():
 
 
 async def case_cancelled_waiter_keeps_the_hold():
-    """W30 #34: the sole waiter is cancelled while its detached read is on OF; the read then 429s.
-    The hold is recorded by the read itself, so an immediate re-ask answers it from RAM."""
     import asyncio
     import threading
     import time as _t

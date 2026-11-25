@@ -1,118 +1,55 @@
-"""
-One proxy's down / confirm / recheck / failover rules as a pure transition
-(docs/reducer-scan.md "Non-React" 2; the states and timeline: proxy_health.py,
-docs/adr/0030):
-
-    decide(state, event) -> (state', effects, next)
-
-`state` is the label's entry in `proxy_health._state` (None: no entry) and is
-never mutated; `state'` replaces it (None: no entry). No clock, no lock, no
-I/O, no logging here: the shell in proxy_health.py builds each event under its
-lock (the time in it read there), calls decide, writes state', and after the
-lock performs the effects in order, then the watcher's next move. Each event
-is one of the shell's lock sections:
-
-  CallOk / CallErr   record(): an OF call or a probe through the proxy answered / failed
-  FlapBad            the flap knob (PROXY_FLAP_BAD_PCT, default 20, 0 = off): the window `flap_trips`
-  ConfirmDue         the confirm's wait is over (owns every confirm wait: the gap from the streak's first error)
-  ConfirmResult      the confirm probe's answer, for the streak its Confirm named
-  RecheckWait        arm the next recheck (stamp next_recheck_at; base = recheck_s(), read at each arm)
-  RecheckDue         the recheck's wait is over
-  RecheckResult      the recheck probe's answer
-  Gone               the label left the registry (the probe found no proxy)
-  FailedOver         proxies.failover_pool answered (moved: who; () = nobody)
-
-Effects: Watch (claim the label, then spawn its watcher thread), Unwatch
-(release the claim), Announce(down) (`proxy_switched` to each Creator on it),
-Failover (`_failover`), Log. The shell applies Watch's claim and Unwatch's
-release in the same lock section as the state write.
-`next`, the watcher's next move, names the event it sends next: Wait(s, then)
-(sleep s, then send `then`: ConfirmDue or RecheckDue), Confirm(streak) (probe
-now; ConfirmResult(streak)), Recheck (probe now; RecheckResult), ArmRecheck
-(send RecheckWait now), or None: the watcher ends. Steps outside the watcher
-(CallOk, CallErr, FailedOver: the last runs inside the Failover effect,
-mid-recheck) return None and never Unwatch.
-
-The claim's contract: a watcher step with nothing of its own left to do goes
-through one exit, `_resume(state')`, the only place Unwatch is emitted. Bad:
-keep rechecking (ArmRecheck). Not bad but at DOWN_AFTER errors (a call brought
-it back mid-recheck, then a streak landed while this watcher held the claim, so
-it started none): back to the confirm phase (Wait(0, ConfirmDue)), same
-watcher. Otherwise: Unwatch and next None, in the same decide as the
-watcher's last step, so a CallErr right after reads `watching` False (built
-under the same lock) and gets its Watch. So the watcher goes on exactly while
-its state warrants one: no proxy is left bad or at DOWN_AFTER errors with
-nobody watching it.
-
-The flap knob's three thresholds are pure too, over one `WindowStats` the shell
-reads under its telemetry lock: `flap_trips` (goes bad: FlapBad),
-`flap_holds` (stays bad: the events' `flapping`) and `flap_guards` (the herd guard: no new binding or move
-onto it).
-
-Importable without side effects (stdlib only).
-"""
-
+# A watcher step with nothing of its own left goes through _resume, the only place Unwatch is emitted: no proxy is left bad or at DOWN_AFTER with nobody watching.
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
-DOWN_AFTER = 3                # consecutive counted errors that start the confirm
-FAILOVER_AFTER_RECHECKS = 2   # failed rechecks in a row before a pool proxy's Creators move
-RECHECK_MAX_S = 600.0         # the recheck's doubling stops here (6 probes an hour for a proxy that stays dead)
-FLAP_MIN_CALLS = 20           # a refusal rate over fewer attempts than this marks nothing bad and holds nothing bad
-FLAP_BUCKETS = 3              # FlapBad and the herd guard need refusals in this many tenths of the window (else a blip)
+DOWN_AFTER = 3
+FAILOVER_AFTER_RECHECKS = 2
+RECHECK_MAX_S = 600.0  # the recheck's doubling stops here (6 probes an hour for a proxy that stays dead)
+FLAP_MIN_CALLS = 20
+FLAP_BUCKETS = 3  # refusals must land in this many tenths of the window, else a blip; a short full outage sits in one or two and the confirm path owns it
 
 State = Optional[dict[str, Any]]
 
 
 @dataclass(frozen=True)
 class WindowStats:
-    """One label's refusal window, read under one lock (`proxy_health._window`): the attempts in it, how many
-    were refused, and in how many tenths of the window a refusal landed."""
     calls: int
     refused: int
     spread: int
 
     @property
     def pct(self) -> float:
-        """The refused share, % to one decimal (0 with no attempts): `health.refusals.pct`, FlapBad's log."""
         return round(100.0 * self.refused / self.calls, 1) if self.calls else 0.0
 
 
 def flap_trips(w: WindowStats, knob: float) -> bool:
-    """Goes bad (FlapBad): knob on, >= FLAP_MIN_CALLS attempts, >= `knob` % refused, refusals in >=
-    FLAP_BUCKETS tenths of the window (a short full outage sits in one or two: the confirm path owns it)."""
     return flap_guards(w, knob) and w.refused * 100.0 >= knob * w.calls
 
 
+# Hysteresis with no recency rule: a flap-bad proxy returns only once its window drains, so a burst minutes ago cannot read clean and re-trip on the next refusal (each trip is a move).
 def flap_holds(w: WindowStats, knob: float) -> bool:
-    """Still flapping (hysteresis): knob on, >= FLAP_MIN_CALLS attempts, >= HALF of `knob` % refused. No
-    recency rule: a flap-bad proxy comes back only once its window drains (under half, or too few attempts to
-    judge), so a burst minutes ago cannot read clean and trip again on the next refusal (each trip a move)."""
     return bool(knob) and w.calls >= FLAP_MIN_CALLS and w.refused * 200.0 >= knob * w.calls
 
 
 def flap_guards(w: WindowStats, knob: float) -> bool:
-    """The herd guard on a proxy not marked bad (a flap-bad one is kept off by its bad state): no new binding
-    or move onto it while `flap_holds` AND its refusals sit in >= FLAP_BUCKETS tenths. One blip (<= 2 tenths)
-    never does, so a clean proxy's blip does not take it out of rotation for the whole window."""
+    # Herd guard: one blip (<= 2 tenths) never holds a clean proxy out of rotation for the whole window.
     return flap_holds(w, knob) and w.spread >= FLAP_BUCKETS
 
 
-# ── events ──
 @dataclass(frozen=True)
 class CallOk:
     now: float
-    flapping: bool            # `flap_holds` on the window now (the shell reads it under the lock); required
+    flapping: bool
 
 
 @dataclass(frozen=True)
 class FlapBad:
     now: float
     watching: bool
-    pct: float                # the window's refusal rate, for the log
+    pct: float
     calls: int
 
 
@@ -120,26 +57,26 @@ class FlapBad:
 class CallErr:
     now: float
     error: Optional[str]
-    watching: bool            # the label already has a watcher (`proxy_health._watchers`)
+    watching: bool
 
 
 @dataclass(frozen=True)
 class ConfirmDue:
     now: float
-    gap: float                # confirm_gap_s(): no confirm sooner than this after the streak's first error
+    gap: float
 
 
 @dataclass(frozen=True)
 class ConfirmResult:
     now: float
     ok: bool
-    streak: int               # Confirm(streak): the streak this probe confirms
+    streak: int
 
 
 @dataclass(frozen=True)
 class RecheckWait:
     now: float
-    base: float               # recheck_s(), read at each arm: the first recheck's delay
+    base: float
 
 
 @dataclass(frozen=True)
@@ -150,7 +87,7 @@ class RecheckDue:
 @dataclass(frozen=True)
 class RecheckResult:
     ok: bool
-    flapping: bool            # as CallOk's: read after the probe's own sample is in the window; required
+    flapping: bool
 
 
 @dataclass(frozen=True)
@@ -168,7 +105,6 @@ Event = Union[CallOk, FlapBad, CallErr, ConfirmDue, ConfirmResult, RecheckWait, 
               FailedOver]
 
 
-# ── effects ──
 @dataclass(frozen=True)
 class Watch:
     pass
@@ -192,41 +128,38 @@ class Failover:
 @dataclass(frozen=True)
 class Log:
     level: int
-    msg: str                  # %-format; the shell passes the label first, then args
+    msg: str
     args: tuple = ()
 
 
 Effect = Union[Watch, Unwatch, Announce, Failover, Log]
 
 
-# ── the watcher's next move: each names the event the watcher sends next ──
 @dataclass(frozen=True)
 class Wait:
     s: float
-    then: type                # ConfirmDue or RecheckDue: sent once the wait is over
+    then: type
 
 
 @dataclass(frozen=True)
 class Confirm:
-    streak: int               # probe now; its ConfirmResult names this streak
+    streak: int
 
 
 @dataclass(frozen=True)
 class Recheck:
-    pass                      # probe now; its RecheckResult follows
+    pass
 
 
 @dataclass(frozen=True)
 class ArmRecheck:
-    pass                      # send RecheckWait now
+    pass
 
 
 Next = Optional[Union[Wait, Confirm, Recheck, ArmRecheck]]
 
 
 def blank() -> dict[str, Any]:
-    # streak: bumped at each streak's first error; a confirm is for one streak (ConfirmResult.streak).
-    # bad_reason: set with down, by the transition that made it bad: "down" (the confirm) or "flapping" (FlapBad).
     return {"errors": 0, "first_error_at": None, "streak": 0, "down": False, "bad_reason": None, "last_error": None,
             "last_error_at": None}
 
@@ -236,22 +169,14 @@ _UP = {"errors": 0, "first_error_at": None, "down": False, "bad_reason": None, "
 
 
 def failover_due(st: State) -> bool:
-    """Bad, and FAILOVER_AFTER_RECHECKS rechecks in a row failed: its pool Creators are to move."""
     return bool(st and st["down"] and st.get("rechecks_failed", 0) >= FAILOVER_AFTER_RECHECKS)
 
 
 def recheck_delay(base: float, failed: int) -> float:
-    """The wait before the next recheck: base, then doubled per failed recheck up to RECHECK_MAX_S
-    (the first one is never capped: a PROXY_RECHECK_S over the cap is honoured once)."""
     return base if failed <= 0 else min(base * 2 ** min(failed, 64), RECHECK_MAX_S)
 
 
 def _resume(st: State) -> tuple[list[Effect], Next]:
-    """Where the watcher goes when its step has nothing of its own left to do: the one place it ends.
-    Bad: it keeps rechecking. Not bad but at DOWN_AFTER errors (a call brought it back, then a new
-    streak landed while this watcher still held the claim, so that streak started none): back to the
-    confirm phase. Otherwise (no entry, or below the bar) nothing warrants a watcher: Unwatch, the
-    claim released in this same decide, so the next DOWN_AFTER-th error reads watching=False."""
     if st is not None and st["down"]:
         return [], ArmRecheck()
     if st is not None and st["errors"] >= DOWN_AFTER:
@@ -263,19 +188,15 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
     if isinstance(ev, CallOk):
         cur = st if st is not None else blank()
         if cur["bad_reason"] == "flapping" and ev.flapping:
-            # Flap-bad (FlapBad): a flapping proxy answers most calls; only its window draining (`flap_holds`
-            # False) brings it up.
             return {**cur, "errors": 0, "first_error_at": None}, [], None
         if cur["down"]:
             return {**cur, **_UP}, [Log(logging.WARNING, "proxy %s is back up"), Announce(False)], None
         return {**cur, **_UP}, [], None
 
     if isinstance(ev, FlapBad):
-        # The flap knob (PROXY_FLAP_BAD_PCT, on by default): refusing too often is bad without the confirm, as the proxy answers
-        # a single probe most of the time. Then the usual rechecks, failover_due and no fail-back.
         cur = st if st is not None else blank()
         if cur["down"] or cur["errors"] >= DOWN_AFTER:
-            return st, [], None   # bad already, or a DOWN_AFTER streak's confirm owns it: no second transition
+            return st, [], None
         nxt = {**cur, "down": True, "bad_reason": "flapping", "bad_since": ev.now, "rechecks_failed": 0}
         return nxt, [Log(logging.WARNING, "proxy %s is DOWN (refusing %.0f%% of %d calls)", (ev.pct, ev.calls)),
                      Announce(True), *([] if ev.watching else [Watch()])], None
@@ -291,8 +212,6 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
         return nxt, [], None
 
     if isinstance(ev, ConfirmDue):
-        # The gap from the streak's first error, then Confirm(it). An answer reset the count (a blip): no
-        # confirm. A new streak since moved first_error_at: waited out from it.
         if not st or st["down"] or st["errors"] < DOWN_AFTER:
             return (st, *_resume(st))
         wait = st["first_error_at"] + ev.gap - ev.now
@@ -307,11 +226,8 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
             return nxt, [Log(logging.INFO, "proxy %s: %d errors in a row but the probe answers; not marked bad",
                              (DOWN_AFTER,)), *effects], then
         if st["down"]:
-            # Bad already (FlapBad landed while this confirm probed): no second announce, bad_since kept.
             return (st, *_resume(st))
         if not st["errors"] or st["streak"] != ev.streak:
-            # A call got through during the probe (it reset the streak this confirm was for): not bad
-            # (ADR 0030). A new streak at DOWN_AFTER since: the same watcher waits it out and confirms it.
             effects, then = _resume(st)
             return st, [Log(logging.INFO, "proxy %s: a call got through during the confirm probe; not marked bad"),
                         *effects], then
@@ -319,7 +235,6 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
         effects, then = _resume(nxt)
         return nxt, [Log(logging.WARNING, "proxy %s is DOWN (confirmed by probe)"), Announce(True), *effects], then
 
-    # The recheck steps read a missing entry as a blank one and never create it.
     if isinstance(ev, RecheckWait):
         if not (st or blank())["down"]:
             return (st, *_resume(st))
@@ -332,8 +247,7 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
         return {**st, "rechecking": True, "next_recheck_at": None}, [], Recheck()
 
     if isinstance(ev, RecheckResult):
-        # Written whatever happened during the probe (as before): an answer brings it up and is announced
-        # even when a call already did; a failure counts even when a call brought it back meanwhile.
+        # Written whatever happened during the probe: an answer brings it up and is announced even when a call already did.
         cur = {**(st or blank()), "rechecking": False}
         if ev.ok and not (cur["bad_reason"] == "flapping" and ev.flapping):
             nxt: State = {**cur, **_UP} if st is not None else None

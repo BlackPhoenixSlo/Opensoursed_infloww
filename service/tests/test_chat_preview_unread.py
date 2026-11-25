@@ -1,32 +1,7 @@
 #!/usr/bin/env python3
-"""
-Roster unread accuracy — an OUTBOUND reply clears the blue badge.
-
-Regression for the "blue over-count" bug: the left-rail per-model badge is
-blue when `chats.unread_count > 0`. That counter only ever went UP on an
-inbound WS event and only zeroed when a chatter OPENED the chat in our UI —
-nothing zeroed it when we SENT an outbound reply, so an already-answered fan
-stayed stuck blue.
-
-attribution._advance_chat_preview() writes the inbox preview on every
-outbound send. The fix adds `unread_count: 0` to its on_conflict update set,
-guarded forward-only-by-time so it can't wipe a fan message that landed AFTER
-our send.
-
-  case_outbound_reply_clears_unread:
-      we reply and our send is the newest message -> unread_count -> 0.
-  case_newer_inbound_preserves_unread:
-      a fan message arrived AFTER our (older/out-of-order) send -> the
-      forward-only WHERE guard fails, so the inbound unread is kept.
-  case_insert_new_chat_unread_zero:
-      outbound to a fan with no chat row yet inserts at unread 0 (no phantom
-      blue badge).
-
-Run: ./venv/bin/python service/tests/test_chat_preview_unread.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 _harness.bootstrap()
 
@@ -56,7 +31,6 @@ async def _seed_chat(fan_id: int, *, unread: int, last_at, preview: str, last_id
 
 
 async def _snapshot(fan_id: int) -> dict | None:
-    """Read the row's fields INSIDE the session (avoid detached access)."""
     async with get_session() as s:
         c = await s.get(Chat, (AID, fan_id))
         if c is None:
@@ -97,8 +71,6 @@ async def case_newer_inbound_preserves_unread() -> None:
         preview="fan: still there?", last_id=3000,
     )
 
-    # Our send is OLDER than the fan's latest message (out-of-order / backfill):
-    # the forward-only guard must reject it and keep the unread intact.
     await attribution._advance_chat_preview(
         account_id=AID, fan_id=fan, message_id=2500,
         body="<p>older reply</p>", created_at=T_INBOUND,

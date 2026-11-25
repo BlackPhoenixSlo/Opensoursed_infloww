@@ -1,38 +1,7 @@
 #!/usr/bin/env python3
-"""
-P3 mass_premade — timed broadcasts (send → resend → unsend, 2 ways).
-
-A thin orchestrator over send_mass_message + unsend_messages; it owns only the
-timers. We drive it with an `online_only` audience so the send needs no explicit
-recipients (OF resolves "online" server-side) — keeping the test about the
-SCHEDULING, not mass persistence (covered by test_send_mass).
-
-Cases:
-  case_send_and_schedule_unsend (acceptance):
-      one message with unsend_after_hours → send_mass_message fires, and a
-      one-shot unsend_messages job is enqueued ~now+ttl with {queue_id, mass_run_id}.
-  case_resend_chain (Way 1):
-      resend_count=1 + resend_after_hours → a mass_premade job is enqueued
-      ~now+resend_after with resend_count decremented to 0.
-  case_no_resend_when_zero:
-      resend_count=0 → no resend job is enqueued.
-  case_drip_list (Way 2):
-      a 2-message list sends the first and re-enqueues mass_premade with the rest.
-  case_dry_run_plans_nothing:
-      dry_run returns the plan, sends nothing, enqueues nothing.
-  case_enqueue_raises_after_broadcast_parks:
-      send once: the broadcast went out, then enqueueing its unsend raised ->
-      exactly 1 broadcast, the claimed job ends 'error' ("may have sent"), and
-      a second run finds nothing to claim (no re-broadcast).
-
-  case_paid_empty_folder_not_sent:
-      a paid mass whose folder yields no photos → skipped paid_no_media, nothing sent; free still sends.
-
-Run: ./venv/bin/python service/tests/test_mass_premade.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness
 
 _harness.bootstrap()
 
@@ -52,7 +21,6 @@ KIND = "mass_premade"
 
 
 class FakeClient:
-    """Records send_mass_message calls; returns an incrementing OF queue id."""
 
     def __init__(self, start_id: int = 880000):
         self.user_id = "999"
@@ -86,7 +54,6 @@ async def _jobs(aid: str, kind: str) -> list[ScheduledJob]:
         )).scalars().all()
 
 
-# ── Acceptance: send + schedule the unsend ───────────────────────────
 
 async def case_send_and_schedule_unsend():
     aid = "acc_mp_unsend"
@@ -109,15 +76,12 @@ async def case_send_and_schedule_unsend():
     assert tgt["queue_id"] == queue_id and tgt["mass_run_id"] == res["mass_run_id"], tgt
     delta_h = (dels[0].run_at - datetime.utcnow()).total_seconds() / 3600
     assert 7.5 < delta_h < 8.5, delta_h
-    # No resend, single message → no mass_premade follow-up.
     assert await _jobs(aid, KIND) == []
-    # wave6 B7: the broadcast is attributed to mass_premade, not send_mass_message.
     async with get_session() as s:
         mr = await s.get(MassRun, res["mass_run_id"])
     assert mr.automation_kind == KIND, mr.automation_kind
 
 
-# ── Way 1: resend chain decrements the count ─────────────────────────
 
 async def case_resend_chain():
     aid = "acc_mp_resend"
@@ -138,7 +102,6 @@ async def case_resend_chain():
     assert len(msgs) == 1 and msgs[0]["resend_count"] == 0, msgs
     delta_h = (resends[0].run_at - datetime.utcnow()).total_seconds() / 3600
     assert 23.5 < delta_h < 24.5, delta_h
-    # And it still scheduled the first send's unsend.
     assert len(await _jobs(aid, "unsend_messages")) == 1
 
 
@@ -156,7 +119,6 @@ async def case_no_resend_when_zero():
     assert await _jobs(aid, KIND) == [], "resend_count=0 must not chain"
 
 
-# ── Way 2: a list drips the remainder forward ────────────────────────
 
 async def case_drip_list():
     aid = "acc_mp_drip"
@@ -179,7 +141,6 @@ async def case_drip_list():
     assert 13 < delta_min < 17, delta_min
 
 
-# ── dry_run: full plan, zero side effects ────────────────────────────
 
 async def case_dry_run_plans_nothing():
     aid = "acc_mp_dry"
@@ -197,14 +158,12 @@ async def case_dry_run_plans_nothing():
 
     assert res["dry_run"] is True and res["messages"] == 2 and res["sent"] == 0, res
     assert res["plan"][0]["resend_count"] == 2 and res["plan"][1]["delay_minutes"] == 20, res["plan"]
-    # wave6 B7: the plan names the audience, so a dry run can confirm WHO gets it.
     assert res["plan"][0]["included_users"] == [42], res["plan"][0]
     assert res["plan"][0]["list_ids"] == [7], res["plan"][0]
     assert fake.send_calls == [], "dry_run must not send"
     assert await _jobs(aid, KIND) == [] and await _jobs(aid, "unsend_messages") == []
 
 
-# ── Randomiser: one text from the pool + sampled media per fire ──────
 
 async def case_randomizer():
     aid = "acc_mp_rand"
@@ -274,12 +233,10 @@ async def case_failed_send_does_not_schedule_legs():
 
 
 async def case_paid_empty_folder_not_sent():
-    """rwl cross-step M2: a paid mass whose folder yields no photos is skipped (never a priced text-only
-    mass); a free one with the same empty folder still goes out."""
     aid = "acc_mp_paid_empty"
     await _seed_account(aid)
     fake = _use_fake()
-    fake.vault_media = lambda **kw: {"list": []}  # empty / unreadable folder
+    fake.vault_media = lambda **kw: {"list": []}
     spec = {"text": "<p>pay</p>", "online_only": True, "media_folder_id": 5, "media_count": 3}
     res = await run_once(aid, KIND, payload={"messages": [{**spec, "price": 10}]})
     assert res["status"] == "skipped" and res["reason"] == "paid_no_media", res

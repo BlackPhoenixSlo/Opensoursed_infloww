@@ -1,9 +1,36 @@
+"""automations/full_ai_owner.py — who owns a Fan's DM in live Mode (spec 04b › Solution). Pure.
+
+Two derived answers, no stored state (pattern `wcfi_decide.py`):
+
+  in_fans(cfg, i, e)   the Fans list: empty include = every Fan, exclude wins, a failed read = not listed
+  of_app_human(items, fan_id=, anchor_at=, known_ids=)
+                       the send time of the first OF-app item a human sent after his anchor, or None
+  fan_after(items, fan_id=, anchor_at=)
+                       the newest OF chat item the Fan sent after his anchor, or None
+  yield_left_s(sent_at, now, yield_s)
+                       seconds of the Human yield still to run (0 = none)
+  claims(off, listed)  Full AI is on for the Creator and the Fan is on its Fans list: the other reply
+                       Lanes skip him, whatever Full AI then does (reply, no_send, Stop).
+  who_owns(facts)      Full AI's own check at job start and before each bubble: `Stop(reason)` or None.
+                       First match wins, in `REASONS` order:
+
+  1. off_global / off_rule / off_mode   switch FULL_AI_CHAT_OFF; rule full_ai_chat off; Mode not live
+  2. not_listed                         the Fans list says no, or its OF read failed
+  3. hard_skip                          blacklist, a hard skip_list reason or unreachable, a muted creator
+  4. audience                           the account fence says no
+  5. human / human_of_app               a human's 1:1 answer since the anchor
+  6. funnel_walk                        a pending, not held funnel_state whose walker rule is on
+  7. top_spend                          lifetime spend >= top_spend_cents (0 = off)
+
+The facts come from `full_ai_owner_io.load`. No DB, OF client, lease or dm_rate import (AST test);
+`of_shapes` (pure OF frame readers) is the one app import.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from of_shapes import queue_id
+from of_shapes import queue_id   # pure: OF's mass-copy marker
 
 REASONS: tuple[str, ...] = ("off_global", "off_rule", "off_mode", "not_listed", "hard_skip", "audience",
                             "human", "human_of_app", "funnel_walk", "top_spend")
@@ -21,8 +48,8 @@ class OwnerFacts:
     human_at: datetime | None
     walk_advancing: bool
     spend_cents: int
-    top_spend_cents: int
-    fan_newest: dict | None = None
+    top_spend_cents: int        # 0 = no limit
+    fan_newest: dict | None = None   # the OF read's newest item HE sent after the anchor (None: none / not read)
 
 
 @dataclass(frozen=True)
@@ -73,6 +100,9 @@ def of_time(v) -> datetime | None:
 
 
 def of_app_human(items: list[dict], *, fan_id: int, anchor_at: datetime, known_ids: set[int]) -> datetime | None:
+    """The earliest send time of an OF chat item a human sent after his anchor: not from the Fan (an item
+    with no readable sender counts as human), newer than `anchor_at`, an id not among this Fan's
+    `messages` rows (`known_ids`: ours, already attributed) and no queue id (not a mass copy)."""
     hits = []
     for m in items or []:
         if not isinstance(m, dict):

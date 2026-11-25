@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-init_db drops a retired index only once its replacement exists.
-
-`_RETIRED_INDEXES` maps an index the models no longer declare to the wider one
-that replaced it. If the catch-up failed to CREATE the replacement, dropping
-the old one would leave the table with neither, so the old one stays.
-
-Plain-assert standalone script (no pytest), run via:
-
-    ./venv/bin/python service/tests/test_retired_indexes.py
-
-Exit 0 = all pass.
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401  # MUST be first — binds a throwaway DB (prod-fallback guard)

@@ -1,21 +1,3 @@
-"""style_config — account_ai_config.style_config_json
-
-Revision ID: 0031_style_config
-Revises: 0030_autoreply
-Create Date: 2026-06-07
-
-Per-automation opt-in for the "human texting style" package (short/casual girl
-voice + 3-bubble splitting + casualized lowercase Q/Tease). One column holds the
-three checkboxes:
-
-  account_ai_config — + style_config_json: JSON
-      {"of_ai_chat": bool, "autoreply": bool, "deep_convo": bool}
-      Absent/NULL or a missing key → OFF for that automation, i.e. the CURRENT
-      behavior runs byte-for-byte unchanged. Kept in its own column (house
-      convention) to avoid the nudge/webhook shallow-merge collision.
-
-Additive + nullable + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence

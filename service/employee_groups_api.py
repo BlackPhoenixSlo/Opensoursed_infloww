@@ -1,55 +1,3 @@
-"""service/employee_groups_api.py — the Organization Chart's Employee groups, one Agency at a time.
-
-  GET    /admin/employee-groups
-         → {groups: [{id, name, parent_id, employee_count}]}: the Agency's
-           groups in creation order; `parent_id` null = under the Agency root;
-           `employee_count` counts every Employee placed in the group,
-           deactivated ones included.
-  POST   /admin/employee-groups  {name, parent_id|null}
-         → the created group. `name` is trimmed and 1–64 characters (else 422);
-           `parent_id` names one of the Agency's own groups or null (else 404);
-           a sibling of the same name is 409.
-  PATCH  /admin/employee-groups/{id}  {name?, parent_id?}
-         → the renamed and/or moved group, under the same rules as POST, and
-           409 when `parent_id` is the group itself or one of its descendants
-           (a move that would make a cycle).
-  DELETE /admin/employee-groups/{id}
-         → {deleted: id}. 409 while the group has sub-groups or Employees.
-  PUT    /admin/employee-groups/members  {group_id|null, employee_ids[]}
-         → {group_id, employee_ids}: Batch edit group places every listed
-           Employee in the group (null = no group) in one write. `group_id`
-           names one of the Agency's own groups or null (else 404); every
-           Employee must be the Agency's (else 400, and nothing is written).
-
-  subtree_employee_ids(agency_user_id, employee_id) -> set[int]
-         "Self and subordinates" for Phase 4's Data scope (service/permissions.py).
-
-docs/spec/phase-05-remaining-parity-gaps.md (item 4, Interfaces). Every
-handler starts from Phase 1's Agency context as an owner endpoint; check order
-is 401 (no session, even with ALLOW_ANONYMOUS_ADMIN) → 403 (a chatter, refused
-first by the chatter admin gate, `chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`)
-→ 422 → 404 (a missing group or another Agency's) → 409. A move under the
-group's own subtree is refused 409, so no write can make a cycle. Every write is audited by the
-audit middleware's generic row (service/employees.py).
-
-ASSUMPTION: Batch edit group follows the Reassign route's statuses (ticket 34):
-a group outside the Agency is 404 like any cross-Agency id, an Employee
-outside it is 400, and `employee_ids` must be a non-empty list of ids (else
-422). Rung 3. Overturned if a foreign Employee should be 404 too.
-
-ASSUMPTION: "Self and subordinates" is the Employee plus every Employee of the
-Agency placed in a strict descendant group of the Employee's own group,
-deactivated ones included (their sales stay history); peers in the same group
-are excluded and an Employee with no group is only itself (spec, Implementation
-Decisions). Rung 2 for the set; rung 5 for keeping deactivated Employees.
-Overturned by the owner's definition.
-
-ASSUMPTION: the Master manages its own Agency's groups, as an owner does, and
-another Agency's groups are 404 to it too. Rung 3: `agency_context` makes the
-Master's session its own Agency, as service/shifts_api.py's Shift schedule
-does. Overturned if the Master should administer every Agency's tree.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -124,7 +72,6 @@ async def _refuse_sibling_clash(s, agency_user_id: str, parent_id: int | None, n
 
 
 async def _descendants(s, agency_user_id: str, group_id: int) -> set[int]:
-    """Every strict descendant group of `group_id` in the Agency's tree."""
     edges = (await s.execute(
         select(EmployeeGroup.id, EmployeeGroup.parent_id).where(EmployeeGroup.agency_user_id == agency_user_id)
     )).all()
@@ -198,7 +145,6 @@ async def delete_group(group_id: int) -> dict[str, Any]:
 
 
 def _ids(value: Any) -> list[int] | None:
-    """A non-empty list of integer ids (no booleans), else None."""
     if not isinstance(value, list) or not value:
         return None
     if not all(isinstance(v, int) and not isinstance(v, bool) for v in value):
@@ -230,9 +176,6 @@ async def set_members(request: Request) -> dict[str, Any]:
 
 
 async def subtree_employee_ids(agency_user_id: str, employee_id: int) -> set[int]:
-    """The Employee plus every Employee of the Agency in a strict descendant
-    group of the Employee's own group; only the Employee when it has no group
-    (or is not the Agency's)."""
     async with get_session() as s:
         e = await s.get(Employee, employee_id)
         if e is None or e.user_id != agency_user_id or e.group_id is None:

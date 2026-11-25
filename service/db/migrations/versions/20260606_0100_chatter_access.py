@@ -1,27 +1,3 @@
-"""chatter_access — per-chatter visibility limits (models + folders)
-
-Revision ID: 0028_chatter_access
-Revises: 0027_nudge_online
-Create Date: 2026-06-06
-
-Owner-set, subtractive allowlists (library/CHATTER_ACCESS_PROMPTS.md):
-
-  chatter_account_access — per (chatter, owner): if >=1 row, that owner's
-                           contribution to the chatter's account union is
-                           restricted to the listed account_ids. Empty ⇒
-                           full access (existing chatters unaffected).
-  chatter_folder_access  — per (chatter, account): if >=1 row, the
-                           chatter's vault browser for that account is
-                           restricted to those OF vault folder ids.
-                           folder_id is BigInteger (matches
-                           vault_items.folder_id; OF ids exceed int32).
-                           folder_name is denormalised at write time so the
-                           chatter's authoritative folder menu renders
-                           without re-paginating vault/lists (DA-3).
-
-Idempotent: guarded by inspector checks (house convention; init_db's
-create_all may have already built these on a freshly-booted DB).
-"""
 from __future__ import annotations
 
 from typing import Sequence

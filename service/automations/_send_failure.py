@@ -148,6 +148,26 @@ async def send_dropping_bad_media(
     client, fan_id, text: str, media_files: list, *, log=log,
     send_purpose: str | None = None, price_cents: int = 0,
 ) -> SendOutcome:
+    """`client.send_message`, except a refused ATTACHMENT degrades to text-only
+    instead of losing the message entirely.
+
+    `send_purpose` is the audience-coverage transport assert (gated / fenced /
+    manual / not_fan_dm / exempt:<reason>): untagged raises under the test
+    harness and logs loudly in prod — see audience_include.audit_send_purpose.
+
+    Why this is not merely nice-to-have: a sender only advances its durable state
+    on a RETURNED send, so a single permanently-bad vault id re-fires the same
+    undeliverable message every tick, forever, burning an LLM call each time.
+    Account 800000038 sat at 39-eligible / 0-sent for days on one bad night-slot
+    image, and the run stats showed only "errors: 6" — nothing named the cause.
+    The text is the point of these messages; the picture is a garnish, so ship
+    the text.
+
+    Re-raises unchanged when the failure is NOT about media — those belong to the
+    caller's own skip/quarantine handling. `price_cents` > 0 sends the media
+    locked at that price (a PPV); the text-only resend is free. After the
+    resend the refused ids are re-checked off the send path
+    (`schedule_recheck_rejected_media`)."""
     import audience_include as _audiences
     _audiences.audit_send_purpose(send_purpose, where="send_dropping_bad_media")
 

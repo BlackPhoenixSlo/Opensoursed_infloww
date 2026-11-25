@@ -1,27 +1,3 @@
-"""employee_groups — the Organization Chart's Employee groups, and each Employee's group
-
-Backs the `/admin/employee-groups` router (service/employee_groups_api.py,
-docs/spec/phase-05-remaining-parity-gaps.md, item 4, Schema "Migration A"):
-
-  employee_groups    — one group of one Agency (`agency_user_id`), under the
-                       Agency root (`parent_id` NULL) or under another of the
-                       Agency's groups; `name` 1–64 characters.
-                       UNIQUE(agency_user_id, parent_id, name); INDEX(agency_user_id).
-  employees.group_id — the Employee's group. NULL = no group. Application-level
-                       FK, like `chatter_id` (SQLite ALTER cannot add one).
-
-The ORM models in db/models.py declare the same table, constraint, index and
-column, so `init_db()`'s create_all and its ADD-COLUMN catch-up bring them to
-a booting box; this revision keeps the alembic chain canonical. Idempotent
-(inspector-guarded, house convention).
-
-Downgrade drops both and loses only the group tree and who sits in which
-group; nothing else reads them.
-
-Revision ID: 0070_employee_groups
-Revises: 0069_attr_view_sales_records
-Create Date: 2026-10-16
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -57,6 +33,7 @@ def upgrade() -> None:
         op.add_column("employees", sa.Column("group_id", sa.Integer(), nullable=True))
 
 
+# Downgrade loses the group tree and who sits in which group.
 def downgrade() -> None:
     inspector = sa.inspect(op.get_bind())
     if "group_id" in {c["name"] for c in inspector.get_columns("employees")}:

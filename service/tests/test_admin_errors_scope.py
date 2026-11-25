@@ -1,31 +1,5 @@
 #!/usr/bin/env python3
-"""/admin/errors (service/diag_api.py) is Agency-scoped, over HTTP with real session cookies
-(the two-Agency bench, service/tests/_agency_fixtures.py).
-
-A row belongs to the Employee that filed it (W30 F2), never to the Creator it names: an owner
-reads its Agency's Employees' rows (its own + its chatters' Mirror rows), a chatter only its
-own; a row naming no Employee is the Master's (`users.is_admin`, as `auth.require_master`).
-
-  • case_reads_own_agency_only: each owner reads its own Employees' rows, never the other
-    Agency's, a Creator-only or an unattributed one; a chatter its own; the Master all.
-  • case_shared_creator_stays_with_the_reporter: two Agencies sharing a Creator read (and
-    Clear) only their own reports on it, over the real POST too.
-  • case_chatters_on_one_creator_see_only_their_own: two chatters of one Agency on one
-    Creator never read each other's (or the owner's) reports; the owner reads all three.
-  • case_clear_deletes_own_only: an owner's Clear deletes only its own rows.
-  • case_chatter_cannot_clear: a chatter session's Clear is 403 and deletes nothing.
-  • case_no_session_401: no session reads and clears nothing.
-  • case_count_is_total: `count` is every matching row, not the page (`limit`).
-  • case_post_attribution: a reported error keeps only the Creator/Employee the reporter owns
-    (header or body); another Agency's is dropped, so it never lands in that Agency's list.
-  • case_server_error_attribution: an unhandled 500's X-Account-Id is kept only when the
-    principal owns it.
-  • case_server_error_hides_sql_parameters: a failed statement's bound values (a 2FA seed)
-    never reach the stored row (engine hide_parameters, W30 F9).
-
-Run: ./venv/bin/python service/tests/test_admin_errors_scope.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 _harness.bootstrap()
 
@@ -45,12 +19,11 @@ from db.models import AppError, Account, Chatter, ChatterUser, UserAccount  # no
 
 IDS = fx.seed_two_agencies()
 A, B = IDS["creator_a"], IDS["creator_b"]
-SHARED = "1000099"     # a Creator both Agencies hold
+SHARED = "1000099"
 PATH = "/admin/errors"
 
 
 async def _seed_shared_and_second_chatter() -> str:
-    """Creator SHARED linked to both owners; `chatter_a2`, a second chatter of Agency A."""
     (account_registry.ACCOUNTS_DIR / SHARED).mkdir()
     now = datetime.utcnow()
     async with get_session() as s:
@@ -91,7 +64,6 @@ MIRROR_B = _mirror("chatter_b", "agency_b_owner")
 
 
 def _seed(rows: list[tuple[str, str | None, int | None]]) -> None:
-    """Fresh table holding `rows` of (message, account_id, employee_id)."""
     async def go():
         async with get_session() as s:
             await s.execute(delete(AppError))
@@ -194,13 +166,11 @@ def case_post_attribution():
     assert got["chatter"] == (A, MIRROR_A), "a chatter may not name Agency B's Employee: its own instead"
     assert _seen(OWNER_B) == set()
     assert _seen(OWNER_A) == {"spoof", "hdr", "chatter"}
-    # A chatter on a page with no Creator picked: its own Mirror Employee, so its owner still reads it.
     r = CHATTER_A.post(PATH, json={"message": "bare"})
     assert r.json()["ok"], r.text
     bare = {e.message: (e.account_id, e.employee_id) for e in _stored()}["bare"]
     assert bare == (None, MIRROR_A), bare
     assert "bare" in _seen(OWNER_A) and "bare" not in _seen(OWNER_B)
-    # A chatter of two Agencies naming no Employee: the row cannot be placed, the Master's alone.
     r = CHATTER_AB.post(PATH, json={"message": "two"})
     assert r.json()["ok"], r.text
     assert {e.message: (e.account_id, e.employee_id) for e in _stored()}["two"] == (None, None)
@@ -224,7 +194,6 @@ server.app.add_api_route("/admin/__errors_scope_boom_sql", _boom_sql, methods=["
 
 
 def case_perflog_recent_is_master_only():
-    """Every Agency's perf rows: an owner or chatter who is not the Master is refused."""
     assert OWNER_A.get("/admin/perflog/recent").status_code == 403
     assert CHATTER_A.get("/admin/perflog/recent").status_code in (401, 403)
 
@@ -235,7 +204,7 @@ def case_server_error_attribution():
         try:
             OWNER_A.get("/admin/__errors_scope_boom", headers={"X-Account-Id": hdr})
         except RuntimeError:
-            pass  # TestClient re-raises; the middleware has already stored the row
+            pass
     got = sorted((e.account_id or "") for e in _stored() if e.source == "server")
     assert got == ["", A], got
     assert _seen(OWNER_B) == set(), "a 500 naming Agency B's Creator never reaches B"
@@ -246,7 +215,7 @@ def case_server_error_hides_sql_parameters():
     try:
         OWNER_A.get("/admin/__errors_scope_boom_sql")
     except Exception:
-        pass  # TestClient re-raises; the middleware has already stored the row
+        pass
     rows = [e for e in _stored() if e.source == "server"]
     assert len(rows) == 1 and "no_such_table" in rows[0].message, [(e.kind, e.message) for e in rows]
     assert SEED not in rows[0].message and SEED not in (rows[0].stack or ""), rows[0].message

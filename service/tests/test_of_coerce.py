@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""of_coerce: the shared OF value coercers as tables. Pure: no DB, no I/O.
-
-Pins: cents round half-to-even off float(v) * 100 (0.005 → 0, True → 100); cents_or_none
-keeps None/""/non-numeric as None, cents_or_zero folds them to 0. strip_tags drops every
-tag and trims; a lone "<" with no ">" is kept. json_list reads only a JSON list ([] for
-empty/bad/non-list) and maps items through `coerce`. The pure decide modules alias these
-very functions (the shells' aliases need a DB import; their own tests cover them).
-
-Runs under pytest (parametrized tables) or as a script (the repo's convention, no pytest needed):
-    ./venv/bin/python service/tests/test_of_coerce.py
-"""
 from __future__ import annotations
 
 import sys
@@ -23,10 +12,10 @@ from of_coerce import cents_or_none, cents_or_zero, json_list, strip_tags  # noq
 
 try:
     if __name__ == "__main__":
-        raise ImportError  # script mode uses the runner below, even with pytest installed
+        raise ImportError
     import pytest
     table = pytest.mark.parametrize
-except ImportError:  # script mode: the runner below calls each row
+except ImportError:
     def table(names, rows):
         def mark(fn):
             fn.rows = rows
@@ -38,13 +27,13 @@ except ImportError:  # script mode: the runner below calls each row
     (9.99, 999, 999),
     ("9.99", 999, 999),
     (0, 0, 0),
-    (0.005, 0, 0),          # 0.5 → round half-to-even → 0 (measured)
+    (0.005, 0, 0),
     ("", None, 0),
     (None, None, 0),
     ("abc", None, 0),
-    (True, 100, 100),       # bool is an int to float(); callers that care guard it
-    ([], None, 0),          # float([]) TypeError
-    ("inf", None, 0),       # OverflowError off round(inf)
+    (True, 100, 100),
+    ([], None, 0),
+    ("inf", None, 0),
 ])
 def test_cents(v, want_none, want_zero):
     assert cents_or_none(v) == want_none

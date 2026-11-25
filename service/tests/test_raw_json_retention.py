@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""raw_json sweep NULLs only old payloads, in batches, and leaves rows and recent payloads intact.
-
-Run: ./venv/bin/python service/tests/test_raw_json_retention.py   (exit 0 = green)
-"""
 import _harness
 
 _harness.bootstrap()

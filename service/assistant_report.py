@@ -1,21 +1,3 @@
-"""service/assistant_report.py — do-mode's `report_export`: a report file of the Agency's numbers.
-
-Ultra-mode ticket 02 (docs/plans/ultra-mode/issues/02-do-mode-export.md). The
-model names a dataset from `report_recipe_decide.CATALOGUE` and the Creators /
-Employees in the request's words; everything else is here:
-
-  • `report_ctx` — an owner's context (Creators, Employees, report zone, week
-    start, today, co-owned Creators) from `report_recipe.agency_scope`, the
-    read `/admin/reports/run` makes; None for anyone else (no export).
-  • `resolve_export` — pure: each name resolves uniquely (`resolve_name`) or
-    is `unresolved` (the slots then carry no recipe: Download stays off); the
-    window is fixed to dates; a restriction that does not parse, or a key the
-    schema does not have, refuses — never a wider report. Only sort / limit
-    are dropped, with a line why.
-  • `report_lines` — the user block's CREATORS / EMPLOYEES / TODAY lines.
-
-assistant_draft keeps REPORT_FLOW, the veto and the one dispatch in `interpret`.
-"""
 from __future__ import annotations
 
 import json
@@ -30,7 +12,6 @@ from auth import get_request_user
 from db.engine import get_session
 from report_recipe import agency_scope
 
-# A file / report word in the languages we see. No such word = no export (assistant_draft.vetoed).
 REPORT_WORD = re.compile(r"\b(export\w*|report\w*|download\w*|csv|excel|xlsx|spreadsheets?|sheets?|files?|"
                           r"tables?|breakdown|stats|statistics?|numbers|figures|data|"
                           r"inform[ea]s?|reporte?s?|exporta\w*|descarga\w*|rapports?|berichte?|tabell\w*|"
@@ -42,18 +23,12 @@ EXPORT_NOT_ALLOWED_ANSWER = "Only the Agency owner can export reports — ask th
 NO_REPORT_ANSWER = "I couldn't tell which report you want — say what to export, e.g. \"last month's sales per Creator\"."
 REPORT_DEFAULT_PRESET = "last_30_days"
 WHEN_NOTE = "Last 30 days — you didn't say when."
-_NAME_LIST_MAX = 200          # names per CREATORS / EMPLOYEES line
+_NAME_LIST_MAX = 200
 _RAW_KEYS = (*rd.FIELDS, "format")
 
 
 @dataclass(frozen=True)
 class ReportCtx:
-    """What an owner's export draft resolves against: the Agency's Creators
-    (id, nickname), its Employees (id, name), its report zone + week start,
-    today there, and the Creators another Agency co-owns (`shared`). A pure
-    projection of `report_recipe.AgencyScope` (`report_ctx`): name-sorted
-    tuples (the prompt's lines are stable), the zone as its key, no ZoneInfo /
-    DB — tests and the eval seam build it from literals."""
     creators: tuple[tuple[str, str], ...]
     employees: tuple[tuple[int, str], ...]
     zone: str
@@ -64,16 +39,12 @@ class ReportCtx:
 
 @dataclass
 class ExportDraft:
-    """`resolve_export`'s draft; assistant_draft wraps it in its `Draft` (that
-    module imports this one, so the reverse import would be a cycle)."""
     slots: dict[str, Any]
     assumptions: list[str]
     unresolved: list[str]
 
 
 async def report_ctx() -> ReportCtx | None:
-    """The signed-in owner's ReportCtx (`report_recipe.agency_scope`); None for
-    a chatter or no session: no export (`/admin/reports/run` re-checks)."""
     user = get_request_user()
     if user is None:
         return None
@@ -86,7 +57,6 @@ async def report_ctx() -> ReportCtx | None:
 
 
 def report_lines(ctx: ReportCtx) -> list[str]:
-    """The user block's lines for an owner: the names the request resolves against, and today."""
     out = []
     for label, opts in (("CREATORS", ctx.creators), ("EMPLOYEES", ctx.employees)):
         shown = sorted({nm for _, nm in opts}, key=str.lower)[:_NAME_LIST_MAX]
@@ -96,17 +66,12 @@ def report_lines(ctx: ReportCtx) -> list[str]:
 
 
 def name_key(s: str) -> str:
-    """A name as compared: casefolded, accents off, letters and digits of any script ("Žan" → "zan", "李" → "李")."""
     return "".join(ch for ch in unicodedata.normalize("NFKD", (s or "").casefold())
                    if not unicodedata.combining(ch) and ch.isalnum())
 
 
 def resolve_name(want: str, options: Iterable[tuple[Any, str]], what: str) -> tuple[Any, str | None]:
-    """(key, None) when `want` names exactly one option — an exact match
-    (name or key, `name_key`), else the single option it contains (`want` of 2+
-    characters) or is contained in (an option of 3+); else (None, the
-    unresolved sentence). Two candidates or only a close spelling never
-    resolve: a wrong Creator in a file is worse than a question."""
+    # Two candidates or only a close spelling never resolve: a wrong Creator in a file is worse than a question.
     n = name_key(want)
     opts = [(k, nm) for k, nm in options]
     if not n:
@@ -124,11 +89,6 @@ def resolve_name(want: str, options: Iterable[tuple[Any, str]], what: str) -> tu
 
 
 def _widened(want: str, key: Any, options: list[tuple[Any, str]], what: str, request: str) -> str | None:
-    """The model wrote a name the request does not hold ("Mia Rose" for "Mia",
-    "Li Rose" for "Li"): the request's longest word inside it must resolve to
-    the same option, else the question that word raises. A one-character word
-    ("李") counts only as a whole word of an option's name; one that is none is
-    no name. None when the request holds the name."""
     if not request or name_key(want) in name_key(request):
         return None
     nm = dict(options)
@@ -157,9 +117,6 @@ _LIST_SEP = re.compile(r"[,;/&+|()\n]")
 
 
 def _spans(request: str) -> list[tuple[str, frozenset[int]]]:
-    """The request per list item ("Mia, Rose" is two): its `name_key` text and
-    the positions a name may start / end at — word edges, and each character of
-    a script written without spaces ("导出李明的销售")."""
     out = []
     for item in _LIST_SEP.split(request):
         keys: list[str] = []
@@ -181,17 +138,11 @@ def _spans(request: str) -> list[tuple[str, frozenset[int]]]:
 
 
 def _hits(k: str, spans: list[tuple[str, frozenset[int]]]) -> list[tuple[int, int, int]]:
-    """Where the request names `k` (a `name_key`): (list item, start, end), whole words only."""
     return [(i, s, s + len(k)) for i, (text, edges) in enumerate(spans) for s in edges
             if k and text.startswith(k, s) and s + len(k) in edges]
 
 
 def _longest(want: str, key: Any, options: list[tuple[Any, str]], what: str, request: str) -> tuple[Any, str | None]:
-    """The option the request names over the model's pick: "Mia" for "export
-    Mia Rose's sales" (Creators Mia and Mia Rose) → Mia Rose. The pick stands
-    when the request names it outside every longer option's name, or not at
-    all (`_widened` judges that); else the longest option over it, and two
-    such options are a question — never the shorter name silently."""
     nm = dict(options)
     spans = _spans(request or "")
     k = name_key(nm[key])
@@ -213,7 +164,6 @@ def _longest(want: str, key: Any, options: list[tuple[Any, str]], what: str, req
 
 
 def _report_kind(dataset: rd.Dataset, k: Any) -> Any:
-    """A kind as the model may write it ("Tips", "PPVs") → the dataset's key; else as given (the parse refuses it)."""
     n = name_key(str(k))
     for key in dataset.kinds:
         if n in (key, name_key(rd.KIND_LABELS.get(key, "")), key + "s"):
@@ -227,14 +177,7 @@ def _report_refusal(field_: str, reason: str) -> str:
 
 def resolve_export(raw: Any, ctx: ReportCtx, *, request: str = "", assumptions: Iterable[str] = (),
                    unresolved: Iterable[str] = ()) -> tuple[ExportDraft | None, str | None]:
-    """The model's `report` → the export's slots, or (None, the refusal).
-    `assumptions` / `unresolved`: the model's own lines, cleaned. Names resolve
-    uniquely; one that does not is `unresolved` and the slots carry no recipe
-    (Download stays off). No Creator named = all of the Agency's. A key the
-    schema lacks, or a restriction that does not parse (dataset, window,
-    creators, employees, kinds, group_by, metrics), refuses — never a wider
-    report; absent / null is the default. Only sort / limit are dropped, with
-    a line why. The window is fixed to dates here."""
+    # An unparseable restriction or unknown key refuses, never a wider report; only sort/limit are dropped.
     if not isinstance(raw, dict):
         return None, NO_REPORT_ANSWER
     if extra := [k for k in raw if k not in _RAW_KEYS]:

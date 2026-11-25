@@ -1,12 +1,3 @@
-"""Split Inbox, enforced on the relay (ADR-0004): a Creator's Fans fall into 1 to 9
-groups (an explicit move wins, else fan id mod N + 1, non-numeric ids in group 1),
-and a chatter the owner bound to a group (`chatter_groups`) is served only that
-group's Fans. Owners, dual-cookie sessions (DA-1), unbound chatters and an
-unsplit Creator are unfiltered (None).
-
-The parsed config is held per Creator in RAM: the PUT route writes it through
-(`remember`), so the sync SSE / push filters see an owner's edit at once.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -31,12 +22,10 @@ def unset() -> dict[str, Any]:
 
 
 def _is_int(v: Any) -> bool:
-    # bool is an int subclass in Python; JSON true is not a group.
     return isinstance(v, int) and not isinstance(v, bool)
 
 
 def clean(cfg: dict) -> dict[str, Any]:
-    """ValueError on a bad count or a non-object map; out-of-range entries and unknown keys dropped."""
     n = cfg.get("group_count")
     if not _is_int(n) or not 1 <= n <= MAX_GROUPS:
         raise ValueError(f"group_count must be an integer from 1 to {MAX_GROUPS}")
@@ -93,7 +82,6 @@ def heal(account_id: str, cfg: dict[str, Any], *, since: int) -> dict[str, Any]:
 
 
 async def warm(account_ids: Iterable[str]) -> None:
-    """Load the configs of `account_ids` not held yet (one query)."""
     from db.engine import get_session
     from db.models import AccountAiConfig
     missing = [str(a) for a in account_ids if str(a) not in _configs]
@@ -119,7 +107,6 @@ def bound_cached(chatter_id: str, account_id: Any) -> bool:
 
 
 def allows_cached(chatter_id: str, account_id: Any, fan_id: Any) -> bool:
-    """Sync check for the SSE / push filters; a Creator not loaded yet (`warm`) is unfiltered."""
     cfg = _configs.get(str(account_id))
     if cfg is None:
         return True
@@ -138,7 +125,6 @@ async def filter_for(chatter_id: str | None, account_id: str) -> Callable[[Any],
 
 
 def acting_chatter_id() -> str | None:
-    """The chatter behind this request, or None for an owner (a User cookie wins, DA-1) or no session."""
     from chatters import current_actor
     actor = current_actor()
     return actor.id if actor is not None and actor.kind == "chatter" else None
@@ -149,7 +135,6 @@ async def chatter_inbox_filter(account_id: str) -> Callable[[Any], bool] | None:
 
 
 def filter_rows(resp: dict[str, Any], keep: Callable[[Any], bool] | None) -> dict[str, Any]:
-    """`resp`'s chat rows (`list` or `chats`) narrowed to `keep(withUser.id)`; `hasMore` stays OF's."""
     if keep is None or not isinstance(resp, dict):
         return resp
     key = "list" if "list" in resp else "chats" if "chats" in resp else "rows" if "rows" in resp else None

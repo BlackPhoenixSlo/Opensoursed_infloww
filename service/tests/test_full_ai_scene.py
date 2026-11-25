@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_scene — the Full AI sext scene (config `sext_scene`, test Mode), pure, plain assert.
-
-  case_scene_next_table          start, climb, never back, after -> new scene, off -> None, heat floor
-  case_scene_words               Jev's `scene` state words
-  case_saved_scene               95: newest row wins whatever its status; None on no rows, a None /
-                                 absent / unreadable newest, or a gap over `gap_s` (119 vs 121 min)
-  case_switches                  scene_flag / is_hot / scene_turn / gif_offered over flag × Mode × Route
-  case_gif_pct                   `gif_pct`: 0 never, 100 = null, 50 ≈ half, seeded per Turn; prompt
-                                 block and `_gif_part` follow the same roll
-  case_flag_off_prompts_pinned   flag off: 14 Writer prompts byte-identical to origin/main's builder
-  case_scene_prompts             scene Turns: SEXT_SCENE + stage (+ SEXT_HEAT on sext / SCENE_SELL on
-                                 a hot sell / CAPTION_APART apart / need-line on a Refusal); no
-                                 EXPLICIT_EARLY, NO_NARRATION_RULE, SELF_BAN, SEXT_HOT, sticker block
-  case_scene_constants_in_catalog  every new constant is in docs/prompts/new/current-repo.md
-  case_level_lane                `offer_level` target -> lane; None -> the heat path
-  case_cents_of_table            the price ladder interpolated, nearest $5, clamped
-  case_offer_state               the price Jev's `offer` from a Pick
-  case_price_signals_state       03d: `he_asked` / `bought_before` "yes"/"no" after `heat`
-  case_price_version_moves       03d: the price version moves with PRICE or STATE_KEYS
-  case_purchases_of              settled priced Offers in words, by purchase time (`outcome_at`)
-  case_haggle_never_above_quote  `_haggled` after a Jev price ends at or under that quote
-
-Run: ./venv/bin/python service/tests/test_full_ai_scene.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 import hashlib  # noqa: E402
 import json  # noqa: E402
@@ -50,22 +26,22 @@ _DOCS = Path(__file__).resolve().parents[2] / "docs" / "prompts"
 
 def case_scene_next_table():
     p = lambda n, stage, heat: {"n": n, "stage": stage, "heat": heat}   # noqa: E731
-    rows = [   # (prev, on, Jev stage or None, heat) -> next
-        ((None, False, "peak", 3), None),                                  # not a scene Turn
-        ((p(4, "peak", 4), False, "peak", 4), None),                       # scene over
-        ((None, True, None, 2), p(1, "opening", 2)),                       # start, Jev default
-        ((None, True, "building", 3), p(1, "building", 3)),                # start mid-way
+    rows = [
+        ((None, False, "peak", 3), None),
+        ((p(4, "peak", 4), False, "peak", 4), None),
+        ((None, True, None, 2), p(1, "opening", 2)),
+        ((None, True, "building", 3), p(1, "building", 3)),
         ((None, True, "after", 3), p(1, "after", 3)),
-        ((p(1, "opening", 2), True, "building", 3), p(2, "building", 3)),  # climb
-        ((p(2, "building", 3), True, None, 3), p(3, "building", 3)),       # default keeps
-        ((p(2, "building", 3), True, "opening", 2), p(3, "building", 3)),  # never back, heat floor
+        ((p(1, "opening", 2), True, "building", 3), p(2, "building", 3)),
+        ((p(2, "building", 3), True, None, 3), p(3, "building", 3)),
+        ((p(2, "building", 3), True, "opening", 2), p(3, "building", 3)),
         ((p(3, "peak", 4), True, "building", 1), p(4, "peak", 4)),
         ((p(3, "peak", 4), True, "after", 4), p(4, "after", 4)),
         ((p(4, "after", 4), True, "after", 2), p(5, "after", 4)),
-        ((p(4, "after", 4), True, None, 2), p(5, "after", 4)),             # default: keeps after
-        ((p(4, "after", 4), True, "opening", 2), p(1, "opening", 2)),      # after -> a new scene
+        ((p(4, "after", 4), True, None, 2), p(5, "after", 4)),
+        ((p(4, "after", 4), True, "opening", 2), p(1, "opening", 2)),
         ((p(5, "after", 4), True, "building", 3), p(1, "building", 3)),
-        ((p(2, "weird", 1), True, None, 2), p(3, "opening", 2)),           # unknown saved stage
+        ((p(2, "weird", 1), True, None, 2), p(3, "opening", 2)),
     ]
     for (prev, on, stage, heat), want in rows:
         got = scene_next(prev, on, stage, heat)
@@ -78,16 +54,16 @@ def case_saved_scene():
     row = lambda reply, mins=1, status="sent": SimpleNamespace(   # noqa: E731
         reply_json=reply if reply is None or isinstance(reply, str) else json.dumps(reply),
         created_at=now - timedelta(minutes=mins), status=status)
-    table = [   # (rows, want)
+    table = [
         ([], None),
-        ([row({"scene": a}, 5), row({"scene": b})], b),                    # newest wins
-        ([row({"scene": a}, 5), row({"scene": None})], None),              # None ends it
-        ([row({"scene": a}, 5), row({"parts": []})], None),                # key absent ends it
-        ([row({"scene": a}, 5), row({"scene": b}, status="failed")], b),   # status ignored
+        ([row({"scene": a}, 5), row({"scene": b})], b),
+        ([row({"scene": a}, 5), row({"scene": None})], None),
+        ([row({"scene": a}, 5), row({"parts": []})], None),
+        ([row({"scene": a}, 5), row({"scene": b}, status="failed")], b),
         ([row({"scene": a}, 5), row({"scene": b}, status="no_send")], b),
-        ([row({"scene": b}, 119)], b),                                     # the same Sitting
-        ([row({"scene": b}, 121)], None),                                  # the Sitting ended
-        ([row({"scene": a}, 5), row(None)], None),                         # empty reply_json
+        ([row({"scene": b}, 119)], b),
+        ([row({"scene": b}, 121)], None),
+        ([row({"scene": a}, 5), row(None)], None),
         ([row({"scene": a}, 5), row("")], None),
         ([row({"scene": a}, 5), row("not json")], None),
         ([row({"scene": a}, 5), row("[1]")], None),
@@ -111,26 +87,26 @@ def case_switches():
     D = lambda route, *fired: Decision(route, 3, "x", frozenset(fired))   # noqa: E731
     on, off, shadow = _facts(sext_scene=True), _facts(sext_scene=False), _facts("shadow", sext_scene=True)
     assert wr.scene_flag(on) and not wr.scene_flag(off) and not wr.scene_flag(shadow)
-    rows = [   # (decision, facts) -> (is_hot, scene_turn)
+    rows = [
         ((D("sext", "sexual_now"), on), (True, True)),
         ((D("sext", "scene_on"), on), (True, True)),
         ((D("sell_now", "scene_on", "scene_offer"), on), (True, True)),
         ((D("sell_now", "wants_content"), on), (False, False)),
         ((D("chat", "scene_on"), on), (True, False)),
-        ((D("sell_now", "scene_on"), off), (False, False)),           # flag off: scene_on is nothing
-        ((D("sell_now", "sexual_now"), off), (True, False)),          # old hot, no scene
+        ((D("sell_now", "scene_on"), off), (False, False)),
+        ((D("sell_now", "sexual_now"), off), (True, False)),
         ((D("sext", "sexual_now"), shadow), (True, False)),
         ((D("sell_now", "scene_on"), _facts(sext_scene=True, sext_on=False)), (False, False)),
     ]
     for (d, f), want in rows:
         assert (wr.is_hot(d.fired, f), wr.scene_turn(d, f)) == want, (d, f.mode, f.config["sext_scene"])
-    gifs = [   # gif_offered: (decision, facts) -> bool
-        ((D("chat"), _facts(gifs=True, sext_scene=False)), False),    # needs gif_fits, flag or not
+    gifs = [
+        ((D("chat"), _facts(gifs=True, sext_scene=False)), False),
         ((D("chat", "gif_fits"), _facts(gifs=True, sext_scene=False)), True),
-        ((D("sext", "sexual_now", "gif_fits"), _facts(gifs=True, sext_scene=False)), True),   # no scene
-        ((D("chat"), _facts(gifs=True, sext_scene=True)), False),     # needs gif_fits
+        ((D("sext", "sexual_now", "gif_fits"), _facts(gifs=True, sext_scene=False)), True),
+        ((D("chat"), _facts(gifs=True, sext_scene=True)), False),
         ((D("chat", "gif_fits"), _facts(gifs=True, sext_scene=True)), True),
-        ((D("sext", "sexual_now", "gif_fits"), _facts(gifs=True, sext_scene=True)), False),  # scene
+        ((D("sext", "sexual_now", "gif_fits"), _facts(gifs=True, sext_scene=True)), False),
         ((D("chat", "gif_fits"), _facts(gifs=False, sext_scene=True)), False),
         ((D("chat"), _facts("shadow", gifs=True, sext_scene=True)), False),
         ((D("chat", "gif_fits"), _facts("shadow", gifs=True, sext_scene=True)), True),
@@ -140,8 +116,6 @@ def case_switches():
 
 
 def case_gif_pct():
-    """`gif_pct`: null = the gate alone; 0 never; 100 = null; 50 ≈ half the Turns; seeded per Turn;
-    never lifts the scene / gif_fits gate; `messages_for` (gif_ok None) and `_gif_part` agree."""
     from automations.full_ai_turn import _gif_part
     D = lambda route, *fired: Decision(route, 3, "x", frozenset(fired))   # noqa: E731
 
@@ -153,14 +127,14 @@ def case_gif_pct():
         assert all(wr.gif_offered(d, f(k)) for k in keys[:200])
         assert not any(wr.gif_offered(d, f(k, gif_pct=0)) for k in keys[:200])
         assert all(wr.gif_offered(d, f(k, gif_pct=100)) for k in keys[:200])
-    fits = D("chat", "gif_fits")        # the % is of the fitting Turns
+    fits = D("chat", "gif_fits")
     hits = sum(wr.gif_offered(fits, f(k, gif_pct=50)) for k in keys)
     assert 0.45 <= hits / len(keys) <= 0.55, hits
     assert [wr.gif_offered(fits, f(k, gif_pct=50)) for k in keys[:50]] == \
         [wr.gif_offered(fits, f(k, gif_pct=50)) for k in keys[:50]]
-    assert not any(wr.gif_offered(D("chat"), f(k, gif_pct=100)) for k in keys[:50])    # no gif_fits
+    assert not any(wr.gif_offered(D("chat"), f(k, gif_pct=100)) for k in keys[:50])
     assert not any(wr.gif_offered(fits, f(k, gifs=False, gif_pct=100)) for k in keys[:50])
-    assert not any(wr.gif_offered(D("chat"), f(k, sext_scene=True, gif_pct=100)) for k in keys[:50])  # no gif_fits
+    assert not any(wr.gif_offered(D("chat"), f(k, sext_scene=True, gif_pct=100)) for k in keys[:50])
     assert all(wr.gif_offered(D("chat", "gif_fits"), f(k, sext_scene=True, gif_pct=100)) for k in keys[:50])
     sticker = wr.cat_stickers.prompt_block("allow", wr._voice.VOICE_HER)
     for k in keys[:40]:
@@ -190,15 +164,13 @@ FLAG_OFF_PROMPTS_SHA = "00570ca587295d9a7222dad2e8fe1be44a375476e9317e7e90aea279
 
 
 def _old_twins(prompts):
-    """Test Mode composes SEXT_HOT_TEST / SELL_STEP_TEST / ESCALATION_TEST / MANIFEST_TEST where Shadow composes
-    the old three (off-path wording PR); put back, the prompts are the pinned builder's."""
     s = json.dumps(prompts)
     fmt = {"close": wr.CLOSE_BY_ID, "example": wr._voice.HER.sell_caption_example}
     for new, old in ((wr.SEXT_HOT_TEST, wr.SEXT_HOT),
                      (wr.SELL_STEP_TEST.format(**fmt), wr.SELL_STEP.format(**fmt)),
                      (wr.ESCALATION_TEST.format(close=wr.CLOSE_BY_ID), wr.ESCALATION.format(close=wr.CLOSE_BY_ID))):
         s = s.replace(json.dumps(new)[1:-1], json.dumps(old)[1:-1])
-    s = s.replace("these are real, already made", "these are real, already filmed")   # MANIFEST_TEST (NEW-163)
+    s = s.replace("these are real, already made", "these are real, already filmed")
     return json.loads(s)
 
 
@@ -268,13 +240,12 @@ def _vault(media_id, lane, kind="photo", desc="x"):
 
 
 def case_level_lane():
-    """`target` (LEVEL_CENTS) picks the lane; None keeps the heat path."""
     import automations.full_ai_sell as m
     pool = [_vault(1, 1000), _vault(2, 5000), _vault(3, 10000)]
     real = m._matches
     m._matches = lambda r, ask: True
     try:
-        ask = fs.Ask("anything", "any", 1)                          # heat 1 -> $10 on the heat path
+        ask = fs.Ask("anything", "any", 1)
         assert fs.pick(pool, [], ask, seed="s").price_cents == 1000
         for level, want in (("soft", 1000), ("nude", 5000), ("explicit", 10000)):
             got = fs.pick(pool, [], ask, seed="s", target=fs.LEVEL_CENTS[level])
@@ -307,7 +278,6 @@ def case_offer_state():
 
 
 def case_price_signals_state():
-    """03d spec › Interfaces (P): the key order, and the two signals in words."""
     assert pj.STATE_KEYS == ("fan_new_messages", "thread", "heat", "he_asked", "bought_before",
                              "scene", "purchases", "offer")
     for asked, before in ((True, True), (True, False), (False, True), (False, False)):
@@ -318,7 +288,6 @@ def case_price_signals_state():
 
 
 def case_price_version_moves():
-    """The price version moves with the wording or the key list; 03d moved it off 9718d06e3's."""
     assert pj.PRICE_VERSION == pj.price_version() != "049c1d6b771b"
     base = pj.price_version()
     real_p, real_k = pj.PRICE, pj.STATE_KEYS
@@ -340,14 +309,13 @@ def case_purchases_of():
                                offer_media_json=json.dumps({"locked": list(range(n))}))
     rows = [r(1, 1000, "bought", 2, "photo", "$10", "topless on the bed"),
             r(2, 5000, "declined", 1, "video", "$50", "toy clip"),
-            r(3, 0, "bought", 1, "photo", "free"),                      # a Free item: not priced
-            r(4, 3500, None, 1, "photo", "$50"),                        # open: not settled
+            r(3, 0, "bought", 1, "photo", "free"),
+            r(4, 3500, None, 1, "photo", "$50"),
             r(5, 2000, "bought", 1, "photo", "$10")]
     assert ft.purchases_of(rows) == ["bought 2 photos for $10 (lane $10): topless on the bed",
                                      "said no to 1 video at $50: toy clip",
                                      "bought 1 photo for $20 (lane $10)"]
     assert ft.purchases_of([]) == []
-    # 03d: by purchase time, not Offer order: $20 offered first, $50 second, the $50 bought first.
     late = [r(1, 2000, "bought", 1, "photo", "$10", at=20), r(2, 5000, "bought", 1, "photo", "$50", at=10)]
     assert ft.purchases_of(late) == ["bought 1 photo for $50 (lane $50)", "bought 1 photo for $20 (lane $10)"]
     tie = [r(1, 2000, "bought", 1, "photo", "$10", at=5), r(2, 5000, "declined", 1, "photo", "$50", at=5)]
@@ -355,8 +323,6 @@ def case_purchases_of():
 
 
 def case_haggle_never_above_quote():
-    """A Jev-priced Offer records Jev's price as its list (`_price`), so a haggle on it (same piece
-    or a re-pick listed higher in the vault) never ends above the quote."""
     quoted = replace(PICK, price_cents=3500, list_cents=3500, facts={**PICK.facts, "vault_list_cents": 5000})
     piece = Teased("tits", "photo", tuple(sorted(quoted.media)), (), quoted.list_cents, 7)
     for his in (["ok 100"], ["30?"], ["how about 20"], ["deal"], ["50 and its a deal"]):

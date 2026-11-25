@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""A signed call on an evicted OFClient (client_pool.evict retires its curl
-handles) never leaves the box, so it must read as unsent everywhere: before
-the fix it raised a plain OFAPIError with no response, which of_write and
-priority_mass read as "may have sent", parking never-sent fans UNKNOWN forever.
-
-  case_retired_signed_send_is_unsent_and_fan_stays_pending:
-      a real OFClient pinned in the pool, retired, then a priority-mass leg on
-      it: the call classifies unsent and the fan stays PENDING (resent on the
-      next leg's fresh client), not UNKNOWN.
-  case_proxy_answers_503_for_a_retired_client:
-      server._proxy maps the retired refusal to 503 + Retry-After, not the
-      relay deny-list's 403 "refused".
-
-No network: the signed call stops at retirement, before any wire I/O.
-
-Run: ./venv/bin/python service/tests/test_evict_unsent.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -42,7 +25,7 @@ def _retired_client(account_id: str) -> OFClient:
                               "checksum_indexes": [1], "checksum_constant": 1}},
         "cookies": [],
     })
-    client._x_hash = "test"  # the signed write stops at retirement, before any wire I/O
+    client._x_hash = "test"
     client.close_signed_sessions()
     return client
 

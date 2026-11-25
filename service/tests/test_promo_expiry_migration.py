@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""promo_campaigns.finish_days + expires_at migration (0125) matches create_all on temp SQLite, keeps rows,
-is idempotent (inspector guard), downgrades, and is the one head."""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness
 
 import os  # noqa: E402
 import sqlite3  # noqa: E402
@@ -56,7 +54,7 @@ def case_upgrade_and_downgrade():
         old, fresh = Path(tmp) / "old.db", Path(tmp) / "fresh.db"
         url = f"sqlite:///{old}"
         engine = sa.create_engine(url)
-        Base.metadata.create_all(engine)   # today's schema, then back to 0124's promo_campaigns
+        Base.metadata.create_all(engine)
         with engine.begin() as con:
             for c in NEW:
                 con.execute(sa.text(f"ALTER TABLE promo_campaigns DROP COLUMN {c}"))
@@ -77,7 +75,6 @@ def case_upgrade_and_downgrade():
         assert not set(NEW) & {c["name"] for c in sa.inspect(engine).get_columns("promo_campaigns")}
         with engine.connect() as con:
             assert con.execute(sa.text("SELECT name FROM promo_campaigns")).all() == [("P",)]
-        # Inspector guard: one column already there (init_db catch-up) still upgrades cleanly.
         with engine.begin() as con:
             con.execute(sa.text("ALTER TABLE promo_campaigns ADD COLUMN finish_days INTEGER"))
         _alembic(url, command.upgrade, REV)

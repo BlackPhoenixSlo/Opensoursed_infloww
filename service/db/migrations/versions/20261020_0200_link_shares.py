@@ -1,30 +1,3 @@
-"""link_shares — Infloww's Share links (public read-only link reports, 7 days)
-
-Backs service/link_share_api.py: one row per share link of some of a
-Creator's free trial links or tracking links.
-
-  link_shares.id                 PK, the public (non-secret) half of the URL
-  link_shares.secret             secrets.token_urlsafe, the URL's secret half
-  link_shares.account_id         FK accounts.id ON DELETE CASCADE, indexed
-  link_shares.kind               trial | campaign
-  link_shares.name               the owner's name for it
-  link_shares.of_ids_json        the links picked (JSON list of OF ids)
-  link_shares.include_earnings   Infloww's "Include earnings"
-  link_shares.rows_json          the report as the public sees it
-  link_shares.snapshot_at        when rows_json was last built (null: not yet)
-  link_shares.created_by         the owner's users.id
-  link_shares.created_at / expires_at (+7 days) / revoked_at
-
-The ORM model in db/models.py declares the same table, so `init_db()`'s
-create_all brings it to a booting box; this revision keeps the alembic chain
-canonical. Idempotent (inspector-guarded, house convention). Downgrade drops
-the table; that ends every share link (their reports are rebuilt from the
-owner's reads, nothing else is lost).
-
-Revision ID: 0079_link_shares
-Revises: 0078_shift_scope_versions
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -63,6 +36,7 @@ def upgrade() -> None:
     op.create_index("ix_link_shares_account_id", "link_shares", ["account_id"])
 
 
+# Downgrade ends every share link; reports are rebuilt from owner reads, nothing else is lost.
 def downgrade() -> None:
     if "link_shares" in set(sa.inspect(op.get_bind()).get_table_names()):
         op.drop_index("ix_link_shares_account_id", table_name="link_shares")

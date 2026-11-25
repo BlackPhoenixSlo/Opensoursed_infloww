@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""Priority mass message (automations/priority_mass + priority_mass_api) sends
-ONE direct message per fan of an audience frozen before the first send: read
-off OF's rosters (fail closed), minus every exclusion, at most 5,000 fans; job
-legs of at most `_LEG` paced, gated sends, chained until done; a claim left by a
-crash is never resent, a sent fan never again; cancel stops it, resume restarts
-a dead chain. Mocked OnlyFans only (FakeOF); nothing reaches the network.
-
-Run: ./venv/bin/python service/tests/test_priority_mass.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -59,7 +50,6 @@ class RateLimited(Exception):
 
 
 class FakeOF:
-    """`fans` / `following` / `lists` are the rosters OF returns; every send is recorded."""
     def __init__(self, fans=(), *, following=(), lists=None, with_id=True):
         self.fans = [{"id": f} for f in fans]
         self.following_rows = [{"id": f} for f in following]
@@ -68,11 +58,11 @@ class FakeOF:
         self.sent: list[tuple[int, str, dict]] = []
         self.fail: dict[int, Exception] = {}
         self.truncate = False
-        self.byid: list[int] = []     # by-id vault reads; every id reads deleted (404)
+        self.byid: list[int] = []
         self._next_id = 9_200_000_000_000
 
     def _page(self, rows, limit, offset):
-        if self.truncate:       # a roster that never ends: the crawl hits its backstop
+        if self.truncate:
             return {"list": [{"id": 10_000_000 + offset + i} for i in range(limit)], "hasMore": True}
         return {"list": rows[offset:offset + limit], "hasMore": offset + limit < len(rows)}
 
@@ -152,7 +142,6 @@ async def _leg(aid: str, rid: int) -> dict:
 
 
 async def _drain(aid: str, *, max_legs: int = 50) -> list[dict]:
-    """Run queued legs through the executor until none is due."""
     out = []
     for _ in range(max_legs):
         async with get_session() as s:
@@ -186,13 +175,12 @@ async def _queued_legs(aid: str) -> list[ScheduledJob]:
             ScheduledJob.status == "pending"))).scalars())
 
 
-# ── engine ────────────────────────────────────────────────────────────
 
 def case_the_audience_is_frozen_before_any_send_minus_every_exclusion():
     async def go():
         aid = "pm_freeze"
         await _seed_account(aid)
-        b = 7_000_000       # the blacklist is global: ids no other case uses
+        b = 7_000_000
         fake = _use_fake(FakeOF(fans=range(b + 1, b + 11), following=[b + 11, b + 12],
                                 lists={77: [b + 3]}))
         now = datetime.utcnow()
@@ -213,11 +201,8 @@ def case_the_audience_is_frozen_before_any_send_minus_every_exclusion():
         run = await _run_row(rid)
         assert run.status == pm.RUNNING and run.capped_count == 0, run.status
         rows = await _recipients(rid)
-        # +1 skip-listed, +2 blacklisted, +3 on the excluded list, +4 wrote to us,
-        # +5 heard from us, +6 opted out of mass DMs.
         want = [b + i for i in range(7, 13)]
         assert sorted(rows) == want, rows
-        # The first leg also sent to the frozen fans, at most `_LEG` of them.
         assert sorted(f for f, _, _ in fake.sent) == want, fake.sent
         assert all(p == {"send_purpose": "gated", "tries": 1} for p in PACED), PACED
     _sandboxed(go)
@@ -228,7 +213,7 @@ def case_an_unreadable_audience_stops_the_run_and_sends_nothing():
         aid = "pm_unread"
         await _seed_account(aid)
         fake = _use_fake(FakeOF(fans=range(1, 4)))
-        rid = await _new_run(aid, lists=("tagged",))       # a list we cannot read
+        rid = await _new_run(aid, lists=("tagged",))
         res = await _leg(aid, rid)
         assert res.get("reason") == "audience_unresolved", res
         fake.truncate = True
@@ -244,7 +229,7 @@ def case_legs_chain_until_every_fan_has_one_message_and_the_run_is_done():
     async def go():
         aid = "pm_chain"
         await _seed_account(aid)
-        fans = list(range(101, 126))                     # 25 fans = 3 legs of 10
+        fans = list(range(101, 126))
         fake = _use_fake(FakeOF(fans=fans))
         async with get_session() as s:
             s.add(Fan(account_id=aid, fan_id=101, real_name="Rob Smith", is_name_real=True))
@@ -261,8 +246,6 @@ def case_legs_chain_until_every_fan_has_one_message_and_the_run_is_done():
             rows = (await s.execute(select(Message).where(
                 Message.account_id == aid, Message.automation_kind == pm.KIND))).scalars().all()
         assert sorted(r.fan_id for r in rows) == fans, len(rows)
-        # Sent fans rest, a fan with no local row too (he gets one), and
-        # nothing is ever sent twice.
         async with get_session() as s:
             fan = await s.get(Fan, (aid, 101))
             rowless = await s.get(Fan, (aid, 102))
@@ -308,7 +291,7 @@ def case_a_fan_who_writes_in_mid_leg_is_skipped_at_his_claim():
 
         async def cooldown_then_fan_12_writes(account_id, fan_id, **kw):
             out = await real_cooldown(account_id, fan_id, **kw)
-            if fan_id == 11:            # after the leg began, before 12's claim
+            if fan_id == 11:
                 async with get_session() as s:
                     s.add(Message(account_id=aid, fan_id=12, message_id=77, direction="in",
                                   body="hey", created_at=datetime.utcnow()))
@@ -345,7 +328,7 @@ def case_a_timeout_may_have_sent_so_the_fan_is_unknown_a_refusal_is_failed():
         assert rows[1] == (pm.UNKNOWN, "transport") and rows[2] == (pm.FAILED, "error"), rows
         assert res["unknown"] == 1 and res["failed"] == 1, res
         await _drain(aid)
-        assert fake.sent == [], fake.sent       # neither is ever retried
+        assert fake.sent == [], fake.sent
     _sandboxed(go)
 
 
@@ -355,7 +338,7 @@ def case_a_slow_leg_yields_its_slot_and_chains():
         await _seed_account(aid)
         fake = _use_fake(FakeOF(fans=[1, 2, 3]))
         real = pm._LEG_BUDGET_S
-        pm._LEG_BUDGET_S = -1           # over budget at once: the leg sends nothing
+        pm._LEG_BUDGET_S = -1
         try:
             rid = await _new_run(aid)
             res = await _leg(aid, rid)
@@ -395,8 +378,6 @@ def case_send_outcomes_unreachable_no_id_rate_limit_and_rejected_media():
         rid = await _new_run(aid)
         res = await _leg(aid, rid)
         rows = await _recipients(rid)
-        # 1 is unreachable (skip-listed); 2 hit the rate limit: back to pending,
-        # the leg stops and the next one waits a minute.
         assert rows[1] == (pm.SKIPPED, "unreachable") and rows[2][0] == pm.PENDING, rows
         assert rows[3][0] == pm.PENDING and fake.sent == [], (rows, fake.sent)
         legs = await _queued_legs(aid)
@@ -428,7 +409,6 @@ def case_send_outcomes_unreachable_no_id_rate_limit_and_rejected_media():
         assert res.get("reason") == "media_rejected" and media.sent == [], res
         run = await _run_row(rid3)
         assert run.status == pm.ERROR and "media" in run.last_error, run.last_error
-        # The refused media was deleted on OF: re-checked by id (detached), it leaves the mirror.
         await asyncio.gather(*list(_send_failure._RECHECK_TASKS))
         assert media.byid == [900], media.byid
         async with get_session() as s:
@@ -437,10 +417,6 @@ def case_send_outcomes_unreachable_no_id_rate_limit_and_rejected_media():
 
 
 def case_a_run_deferred_past_its_deadline_skips_the_rest_and_ends():
-    """A rate limit re-queues the fan leg after leg; once no fan has left
-    pending for `_STALL_DEADLINE` since the run was made, the next leg skips
-    every pending fan ("deadline"), sends nothing, queues no leg and the run
-    is done."""
     async def go():
         aid = "pm_deadline"
         await _seed_account(aid)
@@ -465,9 +441,6 @@ def case_a_run_deferred_past_its_deadline_skips_the_rest_and_ends():
     _sandboxed(go)
 
 def case_an_old_run_still_sending_is_not_past_its_deadline():
-    """The deadline is on progress, not age: a run made 49 h ago whose last fan
-    was sent an hour ago stays pending through a deferred leg; once that send
-    is 49 h old the next leg skips the rest ("deadline")."""
     async def go():
         aid = "pm_progress"
         await _seed_account(aid)
@@ -492,7 +465,7 @@ def case_an_old_run_still_sending_is_not_past_its_deadline():
         await age(1)
         fake.fail[3] = OFAPIError('400 {"message":"Please allow 10 seconds"}',
                                   response=SimpleNamespace(status_code=400))
-        res = await _leg(aid, rid)      # deferred again, but not past the deadline
+        res = await _leg(aid, rid)
         got = await _recipients(rid)
         assert not res.get("done") and got[2] == got[3] == (pm.PENDING, None), (res, got)
         await age(49)
@@ -503,9 +476,6 @@ def case_an_old_run_still_sending_is_not_past_its_deadline():
 
 
 def case_a_crash_claim_sweep_is_no_progress_for_the_deadline():
-    """A run made 49 h ago whose only activity is a claim a crash left 49 h ago:
-    the sweep marks it unknown without counting as progress, so the same leg
-    skips the pending fan ("deadline") and sends nothing."""
     async def go():
         aid = "pm_stale_claim"
         await _seed_account(aid)
@@ -576,7 +546,6 @@ def case_a_cancelled_run_sends_nothing_more():
     _sandboxed(go)
 
 
-# ── API ───────────────────────────────────────────────────────────────
 
 def _body(**kw) -> dict:
     return {"account_id": CREATOR_A, "text": "hey you", "user_lists": ["fans"], **kw}
@@ -623,13 +592,12 @@ def case_the_list_counts_recipients_and_cancel_and_resume_work():
     async def go():
         _use_fake(fake)
         run = OWNER_A.post(ROUTE, json=_body(text="list me")).json()
-        await executor.run_once(CREATOR_A, pm.KIND)       # freeze + first leg
+        await executor.run_once(CREATOR_A, pm.KIND)
         got = OWNER_A.get(ROUTE, params={"account_id": CREATOR_A}).json()
         row = got["runs"][0]
         assert row["id"] == run["id"] and row["total"] == 30, row
         assert row["counts"] == {"sent": 10, "pending": 20}, row["counts"]
         assert got["max_recipients"] == 5000 and got["hourly_rate"] == 300, got
-        # The chain dies (its job is lost): stalled, and Resume requeues it.
         async with get_session() as s:
             await s.execute(sa.delete(ScheduledJob).where(ScheduledJob.kind == pm.KIND))
         assert OWNER_A.get(ROUTE, params={"account_id": CREATOR_A}).json()["runs"][0]["stalled"]
@@ -647,14 +615,11 @@ def case_the_list_counts_recipients_and_cancel_and_resume_work():
 
 
 def case_a_word_listed_after_create_stops_the_first_leg_whatever_its_spacing():
-    """create_run refuses on `sensitive_hits`; the leg runs it beside `filter_banned`, so a
-    phrase listed after the create stops the run at its first leg however the text spaces it,
-    and "ass" still never trips on "class"."""
     _clear_runs()
     agency = IDS["agency_a_owner"]
 
     async def go():
-        fake = _use_fake(FakeOF(fans=[701, 702, 703]))   # fans no earlier case rested
+        fake = _use_fake(FakeOF(fans=[701, 702, 703]))
         r = OWNER_A.post(ROUTE, json=_body(text="pay me on Cash\tApp {name}"))
         assert r.status_code == 200, r.text
         dirty = r.json()["id"]
@@ -680,8 +645,6 @@ def case_a_word_listed_after_create_stops_the_first_leg_whatever_its_spacing():
 
 
 def case_a_session_without_headers_is_a_structured_503_not_a_500():
-    """POST /admin/mass-messages/refresh on a Creator whose session file lacks `headers`
-    (OFClient raises KeyError): the same structured 503 as a missing session."""
     import accounts as account_registry
     import client_pool
 
@@ -707,7 +670,6 @@ def case_a_session_without_headers_is_a_structured_503_not_a_500():
             latest.write_bytes(had_latest)
 
 
-# ── the migration ─────────────────────────────────────────────────────
 
 def _load_migration():
     found = sorted((_MIGRATIONS / "versions").glob("*_priority_mass.py"))
@@ -748,7 +710,7 @@ def case_the_migration_is_on_the_single_head_and_round_trips():
     try:
         step(mod.upgrade)
         assert {"priority_mass_runs", "priority_mass_recipients"} <= tables(), tables()
-        step(mod.upgrade)       # idempotent
+        step(mod.upgrade)
         step(mod.downgrade)
         assert not {"priority_mass_runs", "priority_mass_recipients"} & tables(), tables()
         step(mod.upgrade)

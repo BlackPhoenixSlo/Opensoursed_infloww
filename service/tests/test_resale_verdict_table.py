@@ -1,35 +1,20 @@
 #!/usr/bin/env python3
-"""
-resale_verdict_of — table tests over the re-sale guard's pure half (the shell is
-ownership.resale_verdict: loads owned_or_seen_media + the vault mirror's kinds, then calls
-this). No DB, no loop:
-
-  case_verdict_table:     owned / seen-not-bought / mixed bundle / empty media, the photo
-                          half-fresh boundary, previews (videos still block, photos leave the
-                          denominator), unknown or blank kind (no rule), falsy ids dropped,
-                          previews outside the send ignored.
-  case_owned_media_scope: owned_media lists only the ids the reason is about.
-  case_never_mutates:     inputs untouched.
-
-Run: ./venv/bin/python service/tests/test_resale_verdict_table.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 from ownership import (  # noqa: E402
     RESALE_MOSTLY_OWNED_PHOTOS as PHOTOS, RESALE_OWNED_VIDEO as VIDEO, ResaleVerdict,
     resale_verdict_of,
 )
 
-V1, V2 = 101, 102                      # videos
-P1, P2, P3, P4 = 201, 202, 203, 204    # photos
-U1 = 301                               # unknown to the vault mirror
-B1 = 401                               # blank kind (VaultItem.kind NULL)
+V1, V2 = 101, 102
+P1, P2, P3, P4 = 201, 202, 203, 204
+U1 = 301
+B1 = 401
 KINDS = {V1: "video", V2: "video", P1: "photo", P2: "photo", P3: "photo", P4: "photo",
          B1: ""}
 
-# (label, owned, media, previews) -> expected
 TABLE = [
     ("empty media", {V1}, [], None, ResaleVerdict("", [], [], 0)),
     ("only falsy ids", {V1}, [0, None], None, ResaleVerdict("", [], [], 0)),

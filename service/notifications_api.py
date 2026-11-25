@@ -1,63 +1,3 @@
-"""service/notifications_api.py — the Agency owner's notification centre
-(roadmap W6 6.7, 6.10).
-
-Infloww's bell opens "System Notifications" (role changes, an employee who
-unsent a message, ...); ours is the OnlyFans feed. This is the Agency's own
-feed beside it: `agency_notifications` rows, owner-only (a chatter session is
-refused at `chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`; YAGNI until employees
-get notifications of their own). Under Master impersonation `require_user`
-is the impersonated owner, so the Master reads that owner's feed; marking it
-read is a mutation and refused like any other while impersonating.
-
-  GET  /admin/agency-notifications?limit&offset → {notifications[], unread, pinned[]}
-  POST /admin/agency-notifications/{id}/read    → {unread}
-  POST /admin/agency-notifications/read-all     → {unread}
-  POST /admin/agency-notifications/{id}/dismiss → {unread}   (read + off the list)
-  POST /admin/agency-notifications/dismiss-all  {up_to_id?} → {unread}   (rows id <= up_to_id)
-
-A dismissed row (`dismissed_at`) is read and gone from the list, but kept
-until the retention prune: its `dedupe_key` still stops a sweep (a missed
-clock-in, a dead session) from filing the same event again.
-
-Where the rows come from (settings_schema.NOTIFICATION_KINDS):
-
-  role_changed          PUT /admin/settings/roles, PUT /admin/employees/{id}/setup
-  employee_deactivated  DELETE or PATCH {is_active: false} /admin/employees/{id}
-  message_unsent        DELETE /api/of/v2/messages/{id} from a chatter session
-  clock_in_missed       `tick`, every TICK_S: a Shift running for CLOCK_IN_GRACE
-                        whose Employee has not clocked in
-  session_dead          account_health.mark_session_dead, once per dead episode
-  ultra_done            ultra_run, once per finished Ultra plan (links its plan page)
-  ultra_needs_you       ultra_run, an Ultra judge step waiting for the owner's pick (links the plan page;
-                        no switch: the run waits on it); login_queue, a pasted login that failed
-                        ("<email> not logged in") or timed out ("… not logged in after 5 min"; links
-                        /creators/logins?queue=<id>)
-  consent_required      consent_notices: OnlyFans wants the Creator's signed consent
-                        form (NC/AL law); one per Creator while it lasts
-  promo_keep_running    promo_create_guard: every automatic promo Re-create (one per
-                        Create reservation) and every time Inflowwww turns Keep running off
-
-A PINNED_KIND row is a standing problem, not news: it is no
-NOTIFICATION_KINDS switch (never filtered), `read` refuses it (409), read-all
-and the retention prune skip it, so it stays unread; the list answers it
-apart as `pinned` (the banner's source) and only while the Agency still holds
-its Creator (linked), and `_unread` (every count: the
-list, the reads, each push) counts it on the same terms. The read never
-deletes: `drop_pinned` does, once the problem is gone (consent_notices) or
-when the Creator is removed or unlinked from the Agency (the routes).
-
-The first three ride `employees.audit_middleware`: `audit_snapshot` reads the
-before-state of the few routes above (None for any other request, no read)
-and returns the request's after-step, which compares it with the state after
-a 2xx, so a save that changed no role, or a PATCH of an already inactive
-Employee, files nothing. Each kind is on unless the owner's `preferences`
-blob stores `notifications.<kind>: false`. One `notify` call files a
-request's (or a sweep's) notices for one Agency in one insert and pushes the
-owner's unread count once over SSE (`agency_notifications {unread}`, to the
-owner's sessions only: events.owner_audience). `tick` also drops rows older
-than RETENTION and pushes the new unread count to each Agency that lost
-unread ones.
-"""
 from __future__ import annotations
 
 import json
@@ -86,18 +26,13 @@ log = logging.getLogger("of-relay.notifications")
 
 router = APIRouter(prefix="/admin/agency-notifications", tags=["notifications"])
 
-# How long a running Shift waits for its clock-in before it is "missed", and
-# how often the sweep looks.
 CLOCK_IN_GRACE = timedelta(minutes=15)
 TICK_S = 5 * 60
-# Rows older than this are dropped by the sweep.
 RETENTION = timedelta(days=90)
 
 _SIGN_IN = "sign in as an account owner to read notifications"
 
-# The kind that cannot be read or dismissed (consent_notices.KIND): it leaves
-# by `drop_pinned` (the problem is solved, or the Agency dropped the Creator).
-# One row per (Agency, Creator): dedupe `pinned_key(account_id)`.
+# Cannot be read or dismissed: it leaves only by drop_pinned (problem solved or Creator dropped).
 PINNED_KIND = "consent_required"
 _PINNED_REFUSED = "this notification clears itself once the problem is solved"
 
@@ -107,18 +42,14 @@ def pinned_key(account_id: str) -> str:
 
 
 def _held_pinned(agency_user_id: str):
-    """The Agency's PINNED_KIND rows for Creators it still links (the unlink
-    and delete routes drop the row, so a link is the whole test)."""
     return (AgencyNotification.agency_user_id == agency_user_id) & (AgencyNotification.kind == PINNED_KIND) \
         & AgencyNotification.account_id.in_(select(UserAccount.account_id).where(UserAccount.user_id == agency_user_id))
 
 
-# ── Filing notifications ─────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
 class Notice:
-    """One notification to file; `dedupe` makes a second filing a no-op."""
-    kind: str  # one of NOTIFICATION_KINDS
+    kind: str
     text: str
     account_id: str | None = None
     employee_id: int | None = None
@@ -127,14 +58,12 @@ class Notice:
 
 
 async def _switched_off(s, agency_user_id: str) -> set[str]:
-    from settings_api import applied_blob  # lazy: settings_api imports employees, which imports this
+    from settings_api import applied_blob
     prefs = (await applied_blob(s, agency_user_id, "preferences")).get("notifications") or {}
     return {kind for kind in NOTIFICATION_KINDS if prefs.get(kind) is False}
 
 
 async def _unread(s, agency_user_id: str) -> int:
-    """The Agency's unread count, the one definition: its unread rows but
-    PINNED_KIND, plus the pinned rows `_pinned` shows (always unread)."""
     return (await s.execute(select(func.count(AgencyNotification.id)).where(or_(
         (AgencyNotification.agency_user_id == agency_user_id) & AgencyNotification.read_at.is_(None)
         & (AgencyNotification.kind != PINNED_KIND),
@@ -147,9 +76,6 @@ def _push(agency_user_id: str, unread: int) -> None:
 
 
 async def notify(agency_user_id: str, notices: Sequence[Notice]) -> int:
-    """File `notices` for the Agency in one insert, minus the kinds its owner
-    switched off and those whose `dedupe` key it already has; then push the
-    unread count once. Returns how many were filed."""
     if not notices:
         return 0
     async with get_session() as s:
@@ -169,10 +95,7 @@ async def notify(agency_user_id: str, notices: Sequence[Notice]) -> int:
     return filed
 
 
-# ── From the audit middleware ────────────────────────────────────────
 
-# What the middleware awaits after a 2xx: (request body, the audit row's
-# employee_id, its account_id), i.e. what was sent, who acted, on which Creator.
 AfterStep = Callable[[bytes, int | None, str | None], Awaitable[None]]
 
 _ROLES = re.compile(r"PUT /admin/settings/roles$")
@@ -182,9 +105,6 @@ _UNSEND = re.compile(r"DELETE /api/of/v2/messages/(\d+)$")
 
 
 async def audit_snapshot(method: str, path: str) -> AfterStep | None:
-    """The after-step of a request that may file a notification, holding the
-    state it read before the request; None for every other request (read
-    nothing). Never raises."""
     action = f"{method} {path}"
     try:
         if _ROLES.match(action):
@@ -194,7 +114,6 @@ async def audit_snapshot(method: str, path: str) -> AfterStep | None:
             e = await _owned_employee(int(m.group(1)))
             if e is None:
                 return None
-            # The route seeds the role presets first (employees._held_role_ids, validating the role); no owner's change.
             from settings_api import ensure_role_presets
             await ensure_role_presets(e.user_id)
             return await _roles_step(e.user_id)
@@ -209,8 +128,6 @@ async def audit_snapshot(method: str, path: str) -> AfterStep | None:
 
 
 async def _owned_employee(employee_id: int) -> Employee | None:
-    """The signed-in owner's own Employee, else None: the routes 404 anyone
-    else's, so another Agency's request reads (and seeds) nothing here."""
     user = get_request_user()
     if user is None:
         return None
@@ -225,10 +142,6 @@ async def _roles(s, agency_user_id: str) -> dict[str, Any]:
 
 
 async def _roles_step(agency: str) -> AfterStep:
-    """A roles blob write (the Roles tab, or one Employee's setup): one
-    `role_changed` per changed assignment of the Agency's own Employees (an
-    assignment key naming anyone else's is ignored), and one for changed
-    role definitions or enforcement."""
     async with get_session() as s:
         before = await _roles(s, agency)
 
@@ -250,8 +163,6 @@ async def _roles_step(agency: str) -> AfterStep:
 
 
 def _deactivation_step(agency: str, employee_id: int, was_active: bool) -> AfterStep:
-    """An Employee edit or delete: `employee_deactivated` only when it turned
-    an active Employee inactive."""
     async def after(_body: bytes, _employee_id: int | None, _account_id: str | None) -> None:
         if not was_active:
             return
@@ -264,9 +175,6 @@ def _deactivation_step(agency: str, employee_id: int, was_active: bool) -> After
 
 
 def _unsend_step(message_id: int) -> AfterStep:
-    """An unsent message: `message_unsent` when a chatter unsent it (the audit
-    row names its Mirror Employee, whose Agency is notified); the owner
-    unsending their own message is no news to them."""
     async def after(body: bytes, employee_id: int | None, account_id: str | None) -> None:
         if get_request_user() is not None or employee_id is None:
             return
@@ -294,9 +202,6 @@ def _role_names(roles: dict[str, Any]) -> dict[str, str]:
 
 
 def _role_changes(before: dict[str, Any], after: dict[str, Any]) -> list[tuple[str, str, str]]:
-    """(employee id, old role name, new role name) per changed assignment,
-    then ("", "", "<role names>") when role definitions or the enforcement
-    switch changed."""
     old_names, new_names = _role_names(before), _role_names(after)
     old_as, new_as = before.get("assignments") or {}, after.get("assignments") or {}
     out = [(k, old_names.get(old_as.get(k), "no role"), new_names.get(new_as.get(k), "no role"))
@@ -331,12 +236,8 @@ def _fan_name(fan: Fan | None) -> str | None:
     return fan.custom_nickname or fan.of_display_name or (f"@{fan.of_username}" if fan.of_username else None)
 
 
-# ── Dead sessions (account_health) ───────────────────────────────────
 
 async def notify_creator_owners(account_id: str, build: Callable[[str], Notice]) -> int:
-    """File `build(<the Creator's name>)` for every owner of the Creator; an
-    owner already holding its `dedupe` key is skipped without a write. Returns
-    how many were filed."""
     async with get_session() as s:
         filed = await file_for_creator_owners(s, account_id, build)
     await push_unread(filed)
@@ -344,10 +245,6 @@ async def notify_creator_owners(account_id: str, build: Callable[[str], Notice])
 
 
 async def file_for_creator_owners(s, account_id: str, build: Callable[[str], Notice]) -> list[str]:
-    """notify_creator_owners inside the caller's transaction `s`, so the notice
-    commits or rolls back with the change it reports (promo_create_guard's
-    settle). Returns the Agencies filed for: the caller pushes their unread
-    count (push_unread) after its commit."""
     owners = set((await s.execute(select(UserAccount.user_id).where(
         UserAccount.account_id == account_id))).scalars().all())
     acc = await s.get(Account, account_id)
@@ -370,9 +267,6 @@ async def file_for_creator_owners(s, account_id: str, build: Callable[[str], Not
 
 
 async def notify_session_dead(account_id: str, reason: str, since: datetime) -> None:
-    """One `session_dead` notification per owner of the Creator for the dead
-    episode that began at `since` (its `session_dead_at`). Never raises: the
-    flag it reports matters more."""
     try:
         await notify_creator_owners(account_id, lambda name: _session_dead_notice(account_id, name, reason, since))
     except Exception:
@@ -382,9 +276,7 @@ async def notify_session_dead(account_id: str, reason: str, since: datetime) -> 
 def _session_dead_notice(account_id: str, name: str, reason: str, since: datetime) -> Notice:
     data: dict[str, Any] = {"reason": reason}
     if reason == "otp_required":
-        # Browserbase login is the sign-in that takes the 2FA code: the row opens it (/creators?relink=).
-        # The link is not tied to this Creator (Browserbase login signs in whichever account the
-        # owner enters), so the text names whose account to sign in to.
+        # Browserbase login isn't tied to this Creator (signs in whichever account the owner enters), so the text names whose account.
         text = (f"{name} needs a 2FA code on OnlyFans: sign in to {name}'s OnlyFans account again "
                 f"with Browserbase login to resume")
         data["href"] = "/creators?relink=browserbase"
@@ -395,13 +287,8 @@ def _session_dead_notice(account_id: str, name: str, reason: str, since: datetim
                   data=data, dedupe=f"session_dead:{account_id}:{since.isoformat()}")
 
 
-# ── The periodic sweep: missed clock-ins, retention ──────────────────
 
 async def push_unread(agencies: Sequence[str]) -> None:
-    """Push the unread count to each Agency whose unread rows changed outside
-    `notify` (the sweep's prune, a cleared pinned row, file_for_creator_owners
-    after its caller commits): `notify` pushes only when it files, so a delete
-    alone would leave the badge stale."""
     if not agencies:
         return
     async with get_session() as s:
@@ -411,12 +298,8 @@ async def push_unread(agencies: Sequence[str]) -> None:
 
 
 async def drop_pinned(account_id: str, agencies: Iterable[str] | None = None) -> int:
-    """Delete the Creator's PINNED_KIND row of each Agency in `agencies`
-    (None: every Agency's) and push each one's new unread count. Returns how
-    many went."""
     key = pinned_key(account_id)
     async with get_session() as s:
-        # every Agency: users.id IN keeps the lookup on uq(agency_user_id, dedupe_key)
         who = (select(User.id).scalar_subquery() if agencies is None else sorted(set(agencies)))
         where = AgencyNotification.agency_user_id.in_(who) & (AgencyNotification.dedupe_key == key)
         hit = sorted(set((await s.execute(select(AgencyNotification.agency_user_id).where(where))).scalars().all()))
@@ -435,7 +318,7 @@ async def tick(now: datetime | None = None) -> int:
     Employee per occurrence (dedupe), so the sweep may run as often as it
     likes; a Shift that cannot be read (an unknown zone) is logged and
     skipped. Returns how many were filed."""
-    from clock_api import _clock_gate, _occurrence_at, _time_tracking  # lazy: clock_api imports employees
+    from clock_api import _clock_gate, _occurrence_at, _time_tracking
     now = now or datetime.utcnow()
     async with get_session() as s:
         old = (AgencyNotification.created_at < now - RETENTION) & (AgencyNotification.kind != PINNED_KIND)
@@ -490,7 +373,6 @@ async def tick(now: datetime | None = None) -> int:
     return filed
 
 
-# ── Routes ───────────────────────────────────────────────────────────
 
 def _row(n: AgencyNotification) -> dict[str, Any]:
     return {
@@ -506,8 +388,6 @@ def _row(n: AgencyNotification) -> dict[str, Any]:
 
 
 async def _pinned(s, agency_user_id: str) -> list[AgencyNotification]:
-    """The Agency's PINNED_KIND rows for Creators it still links, oldest
-    first; the others are hidden, not deleted (a read changes nothing)."""
     return list((await s.execute(select(AgencyNotification).where(_held_pinned(agency_user_id))
                                  .order_by(AgencyNotification.created_at, AgencyNotification.id))).scalars().all())
 
@@ -534,8 +414,6 @@ async def list_notifications(
 
 async def _set(user_id: str, notification_id: int | None, pending: ColumnElement[bool], values: dict[str, Any],
                up_to_id: int | None = None) -> dict[str, int]:
-    """Apply `values` to the owner's row `notification_id` (or every row with
-    an id up to `up_to_id`, None: all) still `pending`; pinned rows never."""
     async with get_session() as s:
         q = update(AgencyNotification).where(
             AgencyNotification.agency_user_id == user_id, (AgencyNotification.kind != PINNED_KIND), pending)
@@ -555,12 +433,10 @@ async def _set(user_id: str, notification_id: int | None, pending: ColumnElement
 
 
 async def _mark_read(user_id: str, notification_id: int | None) -> dict[str, int]:
-    """Read one row (or all)."""
     return await _set(user_id, notification_id, AgencyNotification.read_at.is_(None), {"read_at": datetime.utcnow()})
 
 
 async def _dismiss(user_id: str, notification_id: int | None, up_to_id: int | None = None) -> dict[str, int]:
-    """Take one row (or all up to `up_to_id`) off the list; a dismissed row is read too (an earlier read time stays)."""
     now = datetime.utcnow()
     return await _set(user_id, notification_id, AgencyNotification.dismissed_at.is_(None),
                       {"dismissed_at": now, "read_at": func.coalesce(AgencyNotification.read_at, now)}, up_to_id)
@@ -578,8 +454,7 @@ async def read_one(notification_id: int) -> dict[str, int]:
 
 @router.post("/dismiss-all")
 async def dismiss_all(up_to_id: int | None = Body(None, embed=True)) -> dict[str, int]:
-    # `up_to_id` = the newest id the client shows: rows filed after its fetch stay (the dedupe would keep
-    # them from ever being filed again). Absent (a tab from before this field) = every row.
+    # up_to_id: rows filed after the client's fetch stay (dedupe would never file them again).
     return await _dismiss(require_user(detail=_SIGN_IN).id, None, up_to_id)
 
 

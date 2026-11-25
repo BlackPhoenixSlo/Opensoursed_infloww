@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""lifecycle_messages (Smart Messages' Nearing expiry, Expired, Resubscribe and
-Birthday Triggers) must send a fan ONE configured message per event and nothing
-else: off by default, silent on a dry run, never twice for the same event (a
-no-id send included), capped per sweep, blind to skip-listed, paused,
-blacklisted and muted-creator fans, deaf to events from before the switch went
-on, and unmoved by a short or empty roster read. Mocked OnlyFans only (FakeOF);
-nothing reaches the network."""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import os
 import tempfile
@@ -51,7 +44,6 @@ def _iso(dt: datetime) -> str:
 
 def _sub(fid: int, *, sub: datetime, exp: datetime, renew: bool = True,
          renewed: bool = False) -> dict:
-    """A row of OF's active-subscriber list."""
     return {"id": fid, "subscribedOnData": {
         "subscribeAt": _iso(sub), "expiredAt": _iso(exp),
         "status": "active" if renew else "Set to Expire",
@@ -59,12 +51,9 @@ def _sub(fid: int, *, sub: datetime, exp: datetime, renew: bool = True,
 
 
 class FakeOF:
-    """Records every send; `roster` is what the active-subscriber list returns.
-    `price` is the fans' own subscribePrice (None: absent, the gate's no_price),
-    `refuse` the fans whose DMs OF refuses as can't-message."""
     def __init__(self, *, with_id: bool = True, subscribed: bool = True):
         self.sent: list[tuple[int, str]] = []
-        self.kw: list[dict] = []          # each send's keyword arguments, in order
+        self.kw: list[dict] = []
         self.probed: list[int] = []
         self.follows: list[int] = []
         self.discounts: list[tuple[int, int, int]] = []
@@ -76,8 +65,8 @@ class FakeOF:
         self.price: float | None = None
         self.refuse: set[int] = set()
         self.discount_error: str | None = None
-        self.reject_media = False         # refuse any media (OF's `mediaFiles` 400)
-        self.byid: list[int] = []         # by-id vault reads; every id reads deleted (404)
+        self.reject_media = False
+        self.byid: list[int] = []
         self._next_id = 9_100_000_000_000
 
     def follow_user(self, fan_id):
@@ -128,7 +117,6 @@ class FakeOF:
 
 
 class _OFStatus(Exception):
-    """An OF error carrying its status (and JSON body) on `.response`."""
     def __init__(self, status: int, body=None):
         super().__init__(f"{status}")
         resp = type("R", (), {"status_code": status, "json": staticmethod(lambda: body)})
@@ -216,7 +204,6 @@ async def _steps(aid: str, kind: str) -> dict:
 
 
 async def _enable(aid: str, kind: str, *, hours_ago: float = 0, **extra) -> None:
-    """On through the config route; `hours_ago` backdates the switch."""
     await _save(aid, kind, {"enabled": True, "text": TEXT, **extra})
     if hours_ago:
         at = (datetime.utcnow() - timedelta(hours=hours_ago)).isoformat()
@@ -229,7 +216,6 @@ async def _enable(aid: str, kind: str, *, hours_ago: float = 0, **extra) -> None
 
 
 async def _age_crawl(aid: str, minutes: float = 30) -> None:
-    """Make the last roster crawl `minutes` older so the next sweep crawls again."""
     async with get_session() as s:
         for r in (await s.execute(select(SubscriberSnapshot).where(
                 SubscriberSnapshot.account_id == aid))).scalars():
@@ -256,7 +242,6 @@ def _today_mmdd() -> str:
     return datetime.utcnow().strftime("%m-%d")
 
 
-# ── cases ─────────────────────────────────────────────────────────────
 
 def case_off_by_default_nothing_is_read_or_sent():
     async def go():
@@ -271,7 +256,6 @@ def case_off_by_default_nothing_is_read_or_sent():
             res = await _run(kind, aid)
             assert res == {"status": "skipped", "reason": "disabled", "sent": 0}, res
         assert fake.sent == [] and fake.crawls == 0, (fake.sent, fake.crawls)
-        # The registered entry points are the same sweep.
         res = await lm.run_birthday(aid, {}, run_id=1)
         assert res.get("reason") == "disabled", res
     _sandboxed(go)
@@ -293,13 +277,11 @@ def case_nearing_expiry_messages_non_renewing_fans_inside_the_window_once():
         ]
         await _enable(aid, lm.EXPIRY, hours_ago=20, hours=24)
         res = await _run(lm.EXPIRY, aid)
-        # 11 and 14: not renewing, inside 24h. 12 renews; 13 is two days out.
         assert sorted(f for f, _ in fake.sent) == [11, 14], (res, fake.sent)
         assert fake.sent[0][1] == "hey Rob, don't go 🥺", fake.sent
         assert PURPOSES == ["gated", "gated"], PURPOSES
         assert res.get("roster") == "crawled" and res.get("listed") == 4, res
         assert sorted(r.fan_id for r in await _sent_rows(aid, lm.EXPIRY)) == [11, 14]
-        # Never twice for the same expiry, and the cached crawl is reused.
         await _unpause(aid)
         res = await _run(lm.EXPIRY, aid)
         assert res.get("sent") == 0 and len(fake.sent) == 2, (res, fake.sent)
@@ -314,7 +296,6 @@ def case_nearing_expiry_does_not_chase_a_window_entered_before_the_switch():
         now = datetime.utcnow()
         await _seed_account(aid)
         await _seed_fan(aid, 15)
-        # Expires in 10h of a 24h window: the window opened 14h ago, before the switch.
         fake.roster = [_sub(15, sub=now - timedelta(days=20), exp=now + timedelta(hours=10),
                             renew=False)]
         await _enable(aid, lm.EXPIRY, hours=24)
@@ -330,8 +311,6 @@ def case_nearing_expiry_reaches_a_fan_who_turns_renewal_off_late_in_a_long_windo
         now = datetime.utcnow()
         await _seed_account(aid)
         await _seed_fan(aid, 16)
-        # A 72h window, on for four days. He expires in 10h, so his window opened
-        # 62h ago, and he only switched renewal off now: still worth the message.
         fake.roster = [_sub(16, sub=now - timedelta(days=20), exp=now + timedelta(hours=10),
                             renew=True)]
         await _enable(aid, lm.EXPIRY, hours_ago=96, hours=72)
@@ -360,13 +339,12 @@ def case_expired_messages_fans_gone_from_a_complete_crawl_n_hours_after_expiry()
         ]
         await _enable(aid, lm.EXPIRED, hours_ago=20, hours=24)
         res = await _run(lm.EXPIRED, aid)
-        assert res.get("sent") == 0, res          # everyone is still listed
-        # Next crawl: 21 and 23 are gone. 21 expired 30h ago (> 24h); 23 only 5h ago.
+        assert res.get("sent") == 0, res
         await _age_crawl(aid)
         fake.roster = [fake.roster[1]]
         res = await _run(lm.EXPIRED, aid)
         assert [f for f, _ in fake.sent] == [21], (res, fake.sent)
-        assert fake.sent[0][1] == "hey babe, don't go 🥺", fake.sent   # no known name
+        assert fake.sent[0][1] == "hey babe, don't go 🥺", fake.sent
         await _unpause(aid)
         res = await _run(lm.EXPIRED, aid)
         assert len(fake.sent) == 1, fake.sent
@@ -385,12 +363,10 @@ def case_a_truncated_or_empty_crawl_changes_nothing():
                        _sub(32, sub=now - timedelta(days=40), exp=now + timedelta(days=5))]
         await _enable(aid, lm.EXPIRED, hours_ago=20)
         await _run(lm.EXPIRED, aid)
-        # An empty read is not "everyone expired".
         await _age_crawl(aid)
         fake.roster = []
         res = await _run(lm.EXPIRED, aid)
         assert res.get("roster") == "empty" and fake.sent == [], (res, fake.sent)
-        # Nor is a read that hit the page backstop.
         lm._page_all_checked = lambda fetch: ([_sub(32, sub=now - timedelta(days=40),
                                                     exp=now + timedelta(days=5))], True)
         res = await _run(lm.EXPIRED, aid)
@@ -398,7 +374,7 @@ def case_a_truncated_or_empty_crawl_changes_nothing():
         async with get_session() as s:
             seen = {r.fan_id: r.seen_at for r in (await s.execute(select(SubscriberSnapshot).where(
                 SubscriberSnapshot.account_id == aid))).scalars()}
-        assert seen[31] == seen[32], seen         # neither unusable crawl was written
+        assert seen[31] == seen[32], seen
     _sandboxed(go)
 
 
@@ -410,20 +386,20 @@ def case_resubscribe_on_return_after_a_lapse_and_on_a_known_fans_fresh_start():
         await _seed_account(aid)
         await _seed_fan(aid, 41)
         await _seed_fan(aid, 42)
-        await _seed_fan(aid, 43, created_at=now - timedelta(days=30))   # known before
-        await _seed_fan(aid, 44, created_at=now - timedelta(hours=3))   # brand new fan
-        await _seed_fan(aid, 45, created_at=now - timedelta(days=30))   # a renewal
+        await _seed_fan(aid, 43, created_at=now - timedelta(days=30))
+        await _seed_fan(aid, 44, created_at=now - timedelta(hours=3))
+        await _seed_fan(aid, 45, created_at=now - timedelta(days=30))
         await _enable(aid, lm.RESUBSCRIBE, hours_ago=20)
         fake.roster = [_sub(41, sub=now - timedelta(days=60), exp=now + timedelta(days=1)),
                        _sub(42, sub=now - timedelta(days=60), exp=now + timedelta(days=9))]
         res = await _run(lm.RESUBSCRIBE, aid)
         assert res.get("sent") == 0, res
         await _age_crawl(aid)
-        fake.roster = [fake.roster[1]]            # 41 lapsed
+        fake.roster = [fake.roster[1]]
         await _run(lm.RESUBSCRIBE, aid)
         await _age_crawl(aid)
         fake.roster = [
-            _sub(41, sub=now - timedelta(hours=1), exp=now + timedelta(days=30)),   # back
+            _sub(41, sub=now - timedelta(hours=1), exp=now + timedelta(days=30)),
             fake.roster[0],
             _sub(43, sub=now - timedelta(hours=2), exp=now + timedelta(days=30)),
             _sub(44, sub=now - timedelta(hours=2), exp=now + timedelta(days=30)),
@@ -468,8 +444,6 @@ async def _claim_last_year(aid: str, fid: int) -> None:
 
 
 def case_frequency_once_greets_a_fan_once_ever_every_time_once_per_event():
-    """"Send only once when the fan matches the trigger": a fan greeted on last
-    year's birthday is not greeted again. "Every time": each birthday."""
     async def go():
         fake = _use_fake()
         aid = "lm_freq"
@@ -478,7 +452,7 @@ def case_frequency_once_greets_a_fan_once_ever_every_time_once_per_event():
             await _seed_fan(aid, fid, birthday=_today_mmdd())
             await _claim_last_year(aid, fid)
         await _seed_fan(aid, 57, birthday=_today_mmdd())
-        await _enable(aid, lm.BIRTHDAY)                  # Infloww's start: once
+        await _enable(aid, lm.BIRTHDAY)
         res = await _run(lm.BIRTHDAY, aid)
         assert [f for f, _ in fake.sent] == [57], (res, fake.sent)
         await _save(aid, lm.BIRTHDAY, {"frequency": "every"})
@@ -501,8 +475,6 @@ def case_the_effective_and_expiry_dates_bound_what_is_sent():
         res = await _run(lm.BIRTHDAY, aid)
         assert res == {"status": "skipped", "reason": "expired", "sent": 0}, res
         assert fake.sent == [] and fake.crawls == 0, fake.sent
-        # An Effective date later than the switch starts the window there: a
-        # Nearing expiry window opened before it is not chased.
         aid = "lm_window_expiry"
         await _seed_account(aid)
         await _seed_fan(aid, 59)
@@ -533,7 +505,6 @@ def case_media_a_price_and_auto_unsend_ride_on_the_message():
         await _run(lm.BIRTHDAY, aid)
         assert fake.kw == [{"media_files": [801, 802], "price": 12.0}], fake.kw
         assert [r.price_cents for r in await _sent_rows(aid, lm.BIRTHDAY)] == [1200]
-        # A PPV is never auto-unsent.
         assert await _unsend_jobs(aid) == []
         aid = "lm_media_free"
         await _seed_account(aid)
@@ -550,8 +521,6 @@ def case_media_a_price_and_auto_unsend_ride_on_the_message():
 
 
 def case_refused_media_is_rechecked_once_and_a_deleted_one_leaves_the_vault():
-    """OF refuses the media (deleted there): the text goes alone, and one by-id
-    re-check (404, deduped across fans) stamps the mirror row removed."""
     async def go():
         fake = _use_fake()
         fake.reject_media = True
@@ -564,7 +533,7 @@ def case_refused_media_is_rechecked_once_and_a_deleted_one_leaves_the_vault():
         await _seed_fan(aid, 66, birthday=_today_mmdd())
         await _enable(aid, lm.BIRTHDAY, media_ids=[806], price_cents=1200)
         res = await _run(lm.BIRTHDAY, aid)
-        await asyncio.gather(*list(_send_failure._RECHECK_TASKS))   # the re-check runs detached
+        await asyncio.gather(*list(_send_failure._RECHECK_TASKS))
         assert res.get("sent") == 2 and fake.kw == [{"media_files": []}] * 2, (res, fake.kw)
         assert fake.byid == [806], fake.byid
         async with get_session() as s:
@@ -573,8 +542,6 @@ def case_refused_media_is_rechecked_once_and_a_deleted_one_leaves_the_vault():
 
 
 def case_under_once_a_forced_test_is_never_held_back_and_never_counts():
-    """A `force_ids` run is the operator's test, not the event: "once" does not
-    skip a fan already greeted, and the test's claim does not use up his once."""
     async def go():
         fake = _use_fake()
         aid = "lm_once_forced"
@@ -582,11 +549,10 @@ def case_under_once_a_forced_test_is_never_held_back_and_never_counts():
         await _seed_fan(aid, 58, birthday=_today_mmdd())
         await _claim_last_year(aid, 58)
         await _seed_fan(aid, 59, birthday=_today_mmdd())
-        await _enable(aid, lm.BIRTHDAY)                  # once
+        await _enable(aid, lm.BIRTHDAY)
         res = await _run(lm.BIRTHDAY, aid, force_ids=[58, 59])
         assert sorted(f for f, _ in fake.sent) == [58, 59], (res, fake.sent)
         await _unpause(aid)
-        # The real birthday sweep: 58 had his once last year; 59's was only a test.
         res = await _run(lm.BIRTHDAY, aid)
         assert sorted(f for f, _ in fake.sent) == [58, 59, 59], (res, fake.sent)
     _sandboxed(go)
@@ -721,7 +687,6 @@ def case_the_config_route_validates_and_only_an_owner_switches_it_on():
         await _seed_account(aid)
         got = await _as("owner", aid, lambda: api.get_lifecycle_message_config(
             account_id=aid, kind=lm.EXPIRED))
-        # Infloww's start: send only once, free, no dates, no Auto-unsend.
         assert got["defaults"] == got["config"] == {
             "enabled": False, "text": "", "hours": 24, "messages": [], "frequency": "once",
             "media_ids": [], "price_cents": 0, "starts_at": None, "ends_at": None,
@@ -731,7 +696,6 @@ def case_the_config_route_validates_and_only_an_owner_switches_it_on():
         assert got["config"]["hours"] is None, got
         await _refused(_as("owner", aid, lambda: api.get_lifecycle_message_config(
             account_id=aid, kind="nope")), 422)
-        # Infloww's bounds: Expired 12..120, Nearing expiry 1..120, whole hours.
         for kind, bad in ((lm.EXPIRED, 11), (lm.EXPIRED, 121), (lm.EXPIRY, 0),
                           (lm.EXPIRY, 2.5), (lm.EXPIRY, True)):
             await _refused(_save(aid, kind, {"hours": bad}), 422)
@@ -751,7 +715,6 @@ def case_the_config_route_validates_and_only_an_owner_switches_it_on():
         assert (cfg["media_ids"], cfg["price_cents"], cfg["frequency"], cfg["unsend_minutes"],
                 cfg["ends_at"], cfg["hours"]) == (
             [3], 900, "every", 15, "2026-12-31T23:00:00+00:00", 1), cfg
-        # A rule saved before `frequency` existed reads (and runs) "every".
         async with get_session() as s:
             rule = (await s.execute(select(AutomationRule).where(
                 AutomationRule.account_id == aid, AutomationRule.kind == lm.EXPIRY))).scalar_one()
@@ -763,7 +726,6 @@ def case_the_config_route_validates_and_only_an_owner_switches_it_on():
         assert got["config"]["frequency"] == "every", got
         await _save(aid, lm.EXPIRY, {"media_ids": [], "price_cents": 0, "unsend_minutes": 0,
                                      "ends_at": None})
-        # On needs a text; a chatter may save it off but never switch it on.
         await _refused(_save(aid, lm.EXPIRY, {"enabled": True}), 422)
         await _refused(_save(aid, lm.EXPIRY, {"enabled": True, "text": TEXT},
                              principal="chatter"), 403)
@@ -782,9 +744,6 @@ def case_the_config_route_validates_and_only_an_owner_switches_it_on():
 
 
 def case_a_free_page_cannot_switch_on_the_paid_only_triggers():
-    """Infloww's `isPaidAutoRules`: Nearing expiry, Expired and Resubscribe are
-    refused on a free-subscription page; Birthday is not, saving off never is,
-    and a page whose tier cannot be read is not refused."""
     async def go():
         import account_page
         fake = _use_fake()
@@ -827,7 +786,6 @@ def case_the_generic_switch_refuses_to_turn_these_kinds_on():
             else:
                 raise AssertionError(f"the generic switch turned {kind} on")
             assert not any(r.is_enabled for r in await _rules(aid, kind))
-        # Switching OFF through it is always let through.
         await _enable(aid, lm.BIRTHDAY)
         await _as("chatter", aid, lambda: rules_api.switch_kind(rules_api.KindSwitch(
             account_id=aid, kind=lm.BIRTHDAY, enable=False)))
@@ -876,7 +834,6 @@ def case_end_to_end_a_switched_on_rule_is_materialised_and_run_by_the_executor()
 
 
 def _paid_page(fake: FakeOF, aid: str) -> None:
-    """OnlyFans reports the page at $9.99 (a discount's cap reads it)."""
     import account_page
     fake.me = lambda: {"subscribePrice": 9.99}
     account_page.invalidate(aid)
@@ -891,7 +848,6 @@ async def _follow_up_jobs(aid: str, kind: str) -> list[ScheduledJob]:
 
 
 async def _take_follow_up(aid: str, kind: str) -> dict:
-    """The pending follow-up job's payload, marked done, as the executor would."""
     job = (await _follow_up_jobs(aid, kind))[0]
     async with get_session() as s:
         (await s.get(ScheduledJob, job.id)).status = "done"
@@ -917,11 +873,9 @@ def case_a_trigger_picks_one_of_its_messages_and_one_variant_seeded_per_event():
         for fid, text in fake.sent:
             c = claims[fid]
             assert text in messages[c.message_idx]["variants"], (fid, text, c.message_idx)
-            # Seeded on (fan, event): the same event picks the same text again.
             idx = lm.pick(range(2), lm.BIRTHDAY, aid, fid, c.event_key, "message")
             assert idx == c.message_idx
             assert lm.pick(messages[idx]["variants"], lm.BIRTHDAY, aid, fid, c.event_key) == text
-        # The list view's text is the first message's first variant.
         assert (await _steps(aid, lm.BIRTHDAY))["text"] == "a1"
     _sandboxed(go)
 
@@ -942,7 +896,6 @@ def case_follow_ups_go_out_in_order_and_stop_for_good_on_a_reply():
         jobs = await _follow_up_jobs(aid, lm.BIRTHDAY)
         assert len(jobs) == 2, jobs
         assert all(timedelta(minutes=29) < j.run_at - before < timedelta(minutes=31) for j in jobs)
-        # 301 gets both follow-ups; the second waits its own delay after the first.
         await _unpause(aid)
         jobs301 = [j for j in jobs if '"fan_id": 301' in j.payload_json]
         async with get_session() as s:
@@ -958,7 +911,6 @@ def case_follow_ups_go_out_in_order_and_stop_for_good_on_a_reply():
         assert await _follow_up_jobs(aid, lm.BIRTHDAY) == []
         assert [r.body for r in await _sent_rows(aid, lm.BIRTHDAY) if r.fan_id == 301] \
             == ["<p>hb Bo</p>", "<p>f1 Bo</p>", "<p>f2</p>"]
-        # 302 says something after his birthday message: the sequence ends, unsent.
         async with get_session() as s:
             (await s.get(ScheduledJob, [j for j in jobs if j not in jobs301][0].id)).status = "pending"
             s.add(Message(account_id=aid, fan_id=302, message_id=9_200_000_000_001,
@@ -983,14 +935,12 @@ def case_a_busy_fan_retries_and_a_rule_switched_off_drops_the_sequence():
         assert res.get("sent") == 1, res
         job = (await _follow_up_jobs(aid, lm.BIRTHDAY))[0]
         assert job.rule_id is not None and '"_followup": true' in job.payload_json, job.payload_json
-        # Still resting from the birthday message: tried again later, not lost.
         async with get_session() as s:
             (await s.get(ScheduledJob, job.id)).run_at = datetime.utcnow() - timedelta(seconds=1)
         res = await executor.run_once(aid, lm.BIRTHDAY)
         assert res.get("reason") == "busy", res
         retry = (await _follow_up_jobs(aid, lm.BIRTHDAY))[0]
         assert json.loads(retry.payload_json)["follow_up"]["tries"] == 1
-        # Off: the queued follow-up is cancelled and never sends.
         await _save(aid, lm.BIRTHDAY, {"enabled": False})
         await _unpause(aid)
         async with get_session() as s:
@@ -1011,7 +961,6 @@ def case_expired_follows_first_through_the_money_gate_and_a_refusal_is_not_quara
         fake.price = 0
         fake.refuse = {402}
         res = await _run(lm.EXPIRED, aid, force_ids=[401, 402])
-        # Followed before the message, through the paced write seam.
         assert fake.follows == [401, 402], fake.follows
         assert fake.calls[:2] == ["follow", "send"], fake.calls
         assert PURPOSES == ["gated"] * 4, PURPOSES
@@ -1022,12 +971,10 @@ def case_expired_follows_first_through_the_money_gate_and_a_refusal_is_not_quara
             assert (await s.execute(select(SkipList).where(
                 SkipList.account_id == aid, SkipList.fan_id == 402))).first() is None
             assert (await s.get(Fan, (aid, 402))).automation_paused_until is None
-        # A priced profile is never followed (it would PAY); the message still goes.
         fake.price = 9.99
         res = await _run(lm.EXPIRED, aid, force_ids=[403])
         assert fake.follows == [401, 402] and fake.sent[-1][0] == 403, (fake.follows, fake.sent)
         assert res.get("follow_outcomes") == {"paid_profile": 1}, res
-        # Nearing expiry never follows.
         await _enable(aid, lm.EXPIRY)
         await _seed_fan(aid, 404)
         await _run(lm.EXPIRY, aid, force_ids=[404])
@@ -1048,11 +995,9 @@ def case_nearing_expiry_gives_the_discount_before_the_message_and_none_without_i
         res = await _run(lm.EXPIRY, aid, force_ids=[501])
         assert fake.discounts == [(501, 20, 2)] and fake.calls == ["discount", "send"], fake.calls
         assert res.get("discounted") == 1 and res.get("sent") == 1, res
-        # A discount OF refused means no message promising it.
         fake.discount_error = "500 boom"
         res = await _run(lm.EXPIRY, aid, force_ids=[502])
         assert res.get("errors") == 1 and [f for f, _ in fake.sent] == [501], (res, fake.sent)
-        # Expired offers none: OF's handling of a lapsed fan's discount is unverified.
         await _refused(_save(aid, lm.EXPIRED, {"messages": [{
             "variants": ["x"], "discount": {"percent": 20, "months": 2}}]}), 422)
     _sandboxed(go)
@@ -1082,11 +1027,9 @@ def case_the_config_route_validates_messages_and_reads_a_text_only_rule():
              "discount": {"percent": 15, "months": 1}},
             {"variants": ["d"], "follow_ups": [], "discount": None}], out
         assert out["config"]["text"] == "a", out
-        # Turning on needs the messages in the same request; an empty list never.
         await _save(aid, lm.EXPIRY, {"enabled": False})
         await _refused(_save(aid, lm.EXPIRY, {"enabled": True}), 422)
         await _refused(_save(aid, lm.EXPIRY, {"enabled": True, "messages": []}), 422)
-        # A rule saved before messages existed reads as its text, one message.
         async with get_session() as s:
             s.add(AutomationRule(account_id=aid, name="Birthday", kind=lm.BIRTHDAY,
                                  trigger_json="{}", is_enabled=False,
@@ -1113,10 +1056,10 @@ def case_buyers_are_the_messaged_fans_who_spent_within_the_window():
             for fid, cents, at, status in (
                     (601, 500, now + timedelta(hours=1), "cleared"),
                     (601, 700, now + timedelta(days=2), "loading"),
-                    (601, 900, now + timedelta(days=9), "cleared"),     # past the window
+                    (601, 900, now + timedelta(days=9), "cleared"),
                     (601, 300, now + timedelta(hours=2), "refunded"),
-                    (602, 400, now - timedelta(days=1), "cleared"),     # before the message
-                    (603, 800, now + timedelta(hours=1), "cleared")):   # never got it
+                    (602, 400, now - timedelta(days=1), "cleared"),
+                    (603, 800, now + timedelta(hours=1), "cleared")):
                 s.add(Transaction(account_id=aid, fan_id=fid, kind="tip", amount_cents=cents,
                                   occurred_at=at, status=status))
         got = await _as("owner", aid, lambda: api.get_lifecycle_message_buyers(
@@ -1142,12 +1085,10 @@ def case_a_follow_up_is_claimed_once_and_a_failure_after_the_send_never_resends_
         jobs = {json.loads(j.payload_json)["follow_up"]["fan_id"]: json.loads(j.payload_json)
                 for j in await _follow_up_jobs(aid, lm.BIRTHDAY)}
         await _unpause(aid)
-        # The same job run twice (a requeue) sends the step once.
         assert (await _run(lm.BIRTHDAY, aid, **jobs[321])).get("sent") == 1
         await _unpause(aid)
         res = await _run(lm.BIRTHDAY, aid, **jobs[321])
         assert res == {"status": "skipped", "reason": "already_sent", "sent": 0}, res
-        # OF took it, then the bookkeeping broke: done, not an error to retry.
         real = lm.write_outbound_attribution
 
         async def broken(**kw):
@@ -1161,7 +1102,6 @@ def case_a_follow_up_is_claimed_once_and_a_failure_after_the_send_never_resends_
         await _unpause(aid)
         assert (await _run(lm.BIRTHDAY, aid, **jobs[322])).get("reason") == "already_sent"
         assert sorted(t for f, t in fake.sent if t == "f1") == ["f1", "f1"], fake.sent
-        # The claim carries no message index: the Buyers list never reads it.
         async with get_session() as s:
             keys = {c.event_key: c.message_idx for c in (await s.execute(
                 select(LifecycleMessageClaim).where(LifecycleMessageClaim.account_id == aid,
@@ -1191,11 +1131,9 @@ def case_a_discount_above_what_onlyfans_grants_for_the_price_is_refused():
             raise AssertionError("a 20% discount saved on a $5.99 page")
         assert (await _save(aid, lm.EXPIRY, msg(15)))["config"]["messages"][0]["discount"] \
             == {"percent": 15, "months": 1}
-        # A price that cannot be read cannot vouch for the discount.
         fake.me = lambda: (_ for _ in ()).throw(RuntimeError("session dead"))
         account_page.invalidate(aid)
         await _refused(_save(aid, lm.EXPIRY, msg(5)), 422)
-        # No discount, no price read needed.
         assert (await _save(aid, lm.EXPIRY, {"messages": [{"variants": ["y"]}]}))["config"]["text"] == "y"
         account_page.invalidate(aid)
     _sandboxed(go)
@@ -1217,7 +1155,6 @@ def case_a_backlog_of_due_follow_ups_never_holds_back_the_rules_own_run():
             jobs = (await s.execute(select(ScheduledJob).where(
                 ScheduledJob.account_id == aid, ScheduledJob.status == "pending"))).scalars().all()
         assert len(jobs) == 4, jobs
-        # The rule's run is claimed first, then the follow-ups in their order.
         order = [json.loads((await executor._claim_due_job(aid, lm.BIRTHDAY)).payload_json)
                  for _ in range(4)]
         assert "follow_up" not in order[0], order[0]
@@ -1241,10 +1178,6 @@ def case_every_text_is_cut_to_the_cap_on_save():
 
 
 def case_pick_targets_table_claimed_and_gated_fans_drop_out_per_kind():
-    """The sweep's pure selection: per kind, an already-claimed fan drops out
-    silently; no row / outside the audience / hard-skipped / blacklisted /
-    paused / muted-creator counts as skipped; the rest are planned in event order,
-    each with a variant of its picked message, deterministically."""
     from types import SimpleNamespace as NS
     now = datetime(2026, 6, 1, 12, 0, 0)
     msgs = [{"variants": ["a", "b"]}, {"variants": ["c"]}]
@@ -1253,8 +1186,8 @@ def case_pick_targets_table_claimed_and_gated_fans_drop_out_per_kind():
             6: fan(automation_paused_until=now + timedelta(minutes=1)),
             7: fan(is_muted=True, source="creator_we_follow"),
             8: fan(automation_paused_until=now - timedelta(minutes=1))}
-    events = {i: f"ev{i}" for i in range(1, 10)}          # 9 has no Fan row
-    rows = [  # (name, done, kept, hard_skip, blacklist, want planned, want skipped)
+    events = {i: f"ev{i}" for i in range(1, 10)}
+    rows = [
         ("all clear", set(), set(events), set(), set(), [1, 2, 3, 4, 5, 8], 3),
         ("already claimed dropped, not skipped", {1, 2}, set(events), set(), set(),
          [3, 4, 5, 8], 3),

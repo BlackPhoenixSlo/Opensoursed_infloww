@@ -1,3 +1,23 @@
+"""full_ai_rules — the Full AI Chat Turn as data, for the read-only AI rules page (/ai-rules).
+
+  rules(mode) -> {mode, versions, nodes: [{id, title, group, summary, flags, blocks}], edges}
+
+Every prompt, Jev question, threshold, table and key below is read off the live code objects
+(the constants, or the pure builders called with a placeholder Fan), never pasted here, so the
+page cannot drift from what a Turn sends. Hand-written: the step titles and 1-2 sentence
+summaries, the Sell executor's short rules (numbers from its constants), the edge labels, the
+prompt-catalog ids (docs/prompts/README.md), the route probes' "when" text, the fold table,
+the floor reasons and the jev_json / reply_json key lists (dict literals inside run_turn), the
+Offer resolver's step "when" text, the Offer answer check's rule text and the vault switches'
+text (keys and steps read off `full_ai_offer_details` and `vault_settings`).
+
+A block: {label, kind: prompt|table|list|note, text | rows | items, source, doc?, flag?, qid?}.
+A prompt block may also carry `items` (a question's criteria and cut-off); a table's first row
+is its header. `flag` names the config key the wording rides on.
+
+Mode "test" (and "live", the same page) is the full Turn (full_ai_turn.run_turn). No Shadow view (owner
+2026-11-15: Shadow is gone from the page, never restored). Pure: no DB, no network.
+"""
 from __future__ import annotations
 
 from dataclasses import fields
@@ -26,13 +46,21 @@ from automations import full_ai_writers as writers
 from automations import welcome_chatter_for_info as wcfi
 from db.models import AiDecision
 
+# The rules route's modes: both are the full Turn (`full_ai_mode.full`).
 MODES = ("test", "live")
 
+# Config keys whose gate checks `full(mode)` (test + live). The
+# full_ai_writers gates by key; test_full_ai_rules.py probes every `*_flag` there against this map.
+# `draft_questions`' gate is inline in full_ai_turn._route.
 GATES = {"sext_scene": writers.scene_flag, "lead_in": writers.lead_flag, "sell_nearest": writers.nearest_flag,
          "sell_spacing": writers.spacing_flag, "he_likes": writers.likes_flag, "sell_bundle": writers.bundle_of,
          "chat_tease": writers.tease_flag, "ask_implied": writers.implied_flag,
          "info_wide": writers.wide_flag, "sell_count": writers.count_flag}
+# Config keys only live reads: the live sender's owner check (spec 04b, `full_ai_owner_io`) and the catch-up's
+# schedule (`full_ai_catchup`). Test ignores them.
 LIVE_ONLY_KEYS = ("top_spend_cents", "fans", "catchup_minutes")
+# Router wording variants a test-only key swaps in: (router dict, flag, label). `TEST_NEW_ONLY` (no key: test and
+# live always ask it) is the main block (`_router`), as `_router_jev._questions` merges it.
 _VARIANTS = (("TEST_SPACING", "sell_spacing", "Spacing"), ("TEST_LIKES", "he_likes", "He likes"),
              ("TEST_IMPLIED", "ask_implied", "Implied"))
 _KEYSET_FLAG = {"SCENE": "sext_scene", "SPACING": "sell_spacing", "LIKES": "he_likes", "TEASE": "chat_tease"}
@@ -101,6 +129,7 @@ def _criteria(criteria: Any) -> list[str]:
 
 
 def _cutoff(qid: str) -> float | None:
+    """`router.fired`'s threshold in test / live: a `TEST_THRESHOLDS` value replaces `THRESHOLDS`'."""
     test = router.TEST_THRESHOLDS.get(qid)
     return router.THRESHOLDS.get(qid) if test is None else test
 
@@ -207,6 +236,7 @@ def _router(mode: str) -> dict:
 
 
 def _variants(qid: str, kind: str) -> list[dict]:
+    """The `_VARIANTS` wordings that replace `qid`'s when their key is on."""
     out = []
     for name, flag, label in _VARIANTS:
         spec = getattr(router, name).get(qid)
@@ -221,9 +251,12 @@ def _variants(qid: str, kind: str) -> list[dict]:
 
 
 def _probes() -> list[tuple[str, dict]]:
+    """(when, Facts kwargs): one probe per table row, in walk order; `decide_turn` names the row and
+    Route."""
     on = {"draft_on": True, "scene": True, "chat_tease": True}
     p: list[tuple[str, dict]] = [("Jev failed (any error)", {"jev_ok": False})]
     p += [(f"{q} fired", {"fired": {q}}) for q, _ in decide._FIRST]
+    # Offer details (`Facts.offer_details`): above the Pending tease
     od = {"fired": {"asks_offer_details"}, "offer_details": True, **on}
     yes = {**od, "fired": {"asks_offer_details", "says_yes_to_offer"}, "pending_offer": True}
     p += [("asks_offer_details fired: a question about an Offer already sent", od),
@@ -350,6 +383,7 @@ def _fan_info() -> dict:
 
 
 def info_versions() -> dict[str, str]:
+    """`info_version(lead, likes, wide)` per flag combo a Turn can record."""
     on = lambda x: "on" if x else "off"   # noqa: E731
     return {f"lead_in {on(a)}, he_likes {on(b)}, info_wide {on(c)}": info.info_version(a, b, c)
             for a in (False, True) for b in (False, True) for c in (False, True)}
@@ -530,7 +564,9 @@ _FLAGGED = (("LEAD_HEAD", "lead_in"), ("LEAD_LINES", "lead_in"), ("LEAD_EXAMPLES
             ("SELF_GIVE", "lead_in"), ("NEAREST_NOTE", "sell_nearest"), ("SEXT_SCENE", "sext_scene"),
             ("SCENE_STAGE", "sext_scene"), ("SCENE_SELL", "sext_scene"), ("SCENE_NARRATION", "sext_scene"),
             ("SCENE_SELF", "sext_scene"), ("SELL_OFF_SCENE", "sext_scene"), ("RIDE_NOTE", "chat_tease"))
+# Test / live twins of the old hot wording (off a scene Turn; no config key).
 _TEST_TWINS = ("SEXT_HOT_TEST", "SELL_STEP_TEST", "ESCALATION_TEST", "MANIFEST_TEST")
+# Test / live wording with no config key and no twin.
 _FULL_ONLY = ("OFFER_OPEN",)
 _RESOLVER_WHEN = {
     "quote_reply": "he quote-replied to an Offer's card (live: its OF message; Test chat: the marked Turn)",
@@ -684,6 +720,7 @@ def _chain() -> dict:
                      "one rewrite on the Writer that answered, else the fallback caption"], f"{_FT}:_claim_audit",
                     doc=_DOC["fallback_caption"]),
               _note("Docs", "Stages, order and gaps: docs/prompts/post-processing.md.", f"{_FT}:_chain")]
+    # the Heat check runs wherever a Writer writes (spec 06)
     blocks.insert(-1, _prompt(
         f"Heat check: {heat.QID} (Score)", heat.REPLY_LEVEL["instructions"],
         "service/automations/_heat_jev.py:REPLY_LEVEL", items=_criteria(heat.REPLY_LEVEL["criteria"])
@@ -751,6 +788,7 @@ _VAULT_SWITCHES = {
 
 
 def _vault_switches() -> list[dict]:
+    """The vault switches table (test and live)."""
     rows = [["key", "default", "what it does"]]
     rows += [[k, "on" if vault_settings.DEFAULTS[k] else "off", _VAULT_SWITCHES.get(k, "")]
              for k in vault_settings.KEYS]
@@ -779,6 +817,7 @@ def _edges() -> list[dict[str, str]]:
 
 
 def rules(mode: str = "test") -> dict[str, Any]:
+    """The page's whole payload for `mode` ("test" | "live"; live = test). Pure."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     nodes = [_his_lines(), _router(mode), _route_table(), _fan_info(), _store(),

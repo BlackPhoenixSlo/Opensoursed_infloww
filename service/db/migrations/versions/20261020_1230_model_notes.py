@@ -1,17 +1,3 @@
-"""model_notes — My Automations › Get to know fans' short "Model info" note
-
-`account_ai_config.model_notes` (TEXT, NULL): a short free-text note about the
-model, editable by anyone with access to the account, pinned into every chat
-prompt by automations._persona.compose_persona. NULL until someone saves one.
-
-The ORM model declares the same column, so `init_db()`'s ADD-COLUMN catch-up
-brings it to a booting box; this revision keeps the alembic chain canonical.
-Idempotent (inspector-guarded, house convention). Downgrade drops the column.
-
-Revision ID: 0092_model_notes
-Revises: 0089_agency_notifications
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence

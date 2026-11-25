@@ -1,36 +1,3 @@
-"""service/of_promos.py — shared OnlyFans promo helpers.
-
-Used by BOTH `promotions_api` (the Growth → Promotion surface) and
-`automations/promo_reactivate` (the re-arm automation), so the OF contract lives
-in exactly one place. Deliberately free of FastAPI imports so the automation
-plugin scan stays light. The /trials fetch lives here too (`fetch_of_trials`):
-trial_links_api and link_metrics' pre-warm both read it, and link_metrics
-cannot import trial_links_api (which imports link_metrics).
-
-The contract below was captured LIVE (2026-07-22, Ava):
-  • GET  /promotions  → {"hasMore": bool, "items": [ {...}, ... ]}   (NOT "list")
-  • POST /promotions  → a LIST containing the created promo: [ {...} ]
-  • create requires `discount` — an INTEGER PERCENT in [1, 100]; `price` is not
-    a valid field.
-  • an item carries: id, message, price, type, claimsCount, subscribeCounts,
-    subscribeDays, createdAt, finishedAt, isFinished, canClaim.
-    There is NO `discount` on read — the mirror row is the only record of it.
-  • `isFinished` is NOT a reliable liveness flag: OF leaves it False on spent
-    promos indefinitely (9 of Ava's 304, oldest 2025-12, all canClaim=False).
-    A promo is on offer only when isFinished is false AND canClaim isn't false.
-  • GET /promotions is PAGED (10 by default, limit honoured to 100+) and its
-    `hasMore` is ALWAYS true — stop on a short page, never on hasMore.
-  • deleting a promo does not remove it from /promotions; OF flips it to
-    isFinished=true / canClaim=false and keeps it in history.
-
-A history longer than the page cap is read in full at most once per
-PROMO_HISTORY_REREAD_S (`fetch_of_promos`' memo, docs/spec/phase-03-smaller-cuts.md).
-
-Env knobs (read at call time, through `promo_history_reread_s()`):
-  PROMO_HISTORY_REREAD_S=86400   inside it, a capped account's reads page only to the
-                                 promotions that can still change (the rest from the
-                                 memo); 0 = a full read every call (the old behaviour)
-"""
 from __future__ import annotations
 
 import asyncio
@@ -51,7 +18,6 @@ log = logging.getLogger("of-relay.of_promos")
 
 
 def of_field(item: dict, *names, default=None):
-    """First present key among `names` (OF field spellings drift)."""
     for n in names:
         if n in item and item[n] is not None:
             return item[n]
@@ -59,7 +25,6 @@ def of_field(item: dict, *names, default=None):
 
 
 def safe_int(v, default: int = 0) -> int:
-    """Tolerant int coercion — OF drift ('30.0', dicts, None) must NEVER 500."""
     try:
         if isinstance(v, bool):
             return int(v)
@@ -69,7 +34,6 @@ def safe_int(v, default: int = 0) -> int:
 
 
 def coerce_of_id(v) -> int | None:
-    """OF entry id → int, or None when it isn't numeric (drift-safe)."""
     try:
         return int(v)
     except (TypeError, ValueError):
@@ -80,28 +44,15 @@ to_cents = cents_or_zero
 
 
 def normalise_of_promo(item: dict) -> dict:
-    """One OF promo entry → our flat shape (coercion never raises).
-
-    Liveness needs BOTH `isFinished` and `canClaim`. OF does not reliably flip
-    isFinished on a spent promo: 9 of Ava's 304 promos carry isFinished=False
-    with canClaim=False, the oldest from 2025-12 — dead for months. Reading
-    isFinished alone showed them as live campaigns in the UI, and would have
-    made promo_reactivate stand down forever ("a promo is already live") on an
-    account that actually has no offer running.
-
-    A filled claim cap is ended too: `subscribe_counts > 0 and claims >=
-    subscribe_counts` is not live, whatever the flags say (OF may lag flipping
-    them). 0 (OF echoes null) is unlimited, never capped.
-    """
     finished = bool(of_field(item, "isFinished", default=False))
     can_claim = item.get("canClaim")
     cap = safe_int(of_field(item, "subscribeCounts", "subscribe_counts", default=0))
     raw_claims = of_field(item, "claimsCount", "countSubscribers", "subscribersCount")
     claims = safe_int(raw_claims, default=0)
-    # A missing or junk count reads as 0 above but is never trusted (Keep running's memo).
+    # A missing or junk count reads as 0 but is never trusted.
     claims_present = raw_claims is not None and safe_int(raw_claims, default=-1) >= 0
     capped = cap > 0 and claims >= cap
-    # Absent canClaim → don't infer death from it; only an explicit False counts.
+    # Absent canClaim: don't infer death; only an explicit False counts.
     flags_live = (not finished) and (can_claim is not False)
     is_live = flags_live and not capped
     return {
@@ -112,27 +63,18 @@ def normalise_of_promo(item: dict) -> dict:
         "message": of_field(item, "message", "text", default=""),
         "promo_type": of_field(item, "type", default="all"),
         "created_at": of_field(item, "createdAt"),
-        # OF's expiry instant (ISO, null = none): the create path stores it as expires_at.
         "finished_at": of_field(item, "finishedAt"),
-        # performance = how many claimed it
         "subscriber_count": claims,
         "claims_present": claims_present,
         "can_claim": can_claim,
-        # "finished" here means "not on offer", which is what every caller
-        # actually wants to know.
         "is_finished": not is_live,
-        # Ended only by our claims >= cap reading while OF's own flags still say live:
-        # Keep running re-creates on it only with a trusted claim history.
+        # Ended only by our claims >= cap reading while OF's flags still say live: re-create needs a trusted claim history.
         "cap_inferred": flags_live and capped,
         "status": "active" if is_live else "finished",
     }
 
 
 def promo_expires_at(finished_at, finish_days: int | None, created: datetime) -> datetime | None:
-    """When a just-made promo stops being on offer (naive UTC), or None (no expiry known):
-    OF's `finishedAt` when it gave one in the future (it is null for most), else
-    `created` + finish_days days when finish_days > 0 (our guess from what was sent),
-    else None. Never raises (a junk finishedAt reads as absent)."""
     of = parse_iso(finished_at)
     if of is not None and of > created:
         return of
@@ -141,16 +83,10 @@ def promo_expires_at(finished_at, finish_days: int | None, created: datetime) ->
     return None
 
 
-# A promo's audience: OF's "all" (new subscribers), "expired", or both. OF's own
-# Start campaign (ModalPromotion saveForm) sends `type` as a list; a single
-# audience still goes as the bare string the live-verified create used. The
-# mirror stores one String column, so both is kept as "all,expired".
 PROMO_AUDIENCES = ("all", "expired")
 
 
 def promo_type_store(value) -> str:
-    """Create-body `type` (a string or OF's list) -> the mirror's promo_type.
-    Raises ValueError on anything but "all" / "expired" (or both)."""
     given = {value} if isinstance(value, str) else set(value or [])
     if not given or not given <= set(PROMO_AUDIENCES):
         raise ValueError('type: "all" and/or "expired"')
@@ -158,18 +94,11 @@ def promo_type_store(value) -> str:
 
 
 def promo_type_body(stored: str | None):
-    """The mirror's promo_type -> OF's create `type`: "all" / "expired" as the
-    string, both as OF's list ["all", "expired"]."""
     vals = [v for v in (stored or "all").split(",") if v in PROMO_AUDIENCES] or ["all"]
     return vals[0] if len(vals) == 1 else vals
 
 
 def extract_created_promo(res) -> dict:
-    """OF's create returns a LIST holding the created promo; some shapes wrap it
-    as {"items":[...]} or return the bare object. Pull the created item out so
-    the caller can capture of_promo_id — without it, delete/re-arm can't reach
-    OF and a live promo is orphaned. A dict with no id (and no usable items) is {}:
-    the create's outcome is unknown, so nothing may read an id out of it."""
     if isinstance(res, list) and res and isinstance(res[0], dict):
         return res[0]
     if isinstance(res, dict):
@@ -181,10 +110,6 @@ def extract_created_promo(res) -> dict:
 
 
 def _rows_from_payload(raw, keys: tuple[str, ...]) -> list | None:
-    """The item list out of an OF list response, or None if the shape is unusable
-    (caller treats None as 'OF not reachable'). `keys` are the dict spellings to try
-    in order — OF list bodies wrap the rows under different keys per endpoint
-    (/promotions → "items", /trials → "list")."""
     if isinstance(raw, dict):
         for k in keys:
             v = raw.get(k)
@@ -195,16 +120,14 @@ def _rows_from_payload(raw, keys: tuple[str, ...]) -> list | None:
 
 
 _PAGE = 100
-_MAX_PAGES = 12          # 1200 promos — a hard backstop, see below
+_MAX_PAGES = 12
 
-# Why paged_of_fetch stopped (PagedRows.stop).
-STOP_END = "end"         # a short page: the real end of history
-STOP_NEED = "need_ids"   # every id the caller asked about was seen
-STOP_CAP = "cap"         # max_pages read, OF still had more: history truncated
+STOP_END = "end"
+STOP_NEED = "need_ids"
+STOP_CAP = "cap"
 
 
 class PagedRows(list):
-    """paged_of_fetch's rows (a plain list to every caller) and why paging stopped."""
     stop: str = STOP_END
 
 
@@ -221,26 +144,8 @@ async def paged_of_fetch(
     raise_dead: bool = False,
     on_error=None,
 ) -> PagedRows | None:
-    """Best-effort live OF fetch of a PAGED list endpoint. Returns the (possibly
-    empty) normalised list on success, or None when the fetch failed (no session /
-    OF error) — callers use None-vs-list to tell 'not reachable' apart from
-    'reachable, zero rows'. The list's `stop` says why paging ended (STOP_*).
-
-    OF list endpoints paginate and their `hasMore` flag is unreliable (it can stay
-    true past the real end), so we stop on a short/empty page, with `max_pages` as a
-    hard backstop. Dedupe is by `id_key`. `need_ids` is an early exit: once every id
-    the caller cares about has been seen we stop paging.
-
-      page_call(client, offset, limit) -> raw OF response
-      normalise(dict)                  -> flat dict carrying its id under `id_key`
-      payload_keys                     -> dict spellings the rows live under, in order
-
-    `raise_dead` (an automation's read): a dead session (account_health.is_session_dead_error)
-    is raised, not None, so the executor parks the account instead of every later run asking OF.
-    `on_error(e)`: told the error behind a None (the caller's back-off reads its status).
-    """
     def dead(e: Exception) -> bool:
-        import account_health   # lazy: db-backed
+        import account_health
         if raise_dead and account_health.is_session_dead_error(e) is not None:
             return True
         if on_error is not None:
@@ -264,9 +169,6 @@ async def paged_of_fetch(
         except Exception as e:
             if dead(e):
                 raise
-            # A mid-page failure means we hold a PARTIAL history. Returning it
-            # would look like "these rows no longer exist" to the caller, so
-            # report unreachable instead and let it fail closed.
             log.info("%s OF fetch failed account=%s page=%s — mirror-only",
                      label, account_id, page, exc_info=True)
             return None
@@ -285,10 +187,10 @@ async def paged_of_fetch(
                 outstanding.discard(rid)
             out.append(item)
         if len(rows) < _PAGE:
-            out.stop = STOP_END        # short page = end of history
+            out.stop = STOP_END
             break
         if need_ids is not None and not outstanding:
-            out.stop = STOP_NEED       # found everything the caller asked about
+            out.stop = STOP_NEED
             break
     else:
         out.stop = STOP_CAP
@@ -301,8 +203,6 @@ _REREAD_DEFAULT_S = 86_400.0
 
 
 def promo_history_reread_s() -> float:
-    """Knob PROMO_HISTORY_REREAD_S, read now: the capped-history memo's window in
-    seconds (0 = off). A malformed or negative value warns and gives the default."""
     raw = os.environ.get("PROMO_HISTORY_REREAD_S")
     if raw is None or not raw.strip():
         return _REREAD_DEFAULT_S
@@ -317,14 +217,10 @@ def promo_history_reread_s() -> float:
     return v
 
 
-# account -> (monotonic time of its last capped read, that read's rows as merged by
-# the reads since, the account's mirrored of_promo_ids as of that read). In-process:
-# a restart costs one full read.
 _MEMO: dict[str, tuple[float, list[dict], frozenset[int]]] = {}
 
 
 async def _promo_list_sync_on(account_id: str) -> bool:
-    """The account's promotion List is on (link_metrics.sync_lists' rule)."""
     async with get_session() as s:
         st = await s.get(PromoListSetting, account_id)
     return st is not None and bool(st.enabled) and bool(st.list_id)
@@ -345,27 +241,6 @@ async def fetch_of_promos(
     raise_dead: bool = False,
     on_error=None,
 ) -> list[dict] | None:
-    """Best-effort live OF fetch of /promotions, PAGED, over paged_of_fetch (the
-    shared skeleton /trials uses too).
-
-    /promotions' `hasMore` is useless — it stayed true past offset 180 on a
-    230-promo history — so paging stops on a short page. `need_ids` is an early
-    exit: promo_reactivate only needs to locate its own armed campaigns, so it
-    costs one request instead of two dozen. A call with `need_ids` never touches
-    the memo below. `raise_dead`, `on_error`: see paged_of_fetch.
-
-    The memo: a read with no `need_ids` that hits the page cap is kept with its
-    time and the account's mirrored of_promo_ids. Inside PROMO_HISTORY_REREAD_S of
-    it, on an account whose promotion List is off, a read with no `need_ids` pages
-    only until it has seen the promotions that can still change (the memo's ones
-    on offer, plus every mirror of_promo_id new since the memo's read: a promotion
-    made or re-armed through the app shows on the next read) and returns those
-    pages merged over the memo by id, fresh rows winning. A short page (the real
-    end) clears the memo, a need_ids stop keeps it (its rows merged, its mirror ids
-    now), a cap stop renews it with that read's rows alone (nothing pushed past the
-    cap lingers); a failed read is None and leaves it. With the List on, every
-    pass reads in full, so a new promotion's claimers are never enrolled late.
-    """
     async def read(need: set[int] | None) -> PagedRows | None:
         return await paged_of_fetch(
             account_id,
@@ -409,13 +284,6 @@ async def fetch_of_promos(
 
 
 def normalise_of_trial(item: dict) -> dict:
-    """One OF /trials entry -> our flat shape (coercion never raises).
-
-    Field names captured LIVE (2026-07-22, Ava): an entry carries id,
-    trialLinkName, url, subscribeDays, subscribeCounts, claimCounts,
-    clicksCounts, createdAt, expiredAt, isFinished, sharedWith, user.
-    Note there is no `name` key — the operator's label is `trialLinkName`.
-    """
     finished = bool(of_field(item, "isFinished", default=False))
     return {
         "of_trial_id": coerce_of_id(of_field(item, "id", "trialId")),
@@ -424,8 +292,6 @@ def normalise_of_trial(item: dict) -> dict:
         "subscribe_days": safe_int(of_field(item, "subscribeDays", "subscribe_days", default=0)),
         "subscribe_counts": safe_int(of_field(item, "subscribeCounts", "subscribe_counts", default=0)),
         "claim_counts": safe_int(of_field(item, "claimCounts", "claimsCount", "usedCount", default=0)),
-        # A spent/expired link keeps appearing in /trials. Without these the UI
-        # rendered a dead link identically to a live one.
         "clicks_count": safe_int(of_field(item, "clicksCounts", "clickCounts", default=0)),
         "expired_at": of_field(item, "expiredAt"),
         "created_at": of_field(item, "createdAt"),
@@ -435,15 +301,6 @@ def normalise_of_trial(item: dict) -> dict:
 
 
 async def fetch_of_trials(account_id: str) -> list[dict] | None:
-    """Best-effort live OF fetch of /trials, PAGED. Thin wrapper over
-    paged_of_fetch (the shared skeleton /promotions uses too) — same
-    None-vs-list contract: None = OF not reachable, [] = reachable, no links.
-
-    /trials pages at THREE items by default, so an un-paged call showed 3 of
-    Ava's 18 links — the operator saw a fraction of their own links and could
-    not tell. limit=100 returns the lot in one request; the loop covers an
-    account with more. Rows arrive under "list" (OF) with "items" as a fallback.
-    """
     return await paged_of_fetch(
         account_id,
         page_call=lambda c, off, lim: c.trial_links(offset=off, limit=lim),

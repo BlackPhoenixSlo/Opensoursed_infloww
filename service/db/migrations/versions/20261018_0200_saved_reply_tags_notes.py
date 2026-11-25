@@ -1,17 +1,3 @@
-"""saved_replies: tags_json + notes (Growth > Scripts' tags and internal notes)
-
-`saved_replies.tags_json` (TEXT, NULL): a JSON array of tag names; a tag
-exists while some script carries it. `saved_replies.notes` (TEXT, NULL): the
-script's internal notes. NULL reads as no tags / no notes.
-
-The ORM model declares the same columns, so `init_db()`'s ADD-COLUMN catch-up
-brings them to a booting box; this revision keeps the alembic chain canonical.
-Idempotent (inspector-guarded, house convention). Downgrade drops the columns.
-
-Revision ID: 0072_saved_reply_tags_notes
-Revises: 0071_invite_setup
-Create Date: 2026-10-18
-"""
 from __future__ import annotations
 
 from typing import Sequence

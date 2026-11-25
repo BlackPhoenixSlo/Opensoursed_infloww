@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_offer_details_live — the live loader's Offer ask (spec
-docs/spec/phase-01-full-ai-offer-details.md › B, `full_ai_live.load` -> `TurnFacts.offer_ask`), over
-live rows and messages in the temp DB, resolved with the pure resolver.
-
-  case_quote_reply_from_raw_frame     his inbound's stored raw frame quotes the older card -> the
-                                      ask's quote id, resolved to that card (`quote_reply`)
-  case_other_account_never_resolves   the same fan id under another account with an Offer: never a
-                                      candidate, his quote of it resolves none
-  case_old_offer_named_by_price       a 30 h Offer is not open, yet "the $20 one" resolves it
-  case_c_tease_survives_details       tease -> question: a text-only `offer_details` row, sent,
-                                      `held_tease` = the tease; its bubble as newest outbound keeps
-                                      the tease on the next load
-  case_c_human_out_ends_tease         tease -> human outbound -> question: no `held_tease`, no tease
-                                      on the next load
-  case_c_overtaken_keeps_tease        an overtaken stand-down before bubble 1: row `no_send`, the
-                                      tease still stands on the next load
-
-Run: ./venv/bin/python service/tests/test_full_ai_offer_details_live.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -39,7 +20,6 @@ NOW = datetime.utcnow
 
 
 async def _offer_row(aid: str, fan: int, key: int, *, price: int, ago_h: float, omid: int | None) -> int:
-    """A sent live row carrying a priced Offer of one photo."""
     at = NOW() - timedelta(hours=ago_h)
     async with get_session() as s:
         r = AiDecision(
@@ -101,8 +81,6 @@ ASKS = {**QUIET, "asks_offer_details": 0.9}
 
 
 async def _tease(aid: str, fan: int, key: int) -> int:
-    """A sent live tease row 10 min old (Pick 711 + preview 701, no price) and its two bubbles,
-    message ids key+1 / key+2, as her newest outbound."""
     at = NOW() - timedelta(minutes=10)
     async with get_session() as s:
         r = AiDecision(
@@ -161,7 +139,7 @@ async def case_c_overtaken_keeps_tease():
     await seed_live(aid, {})
     tease = await _tease(aid, fan, 8410)
 
-    async def he_writes_again(*_a, **_k):        # bubble 1's typing hold: after the Writer, before OF
+    async def he_writes_again(*_a, **_k):
         if not wrote:
             wrote.append(1)
             await _msg(aid, fan, mid + 1, "in", "and how many?", NOW())

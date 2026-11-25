@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""
-Shared test harness for service/tests/*.py.
-
-⚠️ IMPORT THIS MODULE FIRST — before any `service.*`, `db.*`, or `server`
-import. It binds a throwaway temp SQLite DB to DATABASE_URL + CHATTERLY_DB_URL
-*at import time*, so a test can NEVER accidentally touch PROD
-(`service/chatterly.db`). This is the project's #1 footgun: the engine /
-alembic silently fall back to the prod DB if these env-vars are unset.
-
-Usage (matches the repo's plain-assert, no-pytest convention):
-
-    import _harness                      # MUST be the first import
-    _harness.bootstrap()                 # create schema via init_db()
-    client = _harness.make_client()      # FastAPI TestClient(server.app)
-
-    def case_foo():
-        assert 1 + 1 == 2, "math broke"
-
-    _harness.run()                       # runs every case_* in the file, in order
-    _harness.run(case_foo, case_bar)     # explicit order; unlisted case_* = hard error
-
-Run a test file with:  ./venv/bin/python service/tests/test_X.py
-Exit 0 = all cases passed.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -33,58 +9,34 @@ import tempfile
 import uuid
 from pathlib import Path
 
-# ── Make service modules importable from repo root OR service/tests/.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SERVICE = _REPO_ROOT / "service"
 for _p in (_REPO_ROOT, _SERVICE):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-# ── Bind a UNIQUE temp DB BEFORE any engine import (PROD-fallback footgun).
+# Bind a temp DB before any engine import: engine/alembic fall back to the prod DB if the env is unset.
 DB_PATH = Path(tempfile.gettempdir()) / f"chatterly_test_{uuid.uuid4().hex}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{DB_PATH}"
 os.environ["CHATTERLY_DB_URL"] = f"sqlite:///{DB_PATH}"
-os.environ["SHARE_TOKEN"] = ""  # disable share-token gate for test requests
-# Signal test mode so server startup can early-return instead of spawning the WS
-# pump / tx-ingest supervisors + live_rev network refresh (which would hang a test).
+os.environ["SHARE_TOKEN"] = ""
+# Server startup early-returns in test mode instead of spawning WS pump / ingest supervisors.
 os.environ["CHATTERLY_TEST_MODE"] = "1"
-# run() gives every case its own event loop, so no DB connection may be kept
-# across cases: the engine skips its pool (db/engine.py).
+# run() gives every case its own event loop, so no DB connection may persist across cases.
 os.environ["CHATTERLY_DB_NULLPOOL"] = "1"
-# The startup pool sync is not behind the test-mode guard; with the env unset it
-# never writes the registry (proxies.sync_pool fails closed).
 os.environ.pop("INFLOWW_PROXIES", None)
-# Stable, obviously-fake secrets so cookies/keys are reproducible across reruns.
 os.environ.setdefault("SESSION_SECRET", "test-session-secret-not-for-prod")
 os.environ.setdefault("CHATTER_SESSION_SECRET", "test-chatter-secret-not-for-prod")
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
-# Fake LLM keys so llm_client construction never reads the real ones in tests.
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
-# An Anthropic key that RESOLVES moves help_assistant's default to Claude Opus
-# (_model_pick.KEYED_PURPOSE_DEFAULTS), so a developer's real one in
-# service/.env would change what tests see. Pre-set empty (load_dotenv never
-# overrides) and, in bootstrap(), cut `_api_key`'s file fallback for these.
+# A resolving Anthropic key changes help_assistant's default model; keep it empty so a developer's service/.env cannot leak in.
 _HERMETIC_KEYS = ("ANTHROPIC_API_KEY", "HELP_ASSISTANT_ANTHROPIC_KEY")
 for _k in _HERMETIC_KEYS:
     os.environ.setdefault(_k, "")
-# Web Push (push_send): a generated VAPID key lands in the temp dir, never service/secrets.
 os.environ.setdefault("VAPID_KEY_FILE", str(Path(tempfile.gettempdir()) / f"vapid_test_{uuid.uuid4().hex}.pem"))
 
 
 def bootstrap() -> None:
-    """Create the schema in the temp DB via init_db() (additive create_all),
-    and point the secret store at a throwaway file.
-
-    The store redirect is not tidiness. `secrets_store._PATH` defaults to a real
-    path under service/, `_atomic_write` creates its parent, and ANY test that
-    reaches `/admin/secrets` over HTTP — or any probe that imports the module
-    without thinking — writes the DEVELOPER'S OWN store. That happened
-    (2026-08-20): a stray write left a placeholder DEEPSEEK_API_KEY there, the
-    store outranks the env by design, and the live-API case in
-    test_llm_millicents.py started failing 401 with no connection to the change
-    that "broke" it. Redirecting once here protects every suite; the store's own
-    test still overrides `_PATH` for its own reasons.
-    """
     from db.engine import init_db  # noqa: E402 — env already bound above
 
     try:
@@ -94,14 +46,13 @@ def bootstrap() -> None:
         secrets_store._PATH = _store_dir / "secrets.json"
         secrets_store._CACHE = None
     except Exception:
-        # A suite that cannot import the store must not fail to bootstrap.
         pass
 
     import llm_providers
     _file_backed = llm_providers._api_key
 
     def _api_key(env_name: str) -> str:
-        if env_name in _HERMETIC_KEYS:   # store, then env — never service/.env
+        if env_name in _HERMETIC_KEYS:
             import secrets_store
             return (secrets_store.stored(env_name)
                     or os.environ.get(env_name, "")).strip()
@@ -109,25 +60,11 @@ def bootstrap() -> None:
     llm_providers._api_key = _api_key
 
     asyncio.run(init_db())
-    # Server boot's runtime_switches.load() (startup early-returns in test mode): an off_only switch reads off
-    # until the table is read, so env-on suites need the (empty) table loaded as a booted Relay has it.
     import runtime_switches
     asyncio.run(runtime_switches.load())
 
 
 def make_client():
-    """Return a FastAPI TestClient bound to the in-process app.
-
-    server is imported here (not at module top) so the engine + models load
-    against the temp DB the env-vars above point at.
-
-    The app's background supervisors (WS pump, tx-ingest, live_rev network
-    refresh) are NEUTRALIZED so a request test never hangs or hits OF. Two
-    layers: (1) CHATTERLY_TEST_MODE is set above so a TEST_MODE-aware server
-    startup early-returns; (2) we also no-op `_start_event_pumps` and
-    `live_rev.refresh` post-import as a belt-and-suspenders for the lifespan
-    path. Use the returned client WITHOUT a `with` block for request-only tests.
-    """
     from fastapi.testclient import TestClient  # noqa: E402
     import server  # noqa: E402 — registers routers + middleware
 
@@ -147,9 +84,6 @@ def make_client():
 
 @contextlib.contextmanager
 def slot_lost_at_hold(module, n: int):
-    """Inside the block, `module.hold_with_typing`'s n-th call (1-based) raises
-    `run_slot.SlotLost` after its wait, as a spent take-back budget does, and
-    so does every call after it (a lost run never gets its slot back)."""
     import run_slot
     real, calls = module.hold_with_typing, [0]
 
@@ -166,9 +100,6 @@ def slot_lost_at_hold(module, n: int):
 
 
 def parking_chat(fake, n=1):
-    """A `llm_client.chat` stand-in: `fake(**kw)` answers, but the n-th call
-    (1-based), or the first one the predicate `n(kw)` is true for, first sets
-    `.parked` and waits for `.go` (a model still answering)."""
     calls = [0]
 
     async def chat(**kw):
@@ -182,12 +113,6 @@ def parking_chat(fake, n=1):
 
 
 async def slot_parked(run, chat, *, keep_s: float = 0.0, wait_s: float = 5.0):
-    """`run()` inside `run_slot.hold(SlotPool(1))`, as the executor runs it. When
-    `chat` (a `parking_chat`) parks, a second run must take the one permit while
-    the model answers (AssertionError otherwise: the wait pinned the slot). It
-    lets the model answer, keeps the permit `keep_s` more (past a patched
-    take-back budget = SlotLost), then gives it back. → run()'s result, or its
-    exception raised."""
     import run_slot
     pool, took = run_slot.SlotPool(1), []
 
@@ -216,21 +141,6 @@ async def slot_parked(run, chat, *, keep_s: float = 0.0, wait_s: float = 5.0):
 
 
 def xfail(reason: str, strict: bool = True):
-    """Mark a case as KNOWN-FAILING: it still RUNS, but its failure does not fail the
-    suite — and by default, if it starts PASSING that IS a failure, so the marker
-    cannot outlive the bug it documents.
-
-    This exists because the registration guard in `run()` below has exactly one escape
-    hatch — rename the function so it is not a `case_*` — and using that to park a
-    red test would recreate the silent-skip problem the guard was written to kill. A
-    known-failing test must stay LOUD. Always give a reason that names the bug.
-
-    `strict=False` for a bug that manifests INTERMITTENTLY: the case is reported
-    `[xpass]` when it happens to pass instead of failing the run. Strict is the
-    default because a bug that is reliably fixed should break its own marker; use
-    non-strict only when you have actually observed the case flapping, or the marker
-    hands the suite the flakiness it was supposed to contain.
-    """
     def deco(fn):
         fn._xfail_reason = reason
         fn._xfail_strict = strict
@@ -239,12 +149,6 @@ def xfail(reason: str, strict: bool = True):
 
 
 def _module_cases(depth: int = 2) -> list:
-    """Every `case_*` DEFINED `depth` frames up, in definition order. The default of 2
-    resolves to the test module when called from inside `run()` — its only caller.
-
-    `__module__` is checked so a `case_*` imported from a helper module is not
-    silently adopted as one of this file's tests.
-    """
     caller = sys._getframe(depth).f_globals
     here = caller.get("__name__")
     found = [v for k, v in caller.items()
@@ -305,7 +209,6 @@ def run(*cases) -> None:
                 if not getattr(case, "_xfail_strict", True):
                     print(f"[xpass] {name} — intermittent; still marked xfail ({reason})")
                     continue
-                # The bug is fixed. The marker is now a lie — fail until it is removed.
                 failures.append((name, f"XPASS: marked xfail ({reason}) but PASSED — drop the marker"))
                 continue
             print(f"[ok] {name}")

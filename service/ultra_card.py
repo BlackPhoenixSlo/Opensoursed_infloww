@@ -1,11 +1,3 @@
-"""service/ultra_card.py — what the owner reads about an Ultra plan, pure (docs/plans/ultra-mode/issues/06, 13).
-
-  card         one card per step, from the validated steps (never the summary): a send's rows from
-               toolbox_sends.card_rows (a judge's picks as its media row, a made folder as "folder created in
-               step X"), any other step's args with each reference read "from step <id>", a judge's question
-  title        a step's card heading
-  report_text  the end notification's one line, from the step states
-"""
 from __future__ import annotations
 
 import copy
@@ -18,8 +10,6 @@ import ultra_decide as ud
 import ultra_judge_decide as uj
 
 def _shown(step: Mapping[str, Any]) -> dict[str, Any]:
-    """A non-send step's args for the card: each recorded reference reads "from step <id>"; a list arg made only
-    of references to one step reads "from step <id>" (one) or "N from step <id>"."""
     args = copy.deepcopy(dict(step["args"]))
     refs = step.get("refs", ())
     for r in refs:
@@ -36,14 +26,10 @@ def _shown(step: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def title(tool: td.Tool) -> str:
-    """A step's card heading: the tool's own title, else its name in Title Case ("of" → "OF")."""
     return tool.title or " ".join("OF" if w == "of" else w.capitalize() for w in tool.name.split("_"))
 
 
 def card(plan: ud.Plan, names: Mapping[str, str]) -> list[dict[str, Any]]:
-    """One card per step: {id, tool, effect, title, rows:[[label, value]], text?}. A send (literal args only)
-    shows its Creator (nickname + account id), audience with every fan id, price, media ids, schedule and its FULL text; any other step
-    shows every arg (labelled by its name), a reference as "from step <id>"."""
     out, by_id = [], {s["id"]: s for s in plan.steps}
     for s in plan.steps:
         if uj.is_judge(s):
@@ -51,17 +37,17 @@ def card(plan: ud.Plan, names: Mapping[str, str]) -> list[dict[str, Any]]:
                         "rows": uj.card_rows(s)})
             continue
         t, a = ud.TOOLS[s["tool"]], s["args"] if ud.TOOLS[s["tool"]].effect == "send" else _shown(s)
-        aid = a.get("account_id")  # nickname + id: two Creators may share a nickname
+        aid = a.get("account_id")
         creator = (f"{names[aid]} ({aid})" if aid in names else aid) if aid else None
         rows: list[list[str]] = [["Creator", str(creator)]] if creator else []
         entry: dict[str, Any] = {"id": s["id"], "tool": t.name, "effect": t.effect, "title": title(t)}
         if t.effect == "send":
-            shown: dict[str, Any] = {}  # a reference's arg → what the card shows for it
+            shown: dict[str, Any] = {}
             for r in s.get("refs", ()):
                 src, arg = by_id[r["step"]], r["at"][0]
-                if arg == uj.SEND_ARG:  # media = a judge's picks
+                if arg == uj.SEND_ARG:
                     shown[arg] = uj.media_row(src)
-                elif arg == ts.FOLDER_ARG.get(t.name):  # a rule's folder an earlier step makes
+                elif arg == ts.FOLDER_ARG.get(t.name):
                     shown[arg] = f"folder created in step {src['id']} ({_shown(src).get('name')})"
             rows += ts.card_rows(t.text_kind, a, shown)
         else:
@@ -74,7 +60,6 @@ def card(plan: ud.Plan, names: Mapping[str, str]) -> list[dict[str, Any]]:
 
 
 def report_text(summary: str, status: ud.PlanStatus, states: list[dict[str, Any]]) -> str:
-    """The notification's one line: the plan's status, its summary and how many steps ended done."""
     done = sum(s["state"] == "done" for s in states)
     odd = [f"{s['id']} {s['state']}" for s in states if s["state"] in ("failed", "uncertain")]
     tail = f"; {', '.join(odd)}" if odd else ""

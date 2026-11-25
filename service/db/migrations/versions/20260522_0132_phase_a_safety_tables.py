@@ -1,25 +1,3 @@
-"""phase_a_safety_tables
-
-Revision ID: 0007_phase_a_safety_tables
-Revises: 0006_phase_a_grok_daily_cost_pk
-Create Date: 2026-05-22
-
-Adds the two per-fan safety tables (T-A3 schema).
-
-  • fan_triggers       — spec 03 §4.2: do-not-say list per fan.
-  • fan_safety_flags   — spec 03 §4.3: abuse/minor/scam/suicide detection.
-
-Skipped: emotional_probes (contested per spec 07 §3).
-
-Composite FK (account_id, fan_id) -> fans CASCADE on both tables.
-flagged_by_employee_id -> employees SET NULL on both, so deleting an
-employee doesn't lose the audit trail.
-
-Excluded (autogenerate proposed; out of scope for this revision):
-  • messages.{unsent_*, is_promise, promise_due_date} — deferred to a
-    follow-up migration before B.5 (per the 0005 docstring).
-  • prompts.response_schema_json — lands in 0009.
-"""
 from __future__ import annotations
 
 from typing import Sequence

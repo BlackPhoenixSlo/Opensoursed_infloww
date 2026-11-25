@@ -1,32 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_scene_live — the live sext scene proof (06 ticket 98): test = live for sext.
-
-A scripted live session through the job body (`full_ai_live.run`: 04a's loader and sender), OF
-faked (`_of_fixtures.VaultOF`), the Router / info Jev / price Jev / Heat check and the Writers faked
-at their clients, the purchases feed through the real `poll_purchases`; rows read back from the
-temp DB. No paid call, no real OF call.
-
-  case_walk                4 live sext Turns (opening, building, peak, peak): rows live / sext,
-                           scene n 1..4 at Jev's stage, heat never down; the Router's state `scene`
-                           on Turn k = scene_words(row k-1); the Writer's system holds the stage line
-  case_scene_sell_and_purchases  scene_offer .9 + a vault Piece -> sell_now row with an Offer; the
-                           fake OF send carries the PPV; item ref has the Piece's desc; the price
-                           request's state holds the scene words; bought via the feed -> next Turn's
-                           state `purchases` names it, "bought"
-  case_sitting_end         newest live row 121 min back -> state scene "none", row n 1
-  case_under_18            says_under_18 mid-scene -> no_send, 0 Writer requests, 0 OF sends, scene null
-  case_empty               every Writer empty on a sext Turn -> failed, dropped_reason unset/empty, 0 OF sends
-  case_heat_check_live     Heat 3, score 4.0 then 3.0 -> the second text sent, regen_ok;
-                           the heat client raising -> sent, outcome error
-  case_mode_isolation      Shadow / test rows newer than the live rows never reach saved_scene
-  case_flags_off           sext_scene off -> no scene question, no scene key, still sext;
-                           sext_on off -> no sext row
-
-Run: ./venv/bin/python service/tests/test_full_ai_scene_live.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -54,7 +29,6 @@ ON = {"scene_on": .9}
 
 
 class FakeHeatJev:
-    """`_heat_jev._client`: pops a score (or an exception) per call; none left -> raises."""
 
     def __init__(self, *verdicts):
         self.verdicts, self.calls = list(verdicts), []
@@ -76,7 +50,6 @@ def _sys(fw) -> str:
 
 async def _turn(aid, fan, mid, text, answers, choices=None, *, intensity=3.0, writer="ok:mm keep going baby",
                 heat=None, fake=None, price=None):
-    """One live Turn: his DM, the job. (result, fake OF, FakeJev, FakeWriterHTTP, newest row)."""
     res, of, jev, _info, fw = await dm_turn(
         aid, fan, mid, text, jev=({**QUIET_SCENE, **answers}, intensity, choices or {}),
         writers={NANO: writer}, heat=heat, fake=fake, price=price)
@@ -91,7 +64,6 @@ async def _age_newest(aid: str, fan: int, minutes: float) -> None:
 
 
 async def _walk2(aid: str, fan: int, base: int) -> None:
-    """Two sext Turns: the scene saved at building, n 2."""
     await _turn(aid, fan, base, "ur making me so hard rn", HOT, {"scene_stage": "opening"})
     await _turn(aid, fan, base + 1, "omg I love it", ON, {"scene_stage": "building"})
     assert reply((await live_rows(aid, fan))[-1])["scene"]["n"] == 2
@@ -118,7 +90,6 @@ async def case_walk():
 
 
 class _Feed:
-    """OF's purchases notifications: one paid-message buy of `mid` by `fan`."""
 
     def __init__(self, fan, mid, cents):
         self.item = {"id": 910_000_098, "type": "paided_message", "subType": "subscriber_pay_for_chat_message",
@@ -149,7 +120,6 @@ def case_scene_sell_and_purchases():
         desc = json.loads(row.offer_item_ref).get("desc")
         assert desc, row.offer_item_ref
         (call,) = pf.calls
-        # The scene this Turn saves (`facts.scene_now`, as the Test chat): n 3, never a stale "none".
         assert call["scene"] == scene_words(reply(row)["scene"]) == "sexting for 3 of her messages so far, stage: building", call["scene"]
         R(pn.poll_purchases(A, _Feed(fan, row.offer_message_id, row.offer_price_cents)))
         _res, _of, _j, _fw, nxt = R(_turn(A, fan, 9084, "omg that was so hot", ON, {"scene_stage": "peak"}))

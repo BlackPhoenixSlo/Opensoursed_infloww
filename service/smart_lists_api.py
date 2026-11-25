@@ -1,63 +1,3 @@
-"""service/smart_lists_api.py — Smart Lists: saved dynamic fan segments.
-
-A Smart List is a named query over per-fan facts, saved once and reused as a
-mass-message audience (include/exclude). An ACTIVE list is also mirrored into
-a real OnlyFans user list by the `smart_list_sync` automation (bulk lane,
-automations/smart_list_sync.py); this module only flips the flags and queues
-that work — a route never calls OnlyFans inline.
-
-The DSL (`rules_json`):
-
-    {
-      "match": "all" | "any",          # AND vs OR across the rules (default all)
-      "rules": [
-        # spend, cents. scope creator|org (org = the same fan summed across the
-        # agency's creators); timeframe all|today|yesterday|this_week|7d|30d|90d
-        {"field": "total_spend", "op": ">=", "value": 10000, "scope": "org", "timeframe": "30d"},
-        {"field": "tips_spend",  "op": "between", "value": [1000, 5000]},
-        # dates, as days ago: within_last N | more_than N | between [a, b]
-        # (expires_at also within_next N — the date is still ahead)
-        {"field": "expires_at", "op": "within_next", "value": 3},
-        {"field": "status", "op": "==", "value": "active"},   # active | expired
-        {"field": "renew",  "op": "==", "value": "off"},      # on | off
-        # ghost audience: newest of last purchase (no rebill), last inbound
-        # message and subscription start, as days ago
-        {"field": "idle_days", "op": "more_than", "value": 30},
-        # v1 fields, unchanged
-        {"field": "lifetime_spend",  "op": ">=", "value": 10000},   # OF's lifetime total, cents
-        {"field": "recent_spend",    "op": ">=", "value": 5000, "days": 30},
-        {"field": "last_active_days","op": "<=", "value": 7},       # days since last inbound
-        {"field": "tag",             "op": "has","value": "whale"}  # fans.tags contains
-      ]
-    }
-
-Sources: spend fields read the `transactions` ledger (cleared + pending, so a
-chargeback or refund drops out); `lifetime_spend` is OF's own lifetime total on
-the fan row. Subscription facts read `subscriber_snapshot` (the lifecycle
-roster crawl): `status` is active when the newest complete crawl listed him and
-expired when an older one did; `sub_start` is the start OF reports for the
-current subscription; `resubscribed_at` is only set for returns the crawl saw.
-A fan the snapshot never saw falls back to the fan row.
-
-`resolve(rules, fans)` is a PURE function over already-normalised fan dicts
-(see `_normalise_fan`) so it is trivially unit-testable without a DB; it and
-the rest of the rule engine live in smart_list_rules.
-
-Routes (owner-gated via `auth`, all under /admin/* so the existing relay
-rewrite + share-token gate cover them):
-
-  GET    /admin/smart-lists?account_id=            list saved segments (+ quota)
-  POST   /admin/smart-lists                        create
-  PATCH  /admin/smart-lists/{list_id}              update name/rules
-  DELETE /admin/smart-lists/{list_id}?delete_of_list=  delete (optionally its OF list)
-  POST   /admin/smart-lists/{list_id}/activate     start syncing to OnlyFans (quota)
-  POST   /admin/smart-lists/{list_id}/deactivate   stop syncing (OF list kept)
-  POST   /admin/smart-lists/preview                {account_id, rules} -> {count, sample}
-  GET    /admin/smart-lists/{list_id}/resolve      -> {fan_ids, count} (composer expands to userIds)
-
-PATCH, DELETE and deactivate answer 409 while the list is syncing — the lock is
-a conditional UPDATE/DELETE, so it cannot interleave with the worker's claim.
-"""
 from __future__ import annotations
 
 import json
@@ -78,9 +18,6 @@ from db.models import (
     User, UserAccount,
 )
 from isotime import iso_plain
-# The rule engine (DSL sets, resolve, validation, rule readers) is pure, in
-# smart_list_rules. Imported here: what this module uses, plus what importers
-# take from smart_lists_api (resolve, _validate_rules, uses_subscription_facts).
 from smart_list_rules import (  # noqa: F401
     _LEDGER_MONEY, _SUM_FIELDS, _validate_rules, _windows_in_rules, resolve,
     uses_subscription_facts,
@@ -91,9 +28,7 @@ log = logging.getLogger("of-relay.smart_lists_api")
 router = APIRouter()
 
 SYNC_KIND = "smart_list_sync"
-# Infloww: "A maximum of N smart lists can be active". Each active list costs
-# OF writes on the account's shared pacing slot, so the cap is per creator.
-# SMART_LIST_MAX_ACTIVE (default 10): Settings → System's override, else env; read at use.
+# Each active list costs OF writes on the account's shared pacing slot, so the cap is per creator.
 def _max_active() -> int:
     import runtime_switches
     return int(runtime_switches.value("SMART_LIST_MAX_ACTIVE"))
@@ -101,7 +36,6 @@ def _max_active() -> int:
 _PREVIEW_SAMPLE = 25
 
 
-# ── Fan loading (build normalised dicts from the DB) ──────────────────
 
 def _days_ago(dt: datetime | None, now: datetime) -> float | None:
     return None if dt is None else (now - dt).total_seconds() / 86400.0
@@ -110,10 +44,6 @@ def _days_ago(dt: datetime | None, now: datetime) -> float | None:
 def _normalise_fan(row: Fan, now: datetime, recent_spend: dict[int, int],
                    facts: dict[str, Any] | None = None,
                    sub: tuple[str | None, str | None] = (None, None)) -> dict:
-    """One DB Fan row -> the pure-resolver's fan dict. `recent_spend` maps each
-    referenced v1 window (days) to that fan's spend in cents over the window;
-    `facts` holds the v2 values keyed by `fact_key`; `sub` is the snapshot's
-    (status, renew)."""
     try:
         tags = json.loads(row.tags) if row.tags else []
     except Exception:
@@ -131,14 +61,12 @@ def _normalise_fan(row: Fan, now: datetime, recent_spend: dict[int, int],
         "tags": tags if isinstance(tags, list) else [],
         "recent_spend": recent_spend,
         "facts": facts or {},
-        # display bits for the preview sample (ignored by the resolver)
         "_name": row.custom_nickname or row.generated_nickname or row.of_display_name
                  or row.of_username or str(row.fan_id),
     }
 
 
 def _timeframe_start_end(tf: str, now: datetime) -> tuple[datetime | None, datetime | None]:
-    """[start, end) of a spend timeframe, UTC."""
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if tf == "today":
         return midnight, None
@@ -152,11 +80,6 @@ def _timeframe_start_end(tf: str, now: datetime) -> tuple[datetime | None, datet
 
 
 async def org_account_ids(s, account_id: str) -> list[str]:
-    """The creators a fan's Org-scope spend is summed over: every account of
-    this account's agency. One owner = one agency; an account with none, or
-    with several (a disputed link), counts as its own org — never a guess.
-    A sibling counts only when ITS owner is exactly the same one owner, so a
-    master's oversight links on other agencies' creators never join the org."""
     from tenant_keys import billable_owners, owners_of
     owners = await owners_of(account_id)
     if len(owners) != 1:
@@ -174,13 +97,12 @@ async def org_account_ids(s, account_id: str) -> list[str]:
     return sorted(ids)
 
 
-_LAST_REVENUE = "_last_revenue_at"  # raw datetime, folded into idle_days
+_LAST_REVENUE = "_last_revenue_at"
 
 
 async def _ledger_facts(s, account_id: str, rules: list[dict],
                         now: datetime) -> dict[int, dict[str, Any]]:
-    """{fan_id: {fact_key: value}} for every ledger-backed v2 rule — one grouped
-    query per distinct (scope, timeframe), one per scope for the last amount."""
+    # Spend counts cleared + pending ledger rows, so a chargeback or refund drops out.
     combos: set[tuple[str, str]] = set()
     last_scopes: set[str] = set()
     for r in rules:
@@ -214,7 +136,6 @@ async def _ledger_facts(s, account_id: str, rules: list[dict],
         start, end = _timeframe_start_end(tf, now)
         q = select(T.fan_id, *(_cat(k) for k in _SUM_FIELDS.values()),
                    func.max(T.amount_cents), func.max(T.occurred_at),
-                   # newest purchase, rebills excluded (idle_days)
                    func.max(case((T.kind.in_(REVENUE_KINDS), T.occurred_at)))
                    ).where(*_base(scope))
         if start is not None:
@@ -241,22 +162,12 @@ async def _ledger_facts(s, account_id: str, rules: list[dict],
     return out
 
 
-# How old the newest roster crawl may be for a preview / resolve to trust it
-# (the lifecycle sweeps re-crawl about every 25 min while they run).
+# Only a fresh roster snapshot speaks for status/renew/dates: a stale one would call every fan who subscribed since "expired", so those fall back to the fan row.
 _SNAPSHOT_MAX_AGE_S = 30 * 60
 
 
 async def _snapshot(s, account_id: str, now: datetime, *,
                     roster_fresh: bool = False) -> dict[int, tuple]:
-    """{fan_id: (status, renew, subscribe_at, expired_at, resubscribed_at)} off
-    the lifecycle roster snapshot. Active = listed by the newest complete crawl.
-
-    Only a FRESH snapshot speaks for status, renew and the current
-    subscription's dates — `roster_fresh` (the caller just refreshed the
-    roster, e.g. the sync worker) or a newest crawl under `_SNAPSHOT_MAX_AGE_S`.
-    A stale one would call every fan who subscribed since "expired", so those
-    fall back to the fan row. A recorded return (`resubscribed_at`) is history
-    and stays usable either way."""
     S = SubscriberSnapshot
     rows = (await s.execute(
         select(S.fan_id, S.seen_at, S.renew_on, S.subscribe_at, S.expired_at,
@@ -276,9 +187,7 @@ async def _snapshot(s, account_id: str, now: datetime, *,
     return out
 
 
-# The Fan columns `_normalise_fan` and `_load_normalised_fans` read: Core rows
-# (attribute access like the entity) skip hydrating ~50-column ORM Fans per
-# call, which starved every route under concurrent previews.
+# Core rows skip hydrating ~50-column ORM Fans per call, which starved every route under concurrent previews.
 _FAN_COLS = (Fan.fan_id, Fan.tags, Fan.lifetime_spend_cents, Fan.last_message_received_at,
              Fan.last_message_sent_at, Fan.subscription_status, Fan.subscribed_at,
              Fan.subscription_expires_at, Fan.custom_nickname, Fan.generated_nickname,
@@ -287,9 +196,6 @@ _FAN_COLS = (Fan.fan_id, Fan.tags, Fan.lifetime_spend_cents, Fan.last_message_re
 
 async def _load_normalised_fans(account_id: str, rules_obj: dict, *,
                                 roster_fresh: bool = False) -> list[dict]:
-    """Load every fan for the account as a normalised resolver dict, with each
-    recent_spend window and every v2 fact pre-aggregated. Pure resolve() then
-    filters these. `roster_fresh`: see `_snapshot`."""
     now = datetime.utcnow()
     rules = rules_obj.get("rules") or []
     windows = _windows_in_rules(rules_obj)
@@ -322,8 +228,6 @@ async def _load_normalised_fans(account_id: str, rules_obj: dict, *,
         facts["sub_start"] = _days_ago(sub_at or row.subscribed_at, now)
         facts["expires_at"] = _days_ago(exp_at or row.subscription_expires_at, now)
         facts["resubscribed_at"] = _days_ago(back_at, now)
-        # ghost audience: days since the fan last bought (no rebill), wrote or
-        # (re)subscribed — whichever is newest; no date at all = no match
         touched = [d for d in (facts.pop(_LAST_REVENUE, None), row.last_message_received_at,
                                sub_at or row.subscribed_at) if d is not None]
         facts["idle_days"] = _days_ago(max(touched), now) if touched else None
@@ -331,7 +235,6 @@ async def _load_normalised_fans(account_id: str, rules_obj: dict, *,
     return out
 
 
-# ── Serialisation ─────────────────────────────────────────────────────
 
 def _rules_of(row: SmartList) -> dict:
     try:
@@ -358,10 +261,6 @@ def _serialize(row: SmartList) -> dict:
 
 
 async def _assert_name_free(s, account_id: str, name: str, *, exclude_id: int | None = None) -> None:
-    """409 if `name` is already taken on this account. UNIQUE(account_id, name)
-    is the real guard; this checks first so the operator gets an accurate
-    message instead of a raw IntegrityError (which a rename would otherwise
-    surface as a 500)."""
     q = select(SmartList.id).where(SmartList.account_id == account_id, SmartList.name == name)
     if exclude_id is not None:
         q = q.where(SmartList.id != exclude_id)
@@ -369,9 +268,7 @@ async def _assert_name_free(s, account_id: str, name: str, *, exclude_id: int | 
         raise HTTPException(409, f"a smart list named {name!r} already exists")
 
 
-# A list deleted "with its OnlyFans list" stays as a tombstone row in this state
-# until the worker has deleted that OF list — the worker only ever deletes the
-# OF list a tombstone of the same account names, never an id from a payload.
+# A list deleted with its OF list stays a tombstone until the worker has deleted that OF list; the worker only deletes the OF list a tombstone of the same account names, never an id from a payload.
 DELETING = "deleting"
 _LIVE = or_(SmartList.sync_state.is_(None), SmartList.sync_state != DELETING)
 _NOT_SYNCING = or_(SmartList.sync_state.is_(None),
@@ -380,8 +277,6 @@ _LOCKED = "this smart list is syncing with OnlyFans — try again in a minute"
 
 
 async def live_row(s, list_id: int) -> SmartList | None:
-    """THE way to load one Smart List: a `deleting` tombstone reads as missing,
-    so nothing (a route, auto_follow's targets) can keep acting on it."""
     row = await s.get(SmartList, int(list_id))
     return None if row is None or row.sync_state == DELETING else row
 
@@ -394,11 +289,8 @@ async def _owned_row(s, list_id: int) -> SmartList:
     return row
 
 
-# ── Sync plumbing (queue only — the worker does every OnlyFans write) ──
 
 async def _queue_sync(s, account_id: str) -> None:
-    """Queue a sync run in the caller's transaction, coalesced with one already
-    pending — every run handles all of the account's lists and tombstones."""
     from automation_executor import enqueue_job
     pending = (await s.execute(
         select(ScheduledJob.id).where(
@@ -416,7 +308,7 @@ def _wake() -> None:
     wake_supervisor()
 
 
-# ── Routes ────────────────────────────────────────────────────────────
+# PATCH, DELETE and deactivate answer 409 while the list is syncing: the lock is a conditional UPDATE/DELETE, so it cannot interleave with the worker's claim.
 
 @router.get("/admin/smart-lists")
 async def list_smart_lists(account_id: str = Query(...)) -> dict[str, Any]:
@@ -451,9 +343,6 @@ async def create_smart_list(body: _CreateBody = Body(...)) -> dict[str, Any]:
         try:
             await s.flush()
         except IntegrityError as e:
-            # Lost a race on the name, or account_id has no accounts row. Report
-            # the real reason — a blanket "already exists" here used to mask an
-            # unknown-account FK failure.
             raise HTTPException(409, f"could not save smart list: {repr(e)[:160]}")
         out = _serialize(row)
     log.info("smart_list_created id=%s account=%s name=%s", out["id"], body.account_id, name)
@@ -526,8 +415,6 @@ async def activate_smart_list(list_id: int) -> dict[str, Any]:
     async with get_session() as s:
         row = await _owned_row(s, list_id)
         if not row.is_active:
-            # The quota is checked inside the UPDATE itself, so two activations
-            # racing for the last slot cannot both win.
             cap = _max_active()
             active = (select(func.count()).select_from(SmartList)
                       .where(SmartList.account_id == row.account_id,
@@ -535,6 +422,7 @@ async def activate_smart_list(list_id: int) -> dict[str, Any]:
                       .scalar_subquery())
             res = await s.execute(
                 update(SmartList)
+                # The quota is checked inside the UPDATE itself, so two activations racing for the last slot cannot both win.
                 .where(SmartList.id == list_id, _NOT_SYNCING, active < cap)
                 .values(is_active=True, sync_error=None))
             if res.rowcount != 1:

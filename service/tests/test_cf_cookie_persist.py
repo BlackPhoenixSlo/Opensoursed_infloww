@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""Cloudflare cookies from OF responses persist into the session file (S16).
-
-The live curl session already keeps `__cf_bm` / `_cfuvid` / `cf_clearance`
-from Set-Cookie, but the session file never got them: every client rebuilt
-from disk (pool eviction, proxy edit, restart) replayed the capture-time
-values, `__cf_bm` having a 30-minute TTL — a silent 403 source after idle.
-Pins: a changed CF cookie is written back (value + expiry) through a fresh
-0600 temp file and an atomic replace; an existing row is updated in place,
-matched on name AND domain; an unchanged value and non-CF cookies cause no
-write; a client not built from a file never writes; and the signing-rules
-writer (sign_rules) goes through the same locked re-read, so neither
-writer's change is lost to the other.
-
-Run:  ./venv/bin/python service/tests/test_cf_cookie_persist.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -79,12 +64,12 @@ def case_unchanged_value_does_not_write():
     p = _session_file()
     client = OFClient.from_session_file(p, proxies=None)
     mtime = os.stat(p).st_mtime_ns
-    client._persist_cf_cookies(_Resp(__cf_bm="old"))   # what the file already holds
-    client._persist_cf_cookies(_Resp(sess="x"))        # no CF cookie at all
+    client._persist_cf_cookies(_Resp(__cf_bm="old"))
+    client._persist_cf_cookies(_Resp(sess="x"))
     assert os.stat(p).st_mtime_ns == mtime, "no-op responses must not rewrite the file"
     client._persist_cf_cookies(_Resp(__cf_bm="v2"))
     mtime = os.stat(p).st_mtime_ns
-    client._persist_cf_cookies(_Resp(__cf_bm="v2"))    # same value twice: one write
+    client._persist_cf_cookies(_Resp(__cf_bm="v2"))
     assert os.stat(p).st_mtime_ns == mtime
 
 
@@ -109,7 +94,7 @@ def case_cookies_match_on_name_and_domain():
     rows = [c for c in json.loads(p.read_text())["cookies"] if c["name"] == "__cf_bm"]
     by_domain = {c["domain"]: c["value"] for c in rows}
     assert by_domain == {".onlyfans.com": "old", "cdn.example.net": "cdn"}, by_domain
-    client._persist_cf_cookies(_Resp("onlyfans.com", __cf_bm="main"))  # host-only form
+    client._persist_cf_cookies(_Resp("onlyfans.com", __cf_bm="main"))
     rows = [c for c in json.loads(p.read_text())["cookies"] if c["name"] == "__cf_bm"]
     assert {c["domain"]: c["value"] for c in rows} == {
         ".onlyfans.com": "main", "cdn.example.net": "cdn"}, rows
@@ -121,7 +106,7 @@ def case_rules_writer_and_cookie_writer_keep_each_other():
     client = OFClient.from_session_file(p, proxies=None)
     client._persist_cf_cookies(_Resp(__cf_bm="live"))
 
-    def _set_rules(data):            # what sign_rules writes back
+    def _set_rules(data):
         data["signing"]["rules"]["checksum_constant"] = 42
     update_session_file(p, _set_rules)
     client._persist_cf_cookies(_Resp(cf_clearance="clr"))
@@ -136,7 +121,7 @@ def case_failed_write_leaves_old_file_and_no_temp():
     before = p.read_text()
 
     def _unserializable(data):
-        data["boom"] = object()       # json.dump fails mid-write
+        data["boom"] = object()
     try:
         update_session_file(p, _unserializable)
         raise AssertionError("an unserializable session must raise")
@@ -148,7 +133,7 @@ def case_failed_write_leaves_old_file_and_no_temp():
 
 def case_client_without_file_never_writes():
     client = OFClient(_SESSION)
-    client._persist_cf_cookies(_Resp(__cf_bm="x"))   # must neither raise nor write
+    client._persist_cf_cookies(_Resp(__cf_bm="x"))
     assert client.session_path is None
 
 

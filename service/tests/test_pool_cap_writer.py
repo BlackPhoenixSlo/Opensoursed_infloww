@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
-"""The OF-cache writer (db/of_writer) commits when the DB pool is at its cap.
-
-Request traffic at the cap waits WAIT_MAX_S and raises (server.py: 503); the
-writer carries inbound WS frames (event_inbox, messages) whose SSE already went
-out, so a timeout there loses them. Its checkout spills past the cap instead
-(db/engine.py UNCAPPED, set inside the writer task: the ContextVar must reach
-the pool's _do_get through SQLAlchemy's greenlet, which this proves).
-
-  case_of_writer_commits_with_pool_saturated: pool of 1, no spills, the one
-      connection held; a writer op still commits.
-  case_a_request_checkout_at_the_cap_still_times_out: the same saturation, a
-      plain checkout raises TimeoutError (#386's anti-storm cap kept).
-
-Run: ./venv/bin/python service/tests/test_pool_cap_writer.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 import asyncio  # noqa: E402
 import os  # noqa: E402
 
-# The real bounded pool, a fast timeout and one available checkout.
 os.environ.pop("CHATTERLY_DB_NULLPOOL", None)
 os.environ["CHATTERLY_DB_POOL_SIZE"] = "1"
 os.environ["CHATTERLY_DB_MAX_SPILL"] = "0"
@@ -47,7 +31,7 @@ async def case_of_writer_commits_with_pool_saturated():
     of_writer.start()
     try:
         async with engine.connect() as held:
-            await held.execute(text("SELECT 1"))  # the pool's sole slot
+            await held.execute(text("SELECT 1"))
             assert engine.pool.checkedout() == 1, engine.pool.status()
             result = (await asyncio.gather(of_writer.write(_insert, 7),
                                            return_exceptions=True))[0]

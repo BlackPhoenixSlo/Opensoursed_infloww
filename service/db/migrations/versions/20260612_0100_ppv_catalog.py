@@ -1,32 +1,3 @@
-"""ppv_catalog — content catalog + ai_chatter offer state
-
-Revision ID: 0034_ppv_catalog
-Revises: 0033_tip_reward
-Create Date: 2026-06-12
-
-Five additive changes for the ai_chatter automation (freestyle PPV/tip selling
-from a described content catalog):
-
-  account_ai_config — + ai_chatter_config_json TEXT (per-account config:
-                      enabled, mode backup|always, sla_minutes, spend gate,
-                      offer caps). NULL = built-in defaults (DISABLED).
-
-  catalog_scripts   — NEW. An ordered "sexting sequence" (theme shown to the
-                      LLM, never fans). Singles are items with script_id NULL.
-
-  catalog_items     — NEW. One sellable unit (video/image/image_set) with
-                      description_for_ai (the pitch contract), media ids,
-                      previews, price_cents / tip_unlock_cents.
-
-  catalog_progress  — NEW. Per-(account, fan, script) position pin — which item
-                      may be offered next; once-per-fan-per-script.
-
-  content_offers    — NEW. One row per concrete offer; the OPEN offer anchors
-                      tip accumulation + the is_paid ledger watch, and is the
-                      rate-limit + conversion log.
-
-Additive + nullable + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence

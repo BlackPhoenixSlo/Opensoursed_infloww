@@ -1,47 +1,3 @@
-"""
-OF disputes (GET /api2/v2/payouts/chargebacks) -> the ledger rows they reverse.
-
-The ledger walk only re-reads OF's latest ~600 rows, so a sale disputed weeks
-later is never seen flipping to `undo` there (measured 2026-11-07: 4 missed on
-15891843). This poll reads the disputes list and flips the matching held row to
-`chargedback` the same way a ledger status flip does: status only, in a
-`transaction_ingest.ledger_txn` with its `apply_lifetime_delta`, then the
-status_flip announce (events.announce_transaction, as the ledger's own flip).
-No table, no column: the row's status is the idempotence key (a re-poll finds it
-already reversed and writes nothing).
-
-OF's reply (measured, 445 items / 6 accounts, .scratch/chargebacks-capture):
-    {"list": [{"id": 0,                                  # always 0: no key
-               "createdAt": "2026-11-03T14:05:23+00:00", # the dispute; list newest-first by it
-               "paymentType": "subscribes" | "tips" | "chat_messages",
-               "payment": {<the ledger row minus payoutPendingDays / refundReason>,
-                           "amount": 28.88, "net": 23.1, "fee": 5.78, "vatAmount": 0,
-                           "createdAt": "2026-10-28T20:00:19+00:00",   # the SALE, == ledger createdAt
-                           "description": "Payment for message from <a ...>..</a>",
-                           "status": "undo" | "done",   # undo = money reversed; done = still open
-                           "user": {"id": 498183621, ...},
-                           "id": "e07f5e73..."}}],       # NOT the ledger id
-     "marker": 1793217625}                               # request epoch; no hasMore
-Paging: `offset`, page cap 100, "more" = a full page. `startDate`/`endDate` are
-honoured (filter on the dispute createdAt; a date-only endDate is midnight, so it
-excludes that day); `start`/`end` are ignored.
-
-Join (no shared id): (account, fan = payment.user.id, amount_cents,
-occurred_at == payment.createdAt to the second) among ledger-sourced rows
-(provider id set), any status, kind compatible with paymentType (PAYMENT_KINDS)
-and the same currency when both carry one — 68/68 unique in the capture, while
-+-300 s made 5 ambiguous. A tip with no exact hit falls back to +-300 s on kind='tip' (a
-promoted WS tip keeps the WS pump's clock). Exactly one candidate or nothing.
-Only `undo` writes; `done` is an open dispute, counted. An unmatched dispute
-(sale older than our ledger history) is logged, never inserted.
-
-Lifetime follows status in both writers (transaction_ingest_decide.plan_page):
-if the ledger later calls the sale `done` again, its patch puts the amount back.
-
-Caller holds `transaction_ingest._tick_locks[account_id]` (run_one_tick does).
-transaction_ingest imports this module inside its tick; this one reads its two
-public writers at call time, so neither touches the other at import time.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -65,24 +21,24 @@ from transaction_ingest_decide import (
 
 log = logging.getLogger("of-relay.ingest_tx")
 
-CB_LIMIT = 100          # OF's page cap (limit=500 answers 100)
-CB_MAX_PAGES = 5        # 500 disputes per 90 d; the busiest account had 81 (measured)
-CB_WINDOW_DAYS = 90     # disputes land up to 89 d after the sale (measured)
-# paymentType -> the kinds (KIND_CATALOG) its sale can be; an unknown type constrains nothing.
+# OF's page cap: limit=500 still answers 100.
+CB_LIMIT = 100
+# 500 disputes per 90 d; the busiest account had 81 (measured).
+CB_MAX_PAGES = 5
+# Disputes land up to 89 d after the sale (measured), beyond the ledger walk's ~600 rows.
+CB_WINDOW_DAYS = 90
 PAYMENT_KINDS = {
     "tips": frozenset({"tip", "tip_post", "tip_stream"}),
     "chat_messages": frozenset({"ppv_message"}),
     "subscribes": frozenset({"subscription", "rebill"}),
 }
-_error_traced: set[str] = set()   # accounts whose ingest_cb_error already logged a traceback
+_error_traced: set[str] = set()
 _CHARGEDBACK = "chargedback"
 
 
-# ── Pure: parse, match, plan ────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Held:
-    """A ledger-sourced `transactions` row a dispute may name."""
     id: int
     provider_id: str
     fan_id: int
@@ -98,10 +54,6 @@ Outcome = Literal["applied", "already", "open", "unmatched", "ambiguous"]
 
 @dataclass(frozen=True)
 class CbOp:
-    """What one dispute does. applied: flip `target` to chargedback, lifetime
-    `lifetime_delta`; already: its row is already non-revenue (re-poll: no write);
-    open: payment.status != undo (no write); unmatched / ambiguous: 0 or >1
-    candidates (`candidates`), no write."""
     outcome: Outcome
     dispute: dict
     target: Held | None = None
@@ -114,7 +66,6 @@ class CbOp:
 
 
 def parse_dispute(item: dict) -> dict:
-    """One /payouts/chargebacks item -> the fields the match reads."""
     pay = item.get("payment") or {}
     return {
         "fan_id": (pay.get("user") or {}).get("id"),
@@ -142,8 +93,6 @@ def _candidates(d: dict, rows: Iterable[Held]) -> list[Held]:
 
 
 def plan_chargebacks(disputes: list[dict], held: Iterable[Held]) -> list[CbOp]:
-    """One CbOp per `parse_dispute` dict, in order, each planned as if the ones
-    before it were written (two disputes naming one row: the second is `already`)."""
     rows = {h.id: h for h in held}
     ops: list[CbOp] = []
     for d in disputes:
@@ -164,13 +113,10 @@ def plan_chargebacks(disputes: list[dict], held: Iterable[Held]) -> list[CbOp]:
 
 
 def poll_window(now: datetime) -> tuple[str, str]:
-    """(startDate, endDate), date only: the last CB_WINDOW_DAYS through today
-    (endDate tomorrow: a date-only endDate excludes its own day)."""
     return ((now - timedelta(days=CB_WINDOW_DAYS)).date().isoformat(),
             (now + timedelta(days=1)).date().isoformat())
 
 
-# ── DB ──────────────────────────────────────────────────────────────
 
 async def _read_held(s, account_id: str, fans: set[int]) -> dict[int, Transaction]:
     if not fans:
@@ -188,8 +134,6 @@ def _snap(tx: Transaction) -> Held:
 
 
 async def _announce(account_id: str, ops: list[CbOp]) -> None:
-    """Each applied dispute's status_flip, after the commit (the ledger's own flip's
-    announce, uncapped). One that raises is logged; the rest still run."""
     from events import announce_transaction
     for op in ops:
         h = op.target
@@ -210,19 +154,12 @@ def _log_ops(account_id: str, ops: list[CbOp]) -> None:
             log.info("ingest_cb_applied account=%s fan=%s provider=%s amount=%d dispute_at=%s",
                      account_id, d["fan_id"], op.target.provider_id, d["amount_cents"], dispute)
         elif op.outcome in ("open", "unmatched", "ambiguous"):
-            # recur every poll (old sales, open disputes): debug; ingest_cb_poll counts / samples them.
             log.debug("ingest_cb_%s account=%s fan=%s amount=%d sale_at=%s dispute_at=%s candidates=%d",
                       op.outcome, account_id, d["fan_id"], d["amount_cents"], sale, dispute,
                       op.candidates)
 
 
 async def apply_chargebacks(account_id: str, items: list[dict]) -> dict:
-    """Match `items` (raw /payouts/chargebacks list entries) and flip each
-    applied row to chargedback with its lifetime delta, all in ONE
-    `ledger-chargebacks` write transaction — none when nothing applies (a
-    re-poll). Planned in a plain session, re-read and re-planned inside the
-    write (as `_ingest_rows`). Returns the outcome counts, `items`, and
-    `unmatched_sample`: up to 3 (fan, amount_cents, sale ISO) of the unmatched."""
     disputes = [parse_dispute(i) for i in items]
     fans = {d["fan_id"] for d in disputes if d["undo"] and d["fan_id"]}
     async with get_session() as s:
@@ -245,7 +182,6 @@ async def apply_chargebacks(account_id: str, items: list[dict]) -> dict:
     return {"items": len(items), **counts, "unmatched_sample": sample}
 
 
-# ── OF poll ─────────────────────────────────────────────────────────
 
 async def _fetch(account_id: str, client, now: datetime) -> tuple[list[dict], int]:
     start, end = poll_window(now)
@@ -265,9 +201,6 @@ async def _fetch(account_id: str, client, now: datetime) -> tuple[list[dict], in
 
 
 async def poll_chargebacks(account_id: str, client) -> dict:
-    """Read the last CB_WINDOW_DAYS of disputes (a background walk: of_pacing's
-    per-Creator pace, OF's 429 retried once) and apply them. Logs one
-    `ingest_cb_poll` line. Raises on an OF error (see `poll_after_walk`)."""
     items, pages = await of_pacing.walk(
         account_id, "chargebacks", lambda: _fetch(account_id, client, datetime.utcnow()))
     r = await apply_chargebacks(account_id, items)
@@ -279,11 +212,6 @@ async def poll_chargebacks(account_id: str, client) -> dict:
 
 
 async def poll_after_walk(account_id: str, client) -> dict | None:
-    """run_one_tick's hook after a completed refresh or backfill, or a tick that moved
-    a row out of a reversal. Never
-    raises (a CancelledError aside): an error logs `ingest_cb_error` (with a
-    traceback only the first time per account per process) and never counts
-    toward the ledger's failure streak or pause."""
     try:
         return await poll_chargebacks(account_id, client)
     except Exception as e:

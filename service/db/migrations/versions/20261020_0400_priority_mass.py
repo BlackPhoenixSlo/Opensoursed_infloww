@@ -1,26 +1,3 @@
-"""priority_mass — Priority mass message runs and their frozen recipients
-
-Backs `automations/priority_mass` and `priority_mass_api` (Smart Messages >
-Priority mass message, roadmap W7 7.3):
-
-  priority_mass_runs        — one message (text, vault media ids, previews,
-                              price) to a frozen audience of one Creator, and
-                              its status: resolving → running → done, or
-                              cancelled / error.
-  priority_mass_recipients  — PK(run_id, fan_id): each fan's status (pending →
-                              claimed → sent / skipped / failed / unknown), why,
-                              and OF's message id.
-
-The ORM models in db/models.py declare the same tables, so `init_db()`'s
-create_all brings them to a booting box; this revision keeps the alembic chain
-canonical. Idempotent (inspector-guarded, house convention). Downgrade drops
-both and loses only the Priority mass history; the messages sent stay in
-`messages`.
-
-Revision ID: 0081_priority_mass
-Revises: 0080_smart_list_sync
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -82,6 +59,7 @@ def upgrade() -> None:
                         ["run_id", "status"])
 
 
+# Loses only the Priority mass history; the messages sent stay in `messages`.
 def downgrade() -> None:
     tables = set(sa.inspect(op.get_bind()).get_table_names())
     if "priority_mass_recipients" in tables:

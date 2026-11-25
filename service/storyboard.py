@@ -1,17 +1,3 @@
-"""service/storyboard.py — server.py's video-scrub storyboard block, moved
-wholesale: the 12-frame store (`_STORYBOARD_*`, `_video_path_hash`,
-`_storyboard_all_frames_present`, `_ensure_storyboard_frame`), its build-lock /
-cancel-session registry and evictor (`_storyboard_evictor_loop`, started by
-server.py), and the routes `/img/scrub`, `/img/scrub/cancel`,
-`/admin/storyboard/stats`. vault_frames reads the store through this module.
-
-`_get_client` / `_periodic` are relay_host's call-time forwards, never
-`from server import`. Two routers, each included mid-file in server.py at its
-handlers' old spot, for route order (pinned by service/tests/test_route_order.py).
-
-Builds take `admission.STORYBOARD_BUILD`, a process-wide lane shared with
-vault_frames, which takes it for cold-clip warms.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -34,71 +20,29 @@ from relay_host import periodic as _periodic
 
 log = logging.getLogger("of-relay")
 
-router = APIRouter()        # /img/scrub, /img/scrub/cancel
-stats_router = APIRouter()  # /admin/storyboard/stats
+router = APIRouter()
+stats_router = APIRouter()
 
 
-# ── Video scrub storyboard ────────────────────────────────────────────
-#
-# /img/scrub?u=<signed-video-url>&i=<0..11>
-#
-# Replaces the streaming hover-preview pipeline (two <video> elements
-# pulling Range bytes through /img) with 12 pre-extracted JPGs at evenly
-# spaced timestamps (every 8.33%). First request for a video triggers
-# a one-time ffmpeg extraction: download the mp4, extract 12 frames,
-# write to disk, drop the mp4. Subsequent requests serve directly from
-# disk and are immutable cacheable.
-#
-# Motivation: streaming videos through /img pinned uvicorn threadpool
-# slots for up to 60s each. Five users hovering through video tiles
-# could deadlock the relay. Storyboard frames are ~20KB JPGs served
-# from disk — never blocks the upstream pool past the one-time build.
 
-# Configurable cache root. /tmp is fine on macOS (cleared at boot, so
-# eviction handles itself). In Docker /tmp is per-container and goes
-# away on restart — point STORYBOARD_DIR at a mounted volume in prod
-# so storyboards survive across container restarts.
 _STORYBOARD_DIR = Path(os.environ.get("STORYBOARD_DIR", "/tmp/of-relay-storyboard"))
 _STORYBOARD_FRAMES = 12
 _STORYBOARD_WIDTH = 400
-# Drop from 90s → 30s. Past 30s Next dev's HTTP proxy and most browsers
-# have already given up; holding the uvicorn worker thread any longer
-# just leaks the slot for nothing. The client retries naturally on the
-# next hover cycle so failing fast is cheaper than queueing zombies.
 _STORYBOARD_BUILD_TIMEOUT_S = 30
 _storyboard_locks: dict[str, threading.Lock] = {}
 _storyboard_locks_lock = threading.Lock()
 _storyboard_total_built: int = 0
 _storyboard_total_served: int = 0
 _storyboard_build_failures: int = 0
-# Per-hover-session cancel signal. Set by POST /img/scrub/cancel when the
-# user moves off a video before its download finishes. The download loop
-# polls this every chunk and bails IF it hasn't already crossed the
-# "almost done" threshold below — past that point we let the bytes
-# finish landing so the next hover gets a warm cache.
-#
-# Keyed by `session_id` (client-generated UUID per hover) rather than by
-# video hash on purpose: a previous fix used hash-keyed events, which let
-# a late cancel POST from a prior hover abort a brand-new build for the
-# same video (re-hover within ~100-300ms). With session-keyed events,
-# the new hover gets a new id → fresh event → the stale cancel POST
-# finds no entry and is a no-op.
 _storyboard_cancel_events: dict[str, threading.Event] = {}
 _storyboard_cancel_events_lock = threading.Lock()
-# If the cancel arrives after this fraction of the bytes has landed,
-# we finish the download anyway — the remaining bandwidth is cheap and
-# the cached storyboard will be there next time the user hovers this
-# video. Lower = more cache built (more wasted bytes on truly-abandoned
-# videos); higher = less wasted bandwidth (more re-download next time).
-# 0.80 was the user's call after measuring the tradeoff.
+# A cancel after this fraction of bytes has landed is ignored: finish the file already paid for so the next hover is warm.
 _STORYBOARD_CANCEL_KEEP_THRESHOLD = 0.80
 _storyboard_total_cancelled: int = 0
 _storyboard_total_cancel_ignored: int = 0
 
 
 def _storyboard_register_session(session_id: str) -> threading.Event:
-    """Reserve a cancel event for an active build's session. Called once
-    at the start of a download; the event is dropped at end of build."""
     with _storyboard_cancel_events_lock:
         ev = threading.Event()
         _storyboard_cancel_events[session_id] = ev
@@ -106,16 +50,11 @@ def _storyboard_register_session(session_id: str) -> threading.Event:
 
 
 def _storyboard_release_session(session_id: str) -> None:
-    """Drop the session's cancel event after the build finishes (success
-    or failure). Late cancel POSTs that arrive after this find no entry
-    and become a no-op, which is the desired behaviour."""
     with _storyboard_cancel_events_lock:
         _storyboard_cancel_events.pop(session_id, None)
 
 
 def _storyboard_signal_cancel(session_id: str) -> bool:
-    """Set the cancel event for `session_id` if a build is active. Returns
-    True when a live session was found, False otherwise (stale cancel)."""
     with _storyboard_cancel_events_lock:
         ev = _storyboard_cancel_events.get(session_id)
     if ev is None:
@@ -134,16 +73,6 @@ def _storyboard_lock_for(h: str) -> threading.Lock:
 
 
 def _storyboard_evict_locks_once() -> int:
-    """Drop `_storyboard_locks` entries for hashes whose on-disk
-    storyboard dir is gone — the prune-storyboards cron deletes those
-    dirs on TTL, but the in-memory lock dict would otherwise grow
-    without bound (≈200 bytes per unique video ever hovered).
-
-    Safety: we only evict a lock when (a) the dir is missing AND (b)
-    `lock.acquire(blocking=False)` succeeds, meaning no thread is
-    currently building. We then re-check the dir under the lock and
-    only pop from the dict if the same lock instance is still mapped.
-    Returns the number of entries evicted (for the periodic logger)."""
     existing: set[str] = set()
     try:
         if _STORYBOARD_DIR.exists():
@@ -159,10 +88,10 @@ def _storyboard_evict_locks_once() -> int:
         if lk is None:
             continue
         if not lk.acquire(blocking=False):
-            continue  # active build → leave it alone
+            continue
         try:
             if (_STORYBOARD_DIR / h).is_dir():
-                continue  # someone resurrected it between our snapshot and now
+                continue
             with _storyboard_locks_lock:
                 if _storyboard_locks.get(h) is lk:
                     _storyboard_locks.pop(h, None)
@@ -179,16 +108,10 @@ async def _storyboard_lock_sweep() -> None:
 
 
 async def _storyboard_evictor_loop() -> None:
-    """Background task spawned at startup. Runs the lock evictor every
-    30 minutes — matches the cadence of the prune-storyboards cron so
-    the in-memory dict catches up shortly after the disk cleanup."""
     await _periodic("storyboard evictor", 30 * 60, _storyboard_lock_sweep)
 
 
 def _video_path_hash(u: str) -> str:
-    """SHA-1 of host+path (signature stripped, account-agnostic). Same
-    physical video → same hash → same on-disk frames, regardless of
-    which account fetched it or how OF signed the URL today."""
     from urllib.parse import urlparse as _urlparse
     parsed = _urlparse(u)
     base = (parsed.hostname or "").lower() + (parsed.path or "")
@@ -210,35 +133,14 @@ def _storyboard_download(
     request: Request, u: str, src_path: Path, session_id: str | None,
     media_id: int | None = None,
 ) -> bool:
-    """Pull the mp4 into src_path via the right account's HTTP client (so
-    the URL's source-IP signature matches). Returns False on failure or
-    when the client cancelled before 90% of the bytes had landed.
-
-    The cancel hook lets us bail mid-download when the user moves on to
-    another video. Past `_STORYBOARD_CANCEL_KEEP_THRESHOLD` we ignore
-    the cancel and finish the bytes anyway — the next hover gets a
-    warm cache and the bandwidth we already burned isn't wasted.
-
-    `session_id` scopes the cancel to one hover session. If empty/None
-    (old client, no sid supplied), the build runs without cancellation
-    support — a missed cancel is strictly better than the alternative,
-    which was aborting unrelated builds.
-
-    `media_id` (the vault tile's) makes a 403 re-sign that media and retry
-    once (cdn_resign): the browser's url may be signed for the account's old
-    proxy IP or past its expiry."""
     global _storyboard_build_failures, _storyboard_total_cancelled, _storyboard_total_cancel_ignored
-    # Fresh, session-scoped event. Drop it on exit (finally) so a late
-    # cancel POST arriving after the build wraps up is a no-op — not a
-    # poison flag for the next session that happens to reuse this id.
+    # media_id makes a 403 re-sign that media and retry once: the browser's URL may be signed for the account's old proxy IP or be expired.
     cancel_event = _storyboard_register_session(session_id) if session_id else None
     r = None
     try:
         client = _get_client(request)
         aid = str(getattr(client, "account_id", "") or "")
 
-        # Sync route, so an anyio worker thread: hop to the loop for cdn_resign (its by-id read); the GETs go to
-        # the default executor (as resolve_fresh's read does), not back to the anyio pool this thread holds.
         def get(url: str):
             return asyncio.to_thread(client.http.get, url, timeout=client.timeout_s, stream=True)
         r, u = anyio.from_thread.run(cdn_resign.fetch, aid, media_id, u, client, get, IMG_RESIGN)
@@ -255,15 +157,11 @@ def _storyboard_download(
         with src_path.open("wb") as f:
             for chunk in r.iter_content(chunk_size=256 * 1024):
                 if cancel_event is not None and cancel_event.is_set():
-                    # Past the keep threshold? Honour the bytes we already
-                    # paid for and finish the file — bumping the ignored
-                    # counter so we can see the cap is working.
                     fraction = (bytes_done / total_bytes) if total_bytes > 0 else 0.0
                     if total_bytes > 0 and fraction >= _STORYBOARD_CANCEL_KEEP_THRESHOLD:
                         _storyboard_total_cancel_ignored += 1
-                        cancel_event.clear()  # treat the rest of the dl as committed
+                        cancel_event.clear()
                     else:
-                        # Truly abort — drop the partial mp4, signal failure.
                         _storyboard_total_cancelled += 1
                         return False
                 if chunk:
@@ -285,7 +183,6 @@ def _storyboard_download(
 
 
 def _storyboard_probe_duration(src_path: Path) -> float:
-    """ffprobe → duration in seconds, 0 on failure."""
     import subprocess
     try:
         probe = subprocess.run(
@@ -303,29 +200,11 @@ def _storyboard_probe_duration(src_path: Path) -> float:
 def _storyboard_extract_batch(
     src_path: Path, dest: Path, indices: tuple[int, ...], dur: float,
 ) -> bool:
-    """Extract all `indices` frames in a SINGLE ffmpeg invocation, using
-    repeated `-ss TIME -i SRC -frames:v 1 OUT` blocks. ffmpeg reopens the
-    file per `-i` (keyframe seek is fast on local disk) but the process
-    spawn happens only once per batch — cuts pass-1 latency by ~4x for a
-    4-frame batch vs. one subprocess per frame. Frames write directly to
-    their final 0-based name.
-
-    Tolerates partial success: if ffmpeg returns non-zero (common when
-    the final frame's seek lands at/past EOF on short clips with
-    rounded-up duration metadata) but at least one jpg landed on disk,
-    we treat the batch as good. Returns False only if zero frames came
-    out — that's the case where the source mp4 is unreadable or the
-    timeout fired."""
     import subprocess
-    # Stay at least 100ms before the encoded EOF — ffmpeg can't seek past
-    # the last decodable frame, and short clips whose container metadata
-    # rounds the duration up (e.g. "4.0s" for a 3.93s file) would otherwise
-    # blow up on the last index.
+    # Stay 100ms before the encoded EOF: a duration rounded up would make the last seek land past EOF on short clips.
     safe_dur = max(0.1, dur - 0.1)
     args: list[str] = ["ffmpeg", "-y", "-nostdin", "-loglevel", "error"]
     for pos, i in enumerate(indices):
-        # Mid-segment seek (i + 0.5) lands away from cut boundaries where
-        # an I-frame might be black or a hard transition.
         ts = (i + 0.5) * dur / _STORYBOARD_FRAMES
         ts = min(ts, safe_dur)
         out_path = dest / f"{i}.jpg"
@@ -359,10 +238,6 @@ def _storyboard_extract_batch(
         )
         return False
     if len(landed) < len(indices):
-        # Backfill missing indices by copying the nearest neighbour so the
-        # storyboard is always complete-shaped after a build. Without this
-        # any missing frame would trigger a fresh download+extract on the
-        # next request and fail the same way — an infinite loop.
         import shutil
         for i in indices:
             if (dest / f"{i}.jpg").is_file():
@@ -388,19 +263,6 @@ def _ensure_storyboard_frame(
     session_id: str | None = None,
     media_id: int | None = None,
 ) -> bool:
-    """Make sure frame `i` is on disk. Returns True if it is now.
-
-    Single-pass build: any caller that finds the storyboard missing
-    downloads the source mp4 and extracts all 12 frames in one batched
-    ffmpeg invocation. We tried a two-phase (4-then-8) split but the
-    measured breakdown showed ffmpeg is ~230ms total vs ~3-7s for the
-    download — splitting saved nothing meaningful and added background-
-    thread coordination.
-
-    `hint_duration` (seconds) lets the caller skip ffprobe entirely —
-    VaultMedia carries duration in the vault listing so the client
-    passes it through. The worst case if it's wrong is mis-spaced
-    scrub frames; we sanity-check it's positive."""
     global _storyboard_total_built, _storyboard_build_failures
     dest = _STORYBOARD_DIR / h
     frame_path = _storyboard_frame_path(h, i)
@@ -413,17 +275,11 @@ def _ensure_storyboard_frame(
         return False
     build_slot = False
     try:
-        # Another concurrent caller may have produced our frame while we
-        # waited on the lock.
+        # Another caller may have produced the frame while we waited on the lock.
         if frame_path.is_file():
             return True
 
-        # Global build slot. Taken INSIDE the per-video lock deliberately:
-        # everyone queued on that lock is waiting on a build of the SAME video
-        # already under way, and a waiter holding a build slot would be
-        # reserving a core it will never use. The lock stops duplicate work;
-        # the lane stops N DISTINCT videos putting N ffmpeg processes on a
-        # 2-core box.
+        # Build slot taken INSIDE the per-video lock: waiters on the same video would reserve a core they never use.
         if not admission.STORYBOARD_BUILD.enter(f"scrub h={h}"):
             return False
         build_slot = True
@@ -431,11 +287,8 @@ def _ensure_storyboard_frame(
         dest.mkdir(parents=True, exist_ok=True)
         src_path = dest / "source.tmp"
 
-        # Download mp4 (skipped if a prior failed build left it around).
         if not src_path.is_file():
             if not _storyboard_download(request, u, src_path, session_id, media_id):
-                # On cancel/error, drop the partial bytes — incomplete
-                # mp4s aren't useful for extraction.
                 try: src_path.unlink(missing_ok=True)
                 except Exception: pass
                 return False
@@ -452,14 +305,6 @@ def _ensure_storyboard_frame(
 
         if not _storyboard_extract_batch(src_path, dest, _ALL_FRAME_INDICES, dur):
             _storyboard_build_failures += 1
-            # Drop the source mp4 on extract failure. The previous code
-            # kept it around so a follow-up call could skip the download
-            # and re-attempt extraction, but if the file is the cause of
-            # the failure (corrupt download, codec ffmpeg can't decode)
-            # leaving it on disk pins us into an infinite-retry loop on
-            # this video — every subsequent hover hits the same broken
-            # mp4 and fails the same way. Re-downloading is cheap
-            # relative to a permanently-broken cache entry.
             try: src_path.unlink(missing_ok=True)
             except Exception: pass
             return False
@@ -475,7 +320,6 @@ def _ensure_storyboard_frame(
 
 
 def _check_cdn_url(u: str) -> None:
-    """400 unless `u` is an http(s) URL on an allowed OF CDN host."""
     from urllib.parse import urlparse as _urlparse
     parsed = _urlparse(u)
     if parsed.scheme not in ("http", "https"):
@@ -506,9 +350,6 @@ def proxy_image_scrub(
     if not frame_path.is_file():
         raise HTTPException(status_code=404, detail=f"frame {i} not extracted")
 
-    # Bump the dir's mtime so the prune script's find -mtime treats this
-    # as "last used now". Cheap (one syscall) — does NOT touch each frame
-    # file, just the parent dir, which is all the prune script looks at.
     try:
         os.utime(_STORYBOARD_DIR / h, None)
     except OSError:

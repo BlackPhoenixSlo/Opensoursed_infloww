@@ -1,22 +1,3 @@
-"""phase_f_attr_view_include_pending
-
-Revision ID: 0016_phase_f_attr_view_include_pending
-Revises: 0015_phase_f_attribute_override
-Create Date: 2026-05-22
-
-Rewrites `per_employee_revenue_with_attribution` to include rows with
-status='pending' alongside status='cleared'. Mirrors the stats.py
-`_TRACKED_STATUSES` constant — see that for the rationale (OF clears
-take ~7d; excluding pending lags reality and underreports active
-accounts).
-
-Refunds/chargebacks are still excluded: a pending row that later
-chargebacks gets its status flipped on the next ingest tick and naturally
-drops out of the view.
-
-SELECT shape unchanged (sent_by_employee_id, account_id, kind,
-amount_cents, occurred_at). No reader edits required.
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,10 +1,3 @@
-"""Bounded raw click stats for redirect links.
-
-900-second UTC buckets fold into exact report-zone days, including half/quarter
-hour offsets and DST boundaries. A click's time is floored to its second first:
-older SQLite's unixepoch() rounds 23:59:59.9995+ into the next day. NULL ref means unclassified old rows; the boot
-job rescans those rows without a marker, in resumable chunks.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -29,7 +22,6 @@ BUCKET_S = 900
 
 
 def utcnow() -> datetime:
-    """Shared click write and report clock."""
     return datetime.now(timezone.utc)
 
 
@@ -102,7 +94,6 @@ async def tracking_link_analytics(link_id: int, account_id: str = Query(...), da
         if owner != account_id:
             raise HTTPException(404, "tracking link not found")
         where = "WHERE tracking_link_id=:lid AND clicked_at>=:lo AND clicked_at<:hi "
-        # One statement = one snapshot: series total == breakdown sums (STATS_BREAKDOWN).
         rows = (await s.execute(text("SELECT 'series' AS kind, unixepoch(substr(clicked_at, 1, 19))/:bucket_s AS bucket, "
                                      "NULL AS country, NULL AS in_app, NULL AS ref, COUNT(*) AS n, "
                                      "SUM(verified) AS passed FROM tracking_clicks " + where + "GROUP BY bucket "
@@ -128,7 +119,6 @@ async def tracking_link_analytics(link_id: int, account_id: str = Query(...), da
 
 
 def _classify_chunk(engine, last: int, chunk: int) -> tuple[int, int, int, Exception | None]:
-    """Classify before acquiring the write lock; commit one idempotent chunk."""
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT id, user_agent, referer FROM tracking_clicks "
                                  "WHERE ref IS NULL AND id>:last ORDER BY id LIMIT :chunk"),
@@ -169,7 +159,6 @@ async def classify_old_rows_background(sync_url: str, chunk: int = 2_000) -> int
     cancelled = False
 
     def _tally(n: int, failures: int, first_error: Exception | None) -> None:
-        """One committed chunk: its rows and classifier failures; the first failure logged once per run."""
         nonlocal done, row_failures
         done += n
         row_failures += failures
@@ -186,7 +175,7 @@ async def classify_old_rows_background(sync_url: str, chunk: int = 2_000) -> int
                 except asyncio.CancelledError:
                     cancelled = True
                     try:
-                        last, n, failures, first_error = await pending  # finish transaction before disposing engine
+                        last, n, failures, first_error = await pending
                     except Exception:
                         pass
                     else:

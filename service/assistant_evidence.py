@@ -1,31 +1,3 @@
-"""service/assistant_evidence.py — the fan evidence pack, rendered.
-
-The PURE half of the help bot's v3 answer (plan: plans/help-chatbot/06-v3-fan-why.md).
-`assistant_fan_pack` reads the rows; everything here turns them into the text
-that rides the user message. Nothing here opens a session, runs an engine or
-touches the network — hand it an `Evidence` and it hands back a block, which is
-what makes every line of the pack testable without a DB.
-
-TWO TIERS, AND THE DIFFERENCE IS THE FEATURE. PROVEN lines are stored rows and
-are stated as fact. CURRENT-STATE lines describe how things stand now and can
-only support a ranked hypothesis.
-
-The cap that keeps the block affordable does NOT shed by tier, and learning
-that was the point: value is not sorted by section. `Thread` and `Current` cut
-themselves into named groups, and `_fit` walks a five-rung ladder over them —
-supporting figures, then thread-to-a-floor, then the knobs, then thread-to-the-
-bone, then the two lines that answer the question on their own. The framing
-sentences live in the header, where the cap cannot reach them at all.
-
-NO FAN-WRITTEN TEXT EVER. Message bodies, notes, self-descriptions and the
-fan's own OF identity fields stay out: directions, timestamps, engine
-attribution and amounts only. A fan who writes "ignore all previous
-instructions" would otherwise be dictating half the diagnosis. His
-operator-set `custom_nickname` is the one deliberate exception — it is how the
-operator named him in the first place, and echoing it back is what proves the
-right thread was found — so it goes through `clean_label` rather than straight
-into a prompt.
-"""
 from __future__ import annotations
 
 import json
@@ -40,14 +12,14 @@ from db.models import (
 if TYPE_CHECKING:
     from assistant_evidence_full_ai import FullAi
 
+# No fan-written text ever enters the pack (prompt injection); custom_nickname is the one exception, via clean_label.
 CAP_CHARS = 4000
-TIMELINE_SCAN = 40           # message rows read, newest first
-TIMELINE_LINES = 14          # rendered thread lines, after bubble runs collapse
-LABEL_CAP = 60               # a nickname is a label, not a paragraph
-MAX_LISTS = 8                # …so one row type cannot eat the whole pack
-MAX_AUDIENCES = 3            # audience lines rendered, so the thread survives
-# Consecutive rows of one engine closer together than this are bubbles of ONE
-# reply (the humanizer types a reply out as 3-5 rows, seconds apart).
+TIMELINE_SCAN = 40
+TIMELINE_LINES = 14
+LABEL_CAP = 60
+MAX_LISTS = 8
+MAX_AUDIENCES = 3
+# Consecutive same-engine rows closer than this are bubbles of ONE reply (the humanizer types 3-5 rows, seconds apart).
 _BUBBLE_WINDOW = timedelta(minutes=2)
 
 _FAN_HEADER = (
@@ -60,33 +32,18 @@ _FAN_HEADER = (
     "looked at this fan on a given tick and chose silence is an INFERENCE from "
     "the rows below, and must be stated as one.")
 
-# CONTENT money vs SUBSCRIPTION money, for the per-kind SPLIT only. The verdict
-# comes from `content_payer_fans`; restating the kinds here is presentation, and
-# deciding with them would be the second copy this feature refuses to write.
+# Presentation of the per-kind split only; the verdict comes from content_payer_fans.
 CONTENT_TX_KINDS = ("ppv_message", "ppv_post", "tip")
 
-# ── The typed record everything below reads ──────────────────────────
 
 class AudienceHome(NamedTuple):
-    """Where an engine keeps its audience, and what to call that place.
-
-    THE one answer to that question. The differences are irreducible facts
-    about the codebase rather than special cases this module invented —
-    reading the top level for `mass_premade` reports "nothing set" on a fully
-    configured sender — so the knowledge is a table, and the renderer asks the
-    table rather than carrying its own `if kind == "mass_premade"`."""
 
     keys: frozenset[str]
     where: str
-    # A payload that nests its audience one level down, and the key it is under.
     nested_under: str | None = None
 
 
-# The audience keys a mass rule carries in its `steps_json` payload. WHITELIST,
-# both for the secrets reason and because a payload also holds message text,
-# vault ids and price ladders — none of which answers "who is in the audience".
-# Names verified 2026-08-28 against send_mass_message; a key absent from a payload means the engine's own default, not
-# "off", and the pack says so rather than implying the operator set it.
+# WHITELIST: a payload also holds message text, vault ids, price ladders; an absent key means the engine's default, not "off".
 _RULE_AUDIENCE = AudienceHome(frozenset({
     "excluded_user_lists", "excluded_users", "exclude_inbound_hours",
     "exclude_last_chat_hours", "exclude_list_ids", "exclude_replied_hours",
@@ -96,25 +53,21 @@ _RULE_AUDIENCE = AudienceHome(frozenset({
 }), "the rule payload")
 
 _AUDIENCE_HOMES: dict[str, AudienceHome] = {
-    # mass_premade's payload is a LIST of premade messages, each carrying its
-    # own audience; the top level holds none at all.
+    # mass_premade's payload is a LIST of premade messages, each carrying its own audience; the top level holds none.
     "mass_premade": AudienceHome(
         _RULE_AUDIENCE.keys, "the first premade message",
         nested_under="messages"),
 }
 
 
-# The rule kinds whose sends are tagged with a different `automation_kind`
-# (send_welcome.py, send_followup.py `_PURPOSE`); every other one tags its own.
+# Rule kinds whose sends are tagged with a different automation_kind; every other one tags its own.
 BEAT_TAG = {"send_followup": "followup", "send_welcome": "welcome"}
 
 def audience_home(kind: str) -> AudienceHome:
-    """Where `kind` keeps its audience, and what to call that place."""
     return _AUDIENCE_HOMES.get(kind, _RULE_AUDIENCE)
 
 
 class Beat(NamedTuple):
-    """One rendered thread row, already collapsed if it was a bubble run."""
 
     ts: datetime | None
     direction: str
@@ -130,54 +83,30 @@ class Beat(NamedTuple):
 
 
 class Evidence(NamedTuple):
-    """Everything the fetcher found, in one typed record.
-
-    It exists so the renderers take ONE argument instead of nineteen. The
-    fetcher shreds a session into these fields once; every function below reads
-    them by name, and adding a fact to the pack is a field plus a line rather
-    than another parameter threaded through two signatures.
-
-    EVERY FIELD IS RAW. Not one of them holds a rendered string, and that is
-    what makes the seam real: the fetcher never calls back into this module to
-    pre-format anything, so "who reads the database" and "who writes the
-    prose" is a question with one answer per module rather than two."""
 
     account_id: str
-    label: str | None                        # account nickname, for the header
+    label: str | None
     fan: Fan
     skip: SkipList | None
     banned: Blacklist | None
     welcomed: WelcomeSent | None
     drip: FollowupState | None
-    memberships: list[tuple[str, str, datetime]]   # list name, kind, added_at
-    rows: list                               # raw thread rows, newest first
-    paid_ids: set[int]                       # message_ids with a purchase row
-    runs: dict[int, MassRun]                 # mass_run_id -> the run row
-    money: list[tuple[str, int, int]]        # tx kind, count, cents
-    missing: list[str]                       # scheduled kinds with NO rule
-    is_payer: bool                           # content_payer_fans's verdict
-    muted_creator: bool                      # should_skip_muted_creator's
-    # (kind, its audience config as stored, rule enabled) for the mass engines
-    # worth describing. Raw, like everything else here.
+    memberships: list[tuple[str, str, datetime]]
+    rows: list
+    paid_ids: set[int]
+    runs: dict[int, MassRun]
+    money: list[tuple[str, int, int]]
+    missing: list[str]
+    is_payer: bool
+    muted_creator: bool
     audiences: list[tuple[str, str | None, bool]]
-    # True when none of them sent a mass on this thread (no rule is left for
-    # what did, or no mass row was read): they are OTHER
-    # engines' audiences.
     audiences_other: bool
-    # Full AI Chat's facts for him. None = the account has no full_ai_chat rule,
-    # and then the pack carries not one Full AI line (zero added tokens).
     full_ai: "FullAi | None" = None
-    full_ai_failed: bool = False             # a rule exists but its reads failed
+    full_ai_failed: bool = False
 
 
-# ── Formatting primitives ─────────────────────────────────────────────
 
 def humanize(minutes: int) -> str:
-    """A minute count as the product says it: 45m, 3h, 2d.
-
-    Shared with v2's `_human_age`, which is the only reason it is a function:
-    the two callers differ in whether the span is behind us or ahead of us, and
-    that is a sentence, not a bucketing rule."""
     if minutes < 60:
         return f"{minutes}m"
     if minutes < 48 * 60:
@@ -186,7 +115,6 @@ def humanize(minutes: int) -> str:
 
 
 def clean_label(value: str | None) -> str:
-    """A name rendered as a LABEL: one line, no control characters, short."""
     flat = " ".join((value or "").split())
     return flat[:LABEL_CAP]
 
@@ -196,35 +124,19 @@ def usd(cents: Any) -> str:
 
 
 def at(ts: datetime | None) -> str:
-    """'2026-08-27 00:05:21 (36h ago)' — every mutable fact carries its age.
-
-    FUTURE timestamps get their own branch, and they must: v2's `_human_age`
-    was only ever fed `last_run.started_at`, so it clamps at zero, and v3 is
-    the first caller to hand it a deadline. Unclamped, a fan resting under a
-    SEVEN-DAY quarantine would read "(0m ago)" — the exact opposite of what an
-    operator needs to know about him."""
     if ts is None:
         return "unknown time"
     stamp = f"{ts:%Y-%m-%d %H:%M:%S}"
     now = datetime.utcnow()
+    # Future timestamps need their own branch: unclamped, a fan under a 7-day quarantine would read "(0m ago)".
     if ts > now:
         return f"{stamp} (in {humanize(int((ts - now).total_seconds() // 60))})"
     return f"{stamp} ({humanize(max(0, int((now - ts).total_seconds() // 60)))} ago)"
 
 
-# ── One line at a time ────────────────────────────────────────────────
 
 def _folds(last: Beat, row: Any, ts: datetime | None, window) -> bool:
-    """Is `row` another bubble of the beat already on the list?
-
-    Every clause is a rule about what a bubble ISN'T, and they are spelled out
-    rather than summarised because each one has a reason:
-      • same direction and same engine — otherwise it is a different speaker;
-      • neither priced nor tipped — the amount IS the evidence;
-      • neither on a broadcast — a run id is what answers "why this mass";
-      • neither carrying media — a photo is an event, and folding "he sent a
-        picture" into the text row after it hides why he got the reply he got;
-      • same unsent state, and inside the engine's own bubble window."""
+    # Priced, tipped, broadcast or media rows never fold: the amount, run id or photo is itself the evidence.
     return (last.direction == row.direction
             and last.kind == row.automation_kind
             and last.price_cents == 0 and int(row.price_cents or 0) == 0
@@ -237,18 +149,11 @@ def _folds(last: Beat, row: Any, ts: datetime | None, window) -> bool:
 
 
 def collapse(rows: Iterable[Any]) -> list[Beat]:
-    """Fold a run of consecutive same-engine bubbles into one beat.
-
-    A four-bubble reply is ONE event to anyone reading the thread, and
-    spending four lines of a capped pack on it costs the older history that
-    actually answers the question. Priced, tipped and broadcast rows never fold
-    — the amount and the run id are themselves the evidence."""
     beats: list[Beat] = []
     for row in rows:
         ts = parse_ts(row.created_at)
         last = beats[-1] if beats else None
         if last is not None and _folds(last, row, ts, _BUBBLE_WINDOW):
-            # Rows arrive newest-first, so `ts` is the older edge of the run.
             beats[-1] = last._replace(ts=ts, count=last.count + 1)
             continue
         beats.append(Beat(
@@ -262,11 +167,6 @@ def collapse(rows: Iterable[Any]) -> list[Beat]:
 
 def beat_line(b: Beat, paid_ids: set[int],
               runs: dict[int, MassRun], fan_id: int | None = None) -> str:
-    """One timeline line — directions, times, engines and amounts, never a word
-    he wrote or a word we wrote back.
-
-    `fan_id` reaches `mass_summary` so a broadcast's stored recipient list can
-    be read as this fan's membership of it rather than as a count of strangers."""
     bits = [at(b.ts), {"in": "IN ", "out": "OUT"}.get(b.direction, "SYS")]
     bits.append(b.kind or ("fan" if b.direction == "in" else "human send"))
     if b.count > 1 and b.through is not None:
@@ -278,9 +178,7 @@ def beat_line(b: Beat, paid_ids: set[int],
     if b.media_count:
         bits.append(f"{b.media_count} media")
     if b.price_cents:
-        # PURCHASE TRUTH IS THE LEDGER. `messages.is_paid` carries it on ~1.4%
-        # of priced sends, so reading it here would report almost every real
-        # buyer as a man who never paid.
+        # Purchase truth is the ledger: messages.is_paid is set on ~1.4% of priced sends.
         bits.append("PURCHASED" if b.message_id in paid_ids
                     else "no LINKED purchase row")
     if b.mass_run_id is not None:
@@ -292,43 +190,13 @@ def beat_line(b: Beat, paid_ids: set[int],
     return "  " + "  ".join(bits)
 
 
-# The audience keys that hold THE RECIPIENT LIST ITSELF rather than a filter.
-#
-# 🚨 They do NOT mean "someone picked these people", and a first attempt at this
-# line said they did — it rendered them "INCLUDE-ONLY, N named ids", which told
-# the model a human had hand-chosen the audience. Checked against every stored
-# row: of 2,028 runs carrying a non-empty `included_users`, 2,023 are
-# `ppv_send`, `recipient_count == len(included_users)` in **2,028 of 2,028**,
-# and **none** co-occurs with a filter key. The column is always the audience
-# the engine had already RESOLVED — `ppv_send` writes a price cell (the roster
-# bucketed by spend and recency), `send_mass_message` writes the list after
-# expansion and exclusions. So a 1,514-fan roster blast was being presented as
-# fourteen hundred hand-picked people.
-#
-# What the row can honestly answer is the question actually being asked, which
-# is never "who else was in it": it is "why HIM". So these keys render as
-# MEMBERSHIP — is this fan in the list or not — and the count comes along only
-# as scale.
+# included_users is the audience the engine already RESOLVED, never hand-picked ids; render as this fan's membership.
 _RECIPIENT_LIST_KEYS = frozenset({"included_users", "fan_ids"})
 _EXCLUSION_KEYS = frozenset({"excluded_users"})
 
 
 def _is_id_list(value: Any, key: str = "") -> bool:
-    """Is this a list of IDS — by SHAPE, or by a key that always holds them?
-
-    Shape first, which is this repo's documented lesson and the difference
-    between a guard and a coincidence: a list of ints under a key nobody thought
-    of is still a list of identities, and the audience blob is engine-authored
-    JSON that grows without asking. `bool` is excluded because it is an `int` in
-    Python and `[true]` is a flag, not an id.
-
-    🚨 UNION, not replacement. Shape alone let string ids through: a rule payload
-    is operator-written and `send_mass_message._int_list` exists precisely
-    because `"included_users": ["123", "456"]` is a shape people type, and the
-    coercion happens in the SENDER, long after this renderer has already put the
-    raw list in a prompt. The keys below hold identities whatever type they
-    arrive as, so a non-empty list under one of them is redacted on the strength
-    of its name too."""
+    # Shape OR key: operator-written payloads carry string ids ("123") that a shape-only test lets into the prompt.
     if not isinstance(value, list) or not value:
         return False
     if key in _RECIPIENT_LIST_KEYS or key in _EXCLUSION_KEYS:
@@ -337,30 +205,12 @@ def _is_id_list(value: Any, key: str = "") -> bool:
 
 
 def _holds(ids: list, fan_id: int) -> bool:
-    """Is this fan in that id list, whatever type the ids arrived as?
-
-    `123 in ["123"]` is False in Python, and a rule payload is operator-written
-    JSON where string ids are an ordinary shape (`send_mass_message._int_list`
-    exists for exactly that). Compared naively, a fan who WAS on the list gets
-    told he was not — a confident wrong answer, which is the whole thing this
-    pack is built to avoid. Comparison is on the string form, so it is right for
-    both types and never raises on a ragged list."""
+    # Compare as str: 123 in ["123"] is False, yet string ids are an ordinary payload shape.
     want = str(fan_id)
     return any(str(i) == want for i in ids)
 
 
 def _knob(key: str, value: Any, fan_id: int | None = None) -> str:
-    """`key=value`, with an id LIST rendered as a count — and, for the two keys
-    that hold the recipient list, as THIS FAN'S MEMBERSHIP of it.
-
-    Two audience renderers need this and they must not disagree: a raw list of
-    recipient ids is long, is other fans' identities, and belongs in no prompt.
-    A count of four was as raw as a count of four hundred — the old length test
-    only hid the long ones.
-
-    The pack is built for exactly one fan, so a bare count answers a question
-    nobody asked. `fan_id` turns the same row into the answer: he is on the list
-    the run went out to, or he is not."""
     if _is_id_list(value, key):
         n = len(value)
         if fan_id is not None and key in _RECIPIENT_LIST_KEYS:
@@ -376,27 +226,11 @@ def _knob(key: str, value: Any, fan_id: int | None = None) -> str:
     return f"{key}={json.dumps(value)}"
 
 
-_KNOB_BUDGET = 220           # chars of audience knobs one run summary may carry
+_KNOB_BUDGET = 220
 
 
 def _fit_knobs(audience: dict, fan_id: int | None = None) -> str:
-    """The audience knobs, WHOLE — a cap may drop one, never slice one.
-
-    🚨 This used to be `", ".join(...)[:220]`, and a slice through a joined
-    string lands mid-VALUE: `min_cents=5000` becomes `min_cents=50`, and the
-    pack presents it as a stored fact the answer must state as true. A cap may
-    drop a knob; it may never invent a number. What was dropped is said out
-    loud, because a silently short list reads as a complete one."""
-    # EVERY KEY, empties included. A pass here once skipped them as "the
-    # engine's default, not a setting", on the theory that they were crowding
-    # the budget. Replayed over all 3,695 stored blobs through this very
-    # renderer, the longest audience line is 126 characters against a budget of
-    # 220 and NOTHING has ever been dropped — the ration was imaginary, and it
-    # was paid for with the one distinction that matters here: `included_users`
-    # is present-and-empty in 1,387 of those blobs (37.5%), and "the engine
-    # resolved nobody onto this run by name" is a different fact from "this key
-    # was never written". The budget stays as a guard against a blob nobody has
-    # written yet, not as a live tax on the ones that exist.
+    # Never slice a joined string (min_cents=5000 -> 50): drop whole knobs. Empties are kept: present-and-empty differs from never written.
     kept, used, dropped = [], 0, 0
     for k, v in sorted(audience.items()):
         knob = _knob(k, v, fan_id)
@@ -411,28 +245,7 @@ def _fit_knobs(audience: dict, fan_id: int | None = None) -> str:
 
 
 def mass_summary(run: MassRun, fan_id: int | None = None) -> str:
-    """The broadcast that carried a message, as its own row records it.
-
-    `mass_runs.audience_filter` is the audience AT SEND TIME, which is the only
-    honest answer to "why did HE get this one" — the rule's audience config
-    today describes who would be included NOW, and the two drift apart daily.
-    Id LISTS are rendered as counts: they are long, they are other fans' ids,
-    and neither belongs in a prompt.
-
-    ⚠️ WHAT THE ROW HOLDS VARIES BY KIND, and the line must not overclaim. Where
-    `included_users` is populated it is the audience the engine had already
-    RESOLVED, so "he was on the list" is the whole honest answer and inferring
-    that somebody chose him is not. But 1,387 of 3,699 rows store no recipient
-    list at all — only the FILTER (`user_lists`, `list_ids`) — because a
-    list-or-filter send is resolved by OnlyFans. There the honest answer is that
-    the stored audience IS the filter, and who it expanded to was never written
-    down. Each key says which it is; the header says neither."""
-    # "0 recipients" is not a headcount, it is a MISSING one — and it is the
-    # common case: 1,390 of 3,699 stored runs carry it, including every one of
-    # the 1,055 `send_mass_message` rows, because a list-or-filter send hands
-    # its audience to OnlyFans and never enumerates it locally. Printed as a
-    # number it reads "this went to nobody", on a beat sitting in the thread of
-    # a fan who demonstrably received it.
+    # "0 recipients" is a MISSING count (list-or-filter sends are resolved by OnlyFans), not nobody.
     bits = [run.automation_kind or "manual broadcast"]
     bits.append(f"{run.recipient_count} recipients" if run.recipient_count
                 else "recipient count not recorded — a list/filter send is "
@@ -442,30 +255,11 @@ def mass_summary(run: MassRun, fan_id: int | None = None) -> str:
     except (TypeError, ValueError):
         audience = None
     if isinstance(audience, dict) and audience:
-        # NEUTRAL LABEL. It once read "(WHO it reached, not the filter that
-        # produced them)", which is true of `included_users` and false of every
-        # other key in the block — and on the 1,387 zero-count rows the only
-        # populated knob IS the filter (`user_lists=["fans","following"]`), so
-        # the header asserted the opposite of its own contents. The WHO claim
-        # belongs on the recipient key, where `_knob` already makes it and only
-        # when there is a list to make it about.
         bits.append("audience at send time: " + _fit_knobs(audience, fan_id))
     return "; ".join(bits)
 
 
 def audience_now(kind: str, raw: str | None, enabled: bool) -> str:
-    """A mass engine's audience AS CONFIGURED TODAY.
-
-    The paired line to `_mass_summary`, and the two answer different questions:
-    that one says who was in the audience when the send actually went out, this
-    one says who would be in it now. Asked "why did he get that mass last
-    Tuesday", the bot needs both — the stored filter to answer it, and this to
-    pivot to "and here is what would include him today".
-
-    The line SAYS which of the two it is, in capitals, because the label is the
-    only thing separating them once they are prose in the same prompt: given
-    both, the bot answered "he got it because the engine reaches everyone" —
-    today's switch — about a run whose own row recorded five named recipients."""
     home = audience_home(kind)
     where = home.where
     try:
@@ -486,7 +280,6 @@ def audience_now(kind: str, raw: str | None, enabled: bool) -> str:
 
 
 def skip_line(skip: SkipList | None) -> str:
-    """The skip_list row, verbatim, and who reads it."""
     if skip is None:
         return "- skip_list: no row."
     return (f"- skip_list: reason '{skip.reason or ''}', added {at(skip.added_at)} "
@@ -495,22 +288,16 @@ def skip_line(skip: SkipList | None) -> str:
             "Auto-reply does not read it.")
 
 
-# ── The two tiers, and the cap ────────────────────────────────────────
 
 def proven_lines(ev: Evidence) -> list[str]:
-    """The stored rows. Written first, and the LAST thing the cap gives up.
-
-    The order is the order they are cut in, so a row whose absence would change
-    the answer belongs early. `skip_list` leads because a lifted row named as
-    the blocker is the single wrong answer this feature exists to prevent."""
+    # Order is cut order; skip_list leads because a lifted row named as the blocker is the one wrong answer to prevent.
     out = [skip_line(ev.skip)]
     out.append("- blacklist: no row." if ev.banned is None else
                f"- blacklist: BANNED GLOBALLY, reason '{ev.banned.reason}', "
                f"added {at(ev.banned.added_at)}. This applies across every "
                f"model.")
     if ev.memberships:
-        # Bounded: a fan on thirty lists would otherwise push the thread — the
-        # row that usually answers the question — out of the pack entirely.
+        # Bounded so a fan on thirty lists cannot push the thread out of the pack.
         for name, kind, added in ev.memberships[:MAX_LISTS]:
             out.append(f'- list membership: "{clean_label(name)}" (kind '
                        f"{kind}), added {at(added)}.")
@@ -551,12 +338,7 @@ def proven_lines(ev: Evidence) -> list[str]:
 
 
 def _money_lines(ev: Evidence) -> list[str]:
-    """The ledger split — and, when it disagrees with the payer gate, why.
-
-    The gate is a UNION of the ledger and the messages table, and 40% of known
-    content buyers exist in only one of them. Without the second line the pack
-    prints "content money $0.00" directly above "CONTENT payer: YES" and reads
-    as though it contradicts itself."""
+    # The payer gate is a UNION of ledger and messages table (40% of content buyers exist in only one), so $0 can sit beside payer YES.
     content = sum(int(c or 0) for k, _n, c in ev.money if k in CONTENT_TX_KINDS)
     other = sum(int(c or 0) for k, _n, c in ev.money if k not in CONTENT_TX_KINDS)
     if not ev.money:
@@ -577,16 +359,6 @@ def _money_lines(ev: Evidence) -> list[str]:
 
 
 class Current(NamedTuple):
-    """The CURRENT-STATE section, split at the seams the cap cuts on.
-
-    Three tiers, most decisive first. `essential` is whose turn it is and
-    whether he has bought content — between them they answer the question.
-    `core` is the pause and the mute. `figures` is supporting arithmetic (none
-    today), and it is the first thing to go.
-
-    Named groups rather than indexes into one flat list: `_fit` used to be
-    handed two derived integers describing a shape it did not build, which is
-    a layout invariant living in two files at once."""
 
     head: list[str]
     essential: list[str]
@@ -595,11 +367,6 @@ class Current(NamedTuple):
 
 
 class Thread(NamedTuple):
-    """The thread section, split at the seam the cap cuts on.
-
-    `beats` is the only shed-able part; `head` and `tail` frame it. Keeping
-    them apart is what lets `_fit` pop from a list of beats instead of
-    reverse-engineering the layout from an index and a count."""
 
     head: list[str]
     beats: list[str]
@@ -607,23 +374,8 @@ class Thread(NamedTuple):
 
 
 def thread_lines(ev: Evidence) -> Thread:
-    """The thread, plus the two things its silence does NOT prove.
-
-    Both caveats are load-bearing. A ledger row can land without a message_id
-    (the attribution linker races the purchase), and a list broadcast
-    hands its audience to OnlyFans and writes no per-fan row at all — so an
-    absence here is not evidence, and the pack has to say which absences."""
     shown = collapse(ev.rows)[:TIMELINE_LINES]
-    # ⚠️ NO "this thread covers X to Y" LINE HERE, though it is the obvious fix
-    # for a dated question and was tried. `thread_lines` sees the beats it
-    # SELECTED; `_fit` sheds them afterwards, down to THREAD_FLOOR. A span
-    # computed here therefore names days whose rows the pack then drops — on
-    # Alexj it claimed 08-23 while only the 27th and 28th survived, telling the
-    # model a date was in range when the evidence for it was gone. A false
-    # range is worse than no range, and the honest version has to be built where
-    # the shedding happens, not here. The scan SIZE names no date, so the head
-    # can state it: older than the oldest beat shown means not shown or not
-    # read, never absent.
+    # No "covers X to Y" span line here: _fit sheds beats afterwards, so a span would name days whose rows were dropped.
     head = ["- thread, newest first. Directions, times, engines and amounts "
             "only; message text is deliberately excluded. Only his newest "
             f"{TIMELINE_SCAN} stored messages were read, and not all are shown: "
@@ -640,10 +392,7 @@ def thread_lines(ev: Evidence) -> Thread:
         beats = ["  (no messages stored for this fan at all)"]
     tail = [audience_now(kind, raw, on) for kind, raw, on in ev.audiences]
     if tail:
-        # ONCE, above the group — `MAX_AUDIENCES` is 3, and the same sentence
-        # repeated three times reads as three facts. The warning is what stops
-        # today's switches being offered as the reason for a send that already
-        # happened; that is a property of the whole group, not of each line.
+        # Once per group: repeated three times it reads as three facts.
         tail.insert(0, "  THE LINE(S) BELOW DESCRIBE NO PAST SEND. They are who "
                        "each engine would reach FROM NOW ON — never why anyone "
                        "was in a broadcast that has already gone out. For that, "
@@ -660,12 +409,6 @@ def thread_lines(ev: Evidence) -> Thread:
 
 
 def current_lines(ev: Evidence) -> Current:
-    """How things stand NOW — ranked hypotheses, never proof of the past.
-
-    Grouped by how much each line DECIDES, because `_fit` sheds tier by tier.
-    Whose turn it is and whether he has bought content are ESSENTIAL. The pause
-    and the mute are CORE: their common answer is "no", and "no" decides
-    nothing."""
     essential = [_turn_line(ev)]
     essential.append(
         f"- lifetime_spend_cents: {usd(ev.fan.lifetime_spend_cents)}. CONTENT "
@@ -685,11 +428,11 @@ def current_lines(ev: Evidence) -> Current:
             + (f", expires {at(ev.fan.subscription_expires_at)}"
                if ev.fan.subscription_expires_at else "") + "."]
     if ev.full_ai is not None:
-        from assistant_evidence_full_ai import _fans_line, _full_ai_state  # lazy, as in proven_lines
+        # Lazy, as in proven_lines.
+        from assistant_evidence_full_ai import _fans_line, _full_ai_state
         fa = ev.full_ai
         essential += _full_ai_state(fa)
-        # A SET list can be the whole answer (he may not be on it), so
-        # while Live it must outlive the knobs; "every fan" stops nobody.
+        # A SET list can be the whole answer (he may not be on it), so while Live it outlives the knobs.
         every = fa.fans_ok and not (fa.fans.get("include") or fa.fans.get("exclude"))
         (core if every or fa.off is not None else essential).append(_fans_line(fa))
 
@@ -700,11 +443,7 @@ def current_lines(ev: Evidence) -> Current:
 
 
 def _turn_line(ev: Evidence) -> str:
-    """Whose turn it is — reading the thread the way the ENGINE reads it.
-
-    A broadcast does not take the turn (the chat engines set `last_dir` only
-    off non-broadcast rows), and getting that backwards would report a fan who
-    is owed an answer as one who already got one."""
+    # A broadcast does not take the turn (chat engines set last_dir off non-broadcast rows).
     turn = next((b for b in collapse(ev.rows)
                  if b.mass_run_id is None and not b.is_unsent
                  and b.direction in ("in", "out")), None)
@@ -723,12 +462,7 @@ def _turn_line(ev: Evidence) -> str:
 
 
 def _pause_line(pause: datetime | None) -> str:
-    """`automation_paused_until` — and WHICH of its two writers stamped it.
-
-    They are worlds apart: the post-reply brake stamps minutes, while
-    `quarantine_if_undeliverable` stamps SEVEN DAYS on a fan OnlyFans would not
-    accept a message for. Days out means the second, and it is an entirely
-    different answer to give an operator."""
+    # Two writers: the post-reply brake stamps minutes, quarantine_if_undeliverable stamps 7 days.
     if pause is None:
         return "- automation_paused_until: not set."
     now = datetime.utcnow()
@@ -747,7 +481,6 @@ def _pause_line(pause: datetime | None) -> str:
 
 
 def render(ev: Evidence) -> str:
-    """The whole block, under the cap."""
     nick = clean_label(ev.fan.custom_nickname)
     head = [f"{_FAN_HEADER}\n",
             f"Subject: fan {int(ev.fan.fan_id)}"
@@ -757,25 +490,13 @@ def render(ev: Evidence) -> str:
                 thread_lines(ev), current_lines(ev))
 
 
-# How many beats survive before the cap is allowed to start eating the
-# CURRENT-STATE core. Five reaches back past a mass send to the last real
-# exchange on every live thread measured on 2026-08-28.
+# Five beats reach back past a mass send to the last real exchange on live threads.
 THREAD_FLOOR = 5
 
 
 def _fit(head: list[str], proven: list[str], thread: Thread,
          current: Current) -> str:
-    """Assemble under the cap. The ORDER of sacrifice below IS the policy.
-
-    A ladder rather than a single rule, and it got that way from live data.
-    With "shed all of CURRENT-STATE first", a real fan with a busy thread lost
-    the turn-ownership line — which on the very case this feature was built
-    from IS the answer — while fourteen rows of thread survived. Five rungs
-    rather than two because value is not sorted by section: the last few beats
-    outrank a config knob, and the badge outranks both.
-
-    The stored rows are last in every case. A pack that dropped the skip_list
-    row to keep a config knob would be answering a different question."""
+    # The order of sacrifice IS the policy; stored rows go last, the badge outranks knobs.
     groups = (head, proven, thread.head, thread.beats, thread.tail,
               current.head, current.essential, current.core, current.figures)
 
@@ -784,22 +505,18 @@ def _fit(head: list[str], proven: list[str], thread: Thread,
 
     def shed(group: list[str], down_to: int = 0) -> None:
         while len(group) > down_to and len(joined()) > CAP_CHARS:
-            group.pop()               # oldest beat / least decisive line first
+            group.pop()
 
-    shed(current.figures)                 # 1. the supporting arithmetic
-    shed(thread.beats, THREAD_FLOOR)      # 2. the thread, down to a floor
-    shed(current.core)                    # 3. the knobs, the pause, the mute
-    shed(thread.beats, 1)                 # 4. the thread, to the bone
-    shed(current.essential)               # 5. turn, payer — truly last
+    shed(current.figures)
+    shed(thread.beats, THREAD_FLOOR)
+    shed(current.core)
+    shed(thread.beats, 1)
+    shed(current.essential)
     shed(current.head)
-    # `.rstrip` because the section spacers are empty strings: shed the whole
-    # of CURRENT-STATE and its leading blank is the last line left, which would
-    # hand the model a block ending in a dangling newline.
+    # rstrip: shedding all of CURRENT-STATE leaves its blank spacer last, a dangling newline.
     out = joined().rstrip("\n")
     if len(out) <= CAP_CHARS:
         return out
-    # PROVEN alone is over the cap — cut at a line boundary so no line reads as
-    # a fact that was only half-written. `rfind` returns -1 when there is no
-    # newline to cut at, which would silently keep the whole overlong string.
+    # Cut at a line boundary so no fact reads half-written; rfind -1 would silently keep the overlong string.
     cut = out.rfind("\n", 0, CAP_CHARS)
     return out[:cut if cut > 0 else CAP_CHARS].rstrip("\n")

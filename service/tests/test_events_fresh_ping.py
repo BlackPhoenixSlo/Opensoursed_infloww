@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""The `fresh` ping (phase-01 Contract 7, ticket 09): with the Knob on every stream `ping` carries
-`fresh: {aid: at}` (the Last refresh, epoch ms) for the tracked (Open-tab) Creators in that subscriber's clamp that
-have one, on its own heartbeat timer, frames or not, and once right after `: connected` (the browser counts a
-reopened stream disconnected until its first frame); with it off the ping is today's, byte for byte, and fires only
-after a heartbeat with no frame. No ring entry either way.
-
-Time is scaled 1:50 (heartbeat 20 s -> 0.4 s, a frame every 5 s -> 0.1 s, 60 s -> 1.2 s) through the module's own
-`_HEARTBEAT_S`; the real `events` registry and `sse_stream`.
-
-Run: ./venv/bin/python service/tests/test_events_fresh_ping.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -26,9 +15,9 @@ import shared_refresher  # noqa: E402
 
 A, B, C, D = "9501", "9502", "9503", "9504"
 OWNER = "owner-f"
-HB = 0.4            # the heartbeat, scaled from 20 s
-STEP = 0.1          # a frame every 5 s, scaled
-SPAN = 1.2          # 60 s, scaled
+HB = 0.4
+STEP = 0.1
+SPAN = 1.2
 
 
 class _Req:
@@ -58,7 +47,6 @@ def _setup(on: bool, at_ms: dict[str, int]):
 
 
 def _pings(chunks: list[bytes]) -> list[dict]:
-    """Each ping's `data`, decoded."""
     out = []
     for raw in chunks:
         if raw.startswith(b": ping\n\n"):
@@ -70,8 +58,6 @@ def _pings(chunks: list[bytes]) -> list[dict]:
 
 async def _drive(on: bool, *, tab: bool = True, clamp=frozenset({A, B}), frames: bool = True, span: float = SPAN,
                  other_tab=frozenset({C})) -> list[tuple[float, bytes]]:
-    """One stream for `span` s (a frame for A every STEP when `frames`), beside another tab on `other_tab`;
-    every chunk it yielded after `: connected` and the head, with its time since connect."""
     other = await events.subscribe("all", accounts=other_tab, tab=True)
     gen = events.sse_stream(_Req(), "all", accounts=clamp, agencies=frozenset({OWNER}), tab=tab)
     assert await gen.__anext__() == ew.CONNECTED
@@ -110,7 +96,6 @@ async def case_on_busy_stream_still_pings_with_fresh():
         assert sum(1 for c in got if not c[1].startswith(b": ping")) >= 8, "frames flowed all along"
         assert len(pings) >= 2, (len(pings), got)
         assert all("fresh" in p for p in pings), pings
-        # In the clamp and tracked: A (B is tracked but has no Last refresh yet); C is outside the clamp, D untracked.
         assert all(p["fresh"] == {A: 111} for p in pings), pings
         assert all(set(p) == {"ts", "fresh"} for p in pings), pings
 
@@ -145,7 +130,6 @@ async def case_on_first_frame_is_a_ping_with_fresh_and_badge():
 
 
 async def case_off_busy_stream_pings_as_today():
-    """Today's rule: a heartbeat with no frame; a frame every STEP never leaves one, so no ping at all."""
     with _setup(False, {A: 111}):
         got = await _drive(False)
         assert sum(1 for c in got if not c[1].startswith(b": ping")) >= 8, "frames flowed all along"
@@ -172,7 +156,6 @@ async def case_on_quiet_stream_pings_with_fresh():
 
 
 async def case_fresh_holds_only_tracked_creators_in_the_clamp():
-    """A stream not marked as a tab still gets the field, but only for its Creators some tab tracks."""
     with _setup(True, {A: 111, B: 222, C: 333, D: 444}):
         got = await _drive(True, tab=False, clamp=frozenset({A, D}), other_tab=frozenset({A, C}), frames=False,
                            span=1.5)

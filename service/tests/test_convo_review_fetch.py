@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""convo_review_fetch: the ranking half of the convo reader (scripts/convo-review.sh) as tables.
-No network, no real DB: pure helpers as tables, the SQL signals against an in-memory sqlite holding
-only the `messages` / `transactions` columns they read (names from service/db/models.py).
-
-Pins: break_score caps each signal at 4 and ignores unknown names; pick drops threads under min_msgs
-(the edge is kept), selling needs revenue > 0, breaks needs a signal, each bucket honours its n, the
-union is ordered money, then breakage, then inbound, and `why` reads in break-weight order;
-_like_clause binds one `?` per needle and wraps each in %; media_priority puts unlocked PPVs, then
-what he sent, then the rest, newest first in each tier. thread_stats counts per (account, fan);
-add_revenue counts only cleared money of MONEY_KINDS and flags chargebacks; add_text_signals matches
-inbound only; add_loop_signal needs 3+ identical outbound lines of >= 30 chars, unsent excluded;
-add_tail_signals flags 3+ trailing inbound and an unopened trailing PPV. MASS_PLACEHOLDER_BASE
-mirrors attribution._MASS_PLACEHOLDER_BASE (read via ast: importing attribution opens the DB).
-
-run(parse_args([...])) end to end against a temp sqlite FILE with --no-media: exit 0, the payload
-shape, the picked ids in union order. fetch_thread_media pages with peek=True (a first-page GET
-marks the chat read on OF).
-
-Run as a script (the repo's convention, no pytest):
-    ./venv/bin/python service/tests/test_convo_review_fetch.py
-"""
 from __future__ import annotations
 
 import ast
@@ -35,33 +14,30 @@ sys.path.insert(0, str(SERVICE))
 import convo_review_fetch as crf  # noqa: E402
 
 def table(_cols, rows):
-    """Attach the rows; the runner below calls `fn(*row)` for each."""
     def mark(fn):
         fn.rows = rows
         return fn
     return mark
 
 
+# Nothing here may fetch media; a future call must fail loudly, never reach the network.
 def _no_network(*_a, **_k):
     raise AssertionError("network call in a DB-only test")
 
 
-# Nothing reachable from these tests fetches media; if that ever changes, fail loudly, never fetch.
-# The real pager is kept for the one test that hands it a fake client.
 _fetch_thread_media = crf.fetch_thread_media
 crf.fetch_thread_media = crf.fetch_still = crf.fetch_giphy = _no_network
 
 
-# ── pure tables ──────────────────────────────────────────────────────────────
 
 @table("signals, score", [
     ({}, 0),
     ({"ghosted": 1}, 12),
     ({"chargeback": 4}, 400),
-    ({"chargeback": 5}, 400),                    # capped at 4
+    ({"chargeback": 5}, 400),
     ({"bot_callout": 100}, 240),
     ({"loop_out": 3, "angry": 1}, 90 + 45),
-    ({"nonsense": 9}, 0),                        # unknown signal weighs nothing
+    ({"nonsense": 9}, 0),
     ({"dead_offer": 0}, 0),
 ])
 def test_break_score(signals, score):
@@ -80,11 +56,11 @@ def test_like_clause(needles, sql, params):
 
 @table("msg, prio", [
     ({"paid": 1, "dir": "out", "id": 5}, (0, -5)),
-    ({"paid": 1, "dir": "in", "id": 5}, (0, -5)),      # paid beats inbound
-    ({"paid": True, "dir": "out", "id": 5}, (0, -5)),  # sqlite bool reads as 1
+    ({"paid": 1, "dir": "in", "id": 5}, (0, -5)),
+    ({"paid": True, "dir": "out", "id": 5}, (0, -5)),
     ({"paid": 0, "dir": "in", "id": 7}, (1, -7)),
     ({"paid": None, "dir": "out", "id": 9}, (2, -9)),
-    ({"dir": "in"}, (1, 0)),                           # no id
+    ({"dir": "in"}, (1, 0)),
     ({"id": None}, (2, 0)),
 ])
 def test_media_priority(msg, prio):
@@ -108,23 +84,17 @@ def _pick(rows, n_sell=5, n_long=5, n_break=5, min_msgs=8):
 
 
 @table("rows, kw, want", [
-    # min_msgs edge: 8 kept, 7 dropped
     ([_st(1, total=8), _st(2, total=7)], {"n_sell": 0, "n_break": 0}, [1]),
-    # zero revenue is not selling; zero inbound still ranks long when n_long allows
     ([_st(1, rev=0, inbound=0)], {"n_long": 0, "n_break": 0}, []),
     ([_st(1, inbound=0)], {"n_sell": 0, "n_break": 0}, [1]),
     ([_st(1, rev=1)], {"n_long": 0, "n_break": 0}, [1]),
-    # breaks need a signal
     ([_st(1), _st(2, signals={"ghosted": 3})], {"n_sell": 0, "n_long": 0}, [2]),
-    # n caps each bucket, best-first
     ([_st(1, rev=100), _st(2, rev=300), _st(3, rev=200)], {"n_sell": 2, "n_long": 0, "n_break": 0}, [2, 3]),
     ([_st(1, inbound=3), _st(2, inbound=9)], {"n_sell": 0, "n_long": 1, "n_break": 0}, [2]),
     ([_st(1, signals={"ghosted": 1}), _st(2, signals={"chargeback": 1})],
      {"n_sell": 0, "n_long": 0, "n_break": 1}, [2]),
-    # union order: money, then break score, then inbound
     ([_st(1, inbound=50), _st(2, rev=10, inbound=1), _st(3, signals={"angry": 1}, inbound=2)],
      {}, [2, 3, 1]),
-    # nothing alive
     ([], {}, []),
 ])
 def test_pick(rows, kw, want):
@@ -141,12 +111,10 @@ def test_pick_why():
     assert t["break_score"] == 100 + 36
     [u] = _pick([_st(2, rev=200, buys=2, tips=0)], n_long=0)
     assert u["why"] == ["$2 from 2 unlocks"]
-    # signals only explain a thread that landed in breaks
     [v] = _pick([_st(3, inbound=9, signals={"angry": 1})], n_break=0)
     assert v["buckets"] == ["long"] and v["why"] == ["9 messages from him"]
 
 
-# ── in-memory DB ─────────────────────────────────────────────────────────────
 
 def _db(path=":memory:"):
     conn = sqlite3.connect(path)
@@ -193,7 +161,7 @@ def test_thread_stats():
     assert (s["total"], s["inbound"], s["outbound"], s["media_msgs"], s["unlocked"]) == (4, 1, 2, 1, 1)
     assert s["first_at"] < s["last_at"]
     assert (s["revenue_cents"], s["signals"]) == (0, {})
-    assert st["b:2"]["outbound"] == 0                       # SUM over none → 0, not None
+    assert st["b:2"]["outbound"] == 0
     assert crf.thread_stats(_db()) == {}
 
 
@@ -204,11 +172,11 @@ def test_add_revenue():
     _tx(c, 1, "ppv_message", 1000)
     _tx(c, 1, "ppv_post", 500)
     _tx(c, 1, "tip", 250)
-    _tx(c, 1, "tip", 999, status="pending")                 # not cleared: no money
-    _tx(c, 1, "subscription", 7777)                         # not a MONEY_KIND
+    _tx(c, 1, "tip", 999, status="pending")
+    _tx(c, 1, "subscription", 7777)
     _tx(c, 2, "ppv_message", 300, status="chargedback")
     _tx(c, 2, "tip", 100, status="refund_pending")
-    _tx(c, 9, "tip", 100)                                   # no thread: ignored
+    _tx(c, 9, "tip", 100)
     c.execute("INSERT INTO transactions (account_id, fan_id, kind, amount_cents, status) "
               "VALUES ('a', NULL, 'tip', 5, 'cleared')")
     st = crf.thread_stats(c)
@@ -224,9 +192,9 @@ def test_add_text_signals():
     c = _db()
     _msg(c, 1, "in", "ARE YOU A BOT??", mid=11)
     _msg(c, 1, "in", "you're a bot lol", mid=12)
-    _msg(c, 1, "in", "this is a scam, refund", mid=13)       # one row, one hit for `angry`
-    _msg(c, 1, "out", "are you a bot", mid=14)              # outbound never counts
-    _msg(c, 2, "in", "on the bottom of both", mid=21)       # no loose '%bot%'
+    _msg(c, 1, "in", "this is a scam, refund", mid=13)
+    _msg(c, 1, "out", "are you a bot", mid=14)
+    _msg(c, 2, "in", "on the bottom of both", mid=21)
     _msg(c, 2, "in", "you already said that", mid=22)
     st = crf.thread_stats(c)
     hits: dict = {}
@@ -237,7 +205,7 @@ def test_add_text_signals():
     assert hits["a:2"] == [22]
 
 
-LINE = "hey babe, this one is just for you x"                 # 36 chars
+LINE = "hey babe, this one is just for you x"
 
 
 def test_add_loop_signal():
@@ -245,16 +213,16 @@ def test_add_loop_signal():
     for _ in range(3):
         _msg(c, 1, "out", LINE)
     for _ in range(2):
-        _msg(c, 2, "out", LINE)                             # 2 is not a loop
+        _msg(c, 2, "out", LINE)
     for _ in range(3):
-        _msg(c, 3, "out", "short line x3")                  # < 30 chars
+        _msg(c, 3, "out", "short line x3")
     for i in range(3):
-        _msg(c, 4, "out", LINE, unsent=1 if i == 0 else 0)  # unsent excluded → 2
+        _msg(c, 4, "out", LINE, unsent=1 if i == 0 else 0)
     for _ in range(3):
-        _msg(c, 5, "in", LINE)                              # inbound never loops
+        _msg(c, 5, "in", LINE)
     for _ in range(2):
-        _msg(c, 2, "out", LINE, acct="b")                   # same fan id, other Creator: still 2
-    _msg(c, 7, "out", LINE)                                 # spread across fans is a mass blast
+        _msg(c, 2, "out", LINE, acct="b")
+    _msg(c, 7, "out", LINE)
     st = crf.thread_stats(c)
     hits: dict = {}
     crf.add_loop_signal(c, st, hits)
@@ -267,19 +235,19 @@ def test_add_tail_signals():
     c = _db()
     _msg(c, 1, "out", "hi")
     for _ in range(3):
-        _msg(c, 1, "in", "hello?")                          # ghosted at exactly 3
+        _msg(c, 1, "in", "hello?")
     _msg(c, 2, "out", "hi")
     for _ in range(2):
-        _msg(c, 2, "in", "hello?")                          # 2: not ghosted
+        _msg(c, 2, "in", "hello?")
     for _ in range(8):
-        _msg(c, 3, "in", "hello?")                          # only the last 6 are read
+        _msg(c, 3, "in", "hello?")
     _msg(c, 4, "in", "hi")
-    _msg(c, 4, "out", "ppv", price=1500, paid=0)            # dead offer
-    _msg(c, 5, "out", "ppv", price=1500, paid=1)            # opened: fine
-    _msg(c, 6, "out", "ppv", price=1500, paid=None)         # never answered: dead
+    _msg(c, 4, "out", "ppv", price=1500, paid=0)
+    _msg(c, 5, "out", "ppv", price=1500, paid=1)
+    _msg(c, 6, "out", "ppv", price=1500, paid=None)
     _msg(c, 7, "out", "ppv", price=1500, paid=0)
-    _msg(c, 7, "in", "nah")                                 # reply after: not dead
-    _msg(c, 8, "out", "free pic", price=0, paid=0)          # free: not an offer
+    _msg(c, 7, "in", "nah")
+    _msg(c, 8, "out", "free pic", price=0, paid=0)
     st = crf.thread_stats(c)
     crf.add_tail_signals(c, st)
     sig = {k: v["signals"] for k, v in st.items()}
@@ -295,20 +263,17 @@ def test_mass_placeholder_mirrors_attribution():
 
 
 def test_run_end_to_end_no_media():
-    """The CLI's own entry: parse_args → run, on a FILE (connect opens it read-only by URI)."""
     with tempfile.TemporaryDirectory(prefix="crf_") as tmp:
         d = Path(tmp)
         db, out = d / "c.db", d / "out.json"
         c = _db(str(db))
-        for i in range(8):                                      # fan 1: 8 msgs, one cleared unlock
+        for i in range(8):
             _msg(c, 1, "in" if i % 2 == 0 else "out", f"m{i}")
         _tx(c, 1, "ppv_message", 1500)
-        for i in range(7):                                      # fan 2: 7 msgs, under --min-msgs
+        for i in range(7):
             _msg(c, 2, "in" if i % 2 == 0 else "out", f"m{i}")
-        for i in range(9):                                      # fan 3: a bot callout, no money
+        for i in range(9):
             _msg(c, 3, "in" if i % 2 == 0 else "out", "are you a bot" if i == 4 else f"m{i}")
-        # Columns only load_messages / fan_names / account_names read; added after the
-        # positional _msg inserts so those keep working.
         c.executescript("""
             ALTER TABLE messages ADD COLUMN media_ids TEXT;
             ALTER TABLE messages ADD COLUMN is_tip BOOLEAN NOT NULL DEFAULT 0;
@@ -338,7 +303,7 @@ def test_run_end_to_end_no_media():
         assert got["counts"] == {"scanned": 3, "picked": 2, "media_new": 0}, got["counts"]
         assert (got["media"], got["media_meta"]) == ({}, {})
         ts = got["threads"]
-        assert [t["fan_id"] for t in ts] == [1, 3], [t["fan_id"] for t in ts]   # money, then breaks
+        assert [t["fan_id"] for t in ts] == [1, 3], [t["fan_id"] for t in ts]
         assert [t["buckets"] for t in ts] == [["selling"], ["breaks"]], [t["buckets"] for t in ts]
         assert [(t["account_name"], t["fan_name"]) for t in ts] == [("Ava", "Bob"), ("Ava", "fan 3")]
         assert [(t["shown"], t["truncated"]) for t in ts] == [(8, False), (9, False)]

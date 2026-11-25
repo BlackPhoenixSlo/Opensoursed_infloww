@@ -19,10 +19,10 @@ FRAME_LAG_MS = 1000
 
 @dataclass(frozen=True)
 class UnreadSet:
-    at: int                                                                 # the read's ask time
-    entries: dict[int, tuple[dict | None, int]] = field(default_factory=dict)   # fan -> (row | None: 0-call, stamp)
-    gone: dict[int, int] = field(default_factory=dict)                      # fan -> removal stamp since the ask
-    cut: int | None = None                                                  # a mark all read since the ask
+    at: int
+    entries: dict[int, tuple[dict | None, int]] = field(default_factory=dict)
+    gone: dict[int, int] = field(default_factory=dict)
+    cut: int | None = None
 
     @property
     def fans(self) -> frozenset[int]:
@@ -42,7 +42,7 @@ class DmIn:
 
 @dataclass(frozen=True)
 class ReadDone:
-    fan: int | None         # None: mark all read
+    fan: int | None
     at: int
     landed: int | None = None
 
@@ -66,7 +66,7 @@ SetEvent = Union[DmIn, ReadDone, UnreadDone, Echo]
 @dataclass(frozen=True)
 class Intent:
     id: int
-    fan: int | None         # None: mark all read
+    fan: int | None
     created: int
     responded: int | None = None
     retired: bool = False
@@ -88,7 +88,7 @@ class Start:
 
 @dataclass(frozen=True)
 class Wait:
-    until: int | None       # None: after the read in flight
+    until: int | None
 
 
 def admit(gate: Gate, now: int, gap_ms: int, held_s: float, *,
@@ -105,9 +105,8 @@ def admit(gate: Gate, now: int, gap_ms: int, held_s: float, *,
                 queue_next=queued and not queue), Start(queue)
 
 
+# sent_at: gap counts from page 1's answer so OF never sees two starts closer than the gap.
 def done(gate: Gate, sent_at: int | None = None) -> Gate:
-    """`sent_at`: page 1's answer, so at or after OF saw it (the per-Creator pacer or a lane can hold it past the
-    admit); the gap counts from it, so OF never sees two starts closer than the gap."""
     if sent_at is None or gate.last_start is None or sent_at <= gate.last_start:
         return replace(gate, in_flight=False)
     return replace(gate, in_flight=False, last_start=sent_at)
@@ -143,7 +142,6 @@ def activity_explains(frame: CounterFrame, activity: Activity, window: int) -> b
 
 def explain(frame: CounterFrame, dms: Iterable[Activity], echoes: Iterable[Activity],
             intents: Iterable[Intent]) -> tuple[bool, tuple[Activity, ...], tuple[Activity, ...], tuple[Intent, ...]]:
-    """One DM or echo is one chat's change: it explains one frame, a known delta spent before an unknown one."""
     dms, echoes, intents = tuple(dms), tuple(echoes), tuple(intents)
     held = [(a.delta is None, abs(frame.at - a.at), n, k)
             for n, (acts, window) in enumerate(((dms, DM_WINDOW_MS), (echoes, ECHO_WINDOW_MS)))
@@ -186,14 +184,12 @@ def prior_unread(held: UnreadSet | None, fan: int, row: dict | None) -> bool | N
 
 def echo_prior(held: UnreadSet | None, fan: int, row: dict | None, replied: tuple[bool | None, int] | None,
                now: int) -> bool | None:
-    """Our landed reply already took him out of the set: his echo is that reply's, so it changes what he was before."""
     if replied is not None and now - replied[1] <= ECHO_WINDOW_MS:
         return replied[0]
     return prior_unread(held, fan, row)
 
 
 def reply_prior(held: tuple[bool | None, int] | None, prior: bool | None, now: int) -> tuple[bool | None, int]:
-    """A reply part landing before the first part's echo keeps the state from before the first part."""
     return held if held is not None and now - held[1] <= ECHO_WINDOW_MS else (prior, now)
 
 
@@ -213,9 +209,8 @@ def _counted(rows: list) -> int:
     return sum(1 for r in rows if of_counts(r))
 
 
+# Two frames can cancel out and two pages can drop a row; one frame on a one-page list still judges.
 def _judgeable(calls: int, has_more: bool, counter: int | None, frames_since_ask: int) -> bool:
-    """One counter frame since the ask still judges a one-page list: its change is in the list (counts match) or not
-    (off by one). Two frames can cancel out, and two pages can drop a row."""
     return frames_since_ask == 0 or (frames_since_ask == 1 and calls == 1 and not has_more and counter is not None)
 
 
@@ -230,10 +225,8 @@ def mismatch(rows: list, has_more: bool, partial: bool, counter: int | None, fra
             and _judgeable(calls, has_more, counter, frames_since_ask) and _counted(rows) != counter)
 
 
+# OF's counter frame trails the list it describes (measured 0.8 s after a click, 0.85 s after a reply).
 def settles(calls: int, mismatched: bool) -> bool:
-    """A one-page list below or above the counter waits up to FRAME_LAG_MS for the next counter frame and is judged by
-    it: OF's frame trails the list it describes (measured 0.8 s after a click, 0.85 s after a reply). Never two pages:
-    a removal between them shifts page 2 past a row, and the mismatch is what guards that."""
     return mismatched and calls == 1
 
 
@@ -247,8 +240,6 @@ def settle_outcome(counted: int, counter: int | None, frame_at: int | None, aske
 
 def hover(last_start: int | None, in_flight: bool, now: int, off: bool,
           counter_on: bool) -> Literal["read", "join", "held", "direct"]:
-    """A `?bust=` rewarm, shared by every Employee: a read in flight is joined even past the cooldown, so one
-    Creator's window never has two. Without the counter path (UNREAD_TOTAL off) every bust reads, as before."""
     if not counter_on:
         return "direct"
     if off:
@@ -306,11 +297,9 @@ def diff(window_rows: list | None, prev: UnreadSet | None, unread_rows: list, co
     return out
 
 
+# OF sends no event for a mute made elsewhere, so a listed row's isMutedNotifications is the signal.
 def mute_changes(window_rows: list | None, window_at: int | None, unread_rows: list,
                  held: Mapping[int, tuple[bool, int]], asked_at: int) -> dict[int, bool]:
-    """OF sends no event for a mute made elsewhere: a listed row's `isMutedNotifications` replaces the held window
-    row's and the mute map's, unless the map's entry (our own mute) landed after the ask, or the window (asked at
-    `window_at`) holds the fan and is newer than the ask."""
     window: dict[int, Any] = {}
     for r in window_rows or ():
         f = window_fan_id(r)
@@ -334,8 +323,8 @@ def _held_stamp(s: UnreadSet, fan: int) -> int | None:
     return own[1] if own is not None else s.gone.get(fan)
 
 
+# A write of ours holds from its landing: OF may run it after a list asked before then.
 def _stamp(event: SetEvent) -> int:
-    """A write of ours holds from its landing: OF may run it after a list asked before then."""
     landed = event.landed if isinstance(event, (ReadDone, UnreadDone)) else None
     return event.at if landed is None else landed
 

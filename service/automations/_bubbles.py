@@ -170,21 +170,36 @@ def _dedupe_lead_reaction(parts: list[str], recent_out: list[str]) -> list[str]:
     if not tok or tok not in recent:
         return parts
     if len(parts) > 1:
-        return parts[1:]
-    m = _LEAD_REACT_RE.match(parts[0].strip())
+        return parts[1:]                              # drop the standalone "oof"
+    m = _LEAD_REACT_RE.match(parts[0].strip())        # fused → strip just the opener
     rest = parts[0].strip()[m.end():].strip() if m else ""
     return [rest] if rest else parts
 
 
 def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None,
                       force_single: bool = False) -> list[str]:
+    """Make one generated reply read like real texting, and NO em-dash ever survives
+    (every return path runs _strip_dash). Content is NEVER dropped:
+
+      • style mode (max_bubbles ≥ 3) → walk the model's OWN line breaks, then split
+        each line on commas + sentence boundaries + dash + (for a long chunk) emoji /
+        WH word. A per-reply STRATEGY randomiser (_strategy_target) then picks the
+        bubble count — length-based / split-every-clause / terse — so replies don't
+        all chop the same way.
+      • non-style (cap 2) → the model's two-line style, else a single dash / a
+        MID-LINE emoji break (2/3 of the time), else a trailing-emoji drop (1/3).
+
+    EVERY random draw on both paths goes through `rng`, so passing one seeded off
+    the reply (the senders use `Random(f"split:{fan_id}:{raw}")`) makes the split
+    stable — the same draft re-run after a retry bubbles the same way.
+    """
     _rng = rng if rng is not None else random
     text = text.strip()
     # Not max_bubbles=1 (non-style path truncates, drops content); merge instead. Humans return single-bubble ~64% at every gap length.
     if force_single and text:
         units = _break_units(text)
         return [_strip_dash(_casual_join(units) if units else text)]
-    if max_bubbles >= 3:
+    if max_bubbles >= 3:                         # STYLE MODE
         parts = _break_units(text)
         parts = _group_to_target(parts, _strategy_target(parts, max_bubbles, _rng))
         if parts:

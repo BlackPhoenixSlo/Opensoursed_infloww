@@ -1,34 +1,3 @@
-"""service/toolbox.py — runs a Toolbox tool (`toolbox_decide.TOOLS`) as the caller:
-`await call(tool, args, creds)` → the tool result dict (docs/plans/ultra-mode/issues/04-toolbox.md).
-
-In-process HTTP through the whole middleware stack (session/bearer, isolation, role gates,
-audit) via `httpx.ASGITransport(app=server.app)`, carrying only the caller's own credential.
-Measured by the step-2 spike (.scratch/ultra-s2/spike/RESULT.md):
-
-- Each request runs in `asyncio.create_task(…, context=contextvars.Context())`. Awaited in the
-  caller's task it leaks the inner identity into the caller; in a copied context a request
-  with no credential inherits the caller's user. In an empty context it is an honest 401.
-- The caller must hold no DB session across `call()`: an open write transaction stalls the
-  inner request ~64 s and loses its write; an open read costs +2 s when the pool is busy.
-  `call()` itself opens none across the request (a send's plan check is one short read before it).
-- `open_url` is built on the public app base (X-Forwarded-Host/Proto or APP_PUBLIC_URL),
-  never on Host: behind Next, Host is the RELAY_URL host. The inner request carries the
-  caller's Host and X-Forwarded-* unchanged, so a route that reads them (bio public URLs)
-  answers as it would to the caller.
-- The inner request's client address is the caller's real one (`client_addr`), not
-  ASGITransport's 127.0.0.1 — loopback is a trusted proxy, and every caller would share one
-  throttle bucket.
-
-Results never raise: a refused tool, bad args or a non-2xx answer come back as
-`{"error": {"status", "detail"}, "open_url"}`. `effect="send"` is refused unless `plan_step`
-("<plan id>:<step id>") is, in the DB, a `started` step of a `running` Ultra plan of `plan_owner`
-holding exactly this tool and these args (ultra_decide.may_send): only the Ultra executor
-(ultra_run) writes that state, just before its call (ticket 13). `live` (the executor's "not cancelled")
-is asked once more right before the request goes out: False → a 409 NOT_LIVE result, nothing sent.
-
-A 2xx write whose answer fails the tool's `check` (args silently dropped) is a 502 error result,
-never success.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -55,10 +24,6 @@ NOT_LIVE = "the plan was cancelled before this call went out; nothing was sent"
 
 @dataclass(frozen=True)
 class Creds:
-    """The caller's credential, copied onto every inner request: an `Authorization: Bearer
-    ifw_…` owner token (MCP) or the browser's Cookie (in-app). Never X-Employee-Id.
-    `host` + `forwarded_*`: the caller's own (bio public URLs; `open_url` uses forwarded_*
-    only); `client_host`: the caller's real address."""
     authorization: str | None = None
     cookie: str | None = None
     forwarded_host: str | None = None
@@ -92,7 +57,7 @@ class Creds:
 
 
 async def _raw(req: td.Request, creds: Creds) -> httpx.Response:
-    import server  # the app this process serves; imported late (server imports the API modules)
+    import server
     transport = httpx.ASGITransport(app=server.app, raise_app_exceptions=False,
                                     client=(creds.client_host or "127.0.0.1", 0))
     async with httpx.AsyncClient(transport=transport, base_url="http://relay.internal", timeout=None) as c:
@@ -101,13 +66,11 @@ async def _raw(req: td.Request, creds: Creds) -> httpx.Response:
 
 
 async def raw(req: td.Request, creds: Creds) -> httpx.Response:
-    """One inner request, the whole response (Set-Cookie included); the one isolation point: an empty
-    Context, so the inner request neither sees nor sets the caller's identity."""
+    # Empty Context: in the caller's task the inner identity leaks into the caller; in a copied one a credential-less request inherits the caller's user.
     return await asyncio.create_task(_raw(req, creds), context=contextvars.Context())
 
 
 def body_of(r: httpx.Response) -> Any:
-    """The response's JSON, else its text."""
     try:
         return r.json()
     except ValueError:
@@ -122,9 +85,7 @@ async def _send(req: td.Request, creds: Creds) -> tuple[int, Any]:
 async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
                plan_step: str | None = None, plan_owner: str | None = None,
                live: Callable[[], bool] | None = None) -> dict[str, Any]:
-    """Run tool `t` with `args` as `creds`' owner; the shaped result, never a raise. A send tool
-    needs `plan_step`, the approved plan step it runs, `started` in the DB, of a plan `plan_owner`
-    owns (`_plan_send`). `live()` False right before the request → NOT_LIVE (409), nothing sent."""
+    # The caller must hold no DB session across call(): an open write transaction stalls the inner request ~64 s and loses its write.
     base = creds.public_base()
     raw_args = dict(args)
     if t.effect == "send" and not await _plan_send(t, raw_args, plan_step, plan_owner):
@@ -135,11 +96,11 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
     except td.ArgsError as e:
         return {**td.error(422, {"detail": "invalid arguments", "errors": e.errors}),
                 "open_url": td.open_url(base, t.open, raw_args, None)}
-    if live is not None and not live():  # e.g. a cancel landed while the send gate read the plan
+    if live is not None and not live():
         return {**td.error(409, NOT_LIVE), "open_url": td.open_url(base, t.open, raw_args, None)}
     try:
         status, body = await _send(req, creds)
-    except (ValueError, httpx.InvalidURL):  # httpx can't build it: NaN/Infinity, a lone surrogate, an over-long query
+    except (ValueError, httpx.InvalidURL):
         return {**td.error(422, {"detail": "invalid arguments", "errors": {"args": UNSENDABLE}}),
                 "open_url": td.open_url(base, t.open, raw_args, None)}
     url = td.open_url(base, t.open, parsed, body)
@@ -149,7 +110,6 @@ async def call(t: td.Tool, args: Mapping[str, Any], creds: Creds, *,
 
 
 async def _plan_send(t: td.Tool, args: dict[str, Any], plan_step: str | None, owner: str | None) -> bool:
-    """`plan_step` is a `started` step of `owner`'s `running` plan with this tool and args (one short read)."""
     pid, _, sid = (plan_step or "").partition(":")
     if not pid or not sid or not owner:
         return False

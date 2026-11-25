@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""
-event_transcoder — forward-only chat and Fan last-received writes (phase-0A).
-
-A late or re-delivered older DM used to pull the chat's last message, time and
-preview, and the Fan's last-received time, back to itself: `_write_dms` wrote
-them from the last frame of the batch, unconditionally. Now the chat row moves
-only to a message id at least as new as the stored one, the Fan's
-`last_message_received_at` only to a time at least as late (a NULL takes any),
-and within one batch the highest message id / latest time wins. The message row
-is still stored, unread still counts new rows only, and the hooks fire exactly
-as before (a re-delivered frame included).
-
-  case_late_older_dm_keeps_newer_chat_row     B (id 200) then A (id 100): chat at B; A stored; unread +2
-  case_redelivered_older_dm_no_rollback       B, A, A: chat and Fan at B; unread +2
-  case_one_batch_out_of_order                 [B, A] in one of_writer batch: chat and Fan at B
-  case_same_id_redelivery_refreshes_preview   A, then A edited: the edited preview
-  case_fan_last_received_never_moves_back     B then A: Fan at B; a NULL stored value takes A's
-  case_hooks_still_fire_on_redelivery         one text DM twice: the words hook fires twice
-  case_mass_placeholder_yields_to_newer_dm    placeholder id (>= 5e15) stored: a newer DM moves the chat, an older one does not
-
-Run: ./venv/bin/python service/tests/test_event_transcoder_order.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -45,7 +23,6 @@ _AID = "9999101"
 OLD_AT, NEW_AT = "2026-06-13T03:00:00+00:00", "2026-06-13T04:00:00+00:00"
 OLD_T, NEW_T = datetime(2026, 6, 13, 3, 0), datetime(2026, 6, 13, 4, 0)
 
-# ── hook recorders (the transcoder imports these at call time) ────────
 _words: list[dict] = []
 
 
@@ -69,11 +46,11 @@ def _dm(fan_id: int, message_id: int, created_at: str, text: str) -> dict:
             "__account_id": _AID}
 
 
-def B(fan_id):   # the newer DM
+def B(fan_id):
     return _dm(fan_id, 200, NEW_AT, "newer")
 
 
-def A(fan_id, text="older"):   # the older DM
+def A(fan_id, text="older"):
     return _dm(fan_id, 100, OLD_AT, text)
 
 
@@ -133,7 +110,7 @@ async def case_one_batch_out_of_order():
     fan = 700003
     sizes: list[int] = []
 
-    async def _run(conn, items):        # one run object, so both ops share an of_writer entry
+    async def _run(conn, items):
         sizes.append(len(items))
         return await et._write_dms(conn, items)
 
@@ -165,7 +142,6 @@ async def case_fan_last_received_never_moves_back():
     fan = 700005
     await _send(B(fan), A(fan))
     assert await _fan_last(fan) == NEW_T, await _fan_last(fan)
-    # A stored NULL takes the incoming time.
     fan = 700006
     async with get_session() as s:
         s.add(Fan(account_id=_AID, fan_id=fan, last_message_received_at=None))
@@ -182,18 +158,16 @@ async def case_hooks_still_fire_on_redelivery():
 
 
 async def case_mass_placeholder_yields_to_newer_dm():
-    # A mass send's optimistic row (attribution._advance_chat_preview) stores a synthetic
-    # id above every real OF id; by id alone no DM could ever replace it. In that band
-    # the rule is time, as _advance_chat_preview's: a DM at or after it wins.
+    # Mass-send placeholder id sits above every real OF id, so id order cannot replace it; time decides.
     await _seed_account()
     fan = 700008
     ph, ph_at = _MASS_PLACEHOLDER_BASE + 42, datetime(2026, 6, 13, 3, 30)
     async with get_session() as s:
         s.add(Chat(account_id=_AID, fan_id=fan, last_message_id=ph, last_message_at=ph_at,
                    last_message_preview="mass", unread_count=0))
-    await _send(A(fan))                                    # older than the mass: stays
+    await _send(A(fan))
     assert await _chat(fan) == (ph, ph_at, "mass", 1), await _chat(fan)
-    await _send(B(fan))                                    # the Fan answers the mass
+    await _send(B(fan))
     assert await _chat(fan) == (200, NEW_T, "newer", 2), await _chat(fan)
 
 

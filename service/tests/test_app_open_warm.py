@@ -1,59 +1,4 @@
 #!/usr/bin/env python3
-"""The App-open warm (ADR-0031, phase-01 1b, service/app_open_warm.py): an opened document load warms every
-Creator the Employee can access, once: per Creator one read set (the purchases poll, then the chats window, the rail's
-two money lists and the notifications count) as one background walk, per proxy one Creator at a time
-APP_OPEN_WARM_GAP_S apart, proxies in parallel, leased Creators first; `creator_warmed` per Creator as its reads land.
-
-Fakes: the OF client (client_pool.get: only its bound endpoint, `proxy_url`, is read), the feed read
-(purchase_poll.run_fast_tick, behind the real poll_now and its single-flight), the server's read helper for
-steps 2-4 (`app_open_warm._server`, except in case_read_set_on_the_real_routes), the registries (read through the real
-transaction_ingest.live_account_ids), the reuse clock (`app_open_warm._clock`), a last ok poll (a seeded
-`purchase_poll._poll_state`), events.publish (recorded).
-
-  • case_every_creator_once: each live Creator read exactly once (feed, then steps 2-4), Caller kind
-    walk:app_open_warm; dead, deactivated, watcher and no-session Creators skipped (not in the answer, no read); per
-    proxy serial, starts >= GAP_S apart, leased first; the three groups start together; `creator_warmed` per Creator,
-    after its reads.
-  • case_reuse: a second start inside APP_OPEN_WARM_REUSE_S answers `reused` and reads nothing, also while the
-    first is still running; a reused Creator whose warm ended publishes `creator_warmed` at once (one still queued
-    publishes when its reads land); past the window it reads again.
-  • case_reuse_decision_table: `reuse_decision` (pure): queued/reading → reused (concurrent opens: one warm); fresh
-    + WS kept → reused; fresh + WS down or reconnected since → start; stale → start; failed just now → skip.
-  • case_ws_kept_reuse: past REUSE_S, a Creator whose WebSocket stayed connected since its warm landed is `reused`
-    (no read, `creator_warmed` at once) until FRESH_S; one whose socket is down, or reconnected after the warm,
-    warms; FRESH_S is held to the roster count's TTL and the Idle tier.
-  • case_recently_polled_no_read: a Creator whose last purchases poll started under PURCHASES_POLL_FAST_S ago
-    gets no feed read, still steps 2-4 and its event.
-  • case_refreshed_first: a Creator the route Select-refreshes is `started`, gets no feed read here, its steps 2-4
-    first on its proxy one GAP_S late (the route's `note_read`: the Select refresh reads there now); the others'
-    groups at once.
-  • case_pace_lease_gains: a lease renewal's gains (`pace`): feed reads only, per proxy GAP_S apart, a proxy the
-    selection reads on (`note_read`) waits one GAP_S, a current Creator skipped; no steps 2-4, event or memo.
-  • case_one_gate_per_exit: pace and start calls on one exit share ONE queue: every read on it GAP_S apart across
-    callers, a Creator already queued not queued again, a paced Creator no longer leased at its turn skipped.
-  • case_overlapping_refreshed_coalesce: overlapping opens naming the same Select-refreshed Creator run one warm.
-  • case_failed_warm_not_reused: a warm whose reads failed is never `reused` nor announced; a second open inside
-    REUSE_S skips it (no read, absent from the answer); past the window it is tried again.
-  • case_failed_poll_counts_as_attempt: a feed poll with no ok answer (error, no outcome) still counts for the
-    selection floor and the warm's feed skip: a failing exit is not read again at once.
-  • case_dead_after_feed_read: a Creator its feed read flags a Dead session reads nothing more and publishes nothing.
-  • case_refresh_job_on_exit_gate: a Shared refresher job (`refresh`) runs on its Creator's exit GAP_S after the
-    last read there, exits in parallel; no warm read, event or `pending`.
-  • case_warm_absorbs_refresh: a warm takes a queued refresh's place; a refresh for a queued warm is not queued.
-  • case_refresh_recheck_at_turn: the job's re-check runs at its turn; unwanted, it is dropped unread, no GAP.
-  • case_refresh_deadline_frees_exit: a job hung past the 30 s deadline frees the exit for the next Creator; its walk
-    is not cancelled and its late result lands; `shared_refresher_job_timeout` logged.
-  • case_refresh_429_holds_the_exit: a refresh job's `hold` (a terminal 429) holds its whole exit for OF's wait: the
-    next refresh or warm there starts no earlier, another exit at once; a hold under GAP keeps GAP.
-  • case_refresh_dropped_at_turn_when_no_longer_wanted: the Shared refresher's own queued jobs are dropped unread at
-    their turn when the Creator left `tracked`, went dead or got a Last refresh meanwhile; a still-wanted one reads.
-  • case_read_set_on_the_real_routes: the real server helper and roster-counts recompute over a fake OF client:
-    the four steps in order, at most 5 reads, the money lists at the rail's page size, `creator_warmed` in the house
-    envelope carrying the roster count and the notifications count (an expired entry is left out); the entries are the pass-through's (`of_notifications`, `of_notifications_count`, roster-counts,
-    the Fan List's page 0): read 25 s after the warm, no OF call; at 31 s the money list reads OF again.
-
-Run:  ./venv/bin/python service/tests/test_app_open_warm.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -84,15 +29,15 @@ ALL = LIVE + [DEAD, OFF, WATCH, NOSESS]
 GAP = 0.15
 READ_S = 0.03
 STEP_S = 0.02
-READS: list[tuple[str, float, str]] = []   # (Creator, start, Caller kind) per feed read
-STEPS: list[tuple[str, float, str]] = []   # (Creator, start, Caller kind) per steps 2-4 call
+READS: list[tuple[str, float, str]] = []
+STEPS: list[tuple[str, float, str]] = []
 PUBLISHED: list[dict] = []
 CLOCK = [1000.0]
-FLAG_DEAD: set[str] = set()                # Creators whose feed read flags them dead
-WS_SINCE: dict[str, float] = {}            # Creator -> when its OF WebSocket connected (absent: down)
+FLAG_DEAD: set[str] = set()
+WS_SINCE: dict[str, float] = {}
 
 
-REFUSED: set[str] = set()                  # Creators whose reads the Relay refuses (bad session, 503)
+REFUSED: set[str] = set()
 
 
 async def _steps(aid):
@@ -201,7 +146,6 @@ async def case_every_creator_once():
 
 
 async def case_refused_read_is_one_line():
-    """A refused read (bad session) is a skip line, not `app_open_warm_failed` + Traceback; the rest still warm."""
     records: list[logging.LogRecord] = []
     h = logging.Handler(); h.emit = records.append
     lg = logging.getLogger("of-relay.app_open_warm"); lg.addHandler(h); old = lg.level; lg.setLevel(logging.INFO)
@@ -223,7 +167,7 @@ async def case_reuse():
         CLOCK[0] = 2000.0
         got = await aow.start(("user", "u1"), LIVE, leased_first=())
         assert set(got.values()) == {"started"}, got
-        again = await aow.start(("chatter", "c1"), LIVE, leased_first=())   # the first still running
+        again = await aow.start(("chatter", "c1"), LIVE, leased_first=())
         assert again == {a: "reused" for a in LIVE}, again
         assert PUBLISHED == [], "a Creator still queued publishes when its reads land, not at the reuse"
         await _drain()
@@ -237,7 +181,7 @@ async def case_reuse():
         assert len(READS) == n and len(STEPS) == n, "inside the reuse window: no read"
         assert sorted(_warmed_ids()) == sorted(LIVE), f"a reuse publishes at once: {PUBLISHED}"
         CLOCK[0] = 2000.0 + aow.REUSE_S + 1
-        pp._poll_state.clear()   # forget any last ok poll, so the window alone decides
+        pp._poll_state.clear()
         assert await aow.start(("user", "u2"), LIVE, leased_first=()) == {a: "started" for a in LIVE}
         await _drain()
         assert len(READS) == 2 * n, READS
@@ -245,7 +189,7 @@ async def case_reuse():
 
 def case_reuse_decision_table():
     R, F = 30.0, 300.0
-    rows = [  # pending, warmed_age, failed_age, ws_kept -> call
+    rows = [
         ("queued or reading (concurrent opens)", True, None, None, False, "reused"),
         ("queued, an old failure too", True, None, 5.0, False, "reused"),
         ("inside REUSE_S, WS down", False, 10.0, None, False, "reused"),
@@ -269,12 +213,12 @@ async def case_ws_kept_reuse():
     assert aow.REUSE_S <= aow.FRESH_S <= min(aow.FRESH_MAX_S, decide.SLOW_S), aow.FRESH_S
     with _patched():
         CLOCK[0] = 5000.0
-        WS_SINCE.update({P1A: 4000.0, P1B: 4000.0})          # P1A, P1B: connected before the warm; the rest down
+        WS_SINCE.update({P1A: 4000.0, P1B: 4000.0})
         assert set((await aow.start(("user", "u1"), LIVE, leased_first=())).values()) == {"started"}
         await _drain()
         n = len(READS)
         PUBLISHED.clear()
-        WS_SINCE[P1B] = 5000.0 + 1                           # P1B's socket reconnected after its warm landed
+        WS_SINCE[P1B] = 5000.0 + 1
         CLOCK[0] = 5000.0 + aow.REUSE_S + 1
         pp._poll_state.clear()
         got = await aow.start(("chatter", "c1"), LIVE, leased_first=())
@@ -282,7 +226,7 @@ async def case_ws_kept_reuse():
         await _drain()
         assert sorted(a for a, _, _ in READS[n:]) == sorted(a for a in LIVE if a != P1A), READS[n:]
         assert P1A in _warmed_ids(), f"a reused Creator publishes at once: {PUBLISHED}"
-        CLOCK[0] = 5000.0 + aow.FRESH_S + 1                  # P1A's warm now older than FRESH_S
+        CLOCK[0] = 5000.0 + aow.FRESH_S + 1
         pp._poll_state.clear()
         assert (await aow.start(("user", "u2"), [P1A], leased_first=())) == {P1A: "started"}
         await _drain()
@@ -291,9 +235,9 @@ async def case_ws_kept_reuse():
 async def case_recently_polled_no_read():
     with _patched():
         now = time.monotonic()
-        pp._poll_state[P1A] = decide.PollState(last_started_s=now - (decide.FAST_S - 5))   # inside the fast interval
-        pp._poll_state[P1B] = decide.PollState(last_ok_s=now - (decide.FAST_S - 5),      # an ok answer, but
-                                               last_started_s=now - (decide.FAST_S + 5))  # started older: read
+        pp._poll_state[P1A] = decide.PollState(last_started_s=now - (decide.FAST_S - 5))
+        pp._poll_state[P1B] = decide.PollState(last_ok_s=now - (decide.FAST_S - 5),
+                                               last_started_s=now - (decide.FAST_S + 5))
         t0 = time.monotonic()
         got = await aow.start(("user", "u1"), [P1A, P1B, P1C], leased_first=())
         assert got == {P1A: "started", P1B: "started", P1C: "started"}, got
@@ -308,7 +252,7 @@ async def case_recently_polled_no_read():
 async def case_refreshed_first():
     with _patched():
         t0 = time.monotonic()
-        aow.note_read(P1A)                   # the route, as it spawns P1A's Select refresh
+        aow.note_read(P1A)
         got = await aow.start(("user", "u1"), [P1A, P1B, P2A], leased_first=(), refreshed=[P1A])
         assert got == {P1A: "started", P1B: "started", P2A: "started"}, got
         assert aow.current(P1A), "the Select-refreshed Creator counts as warmed (no second Select refresh)"
@@ -325,9 +269,6 @@ async def case_refreshed_first():
 
 
 async def case_pace_lease_gains():
-    """A lease renewal's gains (app_open_warm.pace): feed reads only, per proxy one Creator at a time GAP_S apart,
-    proxies in parallel, a proxy the selection reads on now waits one GAP_S first; a Creator polled inside
-    PURCHASES_POLL_FAST_S by its turn is skipped; no steps 2-4, no event, no warm memo."""
     polled: list[tuple[str, float]] = []
 
     async def poll(aid):
@@ -338,7 +279,7 @@ async def case_pace_lease_gains():
         view_lease.renew(("user", "u1", "t1"), [P1A, P1B, P1C, P2A, D1], P2B)
         pp._poll_state[P1C] = decide.PollState(last_ok_s=time.monotonic(), last_started_s=time.monotonic())
         t0 = time.monotonic()
-        aow.note_read(P2B)                   # the selection reads on P2's exit now
+        aow.note_read(P2B)
         aow.pace([P1A, P1B, P1C, P2A, D1], poll)
         await _drain()
     at = {a: t - t0 for a, t in polled}
@@ -358,12 +299,12 @@ async def case_one_gate_per_exit():
 
     with _patched():
         view_lease.renew(("user", "u1", "t1"), [P1A, P1B, P1C, P2A, P2B], None)
-        aow.pace([P1A], poll)                # two renewals' gains on one exit, a moment apart
+        aow.pace([P1A], poll)
         aow.pace([P1B], poll)
-        aow.pace([P1A], poll)                # already queued: not again
-        await aow.start(("user", "u1"), [P1C], leased_first=())   # an open's warm on the same exit
+        aow.pace([P1A], poll)
+        await aow.start(("user", "u1"), [P1C], leased_first=())
         aow.pace([P2B, P2A], poll)
-        view_lease.renew(("user", "u1", "t1"), [P1A, P1B, P1C, P2B], None)   # P2A's lease lapses before its turn
+        view_lease.renew(("user", "u1", "t1"), [P1A, P1B, P1C, P2B], None)
         await _drain()
     p1 = sorted([(t, a) for a, t in polled if a in (P1A, P1B)] + [(t, a) for a, t, _ in READS if a == P1C])
     assert [a for _, a in p1] == [P1A, P1B, P1C], f"each once, in arrival order: {p1} {polled}"
@@ -398,7 +339,7 @@ async def case_failed_warm_not_reused():
             assert again == {P1B: "reused"}, f"a failed warm is never reused: {again}"
             assert _warmed_ids() == [P1B], f"nothing announced for the failed one: {PUBLISHED}"
             assert len(STEPS) == n, "inside the window the failed one is not read again"
-            pp._poll_state.clear()           # its feed poll counts for `current` on its own (F3): the memo alone
+            pp._poll_state.clear()
             assert not aow.current(P1A) and aow.current(P1B)
             CLOCK[0] = 3000.0 + aow.REUSE_S + 1
             pp._poll_state.clear()
@@ -412,7 +353,7 @@ async def case_failed_warm_not_reused():
 async def case_failed_poll_counts_as_attempt():
     with _patched():
         assert not aow.just_polled(P1A)
-        await pp.poll_now(P1A)               # the fake feed read answers no outcome (an error / no-session path)
+        await pp.poll_now(P1A)
         n = len(READS)
         assert n == 1, READS
         assert aow.just_polled(P1A), "a poll that started now counts for the selection floor, ok or not"
@@ -433,7 +374,6 @@ async def case_dead_after_feed_read():
 
 
 def _refresher(log: list, hold_s: float = READ_S, landed: list | None = None):
-    """A Shared refresher job's walk: records (Creator, start), reads for `hold_s`, then applies its result."""
     async def run(aid):
         log.append((aid, time.monotonic()))
         await asyncio.sleep(hold_s)
@@ -447,8 +387,6 @@ async def _yes(_aid):
 
 
 async def case_refresh_job_on_exit_gate():
-    """A refresh job runs on its Creator's exit, APP_OPEN_WARM_GAP_S after the last read there, exits in parallel; it
-    reads none of the warm's set, publishes nothing, and is not warm-pending."""
     ran: list[tuple[str, float]] = []
     with _patched():
         t0 = time.monotonic()
@@ -468,11 +406,9 @@ async def case_refresh_job_on_exit_gate():
 
 
 async def case_warm_absorbs_refresh():
-    """One entry per Creator: a warm arriving for a queued refresh takes its place (the refresh never runs); a refresh
-    arriving for a queued warm is not queued; either way one warm, read once."""
     ran: list[tuple[str, float]] = []
     with _patched():
-        await aow.start(("user", "u1"), [P1A], leased_first=())    # holds the exit: the rest stay queued
+        await aow.start(("user", "u1"), [P1A], leased_first=())
         assert aow.refresh(P1B, _refresher(ran), wanted=_yes) is True
         got = await aow.start(("user", "u2"), [P1B, P1C], leased_first=())
         assert got == {P1B: "started", P1C: "started"}, got
@@ -484,8 +420,6 @@ async def case_warm_absorbs_refresh():
 
 
 async def case_refresh_recheck_at_turn():
-    """At its turn a refresh job re-checks (`wanted`, asked then, not at enqueue): unwanted, it is dropped unread and
-    the exit does not wait a GAP for it."""
     ran: list[tuple[str, float]] = []
     asked: list[tuple[str, float]] = []
     gone: set[str] = set()
@@ -500,7 +434,7 @@ async def case_refresh_recheck_at_turn():
         assert aow.refresh(P1B, _refresher(ran), wanted=wanted)
         assert aow.refresh(P1C, _refresher(ran), wanted=wanted)
         assert asked == [], "not asked at enqueue"
-        gone.add(P1B)                        # e.g. its last tab closed after it was planned
+        gone.add(P1B)
         await _drain()
     at = {a: t - t0 for a, t in ran}
     assert set(at) == {P1A, P1C} and len(ran) == 2, f"P1B dropped unread: {ran}"
@@ -510,8 +444,6 @@ async def case_refresh_recheck_at_turn():
 
 
 async def case_refresh_deadline_frees_exit():
-    """A refresh job hung past the job deadline (30 s) frees its exit: the next Creator there reads (one GAP later)
-    while the hung walk runs on, never cancelled; its late result lands; logged `shared_refresher_job_timeout`."""
     assert aow.JOB_DEADLINE_S == 30.0, aow.JOB_DEADLINE_S
     deadline, hang = 0.2, 0.8
     ran: list[tuple[str, float]] = []
@@ -539,9 +471,6 @@ async def case_refresh_deadline_frees_exit():
 
 
 async def case_refresh_429_holds_the_exit():
-    """A refresh job whose read met a terminal 429 holds its whole exit for OF's asked wait (`hold`, 429s follow the
-    proxy IP): the next Creator there, a refresh or a warm, starts no earlier; another exit at once. A hold shorter
-    than GAP keeps GAP."""
     wait = 0.5
     ran: list[tuple[str, float]] = []
 
@@ -549,7 +478,7 @@ async def case_refresh_429_holds_the_exit():
         async def run(aid):
             ran.append((aid, time.monotonic()))
             await asyncio.sleep(READ_S)
-            aow.hold(aid, hold_s)             # the shell's terminal-429 branch
+            aow.hold(aid, hold_s)
         return run
 
     with _patched():
@@ -564,7 +493,7 @@ async def case_refresh_429_holds_the_exit():
         aow.refresh(P1B, hot(wait), wanted=_yes)
         await _drain()
         t1 = time.monotonic()
-        await aow.start(("user", "u1"), [P1C], leased_first=())  # a warm on the held, now idle, exit waits too
+        await aow.start(("user", "u1"), [P1C], leased_first=())
         await _drain()
         assert wait - 0.05 <= STEPS[-1][1] - t1, f"the warm waits out the hold: {STEPS[-1][1] - t1}"
         ran.clear()
@@ -577,9 +506,6 @@ async def case_refresh_429_holds_the_exit():
 
 
 async def case_refresh_dropped_at_turn_when_no_longer_wanted():
-    """The Shared refresher's own jobs (its `tick`, the real `wanted`): queued behind a held exit, each re-checks at
-    its turn and is dropped unread when its Creator left `tracked` (its last tab closed), went dead, or got a Last
-    refresh meanwhile; a still-wanted one reads. A dropped job marks nothing in flight."""
     import shared_refresher as sr
     import shared_refresher_decide as srd
     clock = [1000.0]
@@ -598,16 +524,16 @@ async def case_refresh_dropped_at_turn_when_no_longer_wanted():
     tab_rest = await events.subscribe("all", accounts=frozenset({P1B, P1C, P2A}), tab=True)
     try:
         with _patched():
-            await sr.tick()                          # first seen: published, nothing due yet
-            aow.hold(P1A, 0.3)                       # both exits busy: the jobs queue
+            await sr.tick()
+            aow.hold(P1A, 0.3)
             aow.hold(P2A, 0.3)
-            clock[0] += 61.0                         # past every first slot
+            clock[0] += 61.0
             await sr.tick()
             queued = sorted(a for ex in aow._exits.values() for a in ex.jobs)
             assert queued == [P1A, P1B, P1C, P2A], queued
-            await events.unsubscribe("all", tab_a)   # P1A's last tab closed
-            DEAD_NOW.add(P1B)                        # P1B went dead
-            sr._state = srd.after_read(sr._state, P1C, True, clock[0])   # P1C got a Last refresh meanwhile
+            await events.unsubscribe("all", tab_a)
+            DEAD_NOW.add(P1B)
+            sr._state = srd.after_read(sr._state, P1C, True, clock[0])
             await _drain()
             assert read == [P2A], f"only the still-wanted job read: {read}"
             assert sr._in_flight == set(), sr._in_flight
@@ -621,7 +547,6 @@ async def case_refresh_dropped_at_turn_when_no_longer_wanted():
 
 
 class _OF:
-    """A Creator's OF reads, counted: the chats window, the notifications lists and the count."""
 
     def __init__(self):
         self.user_id = 4242
@@ -642,7 +567,7 @@ class _OF:
 
 
 async def case_read_set_on_the_real_routes():
-    import server   # first: accounts_admin_api is imported by server.py, never first
+    import server
     import accounts_admin_api
     import relay_cache
     import relay_coalesce
@@ -651,7 +576,7 @@ async def case_read_set_on_the_real_routes():
     now = [5000.0]
     saved = [(server, "_load_client", lambda _aid: of), (server, "_resolve_account_id", lambda _req=None: P1A),
              (relay_cache, "time", types.SimpleNamespace(monotonic=lambda: now[0])),
-             (aow, "_server", aow._server)]   # the real lookup, under _patched's stand-in
+             (aow, "_server", aow._server)]
     with _patched():
         old = [(m, k, getattr(m, k)) for m, k, _ in saved]
         for m, k, v in saved:
@@ -672,11 +597,9 @@ async def case_read_set_on_the_real_routes():
                 f"the rail's page (app/lib/notifText.ts NOTIF_PAGE_SIZE 20, offset 0): {of.calls}"
             assert _warmed_ids() == [P1A], PUBLISHED
             warmed = PUBLISHED[0]["creator_warmed"]
-            # The event carries what the warmed entries serve: the tab writes those, no re-read.
             assert {k: warmed["roster"][k] for k in ("unread", "owe_reply")} == {"unread": 1, "owe_reply": 0}, warmed
             assert warmed["roster"]["as_of"] > 0 and warmed["notif_count"] == 3 and warmed["now"] > 0, warmed
             n = len(of.calls)
-            # 25 s later the tab's own reads, through the real routes, are served from the warm's entries.
             now[0] += 25.0
             for typ in ("tip", "purchases"):
                 body = await server.of_notifications(limit=20, offset=0, type=typ, related_user=None, refresh=False)
@@ -692,14 +615,14 @@ async def case_read_set_on_the_real_routes():
                 accounts_admin_api._get_request_user, accounts_admin_api._get_request_chatter = real_user, real_chatter
             got = counts["counts"][P1A]
             assert {k: got[k] for k in ("unread", "owe_reply")} == {"unread": 1, "owe_reply": 0}, counts
-            assert got["as_of"] > 0, counts   # the warm's window time
+            assert got["as_of"] > 0, counts
             page0 = relay_cache._cache.get(("list_chats", P1A, (server._ROSTER_SCAN_MAX, 0, "recent", None, None, None)))
             assert page0 is not None, "the Fan List's page-0 window is warm"
             assert len(of.calls) == n, f"a pass-through read 25 s after the warm makes no OF call: {of.calls[n:]}"
-            now[0] += 6.0   # 31 s: past the pass-through's 30 s TTL
+            # 31 s: past the pass-through's 30 s TTL
+            now[0] += 6.0
             await server.of_notifications(limit=20, offset=0, type="tip", related_user=None, refresh=False)
             assert len(of.calls) == n + 1, of.calls
-            # An expired entry is not carried (a reused warm's event then makes the tab re-read the count).
             assert "notif_count" not in server.app_open_warm_values(P1A), server.app_open_warm_values(P1A)
             assert server.app_open_warm_values(P1A)["roster"] == got, "the roster entry (300 s) still carried"
         finally:
@@ -710,7 +633,6 @@ async def case_read_set_on_the_real_routes():
 
 
 def case_hold_is_capped():
-    """A 429's asked wait never holds an exit past HOLD_MAX_S (`Retry-After: inf`, a day, nan)."""
     for asked, lo, hi in ((float("inf"), 899.0, 900.0), (86400.0, 899.0, 900.0), (float("nan"), 899.0, 900.0),
                           (-5.0, 899.0, 900.0), (30.0, 29.0, 30.0)):
         aow.hold("hold-cap", asked)

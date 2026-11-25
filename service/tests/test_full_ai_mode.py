@@ -18,7 +18,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_mode.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -43,8 +43,7 @@ from automations.full_ai_sell import Pick  # noqa: E402
 
 AUTOMATIONS = Path(__file__).resolve().parents[1] / "automations"
 FOUR = ("full_ai_writers.py", "_router_jev.py", "full_ai_turn.py", "full_ai_rules.py")
-SHADOW_QV_9E9014C36 = "14f5d4f6222f"   # question_version("shadow") on origin/main 9e9014c36 (measured)
-# Each gate's key, its "on" value(s) and "off" value.
+SHADOW_QV_9E9014C36 = "14f5d4f6222f"
 KEYS = {"sext_scene": (True, False), "lead_in": (True, False), "sell_nearest": ("plain", "note", "off"),
         "sell_spacing": (True, False), "he_likes": (True, False), "sell_bundle": ("fill", "shoot"),
         "chat_tease": (True, False), "ask_implied": (True, False), "info_wide": (True, False),
@@ -124,7 +123,6 @@ def case_fired_same():
         for p in sorted(edges):
             a = {**base, q: p}
             assert rj.fired(a, "live") == rj.fired(a, "test"), (q, p)
-    # The 03d Ask cut-off: wants_content .65 fires in test / live, not Shadow; .69 likewise.
     for p, full_want, shadow_want in ((0.65, True, False), (0.69, True, False), (0.7, True, True),
                                       (0.649, False, False)):
         a = {**base, "wants_content": p}
@@ -178,7 +176,6 @@ def case_writer_request_same():
 
 
 async def case_rules_live_is_test():
-    # Equal but for the echoed Mode (`mode` and the Version table's row).
     assert json.dumps(fr.rules("live")).replace('"live"', '"test"') == json.dumps(fr.rules("test"))
     assert fr.rules("live")["mode"] == "live"
     try:
@@ -193,7 +190,6 @@ async def case_rules_live_is_test():
     finally:
         auth._request_user.reset(tok)
     assert got["mode"] == "live" and got["nodes"], got.keys()
-    # The route's Literal admits live (FastAPI answers 422 otherwise).
     lit = inspect.signature(full_ai_api.full_ai_rules_read).parameters["mode"].annotation
     assert "live" in str(lit), lit
 
@@ -219,7 +215,6 @@ def case_no_test_compare_left():
     allowed = {"full_ai_turn.py": ["load_turn_facts"]}
     for f, hits in found.items():
         assert [fn for fn, _ in hits] == allowed.get(f, []), (f, hits)
-    # The scan bites: a planted compare is found.
     planted = ast.parse('def g(mode):\n    return mode == "test"\n')
     assert any(isinstance(n, ast.Compare) for n in ast.walk(planted))
 

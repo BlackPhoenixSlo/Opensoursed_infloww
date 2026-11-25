@@ -1,56 +1,7 @@
 #!/usr/bin/env python3
-"""Online-fans mass message thresholds — Total spent / Tipped over /
-Subscribed over / Expired over, resolved from our own records.
-
-  case_spent_threshold:
-      lifetime_spend_cents >= the bar passes; bots and blacklisted never do.
-  case_tipped_threshold:
-      the sum of PAID tip transactions counts; a refunded tip doesn't.
-  case_subscribed_over_reads_every_date_source:
-      fans.subscribed_at, the roster snapshot, the first subscription charge and
-      an OF roster row's subscribeAt all count (a candidate with no fans row
-      passes on a known date); a fan with no date fails.
-  case_expired_over_reads_the_snapshot:
-      _threshold_base: dropped from the latest complete crawl AND expired N+ days ago.
-  case_resolver_online_now_intersects_the_roster:
-      online_now reads OF's online list once and keeps only qualifying fans on it.
-  case_resolver_narrows_a_segment:
-      explicit ids (a picked segment) are narrowed, never widened.
-  case_route_sends_explicit_ids_without_lists:
-      a thresholded online send drops userLists and the online filter and sends
-      the qualifying ids.
-  case_route_refuses_zero_matches_before_sending:
-      nobody clears → 422, and OF is never called.
-  case_route_refuses_scheduled_or_expired_online:
-      scheduled + online-only, or expired + online-only → 422.
-  case_route_narrows_the_picked_lists_never_widens:
-      not online: the picked lists' members ∩ qualifying fans, nobody else.
-  case_route_refuses_without_an_audience / case_route_refuses_an_unreadable_list:
-      no list and no ids, or a list OF won't page → 422, nothing sent.
-  case_route_expired_over_reads_the_expired_fans:
-      Expired over swaps Fans/Following for the crawl's expired fans; no crawl → 422.
-  case_route_refuses_past_the_id_cap:
-      more qualifying fans than THRESHOLD_IDS_MAX → 422, not a split send.
-  case_route_refuses_an_online_roster_past_the_cap:
-      more fans online than ONLINE_ROSTER_MAX → 422, not a silently cut roster;
-      exactly ONLINE_ROSTER_MAX is sent.
-  case_route_subtracts_the_excluded_lists:
-      excluded lists' members are subtracted server-side; an unreadable one → 422.
-  case_route_explicit_ids_subtract_the_excluded_lists:
-      the same for explicit ids without a threshold; lists holding every
-      picked fan → 422 naming the excluded lists, nothing sent.
-  case_route_tenure_keeps_a_list_member_without_a_fan_row:
-      Subscribed over keeps a list member with no fans row but a crawl date.
-  case_route_expired_over_a_custom_list_needs_a_crawl:
-      Expired over on a custom list with no crawl → "not known yet" 422.
-  case_route_expired_over_narrows_a_custom_list:
-      with a crawl, a custom list is cut to its fans expired N+ days.
-
-Run: ./venv/bin/python service/tests/test_mass_thresholds.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
@@ -69,7 +20,6 @@ NOW = datetime.utcnow()
 
 
 class FakeOF:
-    """The online list plus the broadcast surface; nothing leaves the process."""
 
     def __init__(self, online=(), fans=(), following=(), lists=None):
         self.online = list(online)
@@ -126,16 +76,16 @@ async def case_spent_threshold():
     async with get_session() as s:
         s.add(Blacklist(fan_id=4))
     assert await threshold_fan_ids(aid, {1, 2, 3, 4}, min_spent_cents=2000) == {1}
-    assert await threshold_fan_ids(aid, {2, 3}, min_spent_cents=2000) == set()   # never wider
+    assert await threshold_fan_ids(aid, {2, 3}, min_spent_cents=2000) == set()
 
 
 async def case_tipped_threshold():
     aid = "acc_thr_tips"
     await _seed(aid, {11: {}, 12: {}, 13: {}})
     await _tx(aid, 11, "tip", 1500)
-    await _tx(aid, 11, "tip", 1000)            # 11: $25 across two tips
+    await _tx(aid, 11, "tip", 1000)
     await _tx(aid, 12, "tip", 3000, status="refunded")
-    await _tx(aid, 13, "ppv_message", 9000)    # a purchase is not a tip
+    await _tx(aid, 13, "ppv_message", 9000)
     assert await threshold_fan_ids(aid, {11, 12, 13}, min_tips_cents=2000) == {11}
 
 
@@ -146,16 +96,13 @@ async def case_subscribed_over_reads_every_date_source():
     async with get_session() as s:
         s.add(SubscriberSnapshot(account_id=aid, fan_id=22, seen_at=NOW,
                                  subscribe_at=NOW - timedelta(days=31)))
-        # 27: a list member with NO fans row, but the crawl knows his date.
         s.add(SubscriberSnapshot(account_id=aid, fan_id=27, seen_at=NOW,
                                  subscribe_at=NOW - timedelta(days=40)))
     await _tx(aid, 23, "subscription", 999, days_ago=60)
     roster = [{"id": 24, "subscribedOnData": {"subscribeAt": (NOW - timedelta(days=45)).isoformat() + "Z"}},
               {"id": 26, "subscribedOnData": {"subscribeAt": (NOW - timedelta(days=90)).isoformat() + "+00:00"}}]
-    pool = {21, 22, 23, 24, 25, 26, 27, 28}     # 28: no row, no date anywhere
+    pool = {21, 22, 23, 24, 25, 26, 27, 28}
     got = await threshold_fan_ids(aid, pool, subscribed_over_days=30, roster=roster)
-    # 25 subscribed 3 days ago; 26 is on OF's list only (no fans row yet) and
-    # passes; 27 has no fans row but a snapshot date and passes; 28 fails.
     assert got == {21, 22, 23, 24, 26, 27}, got
     assert await threshold_fan_ids(aid, pool, subscribed_over_days=30) == {21, 22, 23, 27}
 
@@ -166,11 +113,11 @@ async def case_expired_over_reads_the_snapshot():
     last, prev = NOW, NOW - timedelta(days=1)
     async with get_session() as s:
         s.add(SubscriberSnapshot(account_id=aid, fan_id=31, seen_at=prev,
-                                 expired_at=NOW - timedelta(days=20)))   # gone 20d
+                                 expired_at=NOW - timedelta(days=20)))
         s.add(SubscriberSnapshot(account_id=aid, fan_id=32, seen_at=prev,
-                                 expired_at=NOW - timedelta(days=2)))    # gone 2d
+                                 expired_at=NOW - timedelta(days=2)))
         s.add(SubscriberSnapshot(account_id=aid, fan_id=33, seen_at=last,
-                                 expired_at=NOW - timedelta(days=20)))   # still listed
+                                 expired_at=NOW - timedelta(days=20)))
     base = await _threshold_base(aid, user_lists=["fans"], excluded_lists=None, included=[],
                                  roster=None, expired_over_days=14, client=None, now=NOW)
     assert base == {31}, base
@@ -185,7 +132,7 @@ async def case_resolver_online_now_intersects_the_roster():
                                       user_lists=["fans"], exclude_pending_sends=False,
                                       client=fake)
     assert fake.roster_reads == 1
-    assert res["included_users"] == [41], res          # 42 is offline, 43 below the bar
+    assert res["included_users"] == [41], res
 
 
 async def case_resolver_narrows_a_segment():
@@ -194,14 +141,12 @@ async def case_resolver_narrows_a_segment():
                       53: {"lifetime_spend_cents": 10}})
     res = await resolve_mass_audience(aid, included_users=[51, 53], min_spent_cents=5000,
                                       exclude_pending_sends=False)
-    assert res["included_users"] == [51], res          # 52 qualifies but isn't in the segment
+    assert res["included_users"] == [51], res
     off = await resolve_mass_audience(aid, included_users=[53], exclude_pending_sends=False)
-    assert off["included_users"] == [53], off          # no threshold → untouched
+    assert off["included_users"] == [53], off
 
 
 class _Patch:
-    """Swap server seams for one route call: the account, the OF client and the
-    mass_runs bookkeeping (covered by test_send_mass)."""
 
     def __init__(self, aid: str, fake: FakeOF):
         self.aid, self.fake = aid, fake
@@ -286,8 +231,6 @@ async def _refused(aid, fake, body) -> str:
 
 
 async def case_route_narrows_the_picked_lists_never_widens():
-    """Not online: the picked lists' members (read off OF) ∩ qualifying fans.
-    A qualifying fan on no picked list — an old expired buyer — stays out."""
     aid = "acc_thr_lists"
     await _seed(aid, {81: {"lifetime_spend_cents": 9000}, 82: {"lifetime_spend_cents": 100},
                       83: {"lifetime_spend_cents": 9000}, 84: {"lifetime_spend_cents": 9000},
@@ -297,13 +240,11 @@ async def case_route_narrows_the_picked_lists_never_widens():
         await mass_queue_api.of_send_or_schedule_mass(
             None, _list_body(["fans", "following", "777"], min_total_spent=50))
     (sent,) = fake.sent
-    assert sent["included_users"] == [81, 84, 85], sent   # 83 is on no picked list
+    assert sent["included_users"] == [81, 84, 85], sent
     assert sent["user_lists"] == [], sent
 
 
 async def case_route_refuses_without_an_audience():
-    """No list, no ids, not online: nothing to narrow, so nothing is sent (it
-    used to mean every qualifying fan on record)."""
     aid = "acc_thr_nolists"
     await _seed(aid, {86: {"lifetime_spend_cents": 9000}})
     detail = await _refused(aid, FakeOF(fans=[86]), _list_body([], min_total_spent=50))
@@ -313,14 +254,12 @@ async def case_route_refuses_without_an_audience():
 async def case_route_refuses_an_unreadable_list():
     aid = "acc_thr_unread"
     await _seed(aid, {87: {"lifetime_spend_cents": 9000}})
-    for lists in (["recent"], ["999"]):        # unknown built-in; a list OF won't page
+    for lists in (["recent"], ["999"]):
         detail = await _refused(aid, FakeOF(fans=[87]), _list_body(lists, min_total_spent=50))
         assert "Couldn't read who is on" in detail, (lists, detail)
 
 
 async def case_route_expired_over_reads_the_expired_fans():
-    """Expired over: the built-in Fans/Following stand for the crawl's expired
-    fans; with no complete crawl yet, refused rather than guessed."""
     detail = await _refused("acc_thr_exp_nocrawl", FakeOF(),
                             _list_body(["fans", "following"], expired_over_days=14))
     assert "Expired fans aren't known yet" in detail, detail
@@ -332,8 +271,8 @@ async def case_route_expired_over_reads_the_expired_fans():
                                  expired_at=NOW - timedelta(days=20)))
         s.add(SubscriberSnapshot(account_id=aid, fan_id=92, seen_at=NOW - timedelta(days=1),
                                  expired_at=NOW - timedelta(days=3)))
-        s.add(SubscriberSnapshot(account_id=aid, fan_id=93, seen_at=NOW))   # still active
-    fake = FakeOF(fans=[93])   # no list 999: with Fans picked it is never read
+        s.add(SubscriberSnapshot(account_id=aid, fan_id=93, seen_at=NOW))
+    fake = FakeOF(fans=[93])
     with _Patch(aid, fake):
         await mass_queue_api.of_send_or_schedule_mass(
             None, _list_body(["fans", "following", "999"], expired_over_days=14))
@@ -355,8 +294,6 @@ async def case_route_refuses_past_the_id_cap():
 
 
 async def case_route_refuses_an_online_roster_past_the_cap():
-    """More fans online than the roster read: refused, never a silently cut
-    roster (the read asks for one past the cap to know)."""
     import audiences
     aid = "acc_thr_online_cap"
     await _seed(aid, {101: {"lifetime_spend_cents": 9000}, 102: {"lifetime_spend_cents": 9000},
@@ -366,7 +303,7 @@ async def case_route_refuses_an_online_roster_past_the_cap():
     try:
         detail = await _refused(aid, fake, _body(min_total_spent=50))
         assert "More than 2 fans are online" in detail, detail
-        at_cap = FakeOF(online=[{"id": 101}, {"id": 102}])   # exactly the cap: sent
+        at_cap = FakeOF(online=[{"id": 101}, {"id": 102}])
         with _Patch(aid, at_cap):
             await mass_queue_api.of_send_or_schedule_mass(None, _body(min_total_spent=50))
     finally:
@@ -375,10 +312,8 @@ async def case_route_refuses_an_online_roster_past_the_cap():
     assert sent["included_users"] == [101, 102], sent
 
 
+# OF verifies excludedLists on list audiences only, so a thresholded (explicit ids) send subtracts them itself.
 async def case_route_subtracts_the_excluded_lists():
-    """OF's `excludedLists` is verified on list audiences only, so a
-    thresholded (explicit ids) send subtracts the excluded lists' members
-    itself; one OF won't page is refused, not skipped."""
     aid = "acc_thr_excl"
     await _seed(aid, {111: {"lifetime_spend_cents": 9000}, 112: {"lifetime_spend_cents": 9000}})
     fake = FakeOF(fans=[111, 112], lists={555: [112]})
@@ -394,9 +329,6 @@ async def case_route_subtracts_the_excluded_lists():
 
 
 async def case_route_explicit_ids_subtract_the_excluded_lists():
-    """No threshold: explicit ids with an excluded list still subtract its
-    members (OF's `excludedLists` is verified on list audiences only); one OF
-    won't page → 422, nothing sent."""
     aid = "acc_excl_explicit"
     await _seed(aid, {151: {}, 152: {}})
     fake = FakeOF(lists={556: [152]})
@@ -410,15 +342,12 @@ async def case_route_explicit_ids_subtract_the_excluded_lists():
                             _list_body([], user_ids=[151, 152], excluded_user_lists=["998"]))
     assert "Couldn't read who is on the excluded list 998" in detail, detail
 
-    # The lists hold every picked fan: an empty audience never goes to OF.
     detail = await _refused(aid, FakeOF(lists={556: [151, 152]}),
                             _list_body([], user_ids=[151, 152, 151], excluded_user_lists=["556"]))
     assert "the excluded lists hold all 2 fan(s)" in detail, detail
 
 
 async def case_route_tenure_keeps_a_list_member_without_a_fan_row():
-    """A list member we have no fans row for, but whose subscribe date the
-    crawl knows, clears Subscribed over."""
     aid = "acc_thr_norow"
     await _seed(aid, {})
     async with get_session() as s:
@@ -435,8 +364,6 @@ async def case_route_tenure_keeps_a_list_member_without_a_fan_row():
 
 
 async def case_route_expired_over_a_custom_list_needs_a_crawl():
-    """Expired over on a custom list only, no crawl yet: the same 'not known
-    yet' refusal, not an empty-audience one."""
     aid = "acc_thr_exp_custom"
     await _seed(aid, {131: {}})
     detail = await _refused(aid, FakeOF(lists={779: [131]}),
@@ -445,14 +372,12 @@ async def case_route_expired_over_a_custom_list_needs_a_crawl():
 
 
 async def case_route_expired_over_narrows_a_custom_list():
-    """With a crawl, a custom list's members are cut to the fans expired N+
-    days: the list's still-active fan stays out."""
     aid = "acc_thr_exp_list"
     await _seed(aid, {141: {}, 142: {}})
     async with get_session() as s:
         s.add(SubscriberSnapshot(account_id=aid, fan_id=141, seen_at=NOW - timedelta(days=1),
-                                 expired_at=NOW - timedelta(days=20)))   # gone 20d
-        s.add(SubscriberSnapshot(account_id=aid, fan_id=142, seen_at=NOW))   # still active
+                                 expired_at=NOW - timedelta(days=20)))
+        s.add(SubscriberSnapshot(account_id=aid, fan_id=142, seen_at=NOW))
     fake = FakeOF(lists={780: [141, 142]})
     with _Patch(aid, fake):
         await mass_queue_api.of_send_or_schedule_mass(None, _list_body(["780"], expired_over_days=14))

@@ -1,20 +1,6 @@
-"""One account's outbound DM rate: automation queues under OF_DM_PER_MIN (dm_rate, ADR 0025 fix 9).
-
-These cases pin that automation DMs never pass the limit in any window (they
-queue for a place), that an operator's DM never waits and only counts, that
-the peak and the over-limit sends are counted, that the limit is read at every
-DM (env, then the panel), that one turn is one DM (a resend on it counts but
-is not "unguarded"), that an automation DM sent with no turn is flagged, that
-OFClient.send_message counts every DM, that the paced send's wait keeps the
-run's slot (it can be under broadcast_lock) while a direct send's wait hands
-it back like a typing hold, and that every automation sender in the code takes
-a turn before its send.
-
-Run: ./venv/bin/python service/tests/test_dm_rate.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB + TEST_MODE
+import _harness
 import ast
 import asyncio
 import contextlib
@@ -36,8 +22,6 @@ SLACK = 0.03
 
 @contextlib.contextmanager
 def _rate(per_min: int | None, window_s: float = 0.6, slack_s: float = 0.0):
-    """OF_DM_PER_MIN in the env, a short window and slack (none unless asked),
-    every account forgotten."""
     saved_env, saved_w, saved_s = os.environ.get(dm_rate.KNOB), dm_rate.WINDOW_S, dm_rate.SLACK_S
     if per_min is None:
         os.environ.pop(dm_rate.KNOB, None)
@@ -57,7 +41,6 @@ def _rate(per_min: int | None, window_s: float = 0.6, slack_s: float = 0.0):
 
 
 async def _automation_dm(pool: run_slot.SlotPool, account: str = ACCT) -> tuple[float, float]:
-    """One automation run's DM: its turn, then the send. (waited, sent at)."""
     async with run_slot.hold(pool):
         waited = await dm_rate.turn(account)
         dm_rate.record(account)
@@ -69,8 +52,6 @@ def _snap(account: str = ACCT) -> dict:
 
 
 async def case_automation_queues_at_the_limit():
-    """Limit 3 a window: seven automation DMs at once. Three go now, the rest
-    queue, and no window ever holds more than three sends."""
     with _rate(3):
         pool = run_slot.SlotPool(8)
         t0 = asyncio.get_running_loop().time()
@@ -87,10 +68,6 @@ async def case_automation_queues_at_the_limit():
 
 
 async def case_a_place_frees_after_the_send_plus_the_slack():
-    """Limit 1, a 0.4 s window, 0.2 s slack, on a hand-driven clock: the turn
-    is at 0 but its DM goes at 0.3 (a wait on the way to the POST), so the
-    next place is at 0.3 + 0.4 + 0.2, not at 0.4 (the turn) nor 0.7 (the send
-    plus the window: a waiter woken there lands inside it on OF's clock)."""
     with _rate(1, window_s=0.4, slack_s=0.2):
         now = [0.0]
         dm_rate._windows[ACCT] = dm_rate.Window(clock=lambda: now[0])
@@ -103,15 +80,10 @@ async def case_a_place_frees_after_the_send_plus_the_slack():
             now[0] = t
             assert abs(w.wait_for(t, 1) - gap) < 1e-9, (t, w.wait_for(t, 1), gap)
         now[0] = 0.75
-        assert w._in_window(0.75) == 0 and _snap()["now"] == 0, _snap()   # out of the 60 s, still a place
+        assert w._in_window(0.75) == 0 and _snap()["now"] == 0, _snap()
 
 
 async def case_a_place_pruned_on_the_way_to_the_send_still_counts():
-    """A turn reserved before a long wait on the way to the POST (the account's
-    write gate behind a mass): limit 2, the real 60 s window and 1 s slack, on
-    a hand-driven clock. The turn is at 0; at 62 s another DM's turn prunes the
-    window; the first DM goes at 62.5. It is counted (2 in the window) and a
-    third automation DM must wait, not slip past the limit."""
     with _rate(2, window_s=60.0, slack_s=1.0):
         now = [0.0]
         dm_rate._windows[ACCT] = dm_rate.Window(clock=lambda: now[0])
@@ -123,7 +95,7 @@ async def case_a_place_pruned_on_the_way_to_the_send_still_counts():
             async with run_slot.hold(pool):
                 await dm_rate.turn(ACCT)
                 first.set()
-                await go.wait()                  # the gate wait
+                await go.wait()
                 dm_rate.record(ACCT)
         task = asyncio.create_task(slow())
         await first.wait()
@@ -139,16 +111,12 @@ async def case_a_place_pruned_on_the_way_to_the_send_still_counts():
 
 
 async def case_a_dropped_turn_gives_its_place_back_at_once():
-    """Limit 1, the real 60 s window: a turn reserved and then dropped (a stop,
-    a chatter's pick, the fan's reply) is released, and the next automation DM
-    goes at once, not 61 s later. A release after the send, or from another
-    task, takes nothing back: the DM stays counted."""
     with _rate(1, window_s=60.0, slack_s=1.0):
         pool = run_slot.SlotPool(4)
         async with run_slot.hold(pool):
             await dm_rate.turn(ACCT)
             dm_rate.release(ACCT)
-            dm_rate.release(ACCT)                    # twice: still nothing more
+            dm_rate.release(ACCT)
         assert _snap()["now"] == 0, _snap()
         waited, _ = await asyncio.wait_for(_automation_dm(pool), 1.0)
         assert waited == 0.0, ("the dropped turn's place was still held", waited)
@@ -159,23 +127,20 @@ async def case_a_dropped_turn_gives_its_place_back_at_once():
         async with run_slot.hold(pool):
             dm_rate._reset()
             await dm_rate.turn(ACCT)
-            await asyncio.create_task(other_task())   # inherits the var, not the turn
+            await asyncio.create_task(other_task())
             assert _snap()["now"] == 1, "another task took this turn's place back"
             dm_rate.record(ACCT)
-            dm_rate.release(ACCT)                     # after the send: nothing to give back
+            dm_rate.release(ACCT)
         assert _snap()["now"] == 1, _snap()
 
 
 async def case_an_operator_dm_never_waits_and_only_counts():
-    """The window full of automation: the app's composer send (no run) and an
-    operator's run go at once, past the limit (counted as over); automation
-    then waits until the window has room again."""
     with _rate(3):
         pool = run_slot.SlotPool(8)
         await asyncio.gather(*(_automation_dm(pool) for _ in range(3)))
         loop = asyncio.get_running_loop()
         t0 = loop.time()
-        assert await dm_rate.turn(ACCT) == 0.0          # outside any run: the operator
+        assert await dm_rate.turn(ACCT) == 0.0
         dm_rate.record(ACCT)
         async with run_slot.hold(pool, operator=True):
             assert await dm_rate.turn(ACCT) == 0.0
@@ -188,8 +153,6 @@ async def case_an_operator_dm_never_waits_and_only_counts():
 
 
 async def case_the_limit_is_read_at_every_dm():
-    """No env: the code default (23), on the panel live from import. The env
-    pins it; a new value applies to the next DM, never pending a restart."""
     with _rate(None):
         assert dm_rate.limit() == dm_rate.DEFAULT_PER_MIN == 23
         assert dm_rate.KNOB in lane_config.knob_names()
@@ -201,31 +164,25 @@ async def case_the_limit_is_read_at_every_dm():
         got = await asyncio.gather(*(_automation_dm(pool) for _ in range(3)))
         assert sum(1 for w, _ in got if w > 0) == 1, got
     with _rate(None):
-        dm_rate.limit()                                  # leave the live value at the default
+        dm_rate.limit()
 
 
 async def case_one_turn_is_one_dm():
-    """A turn's own send is not counted twice; a second POST on the same turn
-    (a refused attachment's text-only resend, a retry) counts as a DM but not
-    as unguarded; the next DM needs a turn of its own."""
     with _rate(5):
         pool = run_slot.SlotPool(1)
         async with run_slot.hold(pool):
             await dm_rate.turn(ACCT)
             dm_rate.record(ACCT)
             assert _snap()["now"] == 1, _snap()
-            dm_rate.record(ACCT)                         # the resend
+            dm_rate.record(ACCT)
             s = _snap()
             assert s["now"] == 2 and s["retries"] == 1 and s["unguarded"] == 0, s
             await dm_rate.turn(ACCT)
-            await asyncio.to_thread(dm_rate.record, ACCT)    # the send runs in a worker thread
+            await asyncio.to_thread(dm_rate.record, ACCT)
             assert _snap()["now"] == 3 and _snap()["retries"] == 1, _snap()
 
 
 async def case_a_turn_is_reused_by_its_task_only():
-    """A sender takes its turn where it handles SlotLost; the helper's turn
-    under it (send_dropping_bad_media) passes at once, reserving nothing more.
-    A child task the turn's task spawns inherits the variable, not the turn."""
     with _rate(1, window_s=0.5):
         async with run_slot.hold(run_slot.SlotPool(4)):
             await dm_rate.turn(ACCT)
@@ -237,8 +194,6 @@ async def case_a_turn_is_reused_by_its_task_only():
 
 
 async def case_an_unwired_automation_dm_is_flagged():
-    """An automation DM that reaches OF without a turn is counted and flagged
-    (a sender this guard does not know); outside a run it is the operator's."""
     with _rate(5):
         async with run_slot.hold(run_slot.SlotPool(1)):
             dm_rate.record(ACCT)
@@ -256,8 +211,6 @@ def _client(account: str) -> of_client.OFClient:
 
 
 async def case_the_send_path_counts_every_dm():
-    """OFClient.send_message counts each DM in its account's window, in the
-    worker thread the senders call it from."""
     with _rate(5):
         c = _client(ACCT)
         await asyncio.to_thread(c.send_message, 9, "hey", auto_tag=False)
@@ -276,8 +229,6 @@ async def _free(pool: run_slot.SlotPool) -> bool:
 
 
 async def _watching(pool: run_slot.SlotPool, body):
-    """Run `body(stop)` while sampling whether a fresh run could take the pool;
-    the body awaits `stop()` before it leaves its run (its own release)."""
     seen: list[bool] = []
     done = asyncio.Event()
 
@@ -298,9 +249,6 @@ async def _watching(pool: run_slot.SlotPool, body):
 
 
 async def case_a_paced_dm_waits_keeping_its_slot():
-    """of_write_paced(dm=True), the window full: the DM waits for room before
-    the write, and the run's slot is never free meanwhile (a paced send can be
-    under broadcast_lock; ADR 0025's rule)."""
     with _rate(2, window_s=1.5):
         os.environ["AUTOMATION_RELEASE_SLOT_MIN_HOLD_S"] = "1"
         try:
@@ -325,9 +273,6 @@ async def case_a_paced_dm_waits_keeping_its_slot():
 
 
 async def case_a_direct_dm_wait_hands_the_slot_back():
-    """A direct send's turn (release_budget_s, as its typing holds) with the
-    window full: a fresh run gets the slot while it waits, and the run has it
-    back for the send."""
     with _rate(1, window_s=1.5):
         os.environ["AUTOMATION_RELEASE_SLOT_MIN_HOLD_S"] = "1"
         try:
@@ -350,7 +295,6 @@ async def case_a_direct_dm_wait_hands_the_slot_back():
         assert _snap()["unguarded"] == 0 and _snap()["peak"] == 1, _snap()
 
 
-# ── every automation DM takes a turn ─────────────────────────────────────────
 
 _SVC = Path(ax.__file__).resolve().parent
 _SENDS = {"send_message", "send_dropping_bad_media_sync"}
@@ -372,9 +316,6 @@ def _sends(node: ast.AST) -> bool:
 
 
 def case_every_automation_sender_takes_a_turn():
-    """Across service/automations and _common: a DM through of_write_paced
-    says dm=True; a DM through asyncio.to_thread has a dm_rate.turn in the
-    same function. (The runtime backstop is the `unguarded` count.)"""
     found = {"paced": 0, "direct": 0}
     for path in sorted((_SVC / "automations").glob("*.py")):
         tree = ast.parse(path.read_text())

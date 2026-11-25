@@ -1,20 +1,3 @@
-"""account_health — pause a dead-session account's automations until it recovers
-
-Revision ID: 0041_account_health
-Revises: 0040_wall_media_price
-Create Date: 2026-07-10
-
-One additive table: `account_health` (account_id PK, session_dead_at,
-session_dead_reason, last_probe_at).
-
-When OF rejects an account's stored session ("Wrong user." — the creator got
-logged out / re-linked elsewhere), the account is flagged here and the
-automation executor skips every run for it; a periodic `client.me()` probe or
-a session re-capture clears the flag. See service/account_health.py.
-
-Additive + idempotent (inspector-guarded, house convention so a
-create_all-built DB whose alembic_version lags doesn't trip).
-"""
 from __future__ import annotations
 
 from typing import Sequence

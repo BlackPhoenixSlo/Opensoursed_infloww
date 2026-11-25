@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""The client's address behind a CDN (service/client_addr.py, deploy/ae/EDGE-CDN.md).
-
-Behind Cloudflare, Traefik writes the Cloudflare server's address in
-X-Forwarded-For, so every phone near one Cloudflare city would share it. With
-EDGE_PROXIES set, a request that came from a Cloudflare address is keyed by
-Cloudflare's CF-Connecting-IP; unset, nothing changes; a request that did not
-come from Cloudflare cannot pick its address by forging the header.
-
-The seam: client_address on hand-built requests, then the Relay over HTTP
-(TestClient with a docker-network peer, as the Next app is) for the sign-in
-throttle's buckets and log line and the tracking-link click row. EDGE_PROXIES
-is swapped per case (it is read at import).
-
-Run: ./venv/bin/python service/tests/test_client_addr.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -32,9 +17,9 @@ import login_throttle  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, TrackingClick, TrackingLink  # noqa: E402
 
-CF_V4, CF_V6 = "162.158.88.17", "2a06:98c0:3600::103"  # inside Cloudflare's published ranges
+CF_V4, CF_V6 = "162.158.88.17", "2a06:98c0:3600::103"
 PHONE_A, PHONE_B = "203.0.113.7", "198.51.100.23"
-NEXT_PEER = "172.18.0.5"                               # the Next app on the compose network
+NEXT_PEER = "172.18.0.5"
 
 
 @contextlib.contextmanager
@@ -67,7 +52,6 @@ def case_cloudflare_is_its_published_ranges_plus_any_extra_cidr():
     assert ipaddress.ip_network("10.9.9.0/24") in nets and ipaddress.ip_network("173.245.48.0/20") in nets
     assert len(nets) == len(client_addr.CLOUDFLARE.split(",")) + 1, len(nets)
     assert client_addr._in(ipaddress.ip_address(CF_V6), nets)
-    # A bad entry is logged by name and skipped (the relay still starts); the rest still parse.
     lines = _Lines()
     logging.getLogger("of-relay.client_addr").addHandler(lines)
     try:
@@ -76,40 +60,34 @@ def case_cloudflare_is_its_published_ranges_plus_any_extra_cidr():
     finally:
         logging.getLogger("of-relay.client_addr").removeHandler(lines)
     assert any("EDGE_PROXIES" in ln and "cdn-host" in ln for ln in lines.lines), lines.lines
-    # The keywords are EDGE_PROXIES' only: TRUSTED_PROXIES=cloudflare is a bad entry, so the default.
     assert client_addr._parse_trusted("cloudflare") == client_addr._parse_trusted("")
 
 
 def case_through_cloudflare_the_phone_is_the_client():
     with edge("cloudflare"):
-        assert addr(NEXT_PEER, CF_V4, PHONE_A) == PHONE_A                   # Traefik -> Next -> relay
+        assert addr(NEXT_PEER, CF_V4, PHONE_A) == PHONE_A
         assert addr(NEXT_PEER, f"10.0.0.1, {CF_V6}", "2001:db8::9") == "2001:db8::9"
-        assert addr(CF_V4, None, PHONE_A) == PHONE_A                        # Cloudflare as the peer itself
-        assert addr(NEXT_PEER, CF_V4, "not-an-ip") == CF_V4                 # a header that is no address
+        assert addr(CF_V4, None, PHONE_A) == PHONE_A
+        assert addr(NEXT_PEER, CF_V4, "not-an-ip") == CF_V4
         assert addr(NEXT_PEER, CF_V4) == CF_V4
 
 
 def case_a_request_that_skipped_cloudflare_cannot_forge_the_header():
     with edge("cloudflare"):
-        # Straight to the host's IP: Traefik writes the sender's own address.
         assert addr(NEXT_PEER, PHONE_B, PHONE_A) == PHONE_B
-        # A public peer outside TRUSTED_PROXIES naming a Cloudflare hop is ignored first.
         assert addr(PHONE_B, CF_V4, PHONE_A) == PHONE_B
 
 
 def case_through_the_tunnel_the_phone_is_the_client():
-    """cloudflared on the host hands Traefik the request from 127.0.0.1, so
-    Traefik's X-Forwarded-For is loopback; `cloudflare-tunnel` believes the
-    header there too. A hit on the public IP still keys by its sender."""
     nets = client_addr._parse_edge("cloudflare-tunnel")
     assert len(nets) == len(client_addr.CLOUDFLARE.split(",")) + 2, len(nets)
     with edge("cloudflare-tunnel"):
-        assert addr(NEXT_PEER, "127.0.0.1", PHONE_A) == PHONE_A             # tunnel -> Traefik -> Next -> relay
+        assert addr(NEXT_PEER, "127.0.0.1", PHONE_A) == PHONE_A
         assert addr(NEXT_PEER, "::1", PHONE_A) == PHONE_A
-        assert addr(NEXT_PEER, CF_V4, PHONE_A) == PHONE_A                   # orange cloud without the tunnel
-        assert addr(NEXT_PEER, PHONE_B, PHONE_A) == PHONE_B                 # straight to the IP: forged header ignored
+        assert addr(NEXT_PEER, CF_V4, PHONE_A) == PHONE_A
+        assert addr(NEXT_PEER, PHONE_B, PHONE_A) == PHONE_B
     with edge("cloudflare"):
-        assert addr(NEXT_PEER, "127.0.0.1", PHONE_A) == "127.0.0.1"         # plain mode stays as it was
+        assert addr(NEXT_PEER, "127.0.0.1", PHONE_A) == "127.0.0.1"
 
 
 class _Lines(logging.Handler):
@@ -132,7 +110,7 @@ def case_two_phones_behind_one_cloudflare_server_keep_their_own_sign_in_bucket()
     lines = _Lines()
     logging.getLogger("of-relay.login_throttle").addHandler(lines)
     try:
-        with edge(""):  # today: both phones are the Cloudflare server
+        with edge(""):
             assert _spray(c, PHONE_A, login_throttle.IP_CAPACITY) == [401] * login_throttle.IP_CAPACITY
             assert _spray(c, PHONE_B, 1) == [429]
             assert any(f"addr={CF_V4} key={CF_V4}" in ln for ln in lines.lines), lines.lines
@@ -141,7 +119,6 @@ def case_two_phones_behind_one_cloudflare_server_keep_their_own_sign_in_bucket()
             codes = _spray(c, PHONE_A, login_throttle.IP_CAPACITY + 1)
             assert codes == [401] * login_throttle.IP_CAPACITY + [429], codes
             assert _spray(c, PHONE_B, 1) == [401]
-            # The throttle's log names the phone, not Cloudflare.
             assert any(f"sign-in throttled addr={PHONE_A} key={PHONE_A} buckets=ip" in ln for ln in lines.lines), \
                 lines.lines
             assert not any(CF_V4 in ln for ln in lines.lines), lines.lines
@@ -172,12 +149,10 @@ def case_a_tracking_click_records_the_fans_address_not_the_proxy():
         assert c.get("/t/edge-bio", headers={"X-Forwarded-For": PHONE_B}, follow_redirects=False).status_code == 302
     with edge("cloudflare"):
         assert c.get("/t/edge-bio", headers=hop, follow_redirects=False).status_code == 302
-    # Before this, every row held the Next container's address (NEXT_PEER).
     assert asyncio.run(_click_ips("edge-bio")) == [CF_V4, PHONE_B, PHONE_A]
 
 
 def case_a_relay_answer_without_its_own_cache_header_is_no_store():
-    """No CDN may keep a per-user answer (deploy/ae/EDGE-CDN.md); a route's own header wins."""
     c = TestClient(_harness.make_client().app)
     for path in ("/auth/me", "/chatter/me", "/admin/accounts", "/t/no-such-link"):
         r = c.get(path, follow_redirects=False)

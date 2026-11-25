@@ -1,20 +1,3 @@
-"""account_deactivated — the Creator deactivate switch
-
-`account_health.deactivated_at` (DATETIME, NULL): when the owner deactivated
-the Creator (Creators › ⋮ › Deactivate, `POST /admin/accounts/{id}/active`).
-While set, its WS pump, transaction polls and automations stop
-(service/account_health.py); NULL for every Creator that is active, which is
-every Creator before this.
-
-The ORM model declares the same column, so `init_db()`'s ADD-COLUMN catch-up
-brings it to a booting box; this revision keeps the alembic chain canonical.
-Idempotent (inspector-guarded, house convention). Downgrade drops the column,
-which activates every deactivated Creator again.
-
-Revision ID: 0087_account_deactivated
-Revises: 0086_auth_sessions_2fa
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -37,6 +20,7 @@ def upgrade() -> None:
         op.add_column("account_health", sa.Column("deactivated_at", sa.DateTime(), nullable=True))
 
 
+# downgrade re-activates every deactivated Creator
 def downgrade() -> None:
     if "deactivated_at" in _columns():
         op.drop_column("account_health", "deactivated_at")

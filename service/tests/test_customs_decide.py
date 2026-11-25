@@ -1,34 +1,7 @@
 #!/usr/bin/env python3
-"""
-customs_decide — table tests over the customs queue's pure order logic (the shell is
-customs_api: `customs_order` reads + strips the thread and the blast groups, then calls
-blast_counts / order_span; `customs_brief` merges window + span through brief_msgs, then
-brief_skip_reason).
-No DB, no LLM:
-
-  case_anchor_table:        only HIS non-tip line opens an order: our outbound "custom" and
-                            a tip whose text says "custom" do not -> "no order talk" reason.
-  case_gap_table:           walking back from the newest anchor: a 45-day silence stays one
-                            order, 46 days ends it (the older order is excluded); 3 anchors
-                            0/100/110 and 0/10/100 both open at day 100; at=None bridges.
-  case_span_table:          span keeps tips (any length) and own-words lines >= 12 chars; a
-                            short line is dropped; our line sent to > 1 fan is dropped, to 1
-                            fan kept; HIS line is never blast-filtered.
-  case_blast_variants:      3 `<br/>` wrappers of one blast, each to 1 fan, SUM to 3 on the
-                            stripped key -> dropped from the span.
-  case_spec_filter:         _ORDER_MAX_FULL lines -> whole; _ORDER_MAX_FULL+1 -> truncated,
-                            word-boundary spec filter keeps "5 min video", drops "reminded" /
-                            "says"; a tip survives the filter.
-  case_whole_messages:      a substring quote -> his full message; a miss dropped; two quotes
-                            of one message deduped; curly quotes and a trailing "…" match.
-  case_brief_msgs:          merge by message_id (span wins), sorted by `at`; brief_skip_reason:
-                            no rows / no line of his -> the ok:false reason, else None.
-
-Run: ./venv/bin/python service/tests/test_customs_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 from datetime import datetime, timedelta  # noqa: E402
 
@@ -69,12 +42,11 @@ def case_anchor_table():
 
 
 def case_gap_table():
-    # (anchor days oldest-first, None = no timestamp; index of the anchor that opens)
     rows = [
         ([0, 44], 0), ([0, 45], 0), ([0, 46], 1), ([0, 400], 1),
-        ([0, 100, 110], 1),                    # old order cut, last two one order
-        ([0, 10, 100], 2),                     # walk back from NEWEST: 0/10 is the old one
-        ([0, None, 400], 0),                   # a missing `at` never breaks the walk
+        ([0, 100, 110], 1),
+        ([0, 10, 100], 2),
+        ([0, None, 400], 0),
     ]
     for days, opens in rows:
         msgs = [_Msg(i, "in", f"custom number {i}: wear the hat",
@@ -91,13 +63,13 @@ def case_span_table():
              "so you want a custom then": 5}
     msgs = [
         _m(1, "in", "i want a custom where you say my name"),
-        _m(2, "in", "ok babe"),                                # 7 chars  -> dropped
-        _m(3, "in", "", tip=True),                             # tip      -> kept
-        _m(4, "out", "unlock it and you get every clip"),      # blast 2  -> dropped
-        _m(5, "out", "only you get this one babe"),            # blast 1  -> kept
-        _m(6, "in", "so you want a custom then"),              # HIS line -> kept
-        _m(7, "out", "elevenchars"),                           # 11 chars -> dropped
-        _m(8, "out", "twelve chars"),                          # 12 chars -> kept
+        _m(2, "in", "ok babe"),
+        _m(3, "in", "", tip=True),
+        _m(4, "out", "unlock it and you get every clip"),
+        _m(5, "out", "only you get this one babe"),
+        _m(6, "in", "so you want a custom then"),
+        _m(7, "out", "elevenchars"),
+        _m(8, "out", "twelve chars"),
     ]
     res = order_span(msgs, blast)
     assert [ln["message_id"] for ln in res["lines"]] == [1, 3, 5, 6, 8], res["lines"]
@@ -108,6 +80,7 @@ def case_span_table():
     assert res["lines"][2]["from_fan"] is False
 
 
+# variants of one blast must SUM on the stripped key: assigned instead, a variant scores 1 and leaks in
 def case_blast_variants():
     copy = "unlock the full bundle"
     rows = [(f"{copy}<br/>every clip", 1), (f"{copy}<br>every clip", 1),
@@ -118,7 +91,6 @@ def case_blast_variants():
     assert blast_counts([("x" * 130, 1), ("x" * 125 + "y", 1)], _strip_html) == {"x" * 120: 2}
     msgs = [_m(1, "in", "can you do a custom for me"), _m(2, "out", key)]
     assert _texts(order_span(msgs, blast)) == ["can you do a custom for me"]
-    # Assigned instead of summed, the variant scores 1 and leaks in.
     assert key in _texts(order_span(msgs, {key: 1}))
 
 
@@ -175,9 +147,9 @@ def case_brief_msgs():
     never = "he never said what he wanted in this window"
     rows = [
         ([], [], "no stored messages around this tip"),
-        ([], [window[0], window[2]], never),                   # only US lines
-        ([], [window[3]], never),                              # only a tip of his
-        (span, [], None),                                      # one line of his
+        ([], [window[0], window[2]], never),
+        ([], [window[3]], never),
+        (span, [], None),
     ]
     for s, w, reason in rows:
         assert brief_skip_reason(brief_msgs(s, w)) == reason, (s, w)

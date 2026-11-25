@@ -1,15 +1,3 @@
-"""vault_response_cache: shared server-side cache for OF vault listings
-
-Revision ID: 0019_vault_response_cache
-Revises: 0018_template_tags_previews
-Create Date: 2026-05-23
-
-Every employee on the same OF account hits the same vault, so the OF
-passthrough now caches each (account_id, query_key) response and serves
-subsequent reads from SQLite. Any vault-mutating call wipes the rows
-for the account. TTL is enforced in the application layer (see
-service/vault_cache.py), so we only need {pk, payload, fetched_at} on disk.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -25,9 +13,6 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # engine.init_db() runs Base.metadata.create_all() on every startup so
-    # the table may already exist by the time alembic catches up. Guard
-    # the CREATE so re-running this migration on an existing box is a no-op.
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     if "vault_response_cache" in inspector.get_table_names():

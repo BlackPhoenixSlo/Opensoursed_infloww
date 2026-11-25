@@ -1,35 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_scene_chat — the sext scene walked through the Test chat API (config `sext_scene`).
-
-`POST /admin/full-ai/test/turn` + `/settle` with the owner's cookies, a seeded vault, Jev faked at
-`_router_jev._client` and `_price_jev._client`, the Writers at their wire; every request inside
-`_full_ai_sell_helpers._guarded`.
-
-  case_scene_walk          sext opening -> "omg I love it" (scene_on alone) stays sext, the stage
-                           climbs -> scene_offer + offer_level soft -> sell_now on the $10 lane
-                           priced by the price Jev ($30) -> Buy -> next scene_offer at "nude" on
-                           the $50 lane; the price Jev's error keeps the list price, recorded
-  case_sitting_ends_scene  95: a scene at `building`, then a Turn whose newest row is 121 min old ->
-                           Jev's state `scene` "none", the Writer gets the opening, the row n 1
-  case_under_18_ends_scene 95: mid-scene `says_under_18` -> no_send, no Writer request, scene null;
-                           the next sexual Turn starts at n 1
-  case_flag_off_asks_none  the same Turn with `sext_scene` off: no scene question, no price Jev,
-                           no scene on the row
-  case_price_he_asked      03d: a `sell` row -> `he_asked` "yes" in the price Jev's state and in
-                           `reply_json.price`; an `offer_moment` row (draft questions on) -> "no"
-  case_price_bought_before 03d: "no" before any Buy; two Offers ($20 then $50), the $50 bought
-                           first and the $20 second -> next Turn "yes", `purchases` ends with $20
-  case_haggle_no_price_jev 03d: a haggle row never calls the price Jev
-  case_tease_resell_keeps_price  rwl-a F7: a Pending tease re-sold on his yes keeps the teased
-                           piece's list price (no price Jev); `he_asked` reads what he said
-  case_price_jev_at_deadline  rwl-a N4: a price Jev still running near the Turn deadline times out
-                           itself first: the Pick keeps its list price and `price.error` says why
-
-Run: ./venv/bin/python service/tests/test_full_ai_scene_chat.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, OWNER_A, _body, _db, _guarded, _post, _put_draft, _reply, _rows, _system, _vault,
@@ -50,7 +22,6 @@ SETTLE = "/admin/full-ai/test/settle"
 
 
 class FakePriceJev:
-    """`_price_jev._client`: pops a score (or an exception) per call, records the state."""
 
     def __init__(self, *verdicts):
         self.verdicts, self.calls = list(verdicts), []
@@ -98,7 +69,6 @@ def _settle(pair, row_id, outcome):
 def case_scene_walk():
     pair = "sc-walk"
     with _draft(True), _vault({101: "$10", 202: "$50", 303: "$100"}):
-        # 1. He turns it sexual: Route sext, a new scene at Jev's stage.
         g1, fw1, picks1, pf1 = _turn(pair, 1, "ur making me so hard rn", {"sexual_now": .9},
                                      {"scene_stage": "opening"}, "ok:mm good.. im in bed rn")
         row1 = _rows(pair)[0]
@@ -111,7 +81,6 @@ def case_scene_walk():
         assert asked, row1.jev_json
         st1 = json.loads(row1.jev_json)["state"]
         assert st1["scene"] == "none" and st1["purchases"] == [], st1
-        # 2. "omg I love it": only scene_on fires, still sext (row scene_on); Jev's stage climbs.
         g2, fw2, _, _ = _turn(pair, 2, "omg I love it", {"scene_on": .9}, {"scene_stage": "building"},
                               "ok:sliding my fingers in rn")
         row2 = _rows(pair)[1]
@@ -120,7 +89,6 @@ def case_scene_walk():
         st2 = json.loads(row2.jev_json)["state"]
         assert st2["scene"] == "sexting for 1 of her messages so far, stage: opening", st2
         assert wr.SCENE_STAGE["building"] in _system(fw2)
-        # 3. scene_offer at "soft": sell_now on the $10 lane, priced by the price Jev at $30.
         g3, fw3, (p3,), pf3 = _turn(pair, 3, "fuck yes keep going", {"scene_on": .9, "scene_offer": .9},
                                     {"scene_stage": "opening", "offer_level": "soft"},
                                     "ok:i filmed this for u", FakePriceJev(1.5))
@@ -128,18 +96,17 @@ def case_scene_walk():
         rp3 = _reply(row3)
         assert row3.route == "sell_now" and row3.route_row == "scene_offer"
         assert p3.lane == "$10" and rp3["level"] == "soft", (p3, rp3)
-        assert rp3["scene"] == {"n": 3, "stage": "building", "heat": 4}, rp3      # never backwards
+        assert rp3["scene"] == {"n": 3, "stage": "building", "heat": 4}, rp3
         assert rp3["price"]["list_cents"] == 1000 and rp3["price"]["jev_cents"] == 3000, rp3["price"]
         assert rp3["price"]["error"] is None and rp3["price"]["version"] == _price_jev.PRICE_VERSION
         assert row3.offer_price_cents == 3000 == g3["offer"]["price_cents"], (row3.offer_price_cents, g3)
-        assert g3["scene"] == rp3["scene"] and g3["price"] == rp3["price"], g3      # the Turn answer
+        assert g3["scene"] == rp3["scene"] and g3["price"] == rp3["price"], g3
         (call,) = pf3.calls
         assert call["questions"] == ["price"] and call["state"]["offer"]["level"] == "$10", call
         assert call["state"]["offer"]["list_price"] == "$10", call
         assert wr.SCENE_SELL.split("{close}")[0] in _system(fw3), _system(fw3)
         assert json.loads(row3.offer_item_ref).get("desc"), row3.offer_item_ref
         _settle(pair, row3.id, "bought")
-        # 4. Next scene_offer at "nude" -> the $50 lane; the price Jev fails -> the list price stays.
         g4, _, (p4,), pf4 = _turn(pair, 4, "more pls", {"scene_on": .9, "scene_offer": .9},
                                   {"scene_stage": "peak", "offer_level": "nude"},
                                   "ok:this one is even better", FakePriceJev(RuntimeError("boom")))
@@ -163,7 +130,6 @@ def _age(row_id: int, minutes: float) -> None:
 
 
 def _building(pair):
-    """Two sext Turns: the scene saved at `building`, n 2."""
     _turn(pair, 1, "ur making me so hard rn", {"sexual_now": .9}, {"scene_stage": "opening"}, "ok:mm im in bed")
     _turn(pair, 2, "omg I love it", {"scene_on": .9}, {"scene_stage": "building"}, "ok:sliding my fingers in")
     assert _reply(_rows(pair)[1])["scene"] == {"n": 2, "stage": "building", "heat": 4}, _reply(_rows(pair)[1])
@@ -175,7 +141,7 @@ def case_sitting_ends_scene():
         _building(pair)
         _age(_rows(pair)[1].id, 121)
         _, fw, _, _ = _turn(pair, 3, "keep going", {"scene_on": .9}, {"scene_stage": "opening"},
-                            "ok:mm where were we")   # same Sitting: never back -> building, n 3
+                            "ok:mm where were we")
     row = _rows(pair)[2]
     assert json.loads(row.jev_json)["state"]["scene"] == "none", row.jev_json
     assert _reply(row)["scene"] == {"n": 1, "stage": "opening", "heat": 4}, _reply(row)
@@ -220,7 +186,6 @@ def _signals(fake):
 
 
 def case_price_he_asked():
-    # chat_tease off: a not-hot offer_moment is the pitched (Jev-priced) sell, not a Chat tease.
     with _draft(True, draft_questions=True, chat_tease=False), _vault({101: "$10", 202: "$50", 303: "$100"}):
         _, _, _, pf = _turn("pa-sell", 1, "send me pics", {"wants_content": .9}, {},
                                "ok:i have something", FakePriceJev(1.0))
@@ -239,7 +204,6 @@ def case_price_he_asked():
 def case_price_bought_before():
     pair = "pb-order"
     with _draft(True, draft_questions=True), _vault({101: "$10", 202: "$50", 303: "$100"}):
-        # two different pieces (Jev's `offer_level`: the $10 lane, then the $100 lane), priced $20 then $50
         _, _, _, pf1 = _turn(pair, 1, "send me pics", {"wants_content": .9}, {"offer_level": "soft"},
                              "ok:here", FakePriceJev(1.0))
         _, _, _, pf2 = _turn(pair, 2, "more pls", {"wants_content": .9}, {"offer_level": "explicit"},
@@ -277,7 +241,7 @@ def case_tease_resell_keeps_price():
         r2 = _rows(pair)[1]
     assert (r2.route, r2.route_row) == ("sell_now", "sell"), (r2.route, r2.route_row)
     assert pf2.calls == [] and "price" not in _reply(r2), (pf2.calls, _reply(r2).get("price"))
-    assert picks == [] and g2["offer"]["media"] == json.loads(r1.offer_media_json)["locked"], (picks, g2)   # same piece
+    assert picks == [] and g2["offer"]["media"] == json.loads(r1.offer_media_json)["locked"], (picks, g2)
     assert r2.offer_price_cents == r1.offer_list_cents == g2["offer"]["price_cents"], (r2.offer_price_cents, g2)
 
 

@@ -1,23 +1,3 @@
-"""share_media_blocks — S4S media files, S4S blocks, request media snapshots
-
-  s4s_media    — one S4S media file (ADR-0015): a copy of a Creator's own
-                 vault item on the Relay's disk, attached to an S4S post.
-  s4s_blocks   — an Agency's block on another Creator (Discovery and
-                 requests honour it).
-  s4s_requests.from_media_json / to_media_json (TEXT, NULL) — the media ids
-                 on each Primary post at send.
-
-The ORM models declare the same tables, indexes and columns, so `init_db()`'s
-create_all and ADD-COLUMN catch-up bring them to a booting box; this revision
-keeps the alembic chain canonical. The file name avoids "s4s": the S4S suite
-finds 0068's file by that glob. Idempotent (inspector-guarded, house
-convention). Downgrade drops both tables and both columns, losing only S4S
-media rows (not the files on disk) and blocks.
-
-Revision ID: 0082_s4s_media_blocks
-Revises: 0081_priority_mass
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -79,9 +59,8 @@ def upgrade() -> None:
 
     live = {c["name"] for c in insp.get_columns("s4s_requests")}
     missing = [c for c in _MEDIA_COLS if c not in live]
-    # Plain ALTERs, not batch mode: a batch rebuild of s4s_requests would have
-    # to carry its partial unique index (uq_s4s_requests_open_pair) across.
     for col in missing:
+    # Plain ALTERs, not batch: a rebuild of s4s_requests would have to carry its partial unique index.
         op.add_column("s4s_requests", sa.Column(col, sa.Text(), nullable=True))
 
 

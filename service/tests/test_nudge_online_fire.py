@@ -1,40 +1,7 @@
 #!/usr/bin/env python3
-"""nudge_online_fire — characterisation of the delayed one-shot (pins today's
-behaviour; the detector half lives in test_nudge_online.py).
-
-  case_happy_sends_once_and_bumps_state:
-      a still-online fan → exactly one send to HIM, one outbound row tagged
-      `nudge_online`, and `_bump_after_send` observable on NudgeState:
-      nudge_count +1, rotation idx advanced, slot written, pending cleared,
-      no-reply streak +1; the lease is released; no LLM call.
-  case_reply_since_last_nudge_resets_streak:
-      a fan who replied after his last nudge (outside active_convo_hours)
-      → sent, no-reply streak reset to 1.
-  case_no_state_row_sends_nothing:
-      no NudgeState row (nothing pending, never seen) → `offline`, no send,
-      and no row is created by the clear.
-  case_offline_clears_pending_and_sends_nothing:
-      last seen online 30 min ago (> online_recent_minutes) with a job
-      pending → `offline`, pending cleared, no send.
-  case_rule_off_clears_pending_and_sends_nothing:
-      a fire queued while the detector rule was on, run after it went off →
-      `rule_disabled`, pending cleared, no send.
-  case_no_id_send_result_still_counts_and_bumps:
-      OF answers 200 with no message id → PINNED TODAY: counted `sent: 1`,
-      NO outbound row written, NudgeState bumped as a real send, no
-      quarantine/pause (see the report's open finding).
-  case_send_error_clears_pending_and_does_not_raise:
-      a send that raises → `skipped: error`, no crash, pending cleared,
-      nudge_count untouched, no outbound row, lease released.
-
-House style: plain asserts, no pytest; _harness temp DB; the real `run_once`
-with a FakeOF on `ax._make_client`; `llm_client.chat` patched.
-
-Run: ./venv/bin/python service/tests/test_nudge_online_fire.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -55,7 +22,6 @@ from db.models import (  # noqa: E402
 
 KIND = "nudge_online_fire"
 _SLOT_KEYS = ("morning_1", "morning_2", "afternoon_1", "afternoon_2", "evening", "night")
-# One 3-line pool for every slot, so the rotation index is deterministic.
 _SLOTS = {"default": {k: {"text": ["hey {name} a", "hey {name} b", "hey {name} c"],
                           "image": []} for k in _SLOT_KEYS}}
 _CFG = {
@@ -81,7 +47,6 @@ class FakeOF:
 
 
 class NoIdOF(FakeOF):
-    """OF answers 200 but echoes no message id."""
 
     def send_message(self, chat_id, text, *, media_files=None, **kw) -> dict:
         self.sent.append((int(chat_id), text, list(media_files or [])))
@@ -140,13 +105,11 @@ async def _lease(aid: str, fan_id: int) -> FanLease | None:
 
 
 def _online_state(**over):
-    """A fan seen online just now, a fire job pending, nudged 2 days ago."""
     return {"last_seen_online_at": datetime.utcnow(), "pending_job_id": 55,
             "last_nudged_at": datetime.utcnow() - timedelta(days=2), "nudge_count": 2,
             "no_reply_streak": 1, "last_variation_idx": 0, "last_slot": "evening", **over}
 
 
-# ── happy ─────────────────────────────────────────────────────────────
 
 async def case_happy_sends_once_and_bumps_state():
     aid = "nf_happy"
@@ -170,7 +133,6 @@ async def case_happy_sends_once_and_bumps_state():
     outs = await _outs(aid)
     assert [(m.fan_id, m.automation_kind) for m in outs] == [(501, "nudge_online")], outs
     assert await _lease(aid, 501) is None, "lease released after the send"
-    # The other fan was not touched by 501's fire.
     other = await _state(aid, 502)
     assert other.pending_job_id == 56 and other.nudge_count == 2, other
     assert calls == [], "the fire never calls the LLM"
@@ -180,7 +142,6 @@ async def case_reply_since_last_nudge_resets_streak():
     aid = "nf_streak"
     await _seed(aid)
     await _seed_fan(aid, 511, **_online_state(no_reply_streak=2))
-    # Replied after his last nudge (2 days ago), but a day ago — outside active_convo_hours.
     async with get_session() as s:
         s.add(Message(account_id=aid, fan_id=511, message_id=5110001, direction="in",
                       body="hey", created_at=datetime.utcnow() - timedelta(days=1)))
@@ -192,12 +153,11 @@ async def case_reply_since_last_nudge_resets_streak():
     assert (st.nudge_count, st.no_reply_streak, st.pending_job_id) == (3, 1, None), st
 
 
-# ── nothing pending / rule off ────────────────────────────────────────
 
 async def case_no_state_row_sends_nothing():
     aid = "nf_nostate"
     await _seed(aid)
-    await _seed_fan(aid, 601)          # Fan row, no NudgeState
+    await _seed_fan(aid, 601)
     fake = _use(FakeOF())
     res = await run_once(aid, KIND, payload={"fan_id": 601})
     assert res["status"] == "ok" and res["sent"] == 0 and res["skipped"] == "offline", res
@@ -232,7 +192,6 @@ async def case_rule_off_clears_pending_and_sends_nothing():
     assert await _outs(aid) == []
 
 
-# ── no-id send result ─────────────────────────────────────────────────
 
 async def case_no_id_send_result_still_counts_and_bumps():
     aid = "nf_noid"
@@ -240,7 +199,6 @@ async def case_no_id_send_result_still_counts_and_bumps():
     await _seed_fan(aid, 801, **_online_state(pending_job_id=88))
     fake = _use(NoIdOF())
     res = await run_once(aid, KIND, payload={"fan_id": 801})
-    # PINNED TODAY: no id is still counted as a send and bumps state.
     assert res["status"] == "ok" and res["sent"] == 1, res
     assert [f for f, _t, _m in fake.sent] == [801], fake.sent
     assert await _outs(aid) == [], "no id → no attribution row"
@@ -252,7 +210,6 @@ async def case_no_id_send_result_still_counts_and_bumps():
     assert await _lease(aid, 801) is None
 
 
-# ── send error ────────────────────────────────────────────────────────
 
 async def case_send_error_clears_pending_and_does_not_raise():
     aid = "nf_err"

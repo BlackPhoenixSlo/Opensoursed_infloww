@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""
-chats_page.assemble_chats_page — a 429 mid-page. No DB, no OF: a fake client.
-
-  case_mid_page_429_retried_once:  OF's 429 after rows, "allow 1 seconds": one wait (OF's asked
-                                   wait) and the SAME offset re-read; the page completes, not partial.
-  case_second_429_partial:         the retry 429s too: partial page, the 429 kept, no third read.
-  case_one_retry_per_page:         a later 429 in the same page is not retried again.
-  case_long_wait_not_retried:      OF asks more than IN_PAGE_RETRY_MAX_S: partial at once, no sleep.
-  case_first_read_429_raises:      a 429 before any row raises as before (never retried here).
-
-Run: ./venv/bin/python service/tests/test_chats_page.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401 — MUST be first (binds a temp DB; this file never touches it)
@@ -29,7 +17,6 @@ def _429(text: str = "Too many requests. Please allow 1 seconds") -> OFAPIError:
 
 
 class _Client:
-    """40 chats, 10 per read; `fail` maps a call index (0-based) to the error it raises."""
     def __init__(self, fail: dict[int, OFAPIError]):
         self.fail, self.offsets = fail, []
         self.rows = [{"withUser": {"id": 1000 + i}} for i in range(40)]
@@ -58,7 +45,7 @@ def _page(fail, offset=0):
 
 
 def case_mid_page_429_retried_once():
-    c, p = _page({1: _429()})  # the second read 429s
+    c, p = _page({1: _429()})
     assert c.offsets == [0, 10, 10, 20], c.offsets
     assert _slept == [1.0], _slept
     assert len(p.rows) == 25 and not p.partial and p.throttled is None, p

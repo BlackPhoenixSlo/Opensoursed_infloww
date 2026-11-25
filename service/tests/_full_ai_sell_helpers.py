@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""_full_ai_sell_helpers — shared setup for the Full AI selling Test chat suites (phase 03b).
-
-Imported by test_full_ai_sell_chat.py (ticket 42) and test_full_ai_settle_chat.py (44); defines no
-`case_*`. Importing it bootstraps the temp DB, seeds the two-Agency world plus one row in every
-invariant table (content_offers included), and logs A's owner in, once per process. Every Turn runs
-inside `_guarded`: full-row snapshots of messages, transactions, vault_sends, content_offers,
-fan_lease and fans equal before and after, no `automation_runs` row, every send path plus
-`ownership.stamp_media_owned` patched to raise and never hit.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -61,8 +52,6 @@ def _db(fn):
 
 
 async def _seed_world() -> None:
-    """A's (fake) NanoGPT key, a cap far above any test spend, and one existing row in every table
-    the invariant snapshots (content_offers' row hangs off a catalog item)."""
     t = datetime(2026, 11, 1, 12, 0)
     await tenant_keys.set_keys(IDS["agency_a_owner"], {"nanogpt": "test-nanogpt-agency-key",
                                                       "openrouter": "test-openrouter-agency-key"})
@@ -83,7 +72,6 @@ async def _seed_world() -> None:
 _db(_seed_world)
 
 
-# ── Invariants (test_full_ai_test_chat.py `_guarded` + content_offers + the owned stamp) ──
 
 _SEND_PATHS = ((ax, "_make_client"), (of_client.OFClient, "request"),
                (of_client.OFClient, "_http_call"), (of_client.OFClient, "_proxy_retry"),
@@ -135,7 +123,6 @@ def _guarded():
 
 @contextlib.contextmanager
 def _picks():
-    """`full_ai_sell.pick` spied: the list of its results, one per call."""
     real, got = full_ai_sell.pick, []
 
     def spy(*a, **k):
@@ -149,7 +136,6 @@ def _picks():
 
 
 def _post(body: dict, script: dict | str, *, jev=None):
-    """One test turn under the invariants: (response, Writer fake, Pick results)."""
     script = {NANO: script} if isinstance(script, str) else script
     fake_w = FakeWriterHTTP({NANO: "ok:hii", OPENROUTER: "ok:hii", **script})
     with _guarded(), _picks() as picks, fake_w.on(), _fake_jev(FakeJev(jev or (_hot(wants_content=0.9), 1.0))):
@@ -191,7 +177,6 @@ def _ppvs(parts: list[dict]) -> list[int]:
     return [i for i, p in enumerate(parts) if "ppv" in p]
 
 
-# ── Config + vault ────────────────────────────────────────────────────
 
 def _put_draft(draft: dict) -> int:
     rev = OWNER_A.get(CONFIG, params={"account_id": A}).json()["rev"]
@@ -202,8 +187,6 @@ def _put_draft(draft: dict) -> int:
 
 @contextlib.contextmanager
 def _sell_draft(**cfg):
-    """A's draft side sells (put through the config API), `cfg` over it; the checkpoint keeps
-    DEFAULTS (sell off)."""
     _put_draft({**DEFAULTS, "sell_on": True, **cfg})
     try:
         yield
@@ -211,7 +194,6 @@ def _sell_draft(**cfg):
         _put_draft(dict(DEFAULTS))
 
 
-# test_full_ai_sell.py's DRESSED still: sfw, solo, every region covered, priced by its Jev lane alone.
 DRESSED = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none", "explicitness": "sfw",
            "underwear_visible": True, "vulva_vis": "covered", "breasts_vis": "covered",
            "anus_vis": "not_in_frame", "over_vulva": "jeans", "over_breasts": "t-shirt",
@@ -246,7 +228,6 @@ def _vault(items: dict[int, str], *, tags: dict | None = None):
 
 
 class FakePriceJev:
-    """`_price_jev._client` faked (03d): one `price` score per call, each call's state recorded."""
 
     def __init__(self, score):
         self.score, self.calls = score, []

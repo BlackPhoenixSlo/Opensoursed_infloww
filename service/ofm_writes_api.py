@@ -1,11 +1,3 @@
-"""service/ofm_writes_api.py — read/flip one Creator's OF Manager new writes (OFM_NEW_WRITES_ENABLED per Creator,
-runtime_switches) for Settings › OF Manager writes.
-
-  GET /admin/ofm-writes/{account_id}  → {account_id, server_on, forced_off, on, changed_by, changed_at}
-  PUT /admin/ofm-writes/{account_id}  body {"forced_off": bool} → the same view.
-
-The routes it gates (and the Mirror's probe, GET /api/of/ofm-writes) stay in server.py.
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -25,7 +17,7 @@ def _view(account_id: str) -> dict[str, Any]:
     o = runtime_switches.creator_override(OFM_NEW_WRITES, account_id)
     return {"account_id": account_id, "server_on": runtime_switches.on(OFM_NEW_WRITES),
             "forced_off": o is not None, "on": runtime_switches.on(OFM_NEW_WRITES, account_id),
-            # runtime_switches keeps the row's naive-UTC isoformat: sent with its Z, as iso_z does
+            # runtime_switches keeps the row's naive-UTC isoformat: send it with its Z, as iso_z does.
             "changed_by": o and o["updated_by"], "changed_at": o and o["updated_at"] and o["updated_at"] + "Z"}
 
 
@@ -45,8 +37,8 @@ async def put_ofm_writes_creator(account_id: str, body: dict = Body(...)):
     principal is refused: a chatter / employee session 403 here, another Agency's owner 403 (assert_account_owned),
     the Master's "view as" 403 (auth.session_middleware: impersonation is read-only), an owner access token 403 (not
     on token_auth's allowlist), signed out 401."""
-    assert_account_owned(account_id)   # the session's Creator: 403 otherwise, 401 signed out
-    user = assert_owner()              # a chatter / employee session: 403
+    assert_account_owned(account_id)
+    user = assert_owner()
     want = body.get("forced_off") if isinstance(body, dict) else None
     if not isinstance(want, bool):
         raise HTTPException(status_code=422, detail="forced_off must be true or false")

@@ -1,82 +1,4 @@
 #!/usr/bin/env python3
-"""Badge reads, the shell (creator-badges phase 0C), through `events.handle_event` with real `chat_messages` frames,
-a real `OFClient` on a fake wire serving `/chats?filter=unread` (OF's Unread list) and failing anything else, the
-Relay clock injected (`badge_reads._clock`), the loop driven by `badge_reads.tick()`, `events.publish` captured.
-
-  case_onlyfans_read_flips_dot:  held window with F unread, frame 11 -> 10, nothing to explain it -> no read before
-                                 1.5 s, then exactly one `filter=unread` call as `walk:badge_attribution`;
-                                 `chat_read_changed {F, 0}` at the ask time, F's held row patched, the other
-                                 `list_chats` entries dropped, one exact `badge_read` line; a Creator with no Open
-                                 tab -> 0 reads; the OF counter appears in no publish.
-  case_deep_fan_flips_dot:       G past the window (row 30): the first read only builds the set (no off-window flip);
-                                 a later Complete list without him -> `chat_read_changed {G, 0}`, window untouched.
-  case_same_value_frame_reads:   a frame with the value unchanged -> one read; F read in the window and in the list
-                                 -> `{F, 1}`.
-  case_incomplete_list_never_reads_fans: counter 35, two full pages with `hasMore` -> 2 calls, no (fan, 0); a page-2
-                                 error, a page-2 429 past paced's one retry (kept on the read for the exit hold) or a
-                                 duplicate-only page -> partial, no (fan, 0); no further page, 0 rows, counter 1 ->
-                                 `mismatch=1`, no flip.
-  case_one_page_read_waits_for_the_trailing_frame: F read on OF, the list already without him, his counter frame
-                                 landing 0.3 s after the answer -> judged by it: complete, `{F, 0}`; no frame within
-                                 1 s -> `mismatch=1`, never complete; a matching frame not after the ask
-                                 (`newer_than_ask`) -> `mismatch=1`; two pages (page 2 shifted empty) -> no wait.
-  case_one_frame_during_the_read_judges_it: F read on OF, his counter frame landing while page 1 is in flight, the
-                                 list matching it -> complete at once, `{F, 0}`; two frames mid-read, or one the list
-                                 is off by, or two pages -> incomplete, no flip.
-  case_gap_full_and_lean:        10 frames in 3 s -> one read and exactly one follow-up >= 5 s later (lean 15 s);
-                                 200 frames over a fake hour -> 200 reads, no hourly cap; page 1 held 1.3 s past the
-                                 admit (the pacer) -> OF still sees starts >= the gap apart.
-  case_429_holds_exit:           a terminal 429 on page 2 (kept on the read) or page 1 -> the exit held
-                                 (`app_open_warm.exit_held_s` > 0); the next frame reads nothing until it ends; each
-                                 read, failed or not, is noted on the exit queue once (`note_read`).
-  case_switch_off_and_lean:      `BADGE_READS=off` -> 0 list calls on 20 unexplained frames, the Red circle still
-                                 follows the counter, an echo flips nothing, `?bust=` answers the held fold at 0
-                                 calls; a bogus value -> `full` with one warning, empty -> `full` silently;
-                                 UNREAD_TOTAL off -> inert.
-  case_restricted_unread_feeds_red: a registry fan past window row 25 in a Complete list -> R 1 (`set_restricted_unread`
-                                 at the ask time, `note_values` poked), Phase B's red = counter - 1, `restricted=1`.
-  case_muted_dm_keeps_restricted: a DM + same-value frame from a muted registry fan (held row muted, or muted through
-                                 `relay_hooks.mute`) -> 0 list calls, R unchanged.
-  case_unmuted_elsewhere_heals_held_row: F unmuted on OF (held row muted), MF muted through `relay_hooks.mute` ->
-                                 a read listing both unmuted patches F's held row and MF's mute map entry; F then read
-                                 elsewhere -> `{F, 0}` (the muted guard no longer holds it).
-  case_newer_dm_survives_read:   a DM landing while a read is in flight whose answer lacks that fan -> he stays in
-                                 `unread_set`.
-  case_explained_frames_cost_nothing: an ordinary Inbound DM 0.4 s before a frame, a `chatUserId` echo 1 s before
-                                 one, an `Outbound` echo 1 s after one -> 0 list calls each; an unexplained frame
-                                 later -> one read; `on_frame` given malformed events never raises; each Write intent
-                                 site with its frame delivered before the write returns -> 0 list calls: mark read, mark
-                                 unread, mark all read (explains frames until 1.5 s after its response), mute, unmute
-                                 routes, `full_ai_live` and `welcome_chatter_for_info` mark-read; a landed read / unread
-                                 moves the Unread set.
-  case_echo_branch_flips_read:   a Creator echo for unread F -> `chat_read_changed {F, 0}` at the echo's arrival before
-                                 any tick, F's held row patched read, `unread_set` drops F, its frame 0 OF calls; an echo
-                                 for a read Fan outside the set publishes nothing; one for a Fan past the window but in
-                                 the set -> `{fan, 0}`, window untouched; no `creator_echo` hook.
-  case_ineligible_creators_read_nothing: through the refresher's real `live`: no Open tab, Dead session, proxy down ->
-                                 0 reads on unexplained frames and no socket-down poll; the latter two carry Grey
-                                 `dead` / `proxy_down`; the session back -> its next frame reads, the cause gone; the
-                                 proxy check raising -> the last answer stands, reads go on, one check per 5 s.
-  case_socket_down_polls_15s:    `connected_since` None on an eligible Creator -> a `kind=poll` read every 15 s from 15 s
-                                 after the drop (lean too), none after reconnect; no socket expected (`live` None) or a
-                                 blip under 15 s -> none; a live `/users/me` mid-outage keeps the poll's confirmation; a Complete poll -> slot `grey` null, `n` = `of_counts` rows -
-                                 R (the counter from before the drop plays no part); polls failing for 45 s -> `stale` on the refresher's 5 s re-read, no frame, one
-                                 republish (Badge version +1) and none while unchanged; an incomplete poll -> stays
-                                 grey; a two-hour outage -> a poll every 15 s throughout (240 in an hour, no hourly
-                                 cap), never a `capped` grey.
-  case_fold_rescores_from_set:   a set held -> a roster-counts fold writes R from the set (rows from a newer window,
-                                 the registry as loaded): restricted here or on OF -> excluded at that fold,
-                                 unrestricted -> counts again, an older window leaves a row; no set -> R from the window.
-  case_hover_cooldown_shared:    the owner and a Chatter `?bust=` A 5 s apart -> 1 window read, the second answered
-                                 from the held fold; 31 s later -> a second read; two concurrent busts while the
-                                 read's wire is held -> 1 read, both answers equal, the page-0 entry fresh after;
-                                 each read one `kind=hover` line; hover reads leave the Attribution gate
-                                 untouched. A failing window read: leader and follower get equal zeros,
-                                 a bust 5 s later is held at 0 calls, no `kind=hover` line. UNREAD_TOTAL off: every
-                                 bust reads, as before the cooldown, no line.
-  case_failed_write_retires_intent: a mark-read route whose OF write errors, then an unrelated frame -> one list call.
-Run: ./venv/bin/python service/tests/test_badge_reads.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402  (first: temp DB)
 
@@ -126,7 +48,7 @@ account_registry.is_account = lambda aid: aid in _CREATORS
 account_registry.get_platform = lambda aid: "onlyfans"
 account_registry.list_accounts = lambda include_watchers=False: [{"id": a, "has_session": True} for a in _CREATORS]
 account_registry.get_role = lambda aid: None
-events_persist.enqueue = lambda *_a, **_k: None     # the event_inbox write is not under test
+events_persist.enqueue = lambda *_a, **_k: None
 of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = 0.0, 0.0
 
 
@@ -140,11 +62,6 @@ class _Resp:
 
 
 class _Wire:
-    """OF: `GET /chats?filter=unread` pages `unread` by offset/limit (`more` forces `hasMore`); `page2` overrides
-    the offset-10 answer, `fail` every answer ((status, body[, headers])); `me` set: `/users/me` answers that
-    `chatMessagesCount` (not in `calls`). With `window` set, `GET /chats` with no filter pages it (the page-0 window
-    read), waiting on `hold` when set, `fail` answering it too. Anything else fails the case. `calls`: (path, query)
-    per request; `at`: the Relay clock at each."""
     def __init__(self, unread=(), more=None, window=None):
         self.unread, self.more, self.page2, self.fail, self.me = list(unread), more, None, None, None
         self.window, self.hold = window, None
@@ -200,18 +117,14 @@ class _Clock:
         return self.t
 
 
-_LOG: list = []     # every badge_reads log message of the current world, its import included
-_DOWN: set = set()  # the Creators whose Live connection is down (`of_ws.connected_since` None)
+_LOG: list = []
+_DOWN: set = set()
 _DEAD: set = set()
 _UNPUMPED: set = set()
 
 
 @contextlib.contextmanager
 def _world(wire: _Wire, tabs=frozenset({A}), knob: str | None = None, unread: bool = True, real_live: bool = False):
-    """Both Knobs on (`unread` False: UNREAD_TOTAL off), `BADGE_READS` = `knob` (None: unset), modules reloaded (a
-    restart), A's client on `wire`, `tabs` the Open-tab Creators, the Relay clock fake, the Live connection up but for
-    `_DOWN`; the refresher's `live` "up" / "down" from `_DOWN` ("dead" for `_DEAD`, None for `_UNPUMPED`) unless
-    `real_live` (then the case drives `shared_refresher.tick`); yields (clock, published, badge_read log lines)."""
     saved_env = {k: os.environ.get(k) for k in ("SHARED_REFRESHER", "UNREAD_TOTAL", "BADGE_READS")}
     os.environ["SHARED_REFRESHER"] = "1"
     for k, v in (("UNREAD_TOTAL", "1" if unread else None), ("BADGE_READS", knob)):
@@ -294,7 +207,6 @@ async def _frame(n: int, aid=A) -> None:
 
 
 async def _tick_at(clock: _Clock, t: int) -> None:
-    """The loop's tick at Relay time `t`, then the read it started (if any) run to its end."""
     clock.t = t
     await badge_reads.tick()
     for task in list(badge_reads._reads):
@@ -331,7 +243,7 @@ async def case_onlyfans_read_flips_dot():
         before, t = _walk_calls(), clock.t
         await _frame(11)
         await _frame(10)
-        await _frame(77, aid=B)                     # B: no Open tab
+        await _frame(77, aid=B)
         await _tick_at(clock, t + 1499)
         assert wire.calls == [], ("no read before the 1.5 s decide wait", wire.calls)
         await _tick_at(clock, t + 1500)
@@ -518,7 +430,6 @@ _HELD = (429, {"error": {"code": 0, "message": "Too many requests. Please allow 
 
 @contextlib.contextmanager
 def _note_reads():
-    """`app_open_warm.note_read` recorded (the exit queue's "a read started here")."""
     noted: list = []
     real = app_open_warm.note_read
     app_open_warm.note_read = noted.append
@@ -615,7 +526,6 @@ RF, MF, MF2, NF = 9401, 9402, 9403, 9404
 
 
 async def _seed(clock: _Clock, n: int) -> None:
-    """One frame and its read: the Unread set held from the wire's list."""
     await _frame(n)
     await _tick_at(clock, clock.t + 1500)
     assert badge_reads.unread_set(A) is not None
@@ -840,7 +750,6 @@ def _polls(lines) -> int:
 
 @contextlib.contextmanager
 def _refresher():
-    """`shared_refresher.tick()` (its 5 s loop) with its `/users/me` jobs dropped: only its re-read and publish."""
     with _swap(app_open_warm, "refresh", lambda *_a, **_k: None):
         yield shared_refresher.tick
 
@@ -901,7 +810,7 @@ async def case_socket_down_polls_15s():
     wire = _Wire(unread=[_row(F)])
     with _world(wire) as (clock, _pub, _lines):
         _DOWN.add(A)
-        t = clock.t = int(time.time() * 1000) - 100_000      # the polls asked before the live /users/me below
+        t = clock.t = int(time.time() * 1000) - 100_000
         await _tick_at(clock, t)
         await _tick_at(clock, t + 15_000)
         assert unread_total.snapshot(A)["grey"] is None, unread_total.snapshot(A)
@@ -938,7 +847,6 @@ class _User:
 
 @contextlib.contextmanager
 def _roster(wire: _Wire):
-    """roster-counts as the owner, A's client on `wire`, A unleased: its held window folded at 0 OF calls."""
     import accounts_admin_api
     client = _client(A, wire)
     saved = (server._get_request_user, server._load_client)
@@ -1028,8 +936,6 @@ class _Chatter:
 
 @contextlib.contextmanager
 def _busting(wire: _Wire):
-    """`?bust=A` as the given principal (the owner `_User` or a `_Chatter`), A's client on `wire`; yields the call,
-    which answers `counts`."""
     import accounts_admin_api
     client = _client(A, wire)
     saved = (server._get_request_user, accounts_admin_api._get_request_chatter, server._load_client)
@@ -1124,8 +1030,6 @@ async def case_hover_cooldown_shared():
 
 
 class _Writer:
-    """OF's read-state writes on a fake client: each delivers counter frame `n` through `events.handle_event` before
-    it returns (the frame beats the response); `fail` raises an OF error instead, no frame."""
     def __init__(self, n: int, fail: bool = False):
         self.loop, self.n, self.fail = asyncio.get_running_loop(), n, fail
         self.calls: list = []
@@ -1145,7 +1049,6 @@ class _Writer:
 
 @contextlib.contextmanager
 def _routes(writer: _Writer, clock: _Clock):
-    """The relay's routes as A on `writer`, read_flip's pre-write time on the Relay clock."""
     import read_flip
     with _swap(server, "_get_client", lambda *_a, **_k: writer), \
             _swap(server, "_resolve_account_id", lambda *_a, **_k: A), _swap(read_flip, "now_ms", clock):

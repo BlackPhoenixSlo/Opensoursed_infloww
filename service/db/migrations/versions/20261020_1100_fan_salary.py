@@ -1,16 +1,3 @@
-"""fan_salary — Fan insights › Profile's Salary, Salary frequency, Last pay date
-
-`fans.salary`, `fans.salary_frequency`, `fans.last_pay_date` (all TEXT, NULL):
-set by hand in the Fan drawer. NULL until someone fills them in.
-
-The ORM model declares the same columns, so `init_db()`'s ADD-COLUMN catch-up
-brings them to a booting box; this revision keeps the alembic chain canonical.
-Idempotent (inspector-guarded, house convention). Downgrade drops the columns.
-
-Revision ID: 0088_fan_salary
-Revises: 0087_account_deactivated
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence

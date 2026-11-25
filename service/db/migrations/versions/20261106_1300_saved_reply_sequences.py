@@ -1,15 +1,3 @@
-"""saved_reply_sequences + saved_replies.conditional / sent_count (Growth > Scripts at Infloww size)
-
-One NEW table, `saved_reply_sequences` (a sequence's position, Created by, description, dates; joined to
-its steps by name, `saved_replies.script_id`), and two additive columns on `saved_replies`:
-`conditional` (TEXT, NULL: a Condition step option's text) and `sent_count` (INTEGER NOT NULL DEFAULT 0).
-No existing row is rewritten. `create_all()` + init_db's ADD-COLUMN catch-up bring them to a booting box;
-this file keeps the alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0103_saved_reply_sequences
-Revises: 0101_push_subscriptions
-Create Date: 2026-11-06
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -38,7 +38,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_sell_nearest.py  (exit 0 = pas
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
@@ -61,7 +61,6 @@ from automations.full_ai_config import DEFAULTS  # noqa: E402
 from automations.full_ai_decide import Decision  # noqa: E402
 from automations.full_ai_sell import Pick, Refusal, Teased  # noqa: E402
 
-# ── Pick fixtures (test_full_ai_sell.py's shapes) ─────────────────────
 
 T0 = datetime(2026, 7, 1)
 DRESSED = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none", "explicitness": "sfw",
@@ -99,7 +98,6 @@ def case_pick_nearest_steps():
     toy_clip, toy_photo, plain_photo, plain_clip = (_row(1, kind="video", **TOY_J), _row(2, **TOY_J),
                                                     _row(3), _row(4, kind="video"))
     table = [
-        # (rows, ask, media, subject, format, step, why)
         ([toy_clip, plain_photo], fs.Ask("toy", "photo", 1), (1,), "toy", "video", "format",
          "(a) same subject, any format: the toy clip"),
         ([plain_photo, plain_clip], fs.Ask("toy", "video", 1), (4,), "anything", "video", "subject",
@@ -117,11 +115,9 @@ def case_pick_nearest_steps():
         assert (got.media, got.subject, got.format) == (media, subject, fmt), (why, got)
         assert got.facts["asked"] == {"subject": ask.subject, "format": ask.format}, (why, got.facts)
         assert got.facts["nearest"] == step, (why, got.facts)
-    # An exact match is the same Pick, nearest or not, recording no miss.
     exact = fs.Ask("toy", "photo", 1)
     on, off = _pick([toy_photo, plain_photo], exact, nearest=True), _pick([toy_photo, plain_photo], exact)
     assert on == off and on.media == (2,) and "asked" not in on.facts and "nearest" not in on.facts, on
-    # Relaxed rows run the normal lane logic (heat target).
     got = _pick([_row(5), _row(6, "$50")], fs.Ask("toy", "photo", 3), nearest=True)
     assert got.list_cents == 5000 and got.media == (6,), got
 
@@ -130,21 +126,17 @@ def case_pick_nearest_off_and_refusals():
     rows = [_row(3)]
     assert _pick(rows, fs.Ask("toy", "video", 1)) == Refusal("no_match"), "default: no relax"
     assert _pick(rows, fs.Ask("toy", "video", 1), nearest=False) == Refusal("no_match")
-    # The relaxed set with nothing priced: a free-lane photo only.
     free = fs.pool([_row(7, "free")], [], set(), ALL, fs.Ask("toy", "video", 1))
     assert fs.pick(free, [], fs.Ask("toy", "video", 1), seed="s", nearest=True) == Refusal("no_priced_items")
-    # free=True keeps its own fallback; nearest changes nothing there.
     pool = fs.pool(rows, [], set(), ALL, fs.Ask("toy", "video", 1))
     a = fs.pick(pool, [], fs.Ask("toy", "video", 1), seed="s", free=True)
     b = fs.pick(pool, [], fs.Ask("toy", "video", 1), seed="s", free=True, nearest=True)
     assert a == b and "asked" not in a.facts, (a, b)
 
 
-# ── The sell step's gates (`full_ai_turn._sell`) ──────────────────────
 
 @contextlib.contextmanager
 def _sell_fakes(rows):
-    """`load_rows` gives `rows`; `pick` spied (its `nearest` kwarg per call)."""
     real_load, real_pick, calls = fs.load_rows, fs.pick, []
 
     async def load(_aid):
@@ -174,7 +166,6 @@ def case_sell_step_gates():
     rows = [_row(3), _row(4, "$50")]       # no toy anywhere
     piece = Teased("toy", "photo", (99,), (), 5000, row_id=1)
     table = [
-        # (decision, facts, nearest passed, a Pick, why)
         (Decision("sell_now", 2, "sell", frozenset()), _facts(), True, True, "fresh sell, note"),
         (Decision("sell_now", 2, "offer_moment", frozenset()), _facts(sell_nearest="plain", chat_tease=False),
          True, True, "offer_moment, plain (chat_tease off: a pitched sell, not a Chat tease)"),
@@ -201,8 +192,6 @@ def case_sell_step_gates():
 
 
 def case_told_format_table():
-    """F1a (client rule 2026-11-16, M1): a final priced Pick on any path whose format differs from
-    this Turn's photo / video `asks_format` is tagged `facts["asked"]` / "format" and recorded."""
     photo50 = _row(4, "$50")
     rows = [_row(3), photo50]
     offer = Teased("anything", "photo", (4,), (), 5000, row_id=1)
@@ -210,7 +199,6 @@ def case_told_format_table():
     pic = {"asks_subject": {"feet": 0.9}, "asks_format": {"photo": 0.9}}
     haggle = Decision("sell_now", 2, "haggle", frozenset({"counter_offer"}))
     table = [
-        # (decision, facts, choices, tagged, why)
         (haggle, _facts(offer_piece=offer), vid, True, "haggle: a video ask over the photo Offer"),
         (haggle, _facts(offer_piece=offer), pic, False, "haggle: a photo ask over a photo Offer"),
         (haggle, _facts(offer_piece=offer), {}, False, "haggle: no format asked (any)"),
@@ -229,7 +217,6 @@ def case_told_format_table():
             assert reply["nearest"] == {"asked_subject": "feet", "asked_format": "video", "step": "format"}, why
         else:
             assert "asked" not in f.pick.facts and "nearest" not in reply, (why, f.pick.facts, reply)
-    # "off" side: the Writer still gets the (honest) note for a tagged Pick; "plain" none.
     f = _facts(offer_piece=offer, sell_nearest="off")
     with _sell_fakes(rows):
         asyncio.run(full_ai_turn._sell(f, haggle, vid, {}))
@@ -245,8 +232,6 @@ def _kinds_pick(kinds, fmt="photo"):
 
 
 def case_told_format_real_kinds_and_mode():
-    """Items 4 + 9 (2026-11-16): `_told_format` tags only when NO locked item is of the asked kind
-    (per-item kinds, not the first item's), and only in test / live (Shadow byte-identical)."""
     vid = {"asks_subject": {"feet": 0.9}, "asks_format": {"video": 0.9}}
     pic = {"asks_subject": {"feet": 0.9}, "asks_format": {"photo": 0.9}}
     for kinds, fmt, choices, mode, tagged, got, why in [
@@ -298,9 +283,6 @@ def case_caption_set_facts():
 
 
 def case_offer_open_on_a_pure_yes():
-    """F2 (M2 2026-11-16): a yes to the open card naming nothing else is Refusal("offer_open") before
-    any vault load, with or without wants_content (item 2); a yes naming another subject / format
-    sells another piece; a Pending tease is untouched; Shadow never (item 9)."""
     offer = Teased("anything", "photo", (4,), (), 5000, row_id=77)
     yes = Decision("sell_now", 2, "sell", frozenset({"says_yes_to_offer"}))
     both = Decision("sell_now", 2, "sell", frozenset({"says_yes_to_offer", "wants_content"}))
@@ -316,7 +298,7 @@ def case_offer_open_on_a_pure_yes():
         asyncio.run(full_ai_turn._sell(f, yes, {}, reply))
         assert f.pick == Refusal("offer_open") and reply == {"offer_open": 77} and loads == [], (f.pick, reply)
         f, reply = _facts(offer_piece=offer), {}
-        asyncio.run(full_ai_turn._sell(f, both, {}, reply))     # absent choices: CHOICE_DEFAULT
+        asyncio.run(full_ai_turn._sell(f, both, {}, reply))
         assert (router.choice_of({}, "asks_subject"), router.choice_of({}, "asks_format")) == ("anything", "any")
         assert f.pick == Refusal("offer_open") and reply == {"offer_open": 77} and loads == [], (f.pick, reply)
         for piece, choices, opens, why in [
@@ -334,22 +316,20 @@ def case_offer_open_on_a_pure_yes():
             if not opens:
                 assert isinstance(f.pick, Pick) and 4 not in f.pick.media, (why, f.pick)
         f, reply = _facts("shadow", offer_piece=offer), {}
-        asyncio.run(full_ai_turn._sell(f, yes, {}, reply))      # Shadow: never the open-card line
+        asyncio.run(full_ai_turn._sell(f, yes, {}, reply))
         assert f.pick != Refusal("offer_open") and "offer_open" not in reply, (f.pick, reply)
         f, reply = _facts(), {}
-        asyncio.run(full_ai_turn._sell(f, yes, {}, reply))      # no open card: today's path
+        asyncio.run(full_ai_turn._sell(f, yes, {}, reply))
         assert isinstance(f.pick, Pick) and "offer_open" not in reply, f.pick
         f, reply = _facts(tease=offer), {}
-        asyncio.run(full_ai_turn._sell(f, yes, {}, reply))      # a Pending tease sells its piece
+        asyncio.run(full_ai_turn._sell(f, yes, {}, reply))
         assert isinstance(f.pick, Pick) and f.pick.media == (4,), f.pick
     finally:
         fs.load_rows = real
 
 
-# ── Through the Test chat API ─────────────────────────────────────────
 
 class FakePriceJev:
-    """`_price_jev._client` (test_full_ai_scene_chat.py's): one score per call."""
 
     def __init__(self, score):
         self.score, self.calls = score, []
@@ -523,7 +503,6 @@ def case_writer_note():
 def case_sell_off_lines():
     off = dict(sell_on=False, sext_scene=True)
     table = [
-        # (route, row, facts, kwargs, wanted line, why)
         ("sext", "scene_on", _turn(**off), dict(hot=True, scene="building"), wr.SELL_OFF_SCENE, "scene Turn"),
         ("sext", "sexual_now", _turn(sell_on=False, sext_scene=False), dict(hot=True), wr.SELL_OFF_LINE,
          "sext, no scene"),
@@ -541,8 +520,6 @@ def case_sell_off_lines():
 
 
 def shadow_prompts(wr_mod, cap_mod, pick_cls, defaults) -> list:
-    """Shadow's Writer + caption prompts over the routes this PR touches, every `sell_nearest` /
-    `sell_on` value; built the same way against origin/main's modules for the pin."""
     def turn(**cfg):
         return SimpleNamespace(account_id="acct_near", fan_id=7, anchor_key="shadow:s:3",
                                config={**defaults, **cfg}, fan_info={}, next_question=None, spent=[],

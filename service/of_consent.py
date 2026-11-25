@@ -1,17 +1,3 @@
-"""service/of_consent.py — a Creator's "Auto-accept OnlyFans consent" switch.
-
-OF flags some Creators under state consent laws (`GET /users/me`: `needConsent`,
-`needConsentState` NC/AL) and then answers a media send without consent
-`400 {"error":{"code":0,"message":"Consent not accepted"}}`. OF's own web client asks
-"Yes?" before such a send and only then adds `isConsentAccepted: true` to the body, top
-level, beside `mediaFiles` (chat and mass message builder, `MakeFeedPost getDataObject`
-for posts, the story bodies; build 20260517). This switch is that "Yes" given once: while
-it is on, `apply` adds the same field to every media send of the account. Off (the
-default, no row) never adds it; a text-only send never carries it.
-
-The setting is `of_consent_accepts` (db.models.OfConsentAccept), append-only: the newest
-row by id is the setting and every row is who changed it and when.
-"""
 from __future__ import annotations
 
 import logging
@@ -25,13 +11,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("of-relay.of_consent")
 
+# OF answers a media send without consent 400 "Consent not accepted" for some Creators; this adds the field only while the switch is on.
 FIELD = "isConsentAccepted"
 
 
 def auto_accept(account_id: str | None) -> bool:
-    """Whether the account's switch is on. Sync: the send path runs in a worker
-    thread. No account, no row, or a failed read is off: consent is never given
-    by accident."""
     if not account_id:
         return False
     try:
@@ -49,14 +33,11 @@ def auto_accept(account_id: str | None) -> bool:
 
 
 def apply(body: dict, account_id: str | None) -> None:
-    """Add `isConsentAccepted: true` to an OF send body that carries media
-    (`mediaFiles` non-empty) when the account's switch is on."""
     if body.get("mediaFiles") and auto_accept(account_id):
         body[FIELD] = True
 
 
 async def current(s: AsyncSession, account_id: str) -> OfConsentAccept | None:
-    """The account's newest row (the setting and who set it), or None (off)."""
     from sqlalchemy import select
 
     from db.models import OfConsentAccept
@@ -67,7 +48,6 @@ async def current(s: AsyncSession, account_id: str) -> OfConsentAccept | None:
 
 async def record(s: AsyncSession, account_id: str, enabled: bool, *, user_id: str | None,
                  username: str | None, employee_id: int | None, at: datetime) -> OfConsentAccept:
-    """Append one change row; answers it."""
     from db.models import OfConsentAccept
     row = OfConsentAccept(account_id=str(account_id), enabled=bool(enabled), user_id=user_id,
                           username=username, employee_id=employee_id, at=at)

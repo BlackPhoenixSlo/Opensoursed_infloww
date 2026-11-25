@@ -1,18 +1,3 @@
-"""service/tests/test_proxy_retry_interactive.py — a read someone is waiting on
-fails fast on a dead proxy; background work and every write keep the full retry.
-
-Prod 2026-10-28: a proxy answering CONNECT 403 made the Fan List, bell and
-thread reads run _proxy_retry's 5 tries (0.4 + 0.8 + 1.6 + 3.2 s of pauses)
-before the 502. server._proxy now marks a request that is not
-`X-Priority: background` (of_client.INTERACTIVE_READ); its GETs, x-hash warmup
-included, take INTERACTIVE_RETRY (2 tries, one 0.2 s pause). A write under the
-same request, and anything with no request (ingest, automations), keeps 5.
-
-A bare OFClient via __new__ with a fake self.http, so nothing reaches the
-network; the harness for account_health (the write gate) and server._proxy.
-
-Run:  ./venv/bin/python service/tests/test_proxy_retry_interactive.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -32,8 +17,6 @@ _FULL = [0.4, 0.8, 1.6, 3.2]
 
 
 def _dead_client(x_hash="HASH"):
-    """A client whose proxy refuses every CONNECT; `sent` counts each attempt
-    as (method, url)."""
     sent: list[tuple[str, str]] = []
 
     def _fail(method):
@@ -59,7 +42,6 @@ def _dead_client(x_hash="HASH"):
 
 
 class _Pauses:
-    """Captures the retry pauses, the jitter draw pinned to 1.0 (each pause its ceiling)."""
     def __enter__(self):
         self.seen, self._real, self._random = [], of_client.time.sleep, of_client.random
         of_client.time.sleep = self.seen.append
@@ -98,7 +80,6 @@ def case_background_read_keeps_five_tries():
 
 
 def case_write_keeps_five_tries_even_when_someone_waits():
-    """A send/mark-read under a user's request: never a different retry count."""
     for method in ("POST", "PUT", "PATCH", "DELETE"):
         c, sent = _dead_client()
         with _Pauses() as pauses:
@@ -108,8 +89,6 @@ def case_write_keeps_five_tries_even_when_someone_waits():
 
 
 def case_interactive_read_xhash_warmup_fails_fast_too():
-    """A fresh client's first signed read: the warmup must not spend the ~6 s
-    the read itself no longer spends."""
     c, sent = _dead_client(x_hash=None)
     with _Pauses() as pauses:
         _call(c, "GET", interactive=True)
@@ -126,7 +105,6 @@ def case_write_xhash_warmup_keeps_five_tries():
 
 
 class _Counted:
-    """proxy_health.record as seen by the client: the (label, ok) it reports."""
     def __enter__(self):
         self.seen, self._real = [], of_client.proxy_health.record
         of_client.proxy_health.record = lambda label, ok, error=None: self.seen.append((label, ok))
@@ -137,9 +115,6 @@ class _Counted:
 
 
 def case_only_a_full_policy_failure_counts_toward_down():
-    """docs/adr/0030: an interactive read gives up inside ~1 s, so three of them
-    fit in one CONNECT-403 blip; only a full-policy (5-try) final failure is
-    evidence the proxy is down."""
     for method, interactive, want in (("GET", True, []), ("GET", False, [("px", False)]),
                                       ("POST", True, [("px", False)])):
         c, _ = _dead_client()
@@ -150,8 +125,6 @@ def case_only_a_full_policy_failure_counts_toward_down():
 
 
 def _refused_port_client(x_hash):
-    """A proxied client whose proxy port refuses TCP: curl 7, which curl_cffi
-    raises as ConnectionError (measured: a closed loopback port as the proxy)."""
     from curl_cffi.const import CurlECode
     sent: list[str] = []
 
@@ -166,8 +139,6 @@ def _refused_port_client(x_hash):
 
 
 def case_refused_proxy_port_counts_in_the_warmup_too():
-    """F1: a fresh client on a curl-7-dead proxy fails in the x-hash warmup,
-    before the signed call; it is counted there, once, and not retried."""
     for x_hash in (None, "HASH"):
         c, sent = _refused_port_client(x_hash)
         with _Pauses() as pauses, _Counted() as seen:
@@ -215,7 +186,6 @@ def case_proxy_resets_the_flag_on_error():
 
 
 def case_dead_proxy_read_is_a_502_after_two_tries():
-    """End to end through the route wrapper: the UI's proxy_unreachable 502."""
     c, sent = _dead_client()
     with _Pauses() as pauses:
         try:

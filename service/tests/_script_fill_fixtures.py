@@ -1,9 +1,3 @@
-"""service/tests/_script_fill_fixtures.py — vault rows and Sequences for the Fill route suites
-(`test_script_fill_api`, `test_script_fill_lock_hold`). Field shapes are `test_script_fill_decide`'s (described,
-solo, rung-placed, a Jev reading), written as `vault_items` / `saved_replies` rows.
-
-NOT a test file: no `case_*`, no `_harness.run()`. Importers bootstrap `_harness` FIRST, then import this.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -55,7 +49,7 @@ TIERS = {
 def fields(tier: str, kind: str = "photo", lane: str = "$10", colour: str = "white") -> dict[str, Any]:
     raw = {**TIERS[tier], "clothing_items": [f"{colour} bra"], **SOLO,
            vault_jev_rules.JEV_KEY: _jev(lane, kind, "y" if tier == "explicit" else "n")}
-    if lane in vault_jev_rules.PAID:   # the flags + tier the mapper writes a paid lane, never sfw / suggestive (W30 D1)
+    if lane in vault_jev_rules.PAID:
         m = vault_jev_flags.apply(raw, raw[vault_jev_rules.JEV_KEY])
         raw.update({k: m[k] for k in ("explicitness", "breasts_vis", "vulva_vis", "anus_vis")})
     return vault_ai_brief.settled_reading(raw)
@@ -69,8 +63,6 @@ def _hash(n: int) -> str:
 def vault_row(account_id: str, mid: int, tier: str, kind: str = "photo", lane: str = "$10",
               colour: str = "white", *, created_at: datetime | None = None, dupe_of: int | None = None,
               folders: Iterable[str] = (), **kw: Any) -> dict[str, Any]:
-    """One `vault_items` row (core insert values). `dupe_of`: an exact copy of that media id (same
-    content hash, so `vault_dupes.find_duplicates` sets them together)."""
     row = {"account_id": account_id, "media_id": mid, "kind": kind,
            "created_at": created_at or T0 + timedelta(minutes=mid),
            "duration_seconds": 12 if kind == "video" else None,
@@ -82,8 +74,6 @@ def vault_row(account_id: str, mid: int, tier: str, kind: str = "photo", lane: s
 
 
 def shoot(account_id: str, base: int, colour: str = "white", *, at: datetime | None = None) -> list[dict[str, Any]]:
-    """`test_script_fill_decide`'s WHITE Shoot at ids base+1..base+13: 3 free-safe sfw photos, 4 suggestive
-    $10 photos, a suggestive clip, 4 explicit $50 photos, an explicit clip."""
     t = at or T0
     spec = ([(1, "sfw", "photo", "free"), (2, "sfw", "photo", "free"), (3, "sfw", "photo", "free")]
             + [(n, "suggestive", "photo", "$10") for n in (4, 5, 6, 7)] + [(8, "suggestive", "video", "$50")]
@@ -101,8 +91,6 @@ async def insert_vault(rows: list[dict[str, Any]], prices: dict[tuple[str, str],
         await s.commit()
 
 
-# Issue 07's typical shape (`test_script_fill_decide.S1`): a freebie, three paid Steps between bridges, the
-# last a clip. {step: (notes, text, price)}; every other step 1..13 is a bridge.
 S1 = {1: ("1/3, freebie", "hey babe here's a little something", 0),
       3: ("1/3, ppv", "wanna see more? 😈", 0),
       5: ("2/3", "sending you 2 pics 🙈", 0),

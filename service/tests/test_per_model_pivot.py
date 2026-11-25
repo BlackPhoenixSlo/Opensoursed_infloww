@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""Per-model's pure pivot (`stats_per_model.pivot_models` / `empty_model_row`):
-table cases over hand-built read rows, no DB reads, no network.
-
-  pending    a pending sale is revenue, and pending_* is a subset of it
-  refunds    a reversal is no revenue; it shows as refunded_cents / _net_cents
-  net        OF's net summed, rows with no net counted (net_missing_count)
-  OF top-up  `_of_top_ups`' rows add to revenue and net, not to pending,
-             refunds or PPV conversions
-  zero       a Creator with no traffic is still listed, every field zero / null
-  tie        equal revenue keeps the accounts' read order
-  engagement off: no ppvs_sent / fans_chatted / avg_reply_seconds keys at all
-  subs       active subs null when no source has a signal; ltv / arpu by _safe_div
-  source     `pick_active_subs_source`: expires_at, else the 31-day fallback, else unavailable
-  patch      a patch on `stats._of_top_ups` reaches `stats.per_model` (slop fault of-zero-erases-db-sale)
-
-Run: ./venv/bin/python service/tests/test_per_model_pivot.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -41,7 +24,6 @@ def _sum(aid, kind, status, gross, net=None, net_missing=0, sales=1):
              net_missing=net_missing, sales=sales)
 
 
-# Every read empty; a case names only the reads it fills (pivot_models takes keywords only).
 NO_READS = dict(acct_rows=[], r_sums=[], top=[], r_new=[], r_act=[], r_msg=[], r_reply=[], r_pending=[],
                 r_spend=[], r_of={}, active_subs_source="unavailable", engagement=False)
 ROW_KEYS = {
@@ -128,8 +110,6 @@ def case_kinds_bucket_and_ppv_conversions_count_ppv_sales():
 
 
 def case_other_by_kind_holds_what_creator_reports_channels_leave_out():
-    # Creator reports' Tips / Message = bucket - other (app reportsMath `bucketOf`: streams, unknown kinds are
-    # Total only); the buckets themselves still hold every sale.
     row = one(pivot([(A, "a")], [
         _sum(A, "tip", "cleared", 1000, net=800), _sum(A, "tip_stream", "pending", 300, net=240),
         _sum(A, "ppv_message", "cleared", 500, net=400), _sum(A, "ppv_stream", "cleared", 200, net=160),
@@ -154,7 +134,6 @@ def case_of_top_up_adds_to_revenue_and_net_only():
     assert a["net_revenue_by_kind"] == {"ppv": 800, "post": 40, "tip": 240, "subscription": 0, "rebill": 0,
                                         "custom": 0}, a
     assert a["pending_revenue_cents"] == 1000 and a["ppv_conversions"] == 4 and a["refunded_cents"] == 0, a
-    # A Creator OF alone names still gets a row (display_name unknown).
     assert b["display_name"] is None and b["revenue_by_kind"]["subscription"] == 900, b
     no_top = one(pivot([(A, "a")], sums), A)
     assert no_top["total_revenue_cents"] == 1000, no_top
@@ -266,7 +245,6 @@ def case_a_patch_on_stats_of_top_ups_reaches_per_model():
         async with get_session() as s:
             s.add(Account(id=D, nickname="patched", created_at=datetime(2026, 6, 1)))
             await s.commit()
-        # One stored OF day (every category, and their total), so per_model asks for top-ups.
         await osd._upsert_earnings(D, {"2026-06-10": {**{c: (0, 0, 0) for c in osd.EARNINGS},
                                                       osd.TOTAL: (0, 0, 0)}}, datetime(2026, 6, 20))
     asyncio.run(seed())

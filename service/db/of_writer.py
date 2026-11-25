@@ -1,36 +1,3 @@
-"""Group commit for the rows that mirror OnlyFans (the OF cache).
-
-The local DB is a best-effort cache of OnlyFans for OF-sourced data: inbound
-`messages`, `fans` touches, `chats` preview / unread / read state, the raw
-`event_inbox` rows and the tip / PPV ledger rows a WS frame carries. A later OF
-read (inbox reconcile, chat scrape, ledger ingest) corrects anything lost, so
-these writes need no durable outbox — but each one used to be its own SQLite
-write transaction (two per DM, one per chat open), all fighting over the one
-write lock.
-
-Here they are ops: `await write(run, item, key=...)` queues `item`, and ONE task
-runs everything queued in ONE `BEGIN IMMEDIATE` transaction, as soon as there is
-work (no timer, no cap on what arrives: a DM is never delayed for a batch to
-fill). The caller resumes after its batch has committed, so whatever it reads
-next sees its write — no overlay of pending rows needed.
-
-  • coalescing: an op with a `key` joins the newest still-queued entry for that
-    key when it has the same `run`; `run` then gets all of them at once (so two
-    DMs of one chat cost one `fans` and one `chats` upsert). Any other op on the
-    key ends that run, so per-key order holds.
-  • a batch that fails is retried op by op, each in its own transaction; an op
-    that fails alone raises to its caller (who counts its own loss: transcode,
-    persist, a 500), never holds the batch.
-  • `run(conn, items)` gets an AUTOCOMMIT connection already inside the
-    transaction and returns one result per item.
-  • not started (tests, before startup, after stop): each op is written through
-    in its own transaction, as before.
-  • stop(): what is queued is flushed best-effort; leftovers are counted
-    (write_telemetry drops `writer_shutdown`).
-
-Ours-only rows (outbound attribution, cooldowns, the audit row, jobs) do not
-come here: they keep their own immediate transaction (see `immediate()`).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -48,8 +15,9 @@ from db.engine import UNCAPPED, engine
 
 log = logging.getLogger("of-relay.of_writer")
 
-BATCH_MAX = 200          # ops one transaction may carry; the rest go in the next
-STOP_DRAIN_S = 5.0       # how long stop() keeps flushing what is queued
+# Best-effort cache of OnlyFans: a later OF read corrects any loss, so no durable outbox.
+BATCH_MAX = 200
+STOP_DRAIN_S = 5.0
 
 Run = Callable[[Any, list], Awaitable[list]]
 
@@ -63,18 +31,17 @@ class _Entry:
 
 
 _pending: deque[_Entry] = deque()
-_last: dict[Hashable, _Entry] = {}   # newest queued entry per key
+# Per-key coalescing: any other op on the key ends the run, so per-key order holds.
+_last: dict[Hashable, _Entry] = {}
 _inflight: list[_Entry] = []
-_queued = 0                          # ops in _pending
+_queued = 0
 _wake: asyncio.Event | None = None
 _task: asyncio.Task | None = None
 
 
+# BEGIN IMMEDIATE takes the lock up front so a read inside never hits SQLITE_BUSY_SNAPSHOT on upgrade.
 @contextlib.asynccontextmanager
 async def immediate():
-    """One write transaction taken with BEGIN IMMEDIATE (the lock up front, so a
-    read inside can never hit SQLITE_BUSY_SNAPSHOT on its upgrade): yields an
-    AUTOCOMMIT connection inside it; COMMIT on success, ROLLBACK on error."""
     async with engine.connect() as conn:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
         await conn.execute(text("BEGIN IMMEDIATE"))
@@ -87,13 +54,9 @@ async def immediate():
         await conn.execute(text("COMMIT"))
 
 
+# Lock before the first read: a check and the write it guards run alone, concurrent callers cannot all pass the same check.
 @contextlib.asynccontextmanager
 async def immediate_session():
-    """An ORM session inside `immediate()` (BEGIN IMMEDIATE, the lock before the
-    first read), so a check and the write it guards run alone: concurrent
-    callers cannot all pass the same check before any of them writes. Flushed
-    on success; COMMIT / ROLLBACK are immediate()'s; after-commit hooks
-    (`events.on_commit`) run after the COMMIT."""
     async with immediate() as conn:
         s = AsyncSession(bind=conn, expire_on_commit=False)
         try:
@@ -105,8 +68,6 @@ async def immediate_session():
 
 
 def running() -> bool:
-    """The writer task is up on this loop (a test's earlier asyncio.run left a
-    task on a closed loop that would never flush)."""
     try:
         return _task is not None and not _task.done() and _task.get_loop() is asyncio.get_running_loop()
     except RuntimeError:
@@ -114,7 +75,6 @@ def running() -> bool:
 
 
 async def write(run: Run, item: Any, *, key: Hashable | None = None) -> Any:
-    """Queue `item` for `run`; return `run`'s result for it once committed."""
     global _queued
     if not running():
         async with immediate() as conn:
@@ -161,7 +121,7 @@ async def _commit(batch: list[_Entry]) -> list[list]:
 
 def _settle(e: _Entry, results: list | None, exc: BaseException | None = None) -> None:
     for i, f in enumerate(e.futs):
-        if f.done():   # the caller went away; its op was still written
+        if f.done():
             continue
         if exc is not None:
             f.set_exception(exc)
@@ -182,9 +142,8 @@ async def _flush(batch: list[_Entry]) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — every op's caller hears about it
+        # A lock timeout (busy_timeout spent) would only repeat per op, so it fails them all.
         if n == 1 or _locked(exc):
-            # One op that fails alone is that op's own fault; a lock timeout
-            # (busy_timeout spent) would only repeat per op, so it fails them all.
             log.warning("of_writer: %d op(s) of %s failed: %s", n,
                         ",".join(sorted({e.run.__qualname__ for e in batch})), exc)
             write_telemetry.writer_failed(n)
@@ -206,8 +165,7 @@ async def _flush(batch: list[_Entry]) -> None:
 
 
 async def _loop() -> None:
-    # This task's checkouts spill past the pool cap instead of timing out
-    # (db/engine.py): a failed batch would drop inbound OF frames.
+    # Checkouts spill past the pool cap instead of timing out: a failed batch would drop inbound OF frames.
     UNCAPPED.set(True)
     with write_telemetry.writer("of_writer"):
         while True:
@@ -220,7 +178,6 @@ async def _loop() -> None:
 
 
 def start() -> None:
-    """Start the writer task on the running loop. Idempotent."""
     global _task, _wake
     if running():
         return
@@ -230,9 +187,6 @@ def start() -> None:
 
 
 async def stop() -> None:
-    """Flush what is queued (best-effort, up to STOP_DRAIN_S), then stop. Ops
-    still queued after that are counted as `writer_shutdown` and their callers
-    cancelled; later writes go straight through."""
     global _task, _queued
     if _task is None:
         return

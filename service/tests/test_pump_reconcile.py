@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""service/pump_reconcile.py: the pump supervisor's pass, as tables.
-
-  case_reconcile_table: one row per roster/pump situation -> the actions, in order.
-  case_one_account_sweep: every (session, deactivated, parked, pump) of one account ->
-      at most one action; never a pump for an ineligible or parked account; Stop iff a
-      pump and not eligible; eligible, not parked and no running pump -> exactly one
-      Start or Restart.
-  case_restart_backoff_table: (restarts since the last healthy run, how long the exited
-      pump ran) -> (attempt, delay): 0 at once, then 15 s doubling to the 300 s cap; a
-      healthy run (>= 60 s) resets.
-  case_restart_due_table: (restarts, started, exited, parked) -> (attempt, due): due is
-      the exit plus the backoff; a parked exit resets the count like a healthy run.
-
-Run: ./venv/bin/python service/tests/test_pump_reconcile.py
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401  (first: sys.path + the temp-DB guard)
@@ -24,7 +9,6 @@ from pump_reconcile import HEALTHY_RUN_S, Restart, Start, Stop, reconcile, resta
 
 RUNNING, DONE = False, True
 
-# (label, with_session, deactivated, parked, pump_done {account: done}, expected)
 RECONCILE = [
     ("nothing -> empty plan", set(), set(), set(), {}, []),
     ("new account with a session -> Start", {"a"}, set(), set(), {}, [Start("a")]),
@@ -40,7 +24,6 @@ RECONCILE = [
     ("parked and deactivated, pump done -> Stop", {"a"}, {"a"}, {"a"}, {"a": DONE}, [Stop("a")]),
     ("parked and session lost, pump done -> Stop", set(), set(), {"a"}, {"a": DONE}, [Stop("a")]),
     ("deactivated without a session (parked list stale) -> nothing", set(), {"a"}, {"a"}, {}, []),
-    # Starts by id first, then Stops/Restarts in pump_done's iteration order.
     ("mixed roster: Starts sorted, then pumps in pump_done order",
      {"e", "c", "a", "b", "d", "p"}, {"q"}, {"p"},
      {"e": RUNNING, "x": RUNNING, "b": DONE, "q": RUNNING, "z": DONE, "p": DONE},
@@ -78,7 +61,6 @@ def case_one_account_sweep() -> None:
     assert not bad, bad
 
 
-# (label, attempts, ran_s, (attempt, delay_s))
 BACKOFF = [
     ("first restart -> at once", 0, 0.0, (0, 0.0)),
     ("second -> 15 s (the old cadence)", 1, 0.5, (1, 15.0)),
@@ -100,7 +82,6 @@ def case_restart_backoff_table() -> None:
         if got != want:
             bad.append(f"{label}: got {got!r}, want {want!r}")
     assert not bad, "\n  " + "\n  ".join(bad)
-    # A crash loop the caller drives (store attempt + 1): delays never shrink, cap holds.
     n, seen = 0, []
     for _ in range(12):
         a, d = restart_backoff(n, 0.0)
@@ -109,14 +90,11 @@ def case_restart_backoff_table() -> None:
     assert seen == sorted(seen) and seen[-1] == 300.0 and seen[:4] == [0.0, 15.0, 30.0, 60.0], seen
 
 
-# (label, attempts, started, exited, parked, (attempt, due))
 DUE = [
     ("first crash -> at its exit", 0, 100.0, 100.5, False, (0, 100.5)),
     ("second crash -> exit + 15 s", 1, 200.0, 200.5, False, (1, 215.5)),
     ("fourth crash -> exit + 60 s", 3, 0.0, 5.0, False, (3, 65.0)),
     ("crash after a healthy run -> at once", 3, 0.0, HEALTHY_RUN_S, False, (0, HEALTHY_RUN_S)),
-    # phase D's case: restart attempt 2 ran 5 s, then parked on a dead session; the probe
-    # unparks it -> the next pass restarts at once, not 60 s later.
     ("parked after crash-restarts -> reset, at once", 2, 300.0, 305.0, True, (0, 305.0)),
     ("parked, first run -> at once", 0, 0.0, 1.0, True, (0, 1.0)),
 ]

@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager New post's dialogs and tools: the relay routes and the OF bodies they send.
-
-Each write is OF's own request shape as its web client (bundle build 202610091632) sends it,
-read from the bundle, never observed live: Start campaign (ModalPromotion saveForm), Stop
-promotion (users/finishPromotion), Create link (ModalTrial), the bundle dialog's Save
-(bundles/saveBundle), Share (trials/share-access), a tag row's hide (releaseForms/hideReleaseForms),
-Invite new user (releaseForms/saveGuest) and ADD LABELS' Sort (labels/savePostLabelsOrder).
-The reads: OF's search box (users `view: se`), performers-search, the posts search, the Release
-form tab and the free trial links' sort. Plain-assert, OF faked (no request leaves the process).
-
-Run: ./venv/bin/python service/tests/test_new_post_tools.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -35,7 +23,6 @@ def _fixture(name):
 
 
 def _client():
-    """An OFClient whose every request is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = "4242"
     c.sent = []
@@ -44,7 +31,7 @@ def _client():
     return c
 
 
-AID = "npt_acct"   # the promo routes' create reservation and Kept-promo untick are per account
+AID = "npt_acct"
 
 
 async def _seed():
@@ -54,7 +41,6 @@ asyncio.run(_seed())
 
 
 def _route(fn, *args, **kwargs):
-    """Call a route (sync or async) with `_get_client` returning a recording client; the client's sends."""
     c = _client()
     orig, orig_aid = server._get_client, server._current_aid
     server._get_client = lambda: c
@@ -112,7 +98,6 @@ def case_trial_sort_params():
     sent = _route(server.of_trial_links, field="claims_count", sort="asc")
     _, path, _, params = _one(sent)
     assert path == f"{API}/trials" and params == {"limit": 100, "offset": 0, "pagination": 1, "field": "claims_count", "sort": "asc"}, params
-    # OF's default sort sends neither
     sent = _route(server.of_trial_links, field=None, sort=None)
     _, _, _, params = _one(sent)
     assert params == {"offset": 0, "limit": 100}, params
@@ -201,7 +186,6 @@ def case_new_routes_are_registered_before_their_catch_alls():
 
 
 def case_formatted_text_and_media_bodies():
-    """OF's composer markup and a multi-file pick (audio too) ride through create_post untouched."""
     for name in ("new-post-format-body.json", "new-post-media-body.json"):
         fx = _fixture(name)
         for case in fx.get("cases") or [fx]:
@@ -215,7 +199,6 @@ def case_formatted_text_and_media_bodies():
 
 
 def case_video_story_body():
-    """A video story: post_story uploads it (faked here: no upload) and sends OF's /stories with the claim."""
     fx = _fixture("new-post-story-video-body.json")
     c = _client()
     seen = {}

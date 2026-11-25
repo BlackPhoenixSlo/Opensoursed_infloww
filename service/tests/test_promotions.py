@@ -1,89 +1,7 @@
 #!/usr/bin/env python3
-"""Profile-Promotion tests (Growth feature #6). OF is faked — no network.
-
-Locks in the contract discovered by LIVE testing on 2026-07-22:
-  • OF /promotions returns {items:[...]} (NOT {list:[...]}) — list must parse it.
-  • create_promo returns a LIST [{id,...}] — of_promo_id must be captured from it
-    (else delete can't reach OF and leaves a live promo).
-  • performance = claimsCount; discount is a % (1..100), never echoed on list.
-  • fetch failure → of_available False (None sentinel), not a 500.
-
-  case_list_parses_items_and_of_available
-  case_create_captures_of_id_from_list_response
-  case_discount_validation
-  case_of_unavailable_when_fetch_fails
-  case_offer_expiration_and_audience_reach_of   Infloww's/OF's composer fields
-  case_bad_audience_is_422
-  case_of_only_row_keeps_its_created_date
-  case_keep_running_toggle_owns_the_rule        tick ensures the hourly real rule; last untick parks it
-  case_create_with_keep_running_moves_the_flag  the form's default tick arms the new one, unticks others
-  case_create_without_id_is_unknown_unarmed     OF answered with no id: 200 "unknown", no mirror
-                                 row until a read adopts it, not armed, response says why
-  case_create_stores_finish_days_and_expires_at
-  case_keep_warning_listed_until_retick  a campaign Inflowwww turned off keeps its reason
-                                 (keep_warning) on the list; an open create shows
-                                 keep_blocked "unknown"; a re-tick clears the warning and
-                                 restarts the breaker's count (keep_ticked_at).
-  case_manual_409_while_open     a create meeting an open one inside the grace: 409
-                                 create_in_flight, nothing sent.
-  case_create_unresolved_then_resolve_open  past the grace: 409 create_unresolved (id, terms);
-                                 the resend with resolve_open clears it and creates.
-  case_get_reconciles_open_row   the list read adopts a create sent with no answer: its mirror
-                                 row appears.
-  case_rv_c02_manual_age_runs_from_send  an old row just flipped to sending is in flight (409
-                                 create_in_flight), not "create anyway".
-  case_rv_c05_takeover_between_reserve_and_send_refused  Keep running moved after the reserve:
-                                 the sending CAS refuses, 409 keep_running_moved, no POST.
-  case_rv_r06_concurrent_ticks_one_kept  two racing ticks: one Kept campaign, the other 409.
-  case_rv_r08_success_after_create_anyway_no_500  a late success on a cleared row: unresolved
-                                 reply with OF's id, no 500; the row keeps the id.
-  case_manual_after_budget_exhaustion  a full automatic budget never refuses a manual create,
-                                 and the manual create is not counted.
-  case_raw_route_reserved        the OF mirror's Start campaign reserves: a row per create, 409
-                                 while one is open.
-  case_raw_finish_unticks        stopping or deleting a Kept promo from the OF mirror unticks
-                                 it first (and parks the rule).
-  case_list_shows_backoff_and_budget  a Kept campaign held by the back-off or the budget says
-                                 so (keep_blocked + until).
-  case_mn07_tick_on_unfenced_copy_stamps_empty  a tick on a box with PROMO_CREATE_HOST_ID unset
-                                 stamps "", lists keep_blocked "fence" and never creates; a tick
-                                 on a set box stamps its id, with no OF read.
-  case_mn09_unlimited_trial_refused  a Free trial keeps running only with a Claim cap, on
-                                 create and on PATCH; its Re-create limit is optional (none =
-                                 indefinite, owner 11-21), 1-10 when sent; other discounts
-                                 store no limit; a capped no-limit Kept trial is not blocked.
-  case_create_takeover_names_previous  a create that moves Keep running returns the campaign it
-                                 took it from and notifies the owner.
-  case_create_takeover_moved_409  the Kept campaign changed since the form showed it: 409
-                                 keep_running_moved before OF hears; changed during the POST:
-                                 created, not armed, says why.
-  case_preempt_second_tick       the create stores `preempt` (default on) only when it arms;
-                                 PATCH flips it alone, 422 with neither tick; GET lists
-                                 `preempt`, `keep_wait`, and keep_blocked switch / clock.
-  case_rvb_r4_c8_preempt_only_on_kept  PATCH stores `preempt` only on a Kept campaign (or one
-                                 it ticks): alone on another → 422, beside an untick ignored;
-                                 GET shows it off on an unkept row; `keep_wait` only while
-                                 Kept, ticked early and the server switch on.
-  case_f7_small_cap_no_switch_or_wait  cap 5: no keep_wait, no keep_blocked switch / clock.
-  case_f1_manual_kept_create_first_read  a create with Keep running ticked queues one first_read
-                                 Re-check on the rule (its knobs, its id): its first count is 0,
-                                 so Fill fires at the threshold later; an unticked create none.
-  case_f3_first_unknown_kept_create_adopted  a first create with Keep running ticked takes one
-                                 page-1 read before its reservation: OF answering without the
-                                 id, a later read adopts it (mirror row, tickable), as the reply
-                                 promised; without Keep running no extra read and no tick promised.
-  case_w30_f20_landed_between_steps_never_resent  the open create adopted by a concurrent read
-                                 at any step of a manual create: 409 create_landed, no POST.
-  case_w30_f24_delete_unticks_before_of_and_refuses_mid_create  deleting a Kept campaign
-                                 unticks it before OF hears; an open create: 409, no delete.
-  case_w30_f26_untick_on_stale_row_still_writes  an untick on a row read before a re-tick
-                                 still writes False; campaign and rule agree.
-
-Run: ./venv/bin/python service/tests/test_promotions.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -104,31 +22,28 @@ from db.models import (Account, AgencyNotification, AutomationRule, PromoCampaig
 
 import _agency_fixtures as fx  # noqa: E402
 
-# The admin routes need a session (no anonymous admin): an Agency owner signs in and owns every seeded account.
 _OWNER = fx.seed_two_agencies()["agency_a_owner"]
 _client = fx.login_owner("agency_a_owner")
 
 
-BOX = "test-box"   # this box's Host fence id
+BOX = "test-box"
 os.environ[promo_create_guard.HOST_ENV] = BOX
 
 
 class FakeOF:
-    """Mimics the LIVE OF promo endpoints: {items:[...]} on GET, a LIST on create."""
     def __init__(self):
         self._id = 70_000_000
         self.created: list[int] = []
         self.deleted: list[int] = []
         self.store: dict[int, dict] = {}
-        self.calls: list[dict] = []   # every create's kwargs, as OF would get them
+        self.calls: list[dict] = []
         self.finished: list[int] = []
         self.reads = 0
 
     def promotions(self, *, offset=0, limit=100):
         self.reads += 1
-        # OF pages this endpoint and its hasMore is ALWAYS true, so the fake
-        # mimics both: callers must stop on a short page, not on hasMore.
         page = list(self.store.values())[offset:offset + limit]
+                # OF pages this endpoint and hasMore is always true: callers stop on a short page.
         return {"hasMore": True, "items": page}
 
     def create_promo(self, *, discount, subscribe_counts, subscribe_days=30, message="", type="all",
@@ -140,7 +55,8 @@ class FakeOF:
                 "claimsCount": 0, "isFinished": False}
         self.store[self._id] = item
         self.created.append(int(discount))
-        return [item]   # OF returns a LIST containing the created promo
+                # OF returns a LIST containing the created promo.
+        return [item]
 
     def finish_promo(self, pid):
         self.finished.append(int(pid))
@@ -151,7 +67,7 @@ class FakeOF:
     def delete_promo(self, pid):
         self.deleted.append(int(pid))
         if int(pid) in self.store:
-            self.store[int(pid)]["isFinished"] = True   # OF flips to finished
+            self.store[int(pid)]["isFinished"] = True
         return {"success": True}
 
 
@@ -177,7 +93,6 @@ def case_list_parses_items_and_of_available():
                     "subscribeDays": 30, "claimsCount": 9, "isFinished": True}
     r = _client.get(f"/admin/promotions?account_id={aid}").json()
     assert r["of_available"] is True, r
-    # claimsCount maps to subscriber_count (performance readout)
     assert any(c["of_promo_id"] == 123 and c["subscriber_count"] == 9 for c in r["campaigns"]), r
 
 
@@ -215,13 +130,10 @@ def case_of_unavailable_when_fetch_fails():
             raise RuntimeError("no session")
     ax._make_client = lambda account_id: Boom()  # type: ignore[attr-defined]
     r = _client.get(f"/admin/promotions?account_id={aid}").json()
-    assert r["of_available"] is False, r   # None sentinel → False, not a 500
+    assert r["of_available"] is False, r
 
 
 def case_only_one_campaign_can_keep_running():
-    """OF runs one promo at a time, so arming a second campaign set up a
-    ping-pong: each re-arm finished the other's live discount, minting a real
-    promo on the creator's profile every tick."""
     aid = "pr_one_armed"
     asyncio.run(_seed(aid))
     _use_fake()
@@ -237,7 +149,6 @@ def case_only_one_campaign_can_keep_running():
     assert second.status_code == 409, f"expected 409, got {second.status_code}: {second.text}"
     assert "already set to keep running" in second.text, second.text
 
-    # Turning the first off frees the slot.
     assert _client.patch(f"/admin/promotions/{a['id']}",
                          json={"auto_reactivate": False}).status_code == 200
     assert _client.patch(f"/admin/promotions/{b['id']}",
@@ -245,12 +156,10 @@ def case_only_one_campaign_can_keep_running():
 
 
 def case_subscribe_days_reflects_what_of_did():
-    """OF DISCARDS subscribeDays for a percent discount (stores 0, no end date).
-    The mirror used to keep the operator's typed number and `or` hid OF's 0, so
-    the UI promised an expiry that does not exist."""
     aid = "pr_days"
     asyncio.run(_seed(aid))
-    _use_fake()          # fake echoes subscribe_days back as OF stored it
+    # OF discards subscribeDays for a percent discount (stores 0, no end date).
+    _use_fake()
     r = _client.post("/admin/promotions", json={
         "account_id": aid, "name": "Discount", "discount": 10,
         "subscribe_counts": 1, "subscribe_days": 0})
@@ -263,10 +172,6 @@ def case_subscribe_days_reflects_what_of_did():
 
 
 def case_offer_expiration_and_audience_reach_of():
-    """The Growth form now sends Infloww's/OF's "Offer expiration" (finish_days)
-    and "User type". One audience stays the bare string the live-verified create
-    used; both goes as OF's own list, and the mirror keeps it as "all,expired"
-    so the re-arm can send the same list back. No finish_days → not sent."""
     aid = "promo_fields"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -300,12 +205,10 @@ def case_bad_audience_is_422():
     assert f.calls == [], "a rejected audience must never reach OF"
     r = _client.post("/admin/promotions", json={
         "account_id": aid, "name": "X", "discount": 10, "subscribe_counts": 1, "finish_days": 31})
-    assert r.status_code == 422, r.text   # OF's offer expiration tops out at 30 days
+    assert r.status_code == 422, r.text
 
 
 def case_of_only_row_keeps_its_created_date():
-    """Infloww's Promo cell shows the creation date; an OnlyFans-only row (no
-    mirror) carries it from OF's createdAt instead of None."""
     aid = "promo_created"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -343,7 +246,7 @@ def case_keep_running_toggle_owns_the_rule():
     asyncio.run(_seed(aid))
     _use_fake()
     a = _create(aid, "A")
-    assert a["auto_reactivate"] is False and asyncio.run(_rules(aid)) == [], a  # API default: unarmed
+    assert a["auto_reactivate"] is False and asyncio.run(_rules(aid)) == [], a
     assert _client.patch(f"/admin/promotions/{a['id']}", json={"auto_reactivate": True}).status_code == 200
     rules = asyncio.run(_rules(aid))
     assert len(rules) == 1 and rules[0].is_enabled, rules
@@ -355,11 +258,9 @@ def case_keep_running_toggle_owns_the_rule():
     assert _client.patch(f"/admin/promotions/{a['id']}", json={"auto_reactivate": True}).status_code == 200
     rules = asyncio.run(_rules(aid))
     assert len(rules) == 1 and rules[0].is_enabled, "re-tick wakes the same row, never a second"
-    # a refused tick (409) leaves the rule and flags alone
     b = _create(aid, "B")
     assert _client.patch(f"/admin/promotions/{b['id']}", json={"auto_reactivate": True}).status_code == 409
     assert asyncio.run(_row(a["id"])).auto_reactivate and not asyncio.run(_row(b["id"])).auto_reactivate
-    # unticking a campaign that is not the armed one keeps the rule on
     assert _client.patch(f"/admin/promotions/{b['id']}", json={"auto_reactivate": False}).status_code == 200
     assert asyncio.run(_rules(aid))[0].is_enabled
 
@@ -385,7 +286,7 @@ def case_create_without_id_is_unknown_unarmed():
     aid = "pr_create_noid"
     asyncio.run(_seed(aid))
     f = _use_fake()
-    f.create_promo = lambda **kw: []          # OF answered without the created promo
+    f.create_promo = lambda **kw: []
     r = _create(aid, "NoId", auto_reactivate=True)
     assert (r["id"], r["of_promo_id"], r["create"], r["auto_reactivate"]) == (None, None, "unknown", False), r
     assert "shows here once OnlyFans lists it" in r["auto_reactivate_refused"], r
@@ -538,7 +439,7 @@ def _raw(aid, method, path, **kw):
 
 def _raw_fake(aid) -> FakeOF:
     f = _use_fake()
-    server._load_client = lambda account_id: f   # the raw /api/of/v2 routes' client
+    server._load_client = lambda account_id: f
     known = server.account_registry.get_account
     server.account_registry.get_account = lambda a: {"id": a} if a == aid else known(a)
     return f
@@ -570,7 +471,6 @@ def case_raw_finish_unticks():
     r = _raw(aid, "delete", f"/api/of/v2/promotions/{b['of_promo_id']}")
     assert r.status_code == 200 and f.deleted == [b["of_promo_id"]], r.text
     assert not asyncio.run(_row(b["id"])).auto_reactivate
-    # another promo's stop leaves the Kept one alone
     c = _create(aid, "Kept three", auto_reactivate=True)
     assert _raw(aid, "post", f"/api/of/v2/promotions/{b['of_promo_id']}/finish").status_code == 200
     assert asyncio.run(_row(c["id"])).auto_reactivate
@@ -646,14 +546,14 @@ def case_mn09_unlimited_trial_refused():
     assert t["auto_reactivate"] is True and asyncio.run(_row(t["id"])).recreates_left == 3, t
     assert _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": False}).status_code == 200
     r = _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True})
-    assert r.status_code == 200 and r.json()["recreates_left"] is None, r.text   # no limit: indefinite
+    assert r.status_code == 200 and r.json()["recreates_left"] is None, r.text
     assert _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": False}).status_code == 200
     assert _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True,
                                                                "recreate_limit": 11}).status_code == 422
     r = _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": True, "recreate_limit": 4})
     assert r.status_code == 200 and r.json()["recreates_left"] == 4, r.text
     assert _client.patch(f"/admin/promotions/{t['id']}", json={"auto_reactivate": False}).status_code == 200
-    u = _create(aid, "Open trial", discount=100, subscribe_days=3, subscribe_counts=0)   # unticked: fine
+    u = _create(aid, "Open trial", discount=100, subscribe_days=3, subscribe_counts=0)
     r = _client.patch(f"/admin/promotions/{u['id']}", json={"auto_reactivate": True, "recreate_limit": 3})
     assert r.status_code == 422 and r.json()["detail"]["error"] == "trial_unlimited", r.text
     n = _create(aid, "No limit", **trial, subscribe_counts=10)
@@ -701,7 +601,7 @@ def case_create_takeover_moved_409():
     c = _create(aid, "Gamma")
     real = f.create_promo
 
-    def arm_gamma_then_create(**kw):        # another tab moves Keep running mid-POST
+    def arm_gamma_then_create(**kw):
         async def arm():
             async with get_session() as s:
                 (await s.get(PromoCampaign, a["id"])).auto_reactivate = False
@@ -715,8 +615,6 @@ def case_create_takeover_moved_409():
 
 
 def case_rv_c02_manual_age_runs_from_send():
-    """c2: a row reserved long ago that only just started sending is in flight (its sender
-    may be mid-POST), never offered for "create anyway"."""
     aid = "pr_rv_c02_age"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -728,8 +626,6 @@ def case_rv_c02_manual_age_runs_from_send():
 
 
 def case_rv_c05_takeover_between_reserve_and_send_refused():
-    """c5: Keep running moved after the reserve, before the POST: the sending CAS re-checks
-    expect_taken_from, 409 keep_running_moved, OF never hears."""
     aid = "pr_rv_c05"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -758,8 +654,6 @@ def case_rv_c05_takeover_between_reserve_and_send_refused():
 
 
 def case_rv_r06_concurrent_ticks_one_kept():
-    """r6/c4: two ticks racing (PATCH path, refuse_others) leave exactly one Kept campaign;
-    the loser gets 409, never a second Kept row."""
     aid = "pr_rv_r06"
     asyncio.run(_seed(aid))
     _use_fake()
@@ -777,9 +671,6 @@ def case_rv_r06_concurrent_ticks_one_kept():
 
 
 def case_rv_r08_success_after_create_anyway_no_500():
-    """r8: the row was cleared ("create anyway" elsewhere) while this POST was out; OF then
-    answers with an id: the reply says unresolved with that id (no 500), and the cleared row
-    keeps the id so a read never counts it as a fresh promo."""
     aid = "pr_rv_r08"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -822,7 +713,7 @@ def case_preempt_second_tick():
     r = _client.patch(f"/admin/promotions/{b['id']}", json={"auto_reactivate": False})
     assert (r.json()["auto_reactivate"], r.json()["preempt"]) == (False, False), r.text
     r = _client.patch(f"/admin/promotions/{b['id']}", json={"auto_reactivate": True})
-    assert r.json()["preempt"] is False, r.text      # a re-tick keeps the second tick
+    assert r.json()["preempt"] is False, r.text
 
     def listed():
         rows = _client.get(f"/admin/promotions?account_id={aid}").json()["campaigns"]
@@ -853,7 +744,7 @@ def case_rvb_r4_c8_preempt_only_on_kept():
     asyncio.run(_seed(aid))
     _use_fake()
     a = _create(aid, "A", subscribe_counts=10, auto_reactivate=True)
-    c = _create(aid, "C", subscribe_counts=10)                     # not Kept
+    c = _create(aid, "C", subscribe_counts=10)
     stored = asyncio.run(_row(c["id"])).preempt
     r = _client.patch(f"/admin/promotions/{c['id']}", json={"preempt": not stored})
     assert r.status_code == 422, r.text
@@ -883,8 +774,6 @@ def case_rvb_r4_c8_preempt_only_on_kept():
 
 
 def case_f7_small_cap_no_switch_or_wait():
-    """F7: Re-create at 90% never applies under cap 10, so the card shows no waiting line
-    and no 'switch' block for it (ticked early or not, switch on or off)."""
     aid = "pr_f7_small"
     asyncio.run(_seed(aid))
     _use_fake()
@@ -931,7 +820,7 @@ def case_f1_manual_kept_create_first_read():
     f = _use_fake()
     plain = _create(aid, "Plain", subscribe_counts=10)
     assert asyncio.run(_pending_jobs(aid)) == [], "no Keep running: no read owed"
-    f.store[plain["of_promo_id"]]["isFinished"] = True     # OF ends it at the next create
+    f.store[plain["of_promo_id"]]["isFinished"] = True
     a = _create(aid, "A", subscribe_counts=10, auto_reactivate=True)
     (job,) = asyncio.run(_pending_jobs(aid))
     (rule,) = asyncio.run(_rules(aid))
@@ -952,7 +841,6 @@ def case_f1_manual_kept_create_first_read():
 
 
 def _ghost(f: FakeOF):
-    """OF makes the promo (createdAt stamped, as OF lists it) but answers without it."""
     real = f.create_promo
 
     def create(**kw):
@@ -974,11 +862,10 @@ def case_f3_first_unknown_kept_create_adopted():
     assert (r["id"], r["create"]) == (None, "unknown"), r
     rows = _client.get(f"/admin/promotions?account_id={aid}").json()["campaigns"]
     row = next(c for c in rows if c["of_promo_id"] == f._id)
-    assert row["id"] is not None and row["name"] == "Ghost", row        # adopted: its mirror row
+    assert row["id"] is not None and row["name"] == "Ghost", row
     t = _client.patch(f"/admin/promotions/{row['id']}", json={"auto_reactivate": True})
     assert t.status_code == 200 and t.json()["auto_reactivate"] is True, t.text
     assert r["auto_reactivate_refused"] == "It shows here once OnlyFans lists it; tick Keep running then", r
-    # without Keep running: no extra read, no tick promised
     aid = "pr_f3_plain"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -989,9 +876,6 @@ def case_f3_first_unknown_kept_create_adopted():
 
 
 def case_w30_f2_landed_create_never_resent():
-    """W30 F2: a create that landed on OF but got no answer (crash after the POST) is adopted
-    by the retry's reconcile: 409 create_landed, nothing sent again. "Create anyway" naming a
-    row a read settled created meanwhile: 409 create_landed too, no POST."""
     terms = {"discount": 20, "subscribe_counts": 7, "subscribe_days": 30, "message": "Hi",
              "type": "all", "mirror": {"name": "Late one", "promo_type": "all"}}
 
@@ -999,7 +883,6 @@ def case_w30_f2_landed_create_never_resent():
         f.store[pid] = {"id": pid, "message": "Hi", "type": "all", "subscribeCounts": 7,
                         "subscribeDays": 0, "claimsCount": 0, "isFinished": False,
                         "createdAt": datetime.utcnow().isoformat() + "+00:00"}
-    # the retry: the open row (crashed sender) is adopted by its own reconcile
     aid = "pr_w30_f2_retry"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -1011,7 +894,6 @@ def case_w30_f2_landed_create_never_resent():
     assert (d["reason"], d["id"], d["of_promo_id"]) == ("create_landed", rid, 902), d
     assert f.calls == [], f.calls
     assert asyncio.run(_reservations(aid)) == [("manual", "created")]
-    # "create anyway" on a row a list read settled created since the operator saw it
     aid = "pr_w30_f2_anyway"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -1020,7 +902,7 @@ def case_w30_f2_landed_create_never_resent():
     r = _client.post("/admin/promotions", json={"account_id": aid, **BODY})
     assert r.status_code == 409 and r.json()["detail"]["reason"] == "create_unresolved", r.text
     _listed(f, 903)
-    _client.get(f"/admin/promotions?account_id={aid}")          # the list read adopts it
+    _client.get(f"/admin/promotions?account_id={aid}")
     r = _client.post("/admin/promotions", json={"account_id": aid, **BODY, "resolve_open": rid})
     assert r.status_code == 409 and r.json()["detail"]["reason"] == "create_landed", r.text
     assert f.calls == [], f.calls
@@ -1028,10 +910,6 @@ def case_w30_f2_landed_create_never_resent():
 
 
 def case_w30_f20_landed_between_steps_never_resent():
-    """W30 F20: a concurrent list read adopts the open create (settles it created) at any step
-    of a manual create: right after its reserve met the open row, between "create anyway"'s
-    landed check and its reserve, or just before it clears the row. Each: 409 create_landed,
-    no second reservation, nothing sent to OF."""
     from of_promos import normalise_of_promo
     terms = {"discount": 20, "subscribe_counts": 7, "subscribe_days": 30, "message": "Hi",
              "type": "all", "mirror": {"name": "Late one", "promo_type": "all"}}
@@ -1081,9 +959,6 @@ def case_w30_f20_landed_between_steps_never_resent():
 
 
 def case_w30_f24_delete_unticks_before_of_and_refuses_mid_create():
-    """W30 F24: deleting a Kept campaign unticks it (and parks the rule) before OF hears,
-    so no tick re-creates it meanwhile; an open create on the Creator: 409 create_in_flight,
-    nothing deleted on OF, the row stays Kept."""
     import sqlite3
     aid = "pr_w30_f24_delete"
     asyncio.run(_seed(aid))
@@ -1093,7 +968,7 @@ def case_w30_f24_delete_unticks_before_of_and_refuses_mid_create():
     seen: list[tuple] = []
     real = f.delete_promo
 
-    def delete_promo(pid):   # what the DB says the moment OF hears
+    def delete_promo(pid):
         con = sqlite3.connect(str(_harness.DB_PATH))
         try:
             seen.append(con.execute("SELECT auto_reactivate FROM promo_campaigns WHERE id = ?",
@@ -1105,7 +980,6 @@ def case_w30_f24_delete_unticks_before_of_and_refuses_mid_create():
         return real(pid)
     f.delete_promo = delete_promo
     rid = asyncio.run(_open_row(aid, ago_s=30))
-    # W30 N2: an open create only holds a Kept row's delete; any other row deletes at once.
     nb = _client.delete(f"/admin/promotions/{b['id']}")
     assert nb.status_code == 200 and f.deleted == [b["of_promo_id"]], nb.text
     f.deleted.clear(); seen.clear()
@@ -1123,9 +997,6 @@ def case_w30_f24_delete_unticks_before_of_and_refuses_mid_create():
 
 
 def case_w30_f3_retick_of_kept_keeps_limit_and_breaker():
-    """W30 F3: PATCH auto_reactivate=true on a campaign already Kept (a stale tab) keeps its
-    Re-create limit and keep_ticked_at (the Zero-claim breaker's start); an explicit
-    recreate_limit still sets the limit; an off→on tick or one clearing a warning restamps."""
     aid = "pr_w30_f3_retick"
     asyncio.run(_seed(aid))
     _use_fake()
@@ -1153,9 +1024,6 @@ def case_w30_f3_retick_of_kept_keeps_limit_and_breaker():
 
 
 def case_w30_f5_untick_racing_takeover_keeps_rule():
-    """W30 F5: an untick of the last Kept campaign racing a create's Takeover onto another:
-    the untick takes the write lock before it reads "no other Kept campaign", so the Takeover
-    commits after it and the new Kept campaign's rule stays enabled."""
     aid = "pr_w30_f5_race"
     asyncio.run(_seed(aid))
     _use_fake()
@@ -1169,7 +1037,6 @@ def case_w30_f5_untick_racing_takeover_keeps_rule():
         async def racing(s, account_id, *, on):
             nonlocal arm_task
             if not on and arm_task is None:
-                # The untick has read and is about to park the rule: a Takeover starts now.
                 arm_task = asyncio.create_task(promotions_api._arm(aid, b["id"], None))
                 await asyncio.sleep(0.5)
             return await real(s, account_id, on=on)
@@ -1188,8 +1055,6 @@ def case_w30_f5_untick_racing_takeover_keeps_rule():
 
 
 def case_w30_f26_untick_on_stale_row_still_writes():
-    """W30 F26: an untick holding a row read before a re-tick landed (already False in
-    memory) still writes False, so the campaign and its rule agree: unticked, rule parked."""
     aid = "pr_w30_f26_stale"
     asyncio.run(_seed(aid))
     _use_fake()
@@ -1197,9 +1062,9 @@ def case_w30_f26_untick_on_stale_row_still_writes():
 
     async def scenario():
         async with get_session() as s:
-            row = await s.get(PromoCampaign, a["id"])   # unticked, read now
+            row = await s.get(PromoCampaign, a["id"])
             await s.commit()
-            await promotions_api._arm(aid, a["id"], None)   # a re-tick lands meanwhile
+            await promotions_api._arm(aid, a["id"], None)
             await promotions_api._untick(s, row)
     asyncio.run(scenario())
     rules = asyncio.run(_rules(aid))
@@ -1208,9 +1073,6 @@ def case_w30_f26_untick_on_stale_row_still_writes():
 
 
 def case_w30_f6_keep_lines():
-    """W30 F6/F8: the relay sends the card's finished lines (`keep_lines`), so the app keeps no
-    copy of the reason text; a Kept Free trial with no Offer limit says "create a new one with an
-    Offer limit" (limit_needed), never "Tick Keep running again" (a re-tick 422s)."""
     aid = "pr_w30_f6_lines"
     asyncio.run(_seed(aid))
     _use_fake()
@@ -1218,7 +1080,7 @@ def case_w30_f6_keep_lines():
 
     async def unlimited():
         async with get_session() as s:
-            (await s.get(PromoCampaign, t["id"])).subscribe_counts = 0   # older rule / OF edit
+            (await s.get(PromoCampaign, t["id"])).subscribe_counts = 0
     asyncio.run(unlimited())
 
     def listed(mid):
@@ -1252,14 +1114,14 @@ def case_w30_f6_keep_lines():
                                   "— nothing to do", False, None)]),
         ({"blocked": "switch"}, [(None, "Re-create at 90% filled is off on this server — ask the owner",
                                   False, None)]),
-        ({"blocked": "clock", "wait": "clock"},   # clock: the waiting line says it, never a second line
+        ({"blocked": "clock", "wait": "clock"},
          [("Waiting", "will re-create after it ends (OnlyFans' clock doesn't match ours)", False, None)]),
         ({"wait": "count_untrusted"}, [("Waiting", "will re-create after it ends (the claim count isn't "
                                         "reliable yet)", False, None)]),
         ({"wait": "budget"}, [("Waiting", "will re-create after it ends (3 re-creates this hour (or 8 today) "
                                "reached)", False, None)]),
         ({"wait": "something_new"}, [("Waiting", "will re-create after it ends (something_new)", False, None)]),
-        ({"blocked": "something_new"}, [("Paused", "something_new", False, None)]),   # never dropped
+        ({"blocked": "something_new"}, [("Paused", "something_new", False, None)]),
         ({"recreates_left": 1}, [(None, "1 re-create left, then Keep running turns off", False, None)]),
         ({"recreates_left": 3}, [(None, "3 re-creates left, then Keep running turns off", False, None)]),
         ({"auto_reactivate": False, "recreates_left": 3}, []),
@@ -1269,8 +1131,6 @@ def case_w30_f6_keep_lines():
 
 
 def case_w30_f15_every_hold_and_wait_code_has_text():
-    """W30 F15: the card's text tables cover every code decide/guard can answer (a new code
-    added there fails here, and shows raw on the card meanwhile instead of vanishing)."""
     from typing import get_args
     import promo_keep_decide as d
     assert set(get_args(d.HoldReason)) | {"unknown"} <= set(promotions_api._HELD_TEXT), get_args(d.HoldReason)
@@ -1278,9 +1138,6 @@ def case_w30_f15_every_hold_and_wait_code_has_text():
 
 
 def case_w30_f7_moved_after_create_says_tick_the_row():
-    """W30 F7: Keep running moved after the promo landed on OF (the arm's 409): the create
-    answers 200 with the promo, and the reason says where Keep running is and to tick this
-    row, never "check the form and create again" (a second create would mint a duplicate)."""
     aid = "pr_w30_f7_moved"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -1288,7 +1145,7 @@ def case_w30_f7_moved_after_create_says_tick_the_row():
     c = _create(aid, "Gamma")
     real = f.create_promo
 
-    def move_then_create(**kw):        # another tab moves Keep running mid-POST
+    def move_then_create(**kw):
         async def move():
             async with get_session() as s:
                 (await s.get(PromoCampaign, a["id"])).auto_reactivate = False

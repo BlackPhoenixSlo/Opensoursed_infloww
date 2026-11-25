@@ -1,8 +1,3 @@
-"""service/ultra_judge.py — a judge step's one model call (ultra_judge_decide; the run: ultra_run).
-
-One DeepSeek flash call per judge, billed to the owner (user_id, no account), like the planner. Its reply's ids
-are clamped to the candidates; fewer than pick_n left fails the step.
-"""
 from __future__ import annotations
 
 import logging
@@ -18,14 +13,13 @@ log = logging.getLogger("of-relay.ultra")
 
 @dataclass(frozen=True)
 class Verdict:
-    ids: list[int] | None   # None: failed (`error`)
+    ids: list[int] | None
     cost_mc: int
     error: str | None = None
-    capped: bool = False    # the daily AI cap refused the call → the plan is `capped`
+    capped: bool = False
 
 
 async def ask(step: dict[str, Any], cands: list[dict[str, Any]], owner_user_id: str) -> Verdict:
-    """Never raises an Exception: any failure is a failed Verdict (a judge step never ends `uncertain`)."""
     try:
         res = await llm_client.chat(model=upd.MODEL, messages=uj.messages(step["question"], step["pick_n"], cands),
                                     purpose=uj.PURPOSE, account_id=None, user_id=owner_user_id,

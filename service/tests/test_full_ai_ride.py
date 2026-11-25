@@ -42,7 +42,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_ride.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
@@ -73,8 +73,6 @@ SCENE_OFFER_TRUE = (
     "or asks for more), they have each sent several sexting messages, no locked message of hers is "
     "waiting unbought in `thread`, and he has written three or more lines since the last locked "
     "message she sent")
-# 2026-11-14: "he just said no to buying or cannot pay" dropped (then a decline sold now; since
-# 2026-11-15 "broke" routes nothing).
 SCENE_OFFER_FALSE = (
     "The sexting only just started, a locked message of hers "
     "in `thread` is still not bought, she sent or offered him something in one of her last two "
@@ -94,14 +92,11 @@ CLOSE = wr.CLOSE_BY_ID
 EXAMPLE = wr._voice.HER.sell_caption_example
 
 
-# ── Pure ──────────────────────────────────────────────────────────────
 
 def case_flag_table():
     assert "offer_ride" not in DEFAULTS and "offer_ride" not in REFERENCE
     assert "offer_ride" not in assistant_full_ai.CONFIG_KEYS and "offer_ride" not in assistant_full_ai.LABELS
     assert REFERENCE["chat_tease"]["page"] == "Chat tease", REFERENCE["chat_tease"]
-    # A stored side still holding it (PR #663's key) reads and validates, the key dropped; a write
-    # carrying it, any value, is refused, naming its successor.
     old = {**DEFAULTS, "offer_ride": False, "chat_tease": False}
     got = merged({"checkpoint": old, "previous": old, "draft": old, "rev": 3})
     for side in ("checkpoint", "previous", "draft"):
@@ -123,19 +118,19 @@ def case_ride_switches():
     D = lambda route, row, *fired: Decision(route, 2, row, frozenset(fired))   # noqa: E731
     on = _facts(chat_tease=True, sext_scene=False)
     assert not hasattr(wr, "ride_flag") and not hasattr(wr, "ride_turn")
-    rows = [   # (decision, facts) -> tease_turn
+    rows = [
         ((D("sell_now", "offer_moment", "offer_moment"), on), True),
         ((D("sell_now", "chat_tease", "chat_tease"), on), True),
         ((D("sell_now", "sell", "wants_content"), on), False),
         ((D("sell_now", "scene_offer", "scene_on", "scene_offer"), _facts(sext_scene=True)), False),
-        ((D("sell_now", "offer_moment", "offer_moment", "sexual_now"), on), False),           # hot
-        ((D("sell_now", "offer_moment", "offer_moment", "scene_on"), _facts(sext_scene=True)), False),  # hot
+        ((D("sell_now", "offer_moment", "offer_moment", "sexual_now"), on), False),
+        ((D("sell_now", "offer_moment", "offer_moment", "scene_on"), _facts(sext_scene=True)), False),
         ((D("sell_now", "offer_moment", "offer_moment", "sexual_now"),
-          _facts(chat_tease=True, sext_scene=False, sext_on=False)), True),                   # not hot
+          _facts(chat_tease=True, sext_scene=False, sext_on=False)), True),
         ((D("chat", "offer_moment"), on), False),
         ((D("sell_now", "offer_moment", "offer_moment"), _facts(chat_tease=False)), False),
         ((D("sell_now", "offer_moment", "offer_moment"), _facts("shadow", chat_tease=True)), False),
-        ((D("sell_now", "offer_moment", "offer_moment"), _facts("live", chat_tease=True)), True),   # live = test (04a)
+        ((D("sell_now", "offer_moment", "offer_moment"), _facts("live", chat_tease=True)), True),
     ]
     for (d, f), want in rows:
         assert wr.tease_turn(d, f) is want, (d, f.mode)
@@ -183,13 +178,11 @@ def case_pick_ride():
                 assert isinstance(got, Pick), (rows, got)
                 assert 1 <= len(got.media) <= 2 and got.format == "photo", got
                 assert 50 not in got.media and got.previews == () and got.facts.get("ride") is True, got
-                assert _pick(rows, shoots, seed=seed, bundle=bundle, ride=True) == got   # seeded
+                assert _pick(rows, shoots, seed=seed, bundle=bundle, ride=True) == got
     assert len(_pick(shoot6, [{"items": [{"media_id": i} for i in range(1, 7)]}], ride=True).media) == 2
-    assert len(_pick(loose, [], bundle="fill", ride=True).media) == 2                     # fill target 2
+    assert len(_pick(loose, [], bundle="fill", ride=True).media) == 2
     assert len(_pick([_row(60)], [], bundle="fill", ride=True).media) == 1
-    # Only a video: no ride piece (photos only).
     assert isinstance(_pick([clip], [], ride=True), fs.Refusal)
-    # ride=False is today's Pick.
     for rows in (shoot6, loose, loose + [clip]):
         a = _pick(rows, [], bundle="fill")
         assert a == _pick(rows, [], bundle="fill", ride=False) and "ride" not in a.facts, a
@@ -225,15 +218,11 @@ def case_ride_prompt():
     unspent = _turn_facts(sext_scene=False, lead_in=False)
     unspent.spent = []
     assert ride[1] == wr.messages_for("chat", "offer_moment", 2, unspent, None)[1], ride[1]
-    # An unmarked Pick (flag off / no ride Turn): today's pitched offer_moment prompt.
     off = wr.messages_for("sell_now", "offer_moment", 2, f, PICK)[0]["content"]
     assert RIDE_WORDING not in off and wr.ESCALATION_TEST.format(close=CLOSE) in off
-    # plain (a separate caption) or a Refusal never rides.
     assert RIDE_WORDING not in wr.messages_for("sell_now", "offer_moment", 2, f, RIDE, plain=True)[0]["content"]
     assert RIDE_WORDING not in wr.messages_for("sell_now", "offer_moment", 2, f, fs.Refusal("no_match"))[0]["content"]
     assert RIDE_WORDING not in wr.messages_for("tease", "offer_moment", 2, f, RIDE)[0]["content"]
-    # A Refusal on a Chat tease Turn (chat_tease on, offer_moment not hot): plain chat, no need-line;
-    # hot, or chat_tease off, it keeps the need-line (the pitched unasked offer).
     no = fs.Refusal("no_match")
     assert wr.FILMING_MORE not in wr.messages_for("sell_now", "offer_moment", 2, f, no)[0]["content"]
     assert wr.FILMING_MORE not in wr.messages_for("sell_now", "chat_tease", 2, f, no)[0]["content"]
@@ -312,11 +301,8 @@ def case_wording_in_catalog():
     assert wr.RIDE_NOTE == RIDE_WORDING
 
 
-# ── Through the Test chat API ─────────────────────────────────────────
 
 class FakeTeaseJev:
-    """`_price_jev._client`: the tease price Jev answers `verdict` (an option label) on every call,
-    each call's questions recorded; an Offer price Score call raises (never asked on a tease)."""
 
     def __init__(self, verdict="$10"):
         self.verdict, self.calls = verdict, []
@@ -339,7 +325,7 @@ def _draft(**cfg):
 
 
 SAME = {301: "$50", 302: "$50", 303: "$50", 304: "$50"}
-SOFT = {311: "$10", 312: "$10", 313: "$10", 314: "$10"}     # a ride draws only soft photos (rwl-a F4)
+SOFT = {311: "$10", 312: "$10", 313: "$10", 314: "$10"}
 MOMENT = ({**QUIET_TEST, "offer_moment": .9}, 2.0)
 CHATTY = "ok:haha stop ur making me blush, what are u up to tonight"
 
@@ -377,8 +363,6 @@ def case_api_ride():
 
 
 def case_api_ride_bad_claim():
-    """Her reply names a video / a wrong price, the rewrite too: her text goes out alone (no PPV,
-    no fallback caption naming the photos and the price), `offer_dropped` "claim"."""
     pair = "r-ride-bad"
     bad = "ok:here's a hot video for u, $99"
     with _draft(), _vault(SOFT), _price(FakeTeaseJev("$10")):
@@ -462,7 +446,6 @@ def case_api_scene_offer_unchanged():
 
 
 def case_api_offer_ride_stored():
-    """A draft PUT still holding the retired `offer_ride` is refused (422, naming `chat_tease`); nothing stored."""
     cur = OWNER_A.get(CONFIG, params={"account_id": A}).json()
     r = OWNER_A.put(f"{CONFIG}/draft", json={"account_id": A, "draft": {**DEFAULTS, "offer_ride": False}, "rev": cur["rev"]})
     assert r.status_code == 422 and "offer_ride: retired, folded into chat_tease: remove it" in r.text, r.text
@@ -474,7 +457,6 @@ def case_api_offer_ride_stored():
         _put_draft(dict(DEFAULTS))
 
 
-# ── _claim_audit, pure-ish (stubs: banned words; no Writer: too late for a rewrite) ──
 
 def _audit_facts():
     return SimpleNamespace(account_id="acct_audit", fan_id=7, mode="test", anchor_key="test:a:1",
@@ -495,7 +477,7 @@ async def _audit(pick, parts, banned=()):
         f.pick = pick
         reply = {"attempts": [], "leak": [], "dropped_reason": None, "typo_state": {}}
         got = await turn._claim_audit(Decision("sell_now", 2, "sell", frozenset()), f, reply, "w",
-                                      parts, pick, time.monotonic())    # no time left: no rewrite
+                                      parts, pick, time.monotonic())
     finally:
         turn.load_banned_words = real
     return got, reply

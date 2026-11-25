@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_routes — Full AI Chat's Route table on the inbound path.
-
-`webhook_dispatch.on_inbound_message` then `automation_executor.run_once` on
-the _harness temp DB, Jev faked at `_router_jev._client` (`_full_ai_fixtures`).
-The table itself is pure-tested in test_full_ai_decide.py; these cases prove
-what a written Decision row carries.
-
-  case_jev_failure_is_chat_heat_1         raising, out of range, NaN, a missing answer
-                                          or Score, no key: chat, Heat 1, `jev_failed`
-  case_says_yes_without_offer_kept_not_counted  raw answer kept, Route unchanged
-  case_gif_fits_leaves_route_unchanged    gif_fits 1.0 or 0.0: same Route
-  case_every_row_carries_route_row_fired_arm  route_row, fired, Arm, salt_ver; both Arms
-  case_replay_reproduces_route_row_heat   decide_turn over a row's jev_json gives
-                                          its route, route_row and heat
-  case_only_gate_error_is_a_jev_failure   any other error from `ask`: error run, no row
-  case_today_read_counts_by_route_in_the_report_zone  GET /admin/full-ai/today: every
-                                          Route counted (zeros too) + jev_failed, since the zone's
-                                          midnight, shadow only, newest 50 rows with Fan name;
-                                          the run emits rule_run_finished kind full_ai_chat
-  case_today_read_refuses_a_creator_not_owned  403, and 401 with no session
-  case_today_read_ignores_test_rows       Test chat rows beside Shadow rows: counts and rows unchanged
-
-Run: ./venv/bin/python service/tests/test_full_ai_routes.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -50,9 +26,6 @@ from db.models import AiDecision, Fan  # noqa: E402
 
 
 async def case_jev_failure_is_chat_heat_1():
-    """Any Jev failure (raising, an out-of-range answer or Score, NaN, a missing
-    answer or Score, no key) is route chat, Heat 1, row `jev_failed` with the
-    error, in an ok run: never a no_send, so an outage mutes no Fan."""
     missing = {k: v for k, v in QUIET.items() if k != "stop"}
     cases = (
         ("raise", RuntimeError("jev down")),
@@ -85,8 +58,6 @@ async def case_jev_failure_is_chat_heat_1():
 
 
 async def case_says_yes_without_offer_kept_not_counted():
-    """says_yes_to_offer at 1.0 with no Pending offer: its raw answer is kept,
-    the Route unchanged (chat); with a Pending offer the same answer sells."""
     _res, r = await _one_turn("fa_yes_nooffer", 72, ({**QUIET, "says_yes_to_offer": 1.0}, 1.0))
     jj = json.loads(r.jev_json)
     assert jj["answers"]["says_yes_to_offer"] == 1.0 and jj["state"]["pending_offer"] == "none", jj
@@ -96,7 +67,6 @@ async def case_says_yes_without_offer_kept_not_counted():
 
 
 async def case_gif_fits_leaves_route_unchanged():
-    """gif_fits at 1.0 or 0.0: the same Route, quiet or sexual."""
     for i, (base, want) in enumerate(((QUIET, ("chat", "otherwise")),
                                       ({**QUIET, "sexual_now": .9}, ("sext", "sexual_now")))):
         for g in (1.0, 0.0):
@@ -106,8 +76,6 @@ async def case_gif_fits_leaves_route_unchanged():
 
 
 async def case_every_row_carries_route_row_fired_arm():
-    """Every row carries `route_row`, the fired set and the Arm and `salt_ver`
-    `arm_of` gives; a holdout Fan and a treatment Fan both get rows."""
     holdout = next(f for f in range(100, 10_000) if full_ai_decide.arm_of("fa_arm_h", f) == "holdout")
     treated = next(f for f in range(100, 10_000) if full_ai_decide.arm_of("fa_arm_t", f) == "treatment")
     verdict = ({**QUIET, "price": .8, "sexual_now": .8, "gif_fits": .7}, 2.0)
@@ -120,7 +88,6 @@ async def case_every_row_carries_route_row_fired_arm():
 
 
 def _replayed(jj: dict) -> full_ai_decide.Decision:
-    """`decide_turn` over the Facts rebuilt from a stored row's `jev_json` alone."""
     ok = jj["answers"] is not None
     fired = rj.fired(jj["answers"]) if ok else frozenset()
     assert sorted(fired) == jj["fired"], (sorted(fired), jj["fired"])
@@ -130,14 +97,12 @@ def _replayed(jj: dict) -> full_ai_decide.Decision:
 
 
 async def case_replay_reproduces_route_row_heat():
-    """R9: `decide_turn` over a stored row's `jev_json` reproduces its `route`,
-    `route_row` and `heat`, so rows can be re-routed under a later table."""
     verdicts = (
         (({**QUIET, "promo": .9}, 0.0), False, ("no_send", "promo")),
         (({**QUIET, "complains_now": .6, "stop": .9}, 1.0), False, ("make_right", "complains_now")),
         (({**QUIET, "says_yes_to_offer": .8}, 1.5), True, ("sell_now", "sell")),
         (({**QUIET, "says_yes_to_offer": .8}, 1.5), False, ("chat", "otherwise")),
-        (({**QUIET, "declines_buying": .97, "sexual_now": .9}, 3.6), False, ("sext", "sexual_now")),  # broke: ignored
+        (({**QUIET, "declines_buying": .97, "sexual_now": .9}, 3.6), False, ("sext", "sexual_now")),
         (({**QUIET, "sexual_now": .9}, 2.5), False, ("sext", "sexual_now")),
         (RuntimeError("jev down"), False, ("chat", "jev_failed")),
     )
@@ -149,8 +114,6 @@ async def case_replay_reproduces_route_row_heat():
 
 
 async def case_only_gate_error_is_a_jev_failure():
-    """Only `GateError` is read as a Jev failure: any other exception from
-    `ask` (a bug, not Jev) ends the run in error and writes no row."""
     aid, fan = "fa_not_gate", 75
     await _seed(aid, rule=True, gate=False)
     await _dm(aid, fan, 7001, "hey you", T0)
@@ -185,11 +148,6 @@ async def _decision(aid: str, fan: int, key: str, at: datetime, *, route: str = 
 
 
 async def case_today_read_counts_by_route_in_the_report_zone():
-    """One DM through the inbound path, plus rows either side of the report
-    zone's midnight: the read counts today's shadow and test rows per Route, every
-    Route present (zeros too, in Route order), Jev failures apart, newest
-    first, at most 50, each with its Fan's name (a test row none, `test` true). The run emits
-    `rule_run_finished` with its kind, which refetches the page's read."""
     aid, fan = "fa_today", 76
     q = await events.subscribe("all", accounts=frozenset({aid}))
     try:
@@ -203,10 +161,10 @@ async def case_today_read_counts_by_route_in_the_report_zone():
     assert [(f["kind"], f["run_id"], f["status"]) for f in finished] == [("full_ai_chat", res["run_id"], "ok")], got
     async with get_session() as s:
         s.add(Fan(account_id=aid, fan_id=fan, of_display_name="Garrett"))
-    zone = ZoneInfo("Pacific/Kiritimati")       # UTC+14: its midnight is never UTC's
+    zone = ZoneInfo("Pacific/Kiritimati")
     since = (datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
              .astimezone(timezone.utc).replace(tzinfo=None))
-    await _decision(aid, fan, "y1", since - timedelta(minutes=1), route="no_send")   # yesterday there
+    await _decision(aid, fan, "y1", since - timedelta(minutes=1), route="no_send")
     await _decision(aid, fan, "t1", since + timedelta(seconds=1), route="tease")
     await _decision(aid, fan, "f1", since + timedelta(seconds=2), error="jev down")
     await _decision(aid, fan, "m1", since + timedelta(seconds=3), route="sell_now", mode="test")
@@ -233,7 +191,6 @@ async def case_today_read_counts_by_route_in_the_report_zone():
                  "route": "sext", "heat": live.heat, "row": "sexual_now", "jev_ms": live.jev_ms,
                  "jev_failed": False, "test": False, "live": False}, r
     assert [x["jev_failed"] for x in rows if x["jev_ms"] is None] == [True], rows
-    # No report zone: UTC midnight. At most 50 rows, newest first.
     for i in range(55):
         await _decision(aid, fan + 1, f"n{i}", datetime.utcnow() - timedelta(seconds=i))
     got = await _today(aid)
@@ -242,7 +199,7 @@ async def case_today_read_counts_by_route_in_the_report_zone():
     assert len(got["rows"]) == 50 and got["counts"]["chat"] >= 55, got["counts"]
     stamps = [x["created_at"] for x in got["rows"]]
     assert stamps == sorted(stamps, reverse=True), stamps
-    assert {x["fan_name"] for x in got["rows"] if x["fan_id"] == str(fan + 1)} == {None}   # no Fan row
+    assert {x["fan_name"] for x in got["rows"] if x["fan_id"] == str(fan + 1)} == {None}
 
 
 async def case_today_read_refuses_a_creator_not_owned():
@@ -263,10 +220,6 @@ async def case_today_read_refuses_a_creator_not_owned():
 
 
 async def case_today_read_counts_test_rows():
-    """Test chat rows (mode test, a negative Fan id, every Route, one Jev-failed) written after
-    today's Shadow rows: each Route's count and Jev failures go up by the test rows, which list
-    first (newest) marked `test` with no Fan name; the Shadow rows are unchanged (owner
-    2026-11-14, replacing spec 03a story 56's "test rows never count")."""
     aid, fan = "fa_today_test_rows", 81
     await _seed(aid, rule=True, gate=False)
     now = datetime.utcnow()
@@ -287,8 +240,6 @@ async def case_today_read_counts_test_rows():
 
 
 async def case_test_photo_duplicate_post_shares_one_describe():
-    """Two concurrent POSTs of the same image + text: one paid describe call, both get the same
-    body; an error in it reaches both and leaves no entry behind; no cache once it has ended."""
     import asyncio
     from automations import full_ai_photo, full_ai_turn
     import inbound_describe

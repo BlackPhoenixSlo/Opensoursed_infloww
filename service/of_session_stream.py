@@ -1,9 +1,3 @@
-"""Pinned curl_cffi stream setup; native metadata only after worker completion.
-
-Initial metadata is parsed from received headers without touching a performing
-handle. Duplicate ownership outlives an abandoned waiter and ends on cleanup.
-"""
-
 import queue
 import weakref
 import threading

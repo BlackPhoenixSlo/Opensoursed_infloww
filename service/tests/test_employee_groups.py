@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""Employee groups on the Relay for the Organization Chart (docs/spec/phase-05-remaining-parity-gaps.md, item 4;
-ticket 35, stories 31-33, 36, 37, 39; ticket 36, stories 34, 35, 38).
-
-`GET /admin/employee-groups` lists the Agency's groups as `{groups:[{id,name,parent_id,employee_count}]}`;
-`POST /admin/employee-groups {name, parent_id|null}` adds one under the Agency root (null) or under one of the
-Agency's own groups; `PATCH /admin/employee-groups/{id} {name?, parent_id?}` renames and/or moves one (409 for a
-move under itself or its own sub-group, so no cycle); `DELETE /admin/employee-groups/{id}` removes an empty one. Names are unique among siblings
-(409), a missing or another Agency's parent is 404, and a group with sub-groups or Employees is 409 on delete.
-`PUT /admin/employee-groups/members {group_id|null, employee_ids[]}` (Batch edit group) places the Employees in one
-group, or none, in one write: another Agency's or a missing group is 404, an Employee outside the Agency 400, and
-the write is all or nothing. `GET /admin/employees` carries each Employee's `group_id`. `subtree_employee_ids`, the
-"Self and subordinates" Data scope's set, is the Employee plus every Employee in a strict descendant group of its own.
-Every route is owner session or Master: 401 signed out (also with ALLOW_ANONYMOUS_ADMIN=1), 403 for a chatter
-(also when Role enforcement grants it Manage employees), and another Agency's group is 404.
-
-The seam is the Relay over HTTP with real session cookies from the shared two-Agency fixture. Two storage cases
-close the file, each on its own `tempfile.mkdtemp` SQLite file, never the harness database or the default URL:
-the `init_db()` catch-up adds the groups table and the Employee group column to a database lacking both, and the
-migration round-trips upgrade → downgrade → upgrade.
-
-Run: ./venv/bin/python service/tests/test_employee_groups.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -102,7 +80,6 @@ def _new_employee(client, name: str) -> int:
 
 
 def _place(employee_id: int, group_id: int | None) -> None:
-    """Puts an Employee in a group straight in the DB, bypassing Batch edit group."""
     async def go() -> None:
         async with get_session() as s:
             await s.execute(update(Employee).where(Employee.id == employee_id).values(group_id=group_id))
@@ -110,7 +87,6 @@ def _place(employee_id: int, group_id: int | None) -> None:
 
 
 def _every_route(client) -> list:
-    # 401 and 403 come before 404, so an id that may not exist is fine here.
     return [
         ("GET", client.get(ROUTE)),
         ("POST", client.post(ROUTE, json={"name": "Fixture Refused", "parent_id": None})),
@@ -120,7 +96,6 @@ def _every_route(client) -> list:
     ]
 
 
-# ── Sessions: 401, 403 ───────────────────────────────────────────────
 
 def case_signed_out_is_401_on_every_route_with_and_without_anonymous_admin():
     for label, r in _every_route(ANON):
@@ -156,7 +131,6 @@ def case_a_chatter_is_403_even_when_role_enforcement_grants_manage_employees():
     assert _group_count() == 0, "a chatter wrote a group under Role enforcement"
 
 
-# ── Create and list ──────────────────────────────────────────────────
 
 def case_an_owner_builds_a_tree_under_the_agency_root_and_lists_it():
     sales = _create(OWNER_A, "Fixture Sales")
@@ -193,7 +167,6 @@ def case_sibling_names_are_unique_but_cousins_may_share_one():
     a = _create(OWNER_A, "Fixture Leaf", left["id"])
     b = _create(OWNER_A, "Fixture Leaf", right["id"])
     assert a["id"] != b["id"]
-    # Another Agency's group of the same name and parent (the root) is not a sibling.
     _create(OWNER_B, "Fixture Unique Root")
 
 
@@ -205,7 +178,6 @@ def case_a_missing_or_another_agencys_parent_is_404_and_writes_nothing():
     assert _group_count() == before
 
 
-# ── Rename and move ──────────────────────────────────────────────────
 
 def _patch(client, group_id: int, body: dict, status: int = 200) -> dict:
     r = client.patch(f"{ROUTE}/{group_id}", json=body)
@@ -227,7 +199,6 @@ def case_patch_renames_and_moves_a_group_and_keeps_absent_fields():
     out = _patch(OWNER_A, g["id"], {"name": "Fixture Moved Root", "parent_id": None})
     assert (out["name"], out["parent_id"]) == ("Fixture Moved Root", None), out
     assert _groups(OWNER_A)[g["id"]] == out
-    # Renaming to its own name in place is not a clash with itself.
     _patch(OWNER_A, g["id"], {"name": "Fixture Moved Root"})
 
 
@@ -242,7 +213,7 @@ def case_patch_refuses_a_cycle_a_sibling_clash_and_bad_input():
         _patch(OWNER_A, a["id"], {"parent_id": parent}, status=409)
     _patch(OWNER_A, b["id"], {"parent_id": c["id"]}, status=409)
     _patch(OWNER_A, clash["id"], {"name": "Fixture Cycle B"}, status=409)
-    _create(OWNER_A, "Fixture Cycle C")  # a root group named like c
+    _create(OWNER_A, "Fixture Cycle C")
     _patch(OWNER_A, c["id"], {"parent_id": None}, status=409)
     for bad in ({}, {"name": ""}, {"name": "x" * 65}, {"name": 7}, {"parent_id": "1"}, {"parent_id": True}):
         _patch(OWNER_A, b["id"], bad, status=422)
@@ -254,7 +225,6 @@ def case_patch_refuses_a_cycle_a_sibling_clash_and_bad_input():
     assert {k: after[k] for k in before} == before, "a refused PATCH wrote"
 
 
-# ── Delete ───────────────────────────────────────────────────────────
 
 def case_delete_removes_an_empty_group_and_is_409_for_sub_groups_or_employees():
     parent = _create(OWNER_A, "Fixture Delete Parent")
@@ -266,7 +236,6 @@ def case_delete_removes_an_empty_group_and_is_409_for_sub_groups_or_employees():
 
     _delete(OWNER_A, parent["id"], status=409)
     _delete(OWNER_A, staffed["id"], status=409)
-    # A deactivated Employee is still one of the group's Employees.
     assert OWNER_A.delete(f"/admin/employees/{worker}").status_code == 200
     _delete(OWNER_A, staffed["id"], status=409)
     assert {parent["id"], child["id"], staffed["id"]} <= set(_groups(OWNER_A))
@@ -280,7 +249,6 @@ def case_delete_removes_an_empty_group_and_is_409_for_sub_groups_or_employees():
     _delete(OWNER_A, parent["id"], status=404)
 
 
-# ── Batch edit group, the Employee list, the subtree helper ──────────
 
 def _members(client, group_id, employee_ids, status: int = 200):
     r = client.put(f"{ROUTE}/members", json={"group_id": group_id, "employee_ids": employee_ids})
@@ -311,7 +279,6 @@ def case_batch_edit_group_places_the_selected_employees_in_one_group_or_none_in_
     assert (placed[e1], placed[e2], placed[e3]) == (team["id"], team["id"], None), placed
     assert _groups(OWNER_A)[team["id"]]["employee_count"] == 2
 
-    # One write moves Employees out of one group into another, and one to none.
     _members(OWNER_A, other["id"], [e2, e3])
     placed = _group_of()
     assert (placed[e1], placed[e2], placed[e3]) == (team["id"], other["id"], other["id"]), placed
@@ -331,7 +298,6 @@ def case_batch_edit_group_refuses_another_agencys_group_404_and_employees_400_wr
 
     for group in (theirs["id"], 999_999):
         _members(OWNER_A, group, [e_a], status=404)
-    # Another Agency's Employee, or an unknown one, refuses the whole write: e_a is not placed either.
     for ids in ([e_a, e_b], [e_a, 999_999]):
         r = _members(OWNER_A, mine["id"], ids, status=400)
         assert "employee" in r["detail"].lower(), r
@@ -359,15 +325,6 @@ def case_the_employee_list_carries_each_employees_group_beside_its_creator_acces
 
 
 def case_the_subtree_helper_is_the_employee_and_strict_descendant_groups_never_peers():
-    """A three-level tree under Agency A:
-
-        Fixture Tree Lead (lead, peer)
-        ├── Fixture Tree Mid (mid)
-        │   └── Fixture Tree Deep (deep)
-        └── Fixture Tree Side (side)
-        Fixture Tree Elsewhere (elsewhere)      ← another root group
-        (no group: loose)
-    """
     from employee_groups_api import subtree_employee_ids
 
     lead_g = _create(OWNER_A, "Fixture Tree Lead")
@@ -391,11 +348,9 @@ def case_the_subtree_helper_is_the_employee_and_strict_descendant_groups_never_p
     assert tree(side) == {side}
     assert tree(elsewhere) == {elsewhere}
     assert tree(loose) == {loose}
-    # Another Agency's helper call never reads Agency A's tree.
     assert asyncio.run(subtree_employee_ids(IDS["agency_b_owner"], lead)) == {lead}
 
 
-# ── Agencies ─────────────────────────────────────────────────────────
 
 def case_another_agencys_groups_are_invisible_and_404():
     a_group = _create(OWNER_A, "Fixture A Private")
@@ -421,7 +376,6 @@ def case_the_master_manages_its_own_agencys_groups_only():
     assert a_group["id"] in _groups(OWNER_A)
 
 
-# ── Storage: init_db() catch-up and the migration ────────────────────
 
 def _columns(path: Path, table: str) -> set[str]:
     conn = sqlite3.connect(path)
@@ -448,7 +402,6 @@ def _indexes(path: Path, table: str) -> set[str]:
 
 
 def _init_db_on(path: Path) -> None:
-    """`init_db()` in a child process bound to `path` only (`DATABASE_URL`), never the harness file."""
     env = {**os.environ, "DATABASE_URL": f"sqlite+aiosqlite:///{path}", "CHATTERLY_DB_URL": f"sqlite:///{path}",
            "CHATTERLY_TEST_MODE": "1"}
     code = "import asyncio; from db.engine import init_db; asyncio.run(init_db())"
@@ -462,7 +415,7 @@ def case_init_db_adds_the_groups_table_and_the_employee_group_column_to_a_databa
     path = workdir / "catchup.db"
     assert path != Path(_harness.DB_PATH)
     try:
-        _init_db_on(path)  # a fresh file: create_all, stamped
+        _init_db_on(path)
         conn = sqlite3.connect(path)
         try:
             conn.execute("DROP TABLE employee_groups")
@@ -472,7 +425,7 @@ def case_init_db_adds_the_groups_table_and_the_employee_group_column_to_a_databa
             conn.close()
         assert "employee_groups" not in _tables(path) and "group_id" not in _columns(path, "employees")
 
-        _init_db_on(path)  # alembic_version exists: the additive catch-up
+        _init_db_on(path)
 
         assert "employee_groups" in _tables(path)
         assert {"id", "agency_user_id", "parent_id", "name", "created_at"} <= _columns(path, "employee_groups")
@@ -500,7 +453,6 @@ def case_the_migration_is_on_the_single_head_and_round_trips_on_a_throwaway_file
     assert r.returncode == 0, r.stderr
     heads = [line for line in r.stdout.splitlines() if line.strip()]
     assert len(heads) == 1 and heads[0].endswith("(head)"), r.stdout
-    # A later revision may sit on top of this one; it still lies on the single line of history.
     h = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(_MIGRATIONS / "alembic.ini"), "history"],
         cwd=_REPO, env={**os.environ, "PYTHONPATH": str(_REPO)}, capture_output=True, text=True, timeout=300)
@@ -511,7 +463,6 @@ def case_the_migration_is_on_the_single_head_and_round_trips_on_a_throwaway_file
     assert path != Path(_harness.DB_PATH)
     conn = sqlite3.connect(path)
     try:
-        # The predecessor's shape of the two tables the revision touches.
         conn.execute("CREATE TABLE users (id VARCHAR PRIMARY KEY, username VARCHAR NOT NULL)")
         conn.execute("CREATE TABLE employees (id INTEGER PRIMARY KEY, display_name VARCHAR NOT NULL, "
                      "user_id VARCHAR, chatter_id VARCHAR)")
@@ -528,7 +479,7 @@ def case_the_migration_is_on_the_single_head_and_round_trips_on_a_throwaway_file
         _run(mod.upgrade)
         assert "employee_groups" in _tables(path) and "group_id" in _columns(path, "employees")
         assert "ix_employee_groups_agency" in _indexes(path, "employee_groups")
-        _run(mod.upgrade)  # idempotent, as the house's inspector-guarded revisions are
+        _run(mod.upgrade)
         _run(mod.downgrade)
         assert "employee_groups" not in _tables(path), _tables(path)
         assert "group_id" not in _columns(path, "employees"), _columns(path, "employees")

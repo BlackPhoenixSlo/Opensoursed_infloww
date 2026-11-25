@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_live_facts — live fan facts (04a ticket 69, `full_ai_live.load` / `record`).
-
-  case_fans_row_reaches_writer       fans real_name Tom + home_city Leeds: in the Writer request,
-                                     not offered to the info Jev; empty / name-only columns kept out
-  case_extract_lands_in_fans         Turn 1 extracts his_age: fans.his_age set (wcfi upsert shape);
-                                     Turn 2's fan_info has it; a Turn that extracts nothing writes nothing
-  case_wcfi_write_between_turns      a value wcfi wrote between two Turns is in the next fan_info
-  case_asked_not_repeated            Turn 1 asks occupation -> asked {occupation: 1}; Turn 2's info
-                                     Jev state carries it (the Test chat's `_info_jev.state`)
-  case_list_mode_asked               list mode: still_needed = `_info_jev.still_needed` over the folded asked
-  case_typo_state_carried            the newest live row's typo_state is the next start;
-                                     fans.custom_fields unchanged
-  case_newest_row_any_status         a no_send / failed newest row carries asked / typo_state
-  case_blank_extract_never_overwrites  "" / whitespace never overwrites; name-only fields never written
-  case_he_likes_from_fans            fetishes -> state he_likes; none -> "nothing stored yet"
-
-Run: ./venv/bin/python service/tests/test_full_ai_live_facts.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -37,7 +19,7 @@ from automations.full_ai_config import DEFAULTS  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import AiDecision, Fan  # noqa: E402
 
-NO_LEAD = {"lead_in": False}     # today's pick wording: every info field offerable
+NO_LEAD = {"lead_in": False}
 
 
 def _writer_text(fw) -> str:
@@ -45,7 +27,6 @@ def _writer_text(fw) -> str:
 
 
 def _offered(info: FakeInfoJev) -> list[str]:
-    """The fields the info Jev's `next_question` Choice offered on its last call."""
     q = info.calls[-1]["questions"].get("next_question")
     return [k for k in (q.criteria if q is not None else {}) if k != "none"]
 
@@ -61,7 +42,7 @@ async def case_fans_row_reaches_writer():
     assert "Tom" in w and "Leeds" in w, w
     offered = _offered(info)
     assert offered and "real_name" not in offered and "home_city" not in offered, offered
-    assert "occupation" in offered, offered          # whitespace counts as empty
+    assert "occupation" in offered, offered
     (row,) = await live_rows(aid, fan)
     fi = reply(row)["fan_info"]
     assert fi == {"real_name": "Tom", "home_city": "Leeds", "of_display_name": "tommy_of"}, fi
@@ -80,8 +61,6 @@ async def case_extract_lands_in_fans():
     f = await get_fan(aid, fan)
     assert f.his_age == "31" and f.real_name == "Sam", (f.his_age, f.real_name)
     assert f.grok_facts_updated_at is not None and f.updated_at > before.updated_at
-    # Turn 2 states nothing: fan_info from fans (no row fold), no fact write (the 10 s cooldown
-    # touches `updated_at` itself, so the fact stamp is the write's mark).
     stamp = f.grok_facts_updated_at
     await her_reply(aid, fan, 6022)
     res, _f, _j, _i, fw = await dm_turn(aid, fan, 6023, "what are u up to")
@@ -90,7 +69,6 @@ async def case_extract_lands_in_fans():
     assert reply(r2)["fan_info"] == {"real_name": "Sam", "his_age": "31"}, reply(r2)
     assert DEEPSEEK not in [x["host"] for x in fw.requests], fw.requests
     assert (await get_fan(aid, fan)).grok_facts_updated_at == stamp
-    # A no_send Turn (no cooldown either): `updated_at` itself unchanged.
     await her_reply(aid, fan, 6024)
     upd = (await get_fan(aid, fan)).updated_at
     res, *_ = await dm_turn(aid, fan, 6025, "promo pls", jev=({**QUIET, "promo": 0.99}, 1.0))
@@ -103,7 +81,7 @@ async def case_wcfi_write_between_turns():
     await seed_live(aid, NO_LEAD)
     await fan_row(aid, fan)
     await dm_turn(aid, fan, 6031, "hey")
-    async with get_session() as s:        # wcfi's fill lands between the Turns
+    async with get_session() as s:
         await s.execute(update(Fan).where(Fan.account_id == aid, Fan.fan_id == fan).values(home_country="UK"))
     await her_reply(aid, fan, 6032)
     _res, _f, _j, info, _fw = await dm_turn(aid, fan, 6033, "so whats up")
@@ -117,18 +95,17 @@ async def case_asked_not_repeated():
     await seed_live(aid, NO_LEAD)
     await fan_row(aid, fan)
     res, *_ = await dm_turn(aid, fan, 6041, "hey", info=FakeInfoJev(({}, "occupation")),
-                            writers={NANO: LINE + "\nASKED: occupation"})   # her marker (NEW-168)
+                            writers={NANO: LINE + "\nASKED: occupation"})
     (r1,) = await live_rows(aid, fan)
     assert reply(r1)["asked"] == {"occupation": 1}, reply(r1)
     await her_reply(aid, fan, 6042)
     _res, _f, _j, info, _fw = await dm_turn(aid, fan, 6043, "lol idk", info=FakeInfoJev(({}, "none")))
     st = info.calls[-1]["state"]
     offered = _offered(info)
-    # The Test chat's table for the same `asked`: `_info_jev.state` over the fold.
     assert st["asked"] == _info_jev.state({}, {"occupation": 1}, offered)["asked"], st["asked"]
     assert st["asked"]["occupation"] == 1, st["asked"]
     r2 = (await live_rows(aid, fan))[-1]
-    assert reply(r2)["asked"] == {"occupation": 1}, reply(r2)      # none picked: unchanged
+    assert reply(r2)["asked"] == {"occupation": 1}, reply(r2)
 
 
 async def case_list_mode_asked():
@@ -191,14 +168,12 @@ async def case_newest_row_any_status():
                     at=datetime.utcnow() - timedelta(minutes=1))
     got = await full_ai_live.load(aid, fan, None)
     assert got.asked == {"occupation": 3} and got.typo_state == {"a": 3}, (got.asked, got.typo_state)
-    # A test / Shadow row of the same Fan never folds in.
     async with get_session() as s:
         s.add(AiDecision(account_id=aid, fan_id=fan, mode="shadow", trigger_kind="inbound", trigger_key="6074",
                          route="chat", heat=0, route_row="chat", question_version="v", status="planned",
                          reply_json=json.dumps({"asked": {"x": 9}}), jev_json="{}"))
     got = await full_ai_live.load(aid, fan, None)
     assert got.asked == {"occupation": 3}, got.asked
-    # NULL reply_json (after retention): empty fold, no raise.
     await _seed_row(aid, fan, "6075", {}, at=datetime.utcnow())
     async with get_session() as s:
         await s.execute(update(AiDecision).where(AiDecision.trigger_key == "6075").values(reply_json=None))
@@ -214,7 +189,6 @@ async def case_blank_extract_never_overwrites():
     assert upd(loaded, {"his_age": "32", "home_city": " Leeds "}) == {"his_age": "32", "home_city": "Leeds"}
     assert upd({}, {"generated_nickname": "x", "of_display_name": "y"}) == {}
     assert upd({}, {"hobbies": "a" * 300}) == {"hobbies": "a" * 200}
-    # On the real path: an extract of whitespace leaves the stored age.
     aid, fan = "fa_facts_blank", 608
     await seed_live(aid, NO_LEAD)
     await fan_row(aid, fan, his_age="31")

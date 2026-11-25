@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""A vault url signed for the account's OLD proxy IP (or expired), re-signed by media id — `cdn_resign`, behind
-`/img` and `/img/scrub` when the caller names the media. Plain-assert, no pytest (repo convention).
-
-Why: OF signs CDN urls with `AWS:SourceIp` = the egress that listed them. After a proxy rebind every url the
-mirror / vault cache / browser holds 403s through the account's new proxy. Measured on AE 2026-11-06: 108/108
-`/img/scrub` 502 for a Creator moved twice that day.
-
-  case_img_stale_url_resigns_once     — 403 -> one by-id read -> retry with the fresh url of the same file, 200;
-                                        the next request with the same stale url goes straight to the fresh one.
-  case_img_without_media_id_is_as_before — no media id: the 403 passes through, OF is never asked.
-  case_fresh_url_must_be_the_same_file — a fresh payload without that host+path hands nothing back, and the
-                                        failure is remembered (no OF call per frame).
-  case_fresh_url_that_still_403s_is_remembered — re-signed but still 403: remembered as failed, the url forgotten;
-                                        the next /img and scrub make no OF call, every response closed.
-  case_scrub_download_resigns          — the storyboard download (a sync route's worker thread) does the same.
-  case_herd_shares_one_read            — 12 concurrent frames / posters of one media: one by-id read.
-
-OF is faked: no request leaves the process.
-Run: ./venv/bin/python service/tests/test_cdn_resign.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 import asyncio  # noqa: E402
 import os  # noqa: E402
@@ -67,8 +47,8 @@ class _Resp:
         self.closed = True
 
 
+# OF signs CDN urls for the egress IP that listed them (AWS:SourceIp); after a proxy rebind older urls 403
 class _Client:
-    """The account's client on its NEW proxy: the CDN answers only urls signed for it (`new-ip`)."""
 
     def __init__(self, fresh_media: dict | None):
         self.account_id = "acct-1"
@@ -76,7 +56,7 @@ class _Client:
         self.gets: list[str] = []
         self.resps: list[_Resp] = []
         self.byid: list[int] = []
-        self.walks: list[str | None] = []   # the of_pacing walk each by-id read ran in
+        self.walks: list[str | None] = []
         self.fresh_media = fresh_media
         self.lock = threading.Lock()
 
@@ -89,7 +69,8 @@ class _Client:
         self.http = SimpleNamespace(get=get)
 
     def vault_media_by_id(self, media_id: int) -> dict:
-        time.sleep(0.05)  # a real OF round trip: concurrent callers overlap
+        # a real OF round trip: concurrent callers overlap
+        time.sleep(0.05)
         with self.lock:
             self.byid.append(int(media_id))
             self.walks.append(getattr(of_pacing._WALK.get(), "kind", None))
@@ -102,14 +83,14 @@ def _media(url: str) -> dict:
 
 
 def _reset(client: _Client) -> None:
-    shutil.rmtree(_TMP / "cache", ignore_errors=True)   # /img's disk cache would answer before the CDN
+    # /img's disk cache would answer before the CDN
+    shutil.rmtree(_TMP / "cache", ignore_errors=True)
     cdn_resign._fresh.clear()
     cdn_resign._failed.clear()
     server._get_client = lambda *a, **k: client
 
 
 def _img(u: str, media_id: int | None, range_: str | None = None) -> int:
-    """GET /img; with `range_` as a <video> seeking."""
     req = SimpleNamespace(headers={"range": range_} if range_ else {})
 
     async def _fetch() -> int:
@@ -117,8 +98,8 @@ def _img(u: str, media_id: int | None, range_: str | None = None) -> int:
             resp = await img_api.proxy_image(req, u=u, media_id=media_id)
         except server.HTTPException as e:
             return e.status_code
-        if hasattr(resp, "body_iterator"):   # a FileResponse (a small Range answer, off disk) has none
-            async for _ in resp.body_iterator:   # draining releases the lane slot
+        if hasattr(resp, "body_iterator"):
+            async for _ in resp.body_iterator:
                 pass
         return resp.status_code
     return asyncio.run(_fetch())
@@ -132,8 +113,7 @@ def case_img_stale_url_resigns_once():
     assert c.byid == [MID], c.byid
     assert c.walks == ["img_resign"], ("the re-sign's OF read is paced on the Creator", c.walks)
     c.gets.clear()
-    shutil.rmtree(_TMP / "cache", ignore_errors=True)   # else the next range is a disk hit, upstream untouched
-    # The next <video> range with the browser's stale url: no 403 round trip, no OF call.
+    shutil.rmtree(_TMP / "cache", ignore_errors=True)
     assert _img(STALE, MID, "bytes=100-") == 200
     assert c.gets == [FRESH], c.gets
     assert c.byid == [MID], c.byid
@@ -157,8 +137,6 @@ def case_fresh_url_must_be_the_same_file():
 
 
 def case_fresh_url_that_still_403s_is_remembered():
-    """OF re-signs the file, but the CDN still refuses the fresh url (signed for another egress): without the
-    negative cache every frame would pay one by-id read + two CDN GETs for the next hour."""
     still = f"{FILE}?Tag=2&Policy=other-ip&Signature=s3&Key-Pair-Id=K"
     c = _Client(_media(still))
     _reset(c)
@@ -192,7 +170,6 @@ def case_scrub_download_resigns():
     assert anyio.run(main) is True
     assert src.read_bytes() == b"mp4"
     assert c.gets == [STALE, FRESH] and c.byid == [MID], (c.gets, c.byid)
-    # Without the media id the download fails as before (the 502 path), OF untouched.
     c2 = _Client(_media(FRESH))
     _reset(c2)
 

@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""`chat_read_changed` (read_flip.publish): a read flip through the relay (mark read, mark unread, mark all
-read) tells every tab of the Creator, so another chatter's cached chat lists flip the row without a re-read
-(app hooks/useAccountStateEvents.ts). Only once OF took the write: a failed write, or a platform without it (501),
-publishes nothing. Any-scope: an All Models tab holds every Creator's rows.
-
-OF client faked (no network). Run: venv/bin/python -m pytest service/tests/test_chat_read_changed_sse.py -q
-"""
-import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # pytest: tests/ is a package
+import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _harness  # noqa: E402  (first: temp DB)
 
 _harness.bootstrap()
@@ -34,7 +27,6 @@ class _Client:
 
 
 def _run(route, *args, client=None):
-    """`route(*args)` with `client` as the OF client; returns (published events, raised)."""
     published = []
 
     async def _no_local(*_a, **_k):
@@ -86,20 +78,22 @@ def test_a_failed_of_write_publishes_nothing():
 
 
 def test_a_rejected_ack_publishes_nothing():
-    class _Rejected(_Client):   # the Fansly shim's 200 answer to an ack Fansly refused
+    # A rejected ack is a 502 failure, not a 200 the app reads as done.
+    class _Rejected(_Client):
         def _call(self, *_a):
             return {"success": False, "reason": "ack_rejected"}
         mark_chat_read = mark_all_chats_read = _call
     for route, args in ((server.of_mark_chat_read, (FAN,)), (server.of_mark_all_chats_read, ())):
         pub, raised = _run(route, *args, client=_Rejected())
-        # W30-mu #1: answered as the failure it is (502), not a 200 the app reads as done
         assert raised is not None and raised.status_code == 502 and pub == [], (route.__name__, raised, pub)
         assert raised.detail["upstream_status"] == "ack_rejected", raised.detail
 
 
 def test_a_platform_without_unread_publishes_nothing():
     class _Fansly(_Client):
-        mark_chat_unread = None  # the shim lacks it: 501
+        def mark_chat_unread(self, *_a):
+            return {"success": True}
+        mark_chat_unread.fansly_unsupported = "no unread flag on Fansly"
     pub, raised = _run(server.of_mark_chat_unread, FAN, client=_Fansly())
     assert raised is not None and raised.status_code == 501 and pub == [], (raised, pub)
 
@@ -109,9 +103,9 @@ def test_reaches_every_tab_of_the_creator():
     assert "chat_read_changed" in ed.SSE_TYPES
     mine = frozenset({AID, "other"})
     assert ed.wants(f"model:{AID}", mine, frozenset(), e)
-    assert ed.wants("model:other", mine, frozenset(), e)    # any-scope: its cached All Models lists
+    assert ed.wants("model:other", mine, frozenset(), e)
     assert ed.wants("all", mine, frozenset(), e)
-    assert not ed.wants("model:x", frozenset({"x"}), frozenset(), e)  # never outside the clamp
+    assert not ed.wants("model:x", frozenset({"x"}), frozenset(), e)
 
 
 if __name__ == "__main__":

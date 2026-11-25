@@ -1,27 +1,3 @@
-"""tx_credit_rollup — attribution materialised on transactions, hourly and daily rollups
-
-Roadmap W2 2.1 and 2.2. Stats and Sales records read these instead of the
-attribution view and the wide ledger rows.
-
-  transactions.credit_employee_id      the view's credited Employee for the row
-  transactions.credit_rule             manual | message | tip_lookback | unassigned
-  transactions.credit_automation_kind  the crediting message's automation_kind
-  tx_hourly                            transactions summed per account, UTC hour,
-                                       kind, status, linked, credit, rule, automation kind
-  tx_daily                             the same per UTC day
-  ix_messages_chatter_sends            covers Employee reports' "Messages sent" (S4)
-
-The columns and tables are written only by SQLite triggers, which `init_db()` installs on every
-boot (tx_rollup.ensure) and backfills once per box behind a `data_migrations`
-marker. The ORM models declare the columns and the tables, so `init_db()`'s
-additive catch-up brings them to a booting box; this revision keeps the
-alembic chain canonical. Idempotent (inspector-guarded, house convention).
-Downgrade drops them; nothing is lost (all are derived from the ledger).
-
-Revision ID: 0077_tx_credit_rollup
-Revises: 0076_promo_list
-Create Date: 2026-10-19
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -81,9 +57,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # init_db's triggers (tx_rollup.py) write the columns and tables dropped
-    # below: drop them first, or the next sale or message write fails. Named
-    # here, not imported, so this revision stays fixed.
+    # Drop the triggers before the columns/tables they write, or the next sale or message write fails.
     for name in ("trg_tx_credit_ins", "trg_tx_credit_upd", "trg_msg_credit_ins", "trg_msg_credit_upd",
                  "trg_msg_credit_del", "trg_tx_rollup_ins", "trg_tx_rollup_upd", "trg_tx_rollup_del"):
         op.execute(f"DROP TRIGGER IF EXISTS {name}")

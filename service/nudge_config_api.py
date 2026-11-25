@@ -1,20 +1,3 @@
-"""service/nudge_config_api.py — read/write account_ai_config.nudge_config_json.
-
-The nudge_online automation's rich config (repeat_mode, delays,
-caps, quiet hours, and the per-slot tease pools) lives on
-`account_ai_config.nudge_config_json` — separate from the automation_rules row
-that only carries the 60s cadence. BOTH the detector and the delayed fire-job
-read it from there, so the Settings UI persists it through these owner-gated
-routes (NOT the rule payload).
-
-  GET /admin/nudge-config?account_id=   → {config, defaults}
-       `config` is what's stored (or {} if unset); `defaults` is the automation's
-       built-in config so the UI can show effective values + the seed slot pools.
-  PUT /admin/nudge-config               → upsert the JSON, returns {config}
-
-The automation merges stored-over-defaults at run time (_load_nudge_config), so a
-partial config here is fine — anything omitted falls back to the default.
-"""
 from __future__ import annotations
 
 import json
@@ -41,21 +24,17 @@ _NUM_KEYS = {
     "delay_minutes", "jitter_minutes", "gap_minutes", "min_hours_between_nudges",
     "max_per_tick", "max_online_scan", "online_recent_minutes",
     "welcome_grace_hours", "active_convo_hours", "max_no_reply",
-    # Spend tier (null/omitted = off; the loop skips None so it stays off).
     "min_lifetime_spend_cents", "max_lifetime_spend_cents", "recent_spend_days",
     "min_recent_spend_cents", "max_recent_spend_cents",
 }
 
 
 def _defaults() -> dict:
-    # Lazy import so this light API module doesn't pull the executor at startup.
     from automations.nudge_online import _DEFAULT_NUDGE_CONFIG
     return json.loads(json.dumps(_DEFAULT_NUDGE_CONFIG))
 
 
 def _validate_config(cfg: dict) -> dict:
-    """Coerce/clamp a posted config so a bad value can never reach the automation.
-    Unknown keys are dropped; omitted keys simply fall back to defaults at run."""
     if not isinstance(cfg, dict):
         raise HTTPException(422, "config must be an object")
     out: dict[str, Any] = {}
@@ -68,8 +47,6 @@ def _validate_config(cfg: dict) -> dict:
         if rm not in ("new", "same"):
             raise HTTPException(422, "repeat_mode must be 'new' or 'same'")
         out["repeat_mode"] = rm
-    # The nudge line's text/image toggles. The retired info-line keys
-    # (send_info_line / info_line_* / send_nudge_line) are unknown now → dropped.
     for bk in ("nudge_line_text", "nudge_line_image", "require_welcomed"):
         if bk in cfg:
             out[bk] = bool(cfg[bk])
@@ -83,7 +60,7 @@ def _validate_config(cfg: dict) -> dict:
     if "quiet_hours" in cfg:
         qh = cfg["quiet_hours"]
         if qh in (None, []):
-            out["quiet_hours"] = [0, 0]  # disabled
+            out["quiet_hours"] = [0, 0]
         elif isinstance(qh, (list, tuple)) and len(qh) == 2:
             try:
                 out["quiet_hours"] = [int(qh[0]) % 24, int(qh[1]) % 24]
@@ -102,10 +79,6 @@ _SLOTS = {"morning_1", "morning_2", "afternoon_1", "afternoon_2", "evening", "ni
 
 
 def _validate_slots(slots) -> dict:
-    """day bucket → slot → {text: [str], image: [vault id]}: the sender iterates
-    `text` and int()s each image, so a string line or a non-numeric id is refused
-    here, not mis-sent. Digit-string ids become ints; other entry keys drop. A
-    legacy `null` day or slot (the sender skips it: inherited) drops = absent."""
     if not isinstance(slots, dict):
         raise HTTPException(422, "slots must be an object")
     out: dict = {}
@@ -157,9 +130,6 @@ _BULK_PATH = "/admin/nudge-config/bulk"
 
 
 async def _assert_page(account_ids: list[str], path: str) -> None:
-    """The role middleware's page check for the Creators named in the BODY (it
-    reads only ?account_id= / X-Account-Id): owned is not enough, the caller's
-    role in each Creator's Agency must serve this route. One check for all."""
     pages = permissions.route_pages(path, "PUT") or ()
     refusal, _ = await permissions.route_refusal(pages, "PUT", path, list(account_ids))
     if refusal is not None:
@@ -182,9 +152,7 @@ async def put_nudge_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
                 index_elements=["account_id"],
                 set_={"nudge_config_json": payload, "updated_at": now})
         )
-        # config.enabled is the gate, the rule is the 60s detector tick — one
-        # switch, synced here in the same session so a half-landed save can't
-        # read ON on the tab while nothing ticks. Only when the key was sent.
+        # config.enabled is the gate, the rule is the 60s detector tick: synced in one session so a half-landed save can't show ON while nothing ticks.
         if "enabled" in clean:
             action = await ensure_kind_rule(
                 s, body.account_id, "nudge_online", enable=bool(clean["enabled"]),
@@ -195,7 +163,6 @@ async def put_nudge_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     return {"account_id": body.account_id, "config": clean}
 
 
-# ── Share to models (settings + lines; images stay per model) ─────────
 
 _DETECT_EVERY_S = 60
 
@@ -212,8 +179,6 @@ async def _upsert_config(s, account_id: str, payload: str, now: datetime) -> Non
 
 
 async def _effective_cfg(account_id: str, partial: dict) -> dict:
-    """Defaults ← the (possibly-unsaved) form config, plus the account's
-    utc_offset + time_images — so the preview matches what a real run would do."""
     merged = _defaults()
     if isinstance(partial, dict):
         merged.update(partial)
@@ -235,7 +200,6 @@ class _PreviewBody(BaseModel):
     config: dict
     fan_id: int | None = None
     hour: int | None = None
-    # A day name ("friday") to preview that day's lines; None = the model's today.
     weekday: str | None = Field(None, pattern="^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$")
 
 
@@ -258,9 +222,6 @@ class _BulkBody(BaseModel):
 
 
 def _with_own_images(shared: dict, own: dict) -> dict:
-    """`shared` slots carrying `own`'s images instead of its own: lines come from
-    the shared config, images stay each model's (vault ids are per account,
-    ADR-0008). A bucket/slot only `own` has keeps just its images."""
     d = lambda x: x if isinstance(x, dict) else {}  # noqa: E731 — free-form JSON
     out: dict = {}
     for b in set(shared) | set(own):
@@ -293,13 +254,13 @@ async def put_nudge_config_bulk(body: _BulkBody = Body(...)) -> dict[str, Any]:
     if not body.account_ids:
         raise HTTPException(422, "account_ids cannot be empty")
     for aid in body.account_ids:
-        assert_account_owned(aid)  # 403 on any non-owned id BEFORE any write
-    await _assert_page(body.account_ids, _BULK_PATH)   # and on any whose Agency refuses the page
+        # 403 on any non-owned id before any write.
+        assert_account_owned(aid)
+    await _assert_page(body.account_ids, _BULK_PATH)
     clean = _validate_config(body.config)
-    # Only a SENT `enabled` syncs the rules, as a single save (an omitted key
-    # must not switch every target on or park a running one).
+    # Only a SENT `enabled` syncs the rules: an omitted key must not switch every target on or park a running one.
     enabled = clean.get("enabled")
-    shared_slots = clean.get("slots")   # validated: a dict, or absent
+    shared_slots = clean.get("slots")
     now = datetime.utcnow()
     applied: list[dict[str, str]] = []
     async with get_session() as s:

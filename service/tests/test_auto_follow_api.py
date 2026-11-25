@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""The Auto-follow list (Infloww parity): the per-creator switch, the follow
-counts per day window, and the details rows of fans followed."""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 _harness.bootstrap()
 
 import os  # noqa: E402
@@ -39,7 +37,6 @@ async def _seed_account(aid: str) -> None:
 
 
 async def _seed_follow(aid: str, fan_id: int, times: list[datetime], **fan) -> None:
-    """A fan followed at each of `times` (log rows + the per-fan state)."""
     async with get_session() as s:
         if fan is not None and await s.get(Fan, (aid, fan_id)) is None:
             s.add(Fan(account_id=aid, fan_id=fan_id, **fan))
@@ -69,7 +66,7 @@ async def case_stats_count_each_window() -> None:
     aid = _aid()
     await _seed_account(aid)
     starts = api._day_starts_utc(api._zone("UTC"), datetime.utcnow())
-    today = starts["today"]  # midnight itself counts as today
+    today = starts["today"]
     yday = starts["yesterday"] + timedelta(hours=1)
     d5 = starts["today"] - timedelta(days=5)
     d20 = starts["today"] - timedelta(days=20)
@@ -78,7 +75,7 @@ async def case_stats_count_each_window() -> None:
     await _seed_follow(aid, 2, [d5, d20, d60])
 
     r = _row(await api.auto_follow_stats(account_id=aid, tz="UTC"), aid)
-    assert r["total"] == 5, r                  # lifetime: ping_count sum
+    assert r["total"] == 5, r
     assert (r["today"], r["yesterday"], r["d7"], r["d30"]) == (1, 1, 3, 4), r
     assert r["last_followed_at"] == today.isoformat(), r
     assert r["on"] is False, r
@@ -93,9 +90,6 @@ async def case_stats_list_an_account_with_nothing_yet() -> None:
 
 
 async def case_switch_creates_the_expired_follow_rule() -> None:
-    """Infloww's switch: "Automatically follow fans whose subscriptions have
-    expired". A rule made by it follows OF's recently-expired list, live, with
-    the money gate left at its default (on)."""
     aid = _aid()
     await _seed_account(aid)
     out = await rules_api.switch_kind(rules_api.KindSwitch(

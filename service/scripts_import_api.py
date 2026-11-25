@@ -1,46 +1,3 @@
-"""service/scripts_import_api.py — Growth > Scripts' Excel import and copy between Creators.
-
-  GET  /admin/saved-replies/import-template           → the empty .xlsx template
-  POST /admin/saved-replies/import?account_id=  multipart `file`
-       → {total, success_count, fail_count, failed: [{sheet, row, name, reason}]}
-  POST /admin/saved-replies/copy  {from_account_ids, to_account_ids | all_creators, ids?}
-       → {copied, skipped, media_dropped}
-  POST /admin/saved-replies/bulk?account_id=  {sequences, tags, mode, dry_run?}
-       → {sequences: {...counts}, steps: {...}, tag_scripts: {...}, skipped: [names], failed: [...]}
-
-Bulk is an Infloww library (its sequences with their steps, its tags with their
-scripts, tag "" = its untagged loose scripts) in JSON, as `scripts/import_infloww_scripts.py`
-posts it in chunks: see `bulk_import`.
-
-Excel import is Infloww's (remote web bundle `FileUpload` / `ImportScript`, the
-help article H262073): every sheet is read, its name becomes the scripts' tag,
-row 1 is a header naming the `name`, `text` and `note` columns (any order, any
-case; a sheet whose header names none of them reads A, B, C), and a row with all
-three empty is skipped. A sheet over 1000 rows refuses the whole file, as
-Infloww's "Exceeded maximum allowed rows (1000)." does. Limits are the help
-article's import limits: name 64, tag 32, text 1000 (as a fan reads it), note 246 characters; name
-and text are required. A name the Creator already has, or an earlier row of the
-file has, is a failed row ("duplicate name"), never an overwrite.
-
-Copy is Share (from this Creator to others) and Import from other creators (from
-others to this one) in one route. A copied script keeps its name, text, tags,
-notes, condition, sequence and GIF, and its price while it has no media; media
-never moves between accounts (ADR-0008), so media and previews are dropped and
-counted, a script that loses its media loses its price too, locked text is
-dropped, and tagged Creators (an account's own @-tags) are dropped too. A
-sequence is copied whole or not at all: any of its scripts selected (a tag
-share's included) brings every step and "N.M" option; one whose name the target
-already uses is skipped whole (the target's own stays as it is), and of two
-sources sharing a name the first picked brings it, so no copy mixes two sources'
-steps and a re-share adds nothing. A script outside a sequence whose name the
-target already has (an untitled one: the same text) is skipped. A generated
-script (a reserved id, `_reserved_scripts.is_reserved`) is never copied: it
-belongs to that account.
-
-Every route sits under /admin/saved-replies/, so Role enforcement maps it to the
-Scripts page (`permissions.PAGE_MAP`), and each account named goes through
-`assert_account_owned`.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -66,7 +23,6 @@ from xlsx_io import read_xlsx, write_xlsx
 router = APIRouter(prefix="/admin/saved-replies", tags=["scripts"])
 
 NAME_MAX = 64
-# The Excel import's own (Infloww's import limits, the help article's); the editor's and bulk's are saved_replies_api's.
 EXCEL_TEXT_MAX, EXCEL_NOTE_MAX = 1000, 246
 SHEET_ROWS_MAX = 1000
 COLUMNS = ("name", "text", "note")
@@ -74,8 +30,7 @@ _HEADER_ALIASES = {"notes": "note"}
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _MAX_UPLOAD = 5 * 1024 * 1024
 _MAX_COPY_SOURCES = 5
-# One bulk import or copy into a Creator at a time (this process): two identical ones at once would both miss the
-# other's new scripts (no unique key holds them) and create them twice. Held one at a time, never nested.
+# Two identical imports/copies at once would both miss the other's new scripts (no unique key) and create them twice.
 _BULK_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -84,7 +39,6 @@ def _key(name: str | None) -> str:
 
 
 def _columns(header: dict[int, str]) -> dict[str, int]:
-    """Column index of name / text / note from the header row; A, B, C when it names none."""
     found: dict[str, int] = {}
     for i, h in sorted(header.items()):
         k = h.strip().lower()
@@ -95,7 +49,6 @@ def _columns(header: dict[int, str]) -> dict[str, int]:
 
 
 def _reason(tag: str, name: str, text: str, note: str) -> str | None:
-    """Why a row fails, or None. `text` (already of_text'd) counts as the fan reads it: markup by its plain text."""
     if not name:
         return "name is required"
     if not plain_length(text):
@@ -108,8 +61,6 @@ def _reason(tag: str, name: str, text: str, note: str) -> str | None:
 
 
 def parse_workbook(data: bytes) -> list[dict[str, Any]]:
-    """The workbook's script rows: {sheet, row, name, text, note}, row numbers 1-based as Excel shows them.
-    ValueError for a file that is not an .xlsx or a sheet over the row limit."""
     out: list[dict[str, Any]] = []
     for sheet, rows in read_xlsx(data):
         filled = [(n, r) for n, r in enumerate(rows, start=1) if any(c.strip() for c in r.values())]
@@ -147,13 +98,12 @@ async def import_scripts(account_id: str = Query(...), file: UploadFile = File(.
     failed: list[dict[str, Any]] = []
     added = 0
     async with get_session() as s:
-        # A hidden generated script's titles ("1", "1.5", ...) never take a name.
         have = {_key(t) for t in (await s.execute(
             select(SavedReply.title).where(SavedReply.account_id == account_id,
                                            ~reserved.is_reserved(SavedReply.script_id)))).scalars() if t}
         for r in rows:
             tag = r["sheet"].strip()
-            text = of_text(r["text"])  # a cell may hold markup: only OF's allow-list is stored
+            text = of_text(r["text"])
             reason = _reason(tag, r["name"], text, r["note"])
             if reason is None and _key(r["name"]) in have:
                 reason = "duplicate name"
@@ -174,12 +124,8 @@ _AccountId = Annotated[str, Field(min_length=1)]
 
 class _CopyBody(BaseModel):
     from_account_ids: list[_AccountId] = Field(..., min_length=1, max_length=_MAX_COPY_SOURCES)
-    # The targets to share to. Omitted/empty is only valid with `all_creators`, which
-    # resolves the targets SERVER-SIDE to the principal's full owned Creator roster.
     to_account_ids: list[_AccountId] = Field(default_factory=list)
-    # Share to every Creator the principal owns but the sources (the full roster, not session-only).
     all_creators: bool = False
-    # The scripts to copy; omitted copies every script of the sources. Capped as the selection delete's.
     ids: list[int] | None = Field(None, max_length=IDS_MAX)
 
 
@@ -220,12 +166,11 @@ async def copy_scripts(body: _CopyBody = Body(...)) -> dict[str, Any]:
         if body.ids is None:
             rows = {r.id: r for r in (await s.execute(q)).scalars()}
         else:
-            # In chunks: SQLite's bound-variable cap (as the list's media read).
+            # In chunks: SQLite's bound-variable cap.
             ids = sorted(set(body.ids))
             for at in range(0, len(ids), IN_CHUNK):
                 rows.update((r.id, r) for r in (await s.execute(
                     q.where(SavedReply.id.in_(ids[at:at + IN_CHUNK])))).scalars())
-            # Every selected sequence whole.
             for acc in from_ids:
                 names = sorted({r.script_id for r in rows.values() if r.account_id == acc and r.script_id})
                 for at in range(0, len(names), IN_CHUNK):
@@ -233,19 +178,16 @@ async def copy_scripts(body: _CopyBody = Body(...)) -> dict[str, Any]:
                         SavedReply.account_id == acc, SavedReply.script_id.in_(names[at:at + IN_CHUNK])))).scalars())
         rank = {acc: i for i, acc in enumerate(from_ids)}
         ordered = sorted(rows.values(), key=lambda r: (rank[r.account_id], r.script_id or "", r.script_step or 0, r.id))
-        # Materialise before the per-target commits so no row is accessed detached.
         sources = [{"account_id": r.account_id, "title": r.title, "text": r.text,
                     "gif_id": r.gif_id, "gif_url": r.gif_url, "script_id": r.script_id,
                     "script_step": r.script_step, "tags_json": r.tags_json, "notes": r.notes,
                     "conditional": r.conditional, "price_cents": r.price_cents,
                     "has_media": bool(json.loads(r.media_json or "[]"))}
                    for r in ordered]
-        # Each sequence name's bringer: the first source (pick order) holding it.
         bringer: dict[str, str] = {}
         for src in sources:
             if src["script_id"]:
                 bringer.setdefault(src["script_id"], src["account_id"])
-        # Each source's own sequence headers, carried to a target that lacks the sequence.
         src_metas = {(m.account_id, m.name): m for m in (await s.execute(select(SavedReplySequence).where(
             SavedReplySequence.account_id.in_(from_ids)))).scalars()}
         for target in targets:
@@ -254,13 +196,11 @@ async def copy_scripts(body: _CopyBody = Body(...)) -> dict[str, Any]:
                     SavedReply.account_id == target, ~reserved.is_reserved(SavedReply.script_id)))).scalars().all()
                 have = {_key(r.title) if r.title else "\0" + r.text for r in held}
                 held_seqs = {r.script_id for r in held if r.script_id}
-                # Sequence names the target already keeps a header for: the header insert's idempotency.
                 meta_names = set((await s.execute(select(SavedReplySequence.name).where(
                     SavedReplySequence.account_id == target))).scalars())
                 for src in sources:
                     script_id = src["script_id"]
                     k = _key(src["title"]) if src["title"] else "\0" + src["text"]
-                    # The target's own rows (a source among the targets) are in `held`: skipped here too.
                     if script_id:
                         new = script_id not in held_seqs and bringer[script_id] == src["account_id"]
                     else:
@@ -337,10 +277,6 @@ async def saved_replies_overview() -> dict[str, Any]:
     return await relay_coalesce.coalesce_fresh(("saved_replies_overview", tuple(sorted(ids))), _load)
 
 
-# ── Bulk import (an Infloww library in JSON) ─────────────────────────
-# Limits: the saved-reply editor's (name 64 as SCRIPT_NAME_MAX, text `text_reason`, NOTES_MAX, CONDITIONAL_MAX,
-# tag 32, price >= 0); sequence name 64 as relabel's. A request holds at most BULK_ROWS_MAX scripts: the CLI chunks
-# a library, never splitting a sequence.
 SEQ_NAME_MAX, BULK_BY_MAX, BULK_DESC_MAX = 64, 128, 6500
 BULK_ROWS_MAX = 5000
 
@@ -352,7 +288,6 @@ class _BulkStep(BaseModel):
     name: str | None = None
     conditional: str | None = None
     price: float | None = None
-    # The step script's own tags (Infloww: a sequence step IS a script, and that script may sit in tags).
     tags: list[str] = Field(default_factory=list)
 
 
@@ -383,13 +318,10 @@ class _BulkBody(BaseModel):
     sequences: list[_BulkSequence] = Field(default_factory=list)
     tags: list[_BulkTag] = Field(default_factory=list)
     mode: Literal["skip", "replace"] = "skip"
-    # Run every check and count, then roll back: the CLI's --dry-run.
     dry_run: bool = False
 
 
 def _script_reason(name: str, raw: str, text: str, notes: str, price: float | None) -> str | None:
-    """`raw` is the payload's text, `text` its `of_text` (the caller's, stored as is): `text_reason`, then the
-    name, notes and price limits."""
     if (why := text_reason(raw, text)) is not None:
         return why
     for label, n, limit in (("name", len(name), NAME_MAX), ("notes", len(notes), NOTES_MAX)):
@@ -401,8 +333,6 @@ def _script_reason(name: str, raw: str, text: str, notes: str, price: float | No
 
 
 def _parse_sequence(q: _BulkSequence) -> tuple[str | None, list[tuple[int, _BulkStep, str]]]:
-    """(why the sequence fails, []) or (None, its steps as (N, step, stored text `of_text`) in insert order: by N,
-    then option M, so a step's options get ascending ids, the order the Scripts page and the chat list them in)."""
     name = q.name.strip()
     why = None
     if not name:
@@ -438,8 +368,6 @@ def _parse_sequence(q: _BulkSequence) -> tuple[str | None, list[tuple[int, _Bulk
 
 
 def _tag_script_reason(tag: str, name: str, raw: str, text: str, notes: str, price: float | None) -> str | None:
-    """`tag` "" is the untagged group (Infloww's loose scripts, in no sequence and no tag), as the Excel import's
-    empty tag."""
     if len(tag) > TAG_MAX:
         return f"tag name longer than {TAG_MAX} characters"
     if not name and not text.strip():
@@ -464,7 +392,7 @@ async def bulk_import(account_id: str = Query(...), body: _BulkBody = Body(...))
     also needs the Delete scripts permission."""
     assert_account_owned(account_id)
     if body.mode == "replace":
-        # Replace deletes a sequence's scripts: the Delete scripts permission, which the route pattern can't see.
+        # Replace deletes a sequence's scripts: needs the Delete scripts permission, which the route pattern cannot see.
         await permissions.require_action("delete-script", account_id)
     rows_in = sum(len(q.steps) for q in body.sequences) + sum(len(t.scripts) for t in body.tags)
     if rows_in > BULK_ROWS_MAX:
@@ -528,7 +456,6 @@ async def _bulk_import(account_id: str, body: _BulkBody) -> dict[str, Any]:
                 steps["created"] += 1
             have.add(name)
         await s.flush()
-        # Tags: (name, text) -> the script that holds it, generated scripts aside.
         index: dict[tuple[str, str], SavedReply] = {}
         for row in (await s.execute(
                 select(SavedReply)
@@ -538,8 +465,6 @@ async def _bulk_import(account_id: str, body: _BulkBody) -> dict[str, Any]:
         for t in body.tags:
             tag = t.name.strip()
             for sc in t.scripts:
-                # Infloww stores scripts as HTML: only OF's allow-list is kept (plain text as is), and the
-                # (name, text) match below compares stored text with stored text.
                 name, text, notes = (sc.name or "").strip(), of_text(sc.text or ""), (sc.notes or "").strip()
                 why = _tag_script_reason(tag, name, sc.text or "", text, notes, sc.price)
                 if why:

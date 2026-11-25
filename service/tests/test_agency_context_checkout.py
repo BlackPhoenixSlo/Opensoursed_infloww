@@ -1,4 +1,3 @@
-"""Real SQLite, authenticated settings handler; count only agency-resolution checkouts."""
 import _harness
 _harness.bootstrap()
 
@@ -101,8 +100,6 @@ def case_session_exit_failure_never_exposes_hit():
 
 
 def case_duplicate_pair_resolves_to_lowest_id():
-    """A raced duplicate Mirror (no uq_employees_chatter_owner) takes the lowest id
-    (employees.mirror_id, main's dup-safe read), as the role-hook path does."""
     client = fx.login_chatter('chatter_a')
     request(client)
     employee_id = measured_context.last[0].employee_id

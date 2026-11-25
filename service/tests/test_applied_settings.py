@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""The Applied settings read on the Relay (docs/spec/phase-04-apply-stored-settings.md).
-
-`GET /admin/settings/applied` tells any signed-in session (owner, chatter or
-Master) what applies to it: the Agency's time zones and week start, whether AI
-translation is allowed, and Role enforcement with its granted pages and Data
-scope. The Agency comes from Phase 1's Agency context; a chatter names it
-through the Creator in scope (`X-Account-Id`). A chatter linked to two
-Agencies with no Creator in scope gets no time-zone override, translation only
-if every linked Agency allows it, and a page if any linked Agency grants it.
-
-The seam is the Relay over HTTP with real session cookies from the shared
-two-Agency fixture. Blobs are saved through the owners' own PUTs, except the
-stored-invalid case, which is written straight into `user_settings`.
-
-Run: ./venv/bin/python service/tests/test_applied_settings.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 _harness.bootstrap()
 
@@ -50,8 +34,6 @@ def _mirror_count(chatter: str) -> int:
     return asyncio.run(_count())
 
 
-# chatter_ab's Mirror Employees are not created here: its first read is the
-# merged one, which creates them.
 EMP = {"chatter_a@a": _mirror("chatter_a", "agency_a_owner")}
 
 OWNER_A = fx.login_owner("agency_a_owner")
@@ -63,13 +45,10 @@ CHATTER_AB = fx.login_chatter("chatter_ab")
 
 PROMPT = "Fixture translator prompt, never shown to a chatter"
 
-# My Automations: an owner session may use every page; a chatter only what a stored role ticks.
 ALL_OPT_IN = ["/growth/auto-funnel", "/growth/auto-mass", "/growth/auto-post", "/growth/auto-reply",
               "/growth/auto-story", "/growth/gen-info"]
 
-# Feature flags (roadmap 8.11): off until an Agency stores one on.
 FLAGS_OFF = {"fansly_manager": False}
-# No reports layout stored: the app keeps its default columns.
 NO_LAYOUT = {"creator_cols": None}
 
 DEFAULTS = {
@@ -79,11 +58,8 @@ DEFAULTS = {
     "flags": FLAGS_OFF,
     "reports": NO_LAYOUT,
 }
-# An owner of an Agency that stored `enforce: false` (Agency B).
 ROLES_OFF = {**DEFAULTS, "permissions": {**DEFAULTS["permissions"], "enforced": False}}
-# A chatter of such an Agency: every page but My Automations.
 CHATTER_DEFAULTS = {**ROLES_OFF, "permissions": {**ROLES_OFF["permissions"], "opt_in": [], "denied_actions": [], "denied_cards": []}}
-# The built-in Chatter, unstored, hides the Dashboard's revenue cards (roadmap 5.12).
 CHATTER_HIDDEN_CARDS = ["/#card-earnings", "/#card-employee-sales", "/#card-per-model"]
 
 
@@ -109,9 +85,6 @@ def _agency_a_roles(**assignments: str) -> dict:
     }
 
 
-# Agency A: every Preferences field set, AI translation off with a prompt, and
-# Role enforcement on with chatter_a holding a custom "self" role. Agency B:
-# only a regular time zone, translation on, and `enforce: false` stored.
 _put(OWNER_A, "preferences", {"tz": "Europe/Ljubljana", "report_tz": "America/New_York",
                               "week_start": "sunday", "language": "es", "hide_trial_popup": True})
 _put(OWNER_A, "messaging", {"ai_translation": False, "prompt": PROMPT})
@@ -163,22 +136,16 @@ def case_chatter_body_carries_no_roles_list_other_assignment_or_prompt():
 
 
 def case_never_saved_agency_reads_the_defaults_enforcement_on_and_roles_off_grants_every_page():
-    # The Master's own Agency never saved anything: role enforcement reads on.
     assert _applied(MASTER) == DEFAULTS
-    # Agency B saved only `enforce: false`.
     assert _applied(CHATTER_B) == {**CHATTER_DEFAULTS, "preferences": AGENCY_B_PREFS}
 
 
 def case_master_reads_its_own_agency_even_naming_another_agencys_creator():
-    # Phase 1: a named Creator never moves an owner session, the Master
-    # included, into another Agency.
     assert _applied(MASTER, "creator_a") == DEFAULTS
 
 
 def case_two_agency_chatter_with_no_creator_gets_no_zone_strictest_translation_and_any_page():
-    # The first read chatter_ab makes: it creates a Mirror Employee in each Agency.
     assert _mirror_count("chatter_ab") == 0
-    # Agency B does not enforce, so it grants every page: the union is every page. A card either hides is hidden.
     assert _applied(CHATTER_AB) == {
         "preferences": {"tz": None, "report_tz": None, "week_start": "monday", "hide_trial_popup": False},
         "messaging": {"ai_translation": False},
@@ -205,7 +172,6 @@ def case_two_agency_chatter_with_no_creator_gets_503_when_a_mirror_cannot_be_res
 
 
 def case_two_agency_chatter_follows_the_creator_in_scope():
-    # In Agency A its Mirror Employee was given the built-in Chatter on joining: Chatter's pages only.
     assert _applied(CHATTER_AB, "creator_a") == {
         "preferences": AGENCY_A_PREFS,
         "messaging": {"ai_translation": False},
@@ -251,7 +217,6 @@ def case_two_agency_chatter_with_both_enforcing_gets_the_union_of_granted_pages(
 
 
 def case_built_in_admin_role_grants_every_page_with_all_data():
-    # ...but My Automations, which only a stored role ticking it grants (permissions.OPT_IN_PAGES).
     _put(OWNER_A, "roles", _agency_a_roles(**{str(EMP["chatter_a@a"]): "admin"}))
     try:
         assert _applied(CHATTER_A)["permissions"] == {"enforced": True, "pages": None, "scope": "all",
@@ -276,7 +241,6 @@ def case_another_agencys_session_never_sees_this_agencys_values():
     body = _applied(OWNER_B)
     assert body == {**ROLES_OFF, "preferences": AGENCY_B_PREFS}, body
     assert "Ljubljana" not in json.dumps(body)
-    # A chatter of Agency B naming Agency A's Creator is refused, not answered.
     r = CHATTER_B.get(APPLIED, headers={"X-Account-Id": IDS["creator_a"]})
     assert r.status_code == 403, f"{r.status_code} {r.text}"
     assert "Ljubljana" not in r.text
@@ -292,7 +256,6 @@ def case_a_stored_invalid_field_reads_as_its_default():
         assert _applied(OWNER_B) == {
             "preferences": {"tz": None, "report_tz": "Asia/Tokyo", "week_start": "monday", "hide_trial_popup": False},
             "messaging": {"ai_translation": True},
-            # An invalid switch reads as the default: on.
             "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
             "flags": FLAGS_OFF,
             "reports": NO_LAYOUT,
@@ -310,7 +273,6 @@ def case_a_flag_stored_on_reads_on_for_the_agencys_owner_and_chatters_only():
         assert _applied(CHATTER_A)["flags"] == {"fansly_manager": True}
         assert _applied(CHATTER_AB, "creator_a")["flags"] == {"fansly_manager": True}
         assert _applied(OWNER_B)["flags"] == FLAGS_OFF
-        # A chatter of two Agencies naming no Creator: on only if every Agency turns it on.
         assert _applied(CHATTER_AB)["flags"] == FLAGS_OFF
         _put(OWNER_B, "flags", {"fansly_manager": True})
         assert _applied(CHATTER_AB)["flags"] == {"fansly_manager": True}
@@ -334,7 +296,6 @@ def case_owner_saves_the_creator_columns_and_every_session_reads_them():
         assert _applied(OWNER_A)["reports"] == {"creator_cols": cols}
         assert _applied(CHATTER_A)["reports"] == {"creator_cols": cols}
         assert _applied(OWNER_B)["reports"] == NO_LAYOUT
-        # A chatter saves nothing: the tab routes are the owner's.
         assert CHATTER_A.put("/admin/settings/reports", json={"creator_cols": []}).status_code == 401
         for bad in ("x", ["a", "a"], [""], [1], [{}], [["x"]]):
             r = OWNER_A.put("/admin/settings/reports", json={"creator_cols": bad})
@@ -349,21 +310,13 @@ def case_signed_out_is_401():
     assert r.status_code == 401, f"{r.status_code} {r.text}"
 
 
+# /applied is declared before /{tab}: an owner gets the read, never the 404 "unknown settings tab"
 def case_applied_is_not_read_as_a_tab_name():
-    # Declared before /{tab}: an owner gets the read, never the 404 "unknown settings tab".
     r = OWNER_A.get(APPLIED)
     assert r.status_code == 200 and "tab" not in r.json(), r.text
-    # The tab routes still refuse a chatter.
     assert CHATTER_A.get("/admin/settings/preferences").status_code == 401
 
 
-# Report day bounds and "by day" buckets in the report time zone (spec stories
-# 18 and 19). Agency A's report zone is America/New_York, UTC-4 in June. Four
-# sales on creator_a, as UTC instants and New York wall clock:
-#   2026-06-10 02:00Z = Jun 9 22:00 local,  200
-#   2026-06-11 03:30Z = Jun 10 23:30 local, 1000 (the next UTC day)
-#   2026-06-11 12:00Z = Jun 11 08:00 local, 500
-#   2026-06-12 03:30Z = Jun 11 23:30 local, 300
 def _seed_report_sales() -> None:
     async def _seed():
         async with get_session() as s:
@@ -393,9 +346,6 @@ def _report(client, account_id: str | None = None) -> list[dict]:
 
 @contextmanager
 def _roles_not_enforced():
-    """These cases are about report days, not roles: Agency A's Role
-    enforcement, on in this file, refuses chatter_a and chatter_ab the
-    Dashboard's report (ticket 23), so it is off while their reports run."""
     _put(OWNER_A, "roles", {**AGENCY_A_ROLES, "enforce": False})
     try:
         yield
@@ -404,8 +354,6 @@ def _roles_not_enforced():
 
 
 def case_report_days_start_and_end_at_midnight_in_the_report_time_zone():
-    # The 23:30 local sale lands on Jun 10, the 22:00 Jun 9 sale is before the
-    # range and the Jun 11 23:30 sale is inside it.
     assert _report(OWNER_A, "creator_a") == NEW_YORK_DAYS
     assert _report(OWNER_A) == NEW_YORK_DAYS
     with _roles_not_enforced():
@@ -448,10 +396,6 @@ def case_full_iso_bounds_are_unchanged_by_the_report_zone():
 
 
 
-# The translate gate on `/admin/translate` (spec stories 57-59): a chatter is
-# refused while its Agency's AI translation is off, an owner never is, and a
-# never-stored blob or key counts as on. The provider is patched, so no
-# network call is made and a refusal is seen to reach no provider.
 TRANSLATE = "/admin/translate"
 TURNED_OFF = {"detail": "Turned off by your organization"}
 _provider_calls: list[str] = []
@@ -524,12 +468,9 @@ def case_translate_allows_a_chatter_whose_agency_never_stored_messaging_or_the_k
 
 
 def case_translate_follows_the_creator_in_scope_for_a_two_agency_chatter():
-    # Role enforcement in Agency A would refuse chatter_ab first; this case is
-    # about the translate gate only.
     with _roles_not_enforced():
         _refused(_translate(CHATTER_AB, "gate hola ocho", "creator_a"))
         _translated(_translate(CHATTER_AB, "gate hola nueve", "creator_b"), "gate hola nueve")
-        # No Creator in scope: translation only if every linked Agency allows it.
         _refused(_translate(CHATTER_AB, "gate hola diez"))
 
 

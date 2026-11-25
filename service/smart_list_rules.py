@@ -1,13 +1,3 @@
-"""service/smart_list_rules.py — the Smart Lists rule engine, pure.
-
-The DSL (`rules_json`) is documented in smart_lists_api's module docstring.
-Here: the field / operator sets, `resolve(rules, fans)` over already-normalised
-fan dicts (smart_lists_api `_normalise_fan`), `_validate_rules` for storage and
-the rule readers (`_windows_in_rules`, `uses_subscription_facts`). No I/O, no DB.
-smart_lists_api re-exports the names its importers use.
-A bad rule raises fastapi's HTTPException(422) here on purpose: the routes answer
-its exact text/status as-is (kept, not mapped, by design).
-"""
 from __future__ import annotations
 
 from typing import Any, Iterable
@@ -16,10 +6,8 @@ from fastapi import HTTPException
 
 from attribution_backfill import PPV_KINDS, TIP_KINDS
 
-# ── DSL definition ────────────────────────────────────────────────────
 
 SUB_KINDS = ("subscription", "rebill")
-# money field -> transaction kinds summed (None = every kind)
 _SUM_FIELDS = {
     "total_spend": None,
     "ppv_spend": PPV_KINDS,
@@ -32,7 +20,6 @@ _DATE_FIELDS = {"last_purchase_at", "last_message_sent_at", "sub_start",
 _SCOPED = _LEDGER_MONEY | {"last_purchase_at"}
 _ENUMS = {"status": ("active", "expired"), "renew": ("on", "off")}
 
-# v1 fields (kept verbatim: saved lists and auto_follow targets use them)
 _NUMERIC_FIELDS = {"lifetime_spend", "recent_spend", "last_active_days"} | _LEDGER_MONEY
 _TAG_FIELDS = {"tag"}
 _FIELDS = _NUMERIC_FIELDS | _DATE_FIELDS | set(_ENUMS) | _TAG_FIELDS
@@ -49,8 +36,6 @@ _MAX_RULES = 20
 
 
 def _window_days(days: Any) -> int:
-    """A recent_spend window in days, clamped to 1..3650. Raises TypeError /
-    ValueError when `days` is not an integer."""
     return max(1, min(int(days), 3650))
 
 
@@ -71,11 +56,11 @@ def _num_cmp(a: float, op: str, b: Any) -> bool:
         return a == b
     if op == "!=":
         return a != b
+    # Unknown op or malformed rule never matches: a bad rule can only shrink a segment, never leak fans into it.
     return False
 
 
 def fact_key(rule: dict) -> str:
-    """Where a v2 rule's value lives in the normalised fan's `facts` dict."""
     field = rule.get("field")
     if field in _LEDGER_MONEY or field == "last_purchase_at":
         scope = rule.get("scope") or "creator"
@@ -86,9 +71,6 @@ def fact_key(rule: dict) -> str:
 
 
 def _eval_rule(rule: dict, fan: dict) -> bool:
-    """Evaluate ONE rule against a normalised fan dict. Unknown field / bad
-    shape → False (never matches), so a malformed rule can only ever SHRINK a
-    segment, never leak fans into it."""
     field = rule.get("field")
     op = rule.get("op")
     value = rule.get("value")
@@ -100,7 +82,7 @@ def _eval_rule(rule: dict, fan: dict) -> bool:
     if field in _DATE_FIELDS:
         ago = (fan.get("facts") or {}).get(fact_key(rule))
         if ago is None:
-            return False  # no date → never matches a date rule
+            return False
         if op == "within_last":
             return 0 <= ago <= float(value)
         if op == "more_than":
@@ -123,14 +105,13 @@ def _eval_rule(rule: dict, fan: dict) -> bool:
     if field == "recent_spend":
         days = int(rule.get("days") or 30)
         rs = fan.get("recent_spend") or {}
-        # keys may be int (from the resolver) or str (from JSON round-trips)
         cents = rs.get(days, rs.get(str(days), 0))
         return _num_cmp(float(cents or 0), op, value)
 
     if field == "last_active_days":
         la = fan.get("last_active_days")
         if la is None:
-            return False  # never active → fails any recency threshold
+            return False
         return _num_cmp(float(la), op, value)
 
     if field == "tag":
@@ -146,12 +127,6 @@ def _eval_rule(rule: dict, fan: dict) -> bool:
 
 
 def resolve(rules_obj: dict | None, fans: Iterable[dict]) -> list[int]:
-    """PURE. Return the sorted fan_id list matching `rules_obj` over `fans`.
-
-    `rules_obj` = {"match": "all"|"any", "rules": [...]}. Empty/absent rules →
-    EVERY fan matches (a blank segment is "everyone", not "no one"). `fans` is
-    an iterable of dicts shaped by `_normalise_fan`.
-    """
     rules_obj = rules_obj or {}
     rules = rules_obj.get("rules") or []
     match = str(rules_obj.get("match") or "all").lower()
@@ -170,7 +145,6 @@ def resolve(rules_obj: dict | None, fans: Iterable[dict]) -> list[int]:
     return sorted(out)
 
 
-# ── Validation (persisted rules) ──────────────────────────────────────
 
 def _number(field: str, v: Any) -> float:
     try:
@@ -180,7 +154,6 @@ def _number(field: str, v: Any) -> float:
 
 
 def _value_for(field: str, op: str, raw: Any) -> Any:
-    """A numeric value, or [lo, hi] for `between`."""
     if op != "between":
         return _number(field, raw)
     if not isinstance(raw, (list, tuple)) or len(raw) != 2:
@@ -192,9 +165,6 @@ def _value_for(field: str, op: str, raw: Any) -> Any:
 
 
 def _validate_rules(rules_obj: Any) -> dict:
-    """Coerce + bound-check a rules object for storage. Raises 422 on anything
-    the resolver couldn't act on (so a bad rule is rejected at write time, not
-    silently dropped at read)."""
     if rules_obj is None:
         return {"match": "all", "rules": []}
     if not isinstance(rules_obj, dict):
@@ -240,7 +210,7 @@ def _validate_rules(rules_obj: Any) -> dict:
             if val not in _ENUMS[field]:
                 raise HTTPException(422, f"{field} must be one of {', '.join(_ENUMS[field])}")
             entry["value"] = val
-        else:  # tag
+        else:
             if op not in _TAG_OPS:
                 raise HTTPException(422, "tag needs 'has' or 'not_has'")
             entry["value"] = str(r.get("value") or "")
@@ -260,10 +230,8 @@ def _validate_rules(rules_obj: Any) -> dict:
     return {"match": match, "rules": clean}
 
 
-# ── Rule readers ──────────────────────────────────────────────────────
 
 def _windows_in_rules(rules_obj: dict) -> set[int]:
-    """The distinct v1 recent_spend windows (days) a rules object references."""
     out: set[int] = set()
     for r in (rules_obj.get("rules") or []):
         if r.get("field") == "recent_spend":
@@ -275,8 +243,6 @@ def _windows_in_rules(rules_obj: dict) -> set[int]:
 
 
 def uses_subscription_facts(rules_obj: dict) -> bool:
-    """Does this rules object read the roster snapshot? (The sync worker
-    refreshes the roster first, and syncs nothing off a stale one.)"""
     return any(r.get("field") in ("status", "renew", "sub_start", "expires_at", "resubscribed_at",
                                   "idle_days")
                for r in (rules_obj.get("rules") or []))

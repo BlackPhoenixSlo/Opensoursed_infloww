@@ -1,20 +1,3 @@
-"""fan_is_muted — track creator-muted chats so automations leave them alone
-
-Revision ID: 0036_fan_is_muted
-Revises: 0035_funnel_account_media
-Create Date: 2026-06-17
-
-One additive change: `fans.is_muted` BOOLEAN NOT NULL DEFAULT 0.
-
-OF exposes `isMutedNotifications` on every `/chats` list item (the creator-side
-"Mute notifications" toggle — verified live: it lives on the top-level chat
-object, not on `withUser`). The chat-scrape now persists it here so the
-automations can durably skip-list a fan who is BOTH muted AND a creator we
-follow (mutual-promo spam) — see `_common.should_skip_muted_creator`.
-
-Additive + NOT-NULL-with-default + idempotent (inspector-guarded, house
-convention so a create_all-built DB whose alembic_version lags doesn't trip).
-"""
 from __future__ import annotations
 
 from typing import Sequence

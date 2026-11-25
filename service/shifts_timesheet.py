@@ -1,12 +1,3 @@
-"""service/shifts_timesheet.py — the Timesheet's tally, with no DB.
-
-`GET /admin/shifts/timesheet` (service/shifts_api.py `timesheet`, whose
-docstring holds the rules and their ASSUMPTIONs) loads the Agency's live
-Shifts, their assignments, its Clock events, their time per Creator
-(`shift_time.creator_spans`) and their sales (`sales_attribution.event_sales`),
-then calls `timesheet_rows` here and names the rows it returns.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -20,7 +11,6 @@ if TYPE_CHECKING:
 
 
 def _overlap_s(a: datetime, b: datetime, lo: datetime, hi: datetime) -> float:
-    """Seconds of [a, b) inside [lo, hi)."""
     return max(0.0, (min(b, hi) - max(a, lo)).total_seconds())
 
 
@@ -29,16 +19,6 @@ def timesheet_rows(
     on_creator: list[tuple[ClockEvent, str, datetime, datetime]], sales: dict[int, list[CreditedSale]],
     *, lo: datetime, hi: datetime, now: datetime, by_employee: bool,
 ) -> dict[int | str, dict[str, Any]]:
-    """Per key (an Employee id with `by_employee`, else a Creator id), in
-    first-seen order, the tally `{scheduled_shifts, shifts_worked,
-    scheduled_s, worked_s, recorded_earnings_cents, open_now}` over [lo, hi).
-
-    `assigned` is, by Shift id, its (Employee, Creator) pairs; `on_creator`
-    the events' time per Creator (`creator_spans`); `sales`, by event id,
-    their credited shares (`event_sales`: `employee_id`, `account_id`,
-    `occurred_at`, `amount_cents`). An open event runs to `now`.
-    """
-    # Recorded earnings: each event's sales inside the range.
     stop = min(hi, now)
     earnings: dict[int | str, int] = {}
     for shares in sales.values():
@@ -64,8 +44,6 @@ def timesheet_rows(
                        for emp, acc in assigned[sh.id]):
                     tally["shifts_worked"] += 1
 
-    # Worked time as (key, lo, hi, open) spans: per Employee each whole
-    # event, per Creator the event's time on that Creator.
     spans = ([(ev.employee_id, ev.in_utc, ev.out_utc or now, ev.out_utc is None) for ev in clock_events]
              if by_employee else [(acc, s_lo, s_hi, ev.out_utc is None) for ev, acc, s_lo, s_hi in on_creator])
     for key, s_lo, s_hi, is_open in spans:

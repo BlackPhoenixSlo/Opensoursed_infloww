@@ -1,36 +1,7 @@
 #!/usr/bin/env python3
-"""
-The DEFAULT "strokes" funnel — pre-added on every box, and walked end to end.
-
-  case_seed_matches_canonical_json:
-      seeds/funnels.py's "strokes" entry IS the canonical funnel JSON, minus step
-      4's `media_files` (vault ids are per model → funnel_account_media).
-  case_seed_defaults_once_idempotent:
-      seed_defaults_once adds exactly "strokes" (not the French variant) on the
-      first boot and nothing on every later boot — one row, no duplicates.
-  case_seed_deleted_default_stays_deleted:
-      a default the operator deleted does not come back on the next boot (only
-      a box without the marker re-adds a missing one).
-  case_seed_never_clobbers_an_edit:
-      even with the marker gone, an existing "strokes" row is left as edited.
-  case_strokes_walk_end_to_end:
-      the SEEDED funnel walked through the real run_once: a replier gets step 1;
-      with no reply the checks land +2, +6, +16 after the send, then every 10;
-      each fresh reply advances 1→2→3→4; step 4 is a $24 PPV carrying THIS
-      model's five bound vault ids, and finishes the fan.
-  case_funnel_send_turns_the_walker_on:
-      a funnel-linked send needs the periodic reply_mass_funnel rule: created ON
-      at 120 s when missing (once), a parked one is woken, a cadence-less Reply
-      Instant row gets a cadence, an operator-tuned cadence is kept.
-  case_strokes_ppv_waits_for_media:
-      a model that never bound PPV media is held at step 4 (pre-send guard) —
-      nothing is sent, the fan stays pending — instead of a blank paywall.
-
-Run: ./venv/bin/python service/tests/test_default_funnel.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -42,7 +13,7 @@ from sqlalchemy import delete, select, text, update  # noqa: E402
 import automation_executor as ax  # noqa: E402
 import automations.reply_mass_funnel as a11  # noqa: E402 — module under test
 
-a11._STEP_GAP_S = 0  # skip the human typing-pause sleep in tests
+a11._STEP_GAP_S = 0
 from automation_executor import run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
@@ -52,8 +23,6 @@ from db.models import (  # noqa: E402
 from funnels_api import ensure_funnel_walker  # noqa: E402
 from seeds.funnels import DEFAULTS_MARKER, FUNNELS, seed_defaults_once  # noqa: E402
 
-# The funnel as the operator wrote it (verbatim, including the media ids that
-# belong to ONE model's vault).
 CANONICAL = {
     "name": "strokes",
     "opening_message": "How many strokes does it take to get you off? 😈",
@@ -83,12 +52,10 @@ CANONICAL = {
 }
 PPV_MEDIA = CANONICAL["steps"][3]["media_files"]
 
-T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)  # broadcast time
+T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)
 
 
 class FakeOF:
-    """Records sends; stamps each echo at `clock` so every step's funnel-out lands
-    at a time the test controls (a reply must come AFTER it to count)."""
 
     def __init__(self):
         self.user_id = "999"
@@ -121,8 +88,6 @@ async def _funnel_names() -> list[str]:
 
 
 async def _setup_run(aid: str, fan_id: int, *, media: list[int] | None) -> int:
-    """Account + (optional) per-model PPV media + a funnel broadcast to `fan_id`
-    that the fan answered 5 min later."""
     fid = (await _strokes()).id
     async with get_session() as s:
         s.add(Account(id=aid))
@@ -155,7 +120,6 @@ async def _state(mr: int, fan_id: int) -> FunnelState:
 
 
 async def _make_due(aid: str, mr: int, fan_id: int) -> None:
-    """Time passes: the check is due and the 60 s post-send rest is over."""
     async with get_session() as s:
         await s.execute(update(FunnelState)
                         .where(FunnelState.mass_run_id == mr, FunnelState.fan_id == fan_id)
@@ -166,24 +130,20 @@ async def _make_due(aid: str, mr: int, fan_id: int) -> None:
 
 
 def _gap_min(st: FunnelState) -> float:
-    """Minutes from the tick that saved this state to its next reply-check (both
-    stamps come from the walker's one `now`, so this is exact)."""
     return (st.next_check_at - st.updated_at).total_seconds() / 60
 
 
-# ── Content ───────────────────────────────────────────────────────────
 
 def case_seed_matches_canonical_json():
     seeded = next(f for f in FUNNELS if f["name"] == "strokes")
     want = json.loads(json.dumps(CANONICAL))
-    want["steps"][3].pop("media_files")  # per model, never on the shared text
+    want["steps"][3].pop("media_files")
     got = {k: seeded[k] for k in ("name", "opening_message", "description", "steps")}
     assert got == want, json.dumps(got, ensure_ascii=False, indent=1)
     assert set(seeded) == {"name", "opening_message", "description", "steps"}, \
         f"no legacy keys on the default: {sorted(seeded)}"
 
 
-# ── Seeding ───────────────────────────────────────────────────────────
 
 async def case_seed_defaults_once_idempotent():
     assert await _funnel_names() == [], "fresh test DB starts empty"
@@ -203,13 +163,12 @@ async def case_seed_never_clobbers_an_edit():
     async with get_session() as s:
         await s.execute(update(MassMessageFunnel).where(MassMessageFunnel.name == "strokes")
                         .values(opening_message="my own opener"))
-        # Even if the one-shot marker were lost, insert-if-missing keeps the edit.
         await s.execute(text("DELETE FROM data_migrations WHERE name = :n"),
                         {"n": DEFAULTS_MARKER})
     assert await seed_defaults_once() == []
     assert (await _strokes()).opening_message == "my own opener"
     assert await _funnel_names() == ["strokes"]
-    async with get_session() as s:  # put the canonical opener back for the walk
+    async with get_session() as s:
         await s.execute(update(MassMessageFunnel).where(MassMessageFunnel.name == "strokes")
                         .values(opening_message=CANONICAL["opening_message"]))
 
@@ -219,7 +178,6 @@ async def case_seed_deleted_default_stays_deleted():
         await s.execute(delete(MassMessageFunnel).where(MassMessageFunnel.name == "strokes"))
     assert await seed_defaults_once() == [], "marker present → never resurrected"
     assert await _strokes() is None
-    # A box that never got the default (no marker) gets it back: insert-if-missing.
     async with get_session() as s:
         await s.execute(text("DELETE FROM data_migrations WHERE name = :n"),
                         {"n": DEFAULTS_MARKER})
@@ -227,7 +185,6 @@ async def case_seed_deleted_default_stays_deleted():
     assert await _funnel_names() == ["strokes"]
 
 
-# ── The walk ──────────────────────────────────────────────────────────
 
 async def case_strokes_walk_end_to_end():
     aid, fan = "acc_strokes", 61001
@@ -235,7 +192,6 @@ async def case_strokes_walk_end_to_end():
     fake = _use_fake()
     steps = CANONICAL["steps"]
 
-    # Discovery + step 1 (he answered the opener).
     fake.clock = T0 + timedelta(hours=1)
     r = await run_once(aid, "reply_mass_funnel", payload={})
     assert (r["discovered"], r["advanced"]) == (1, 1), r
@@ -245,8 +201,6 @@ async def case_strokes_walk_end_to_end():
     assert (st.current_step, st.check_count, st.status) == (1, 0, "pending"), st
     assert _gap_min(st) == 2, _gap_min(st)
 
-    # Silence: each due check reschedules on the NEXT gap — +2, +6, +16 after the
-    # send, then every 10 — and sends nothing.
     for want_count, want_gap in ((1, 4), (2, 10), (3, 10), (4, 10)):
         await _make_due(aid, mr, fan)
         r = await run_once(aid, "reply_mass_funnel", payload={})
@@ -256,7 +210,6 @@ async def case_strokes_walk_end_to_end():
         assert _gap_min(st) == want_gap, (want_count, _gap_min(st))
     assert len(fake.sent) == 2, "no send while he's quiet"
 
-    # Each fresh reply advances one step and restarts the [2,4,10] poll.
     for n, step in ((2, steps[1]), (3, steps[2])):
         await _reply(aid, fan, 7_100 + n, fake.clock + timedelta(minutes=30))
         fake.clock += timedelta(hours=1)
@@ -269,7 +222,6 @@ async def case_strokes_walk_end_to_end():
         assert (st.current_step, st.check_count, st.status) == (n, 0, "pending"), st
         assert _gap_min(st) == 2, _gap_min(st)
 
-    # A reply after step 3 → the $24 PPV with this model's five vault ids, then done.
     await _reply(aid, fan, 7_104, fake.clock + timedelta(minutes=30))
     fake.clock += timedelta(hours=1)
     await _make_due(aid, mr, fan)
@@ -292,7 +244,6 @@ async def case_strokes_walk_end_to_end():
     assert [r[0] for r in out] == [1, 1, 2, 2, 3, 3, 4], out
     assert out[-1][1] == 2400, out
 
-    # Done means done: a later reply does not restart the walk.
     await _reply(aid, fan, 7_105, fake.clock + timedelta(minutes=30))
     await _make_due(aid, mr, fan)
     before = len(fake.sent)
@@ -302,9 +253,9 @@ async def case_strokes_walk_end_to_end():
 
 async def case_strokes_ppv_waits_for_media():
     aid, fan = "acc_strokes_nomedia", 62001
-    mr = await _setup_run(aid, fan, media=None)  # this model bound no PPV media
+    mr = await _setup_run(aid, fan, media=None)
     fake = _use_fake()
-    async with get_session() as s:  # he's at step 4 and has just answered step 3
+    async with get_session() as s:
         s.add(FunnelState(mass_run_id=mr, fan_id=fan, current_step=3, check_count=0,
                           status="pending",
                           next_check_at=datetime.utcnow() - timedelta(seconds=1)))
@@ -334,24 +285,20 @@ async def _add_walker(aid: str, *, enabled: bool, trigger: dict) -> None:
 
 
 async def case_funnel_send_turns_the_walker_on():
-    # None yet → created ON at the catalog's 2-min cadence; a second send is a no-op.
     async with get_session() as s:
         s.add(Account(id="acc_w_none"))
     assert await ensure_funnel_walker("acc_w_none") == "created"
     assert await ensure_funnel_walker("acc_w_none") == "unchanged"
     assert await _walker_rules("acc_w_none") == [(True, {"every_seconds": 120})]
 
-    # Parked by the operator → the funnel pick wakes it, cadence untouched.
     await _add_walker("acc_w_off", enabled=False, trigger={"every_seconds": 180})
     assert await ensure_funnel_walker("acc_w_off") != "unchanged"
     assert await _walker_rules("acc_w_off") == [(True, {"every_seconds": 180})]
 
-    # Reply Instant's cadence-less switch never ticks → it gets a cadence.
     await _add_walker("acc_w_w7", enabled=True, trigger={})
     assert await ensure_funnel_walker("acc_w_w7") == "cadence"
     assert await _walker_rules("acc_w_w7") == [(True, {"every_seconds": 120})]
 
-    # Already walking at a tuned cadence → left exactly as it is.
     await _add_walker("acc_w_tuned", enabled=True, trigger={"every_seconds": 300})
     assert await ensure_funnel_walker("acc_w_tuned") == "unchanged"
     assert await _walker_rules("acc_w_tuned") == [(True, {"every_seconds": 300})]

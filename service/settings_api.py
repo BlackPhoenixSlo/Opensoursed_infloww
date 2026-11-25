@@ -1,44 +1,3 @@
-"""service/settings_api.py — Settings blobs, one per agency and Blob tab.
-
-  GET /admin/settings/applied → what applies to the caller's session
-  GET /admin/settings/{tab}  → {tab, config}   ({} when nothing is stored)
-  PUT /admin/settings/{tab}  → replace the blob with the JSON object body,
-                               stamped `version: 1`; returns {tab, config}
-  On the versioned tabs (`sales`, `time-tracking`) GET and PUT also answer
-  `history`, and PUT takes `?effective_from=<ISO time>` (default now).
-
-ADR-0007: one table (`user_settings`), whole-blob replace. Each tab's schema
-lives in `settings_schema.parse_blob` (docs/spec/phase-04-apply-stored-settings.md):
-a PUT with a wrong value is refused naming the first failing field, a partial
-blob is accepted and unknown keys are kept. GET answers the stored blob as
-stored. Every consumer reads a stored blob through `applied_blob`, which drops
-each invalid stored field so its default applies: today `time-tracking`
-(clock_api) and `sales.multi_employee_shift` (shifts_api).
-
-Versioned tabs (roadmap W6 6.4): a Sales or Time tracking change must not
-rewrite past payroll, so those two tabs are not a `user_settings` blob but
-append-only `settings_versions` rows. A save adds a version effective from
-`effective_from` (now by default, never later than now, as Infloww's "The
-effective time start later than the current time"); a read for time `ts` takes
-the latest version with `effective_from <= ts` (`applied_versions`, then
-`blob_at`), and GET and `applied_blob` answer the one in effect now. A backdated save
-therefore recredits the sales and shifts from its effective time up to the
-next version. The blobs stored before moved in as versions effective from
-SETTINGS_EPOCH (db.engine.move_versioned_settings), so nothing past moved.
-
-A signed-in User is required, as in `tenant_keys_api`: the user id comes from
-the session and never from the request, so an owner can only ever touch their
-own rows. A Chatter session resolves to no User here and gets a 401.
-
-The Applied settings read is the one route here a chatter may call: any
-signed-in session (owner, chatter or Master) gets the values that apply to it,
-from Phase 1's Agency context, and never the stored blobs themselves.
-
-Check order: 401 (no User) → 404 (not a Blob tab) → 413 (body over 64 KB) →
-400 (not JSON, not an object, or `{"detail": "<tab>.<dotted.path>: <reason>"}`
-for the first field the tab's schema refuses).
-"""
-
 from __future__ import annotations
 
 import json
@@ -63,9 +22,6 @@ from settings_schema import CHATTING_PAGES, FLAGS, TABS, parse_blob
 
 router = APIRouter(prefix="/admin/settings", tags=["settings"])
 
-# The Settings tabs whose Panel saves a blob, and `flags` (no Panel):
-# exactly the tabs the schema module knows, so a tab without a schema is 404,
-# never a KeyError. Any other tab is 404.
 BLOB_TABS: frozenset[str] = frozenset(TABS)
 
 MAX_BODY_BYTES = 64 * 1024
@@ -80,8 +36,6 @@ def _require_tab(tab: str) -> None:
 
 
 def _loads(raw: str | None) -> dict[str, Any]:
-    """A stored blob's text as an object, or {} when nothing usable is
-    stored (empty, not JSON, or not an object)."""
     try:
         loaded = json.loads(raw) if raw else {}
     except Exception:
@@ -90,8 +44,6 @@ def _loads(raw: str | None) -> dict[str, Any]:
 
 
 async def _read_blob(s, user_id: str, tab: str) -> dict[str, Any]:
-    """The stored blob for (user, tab), or {} when nothing usable is stored;
-    for a versioned tab, the version in effect now."""
     if tab in VERSIONED_SETTINGS_TABS:
         return blob_at(await _versions(s, user_id, tab), datetime.utcnow())
     row = await s.get(UserSetting, (user_id, tab))
@@ -99,8 +51,6 @@ async def _read_blob(s, user_id: str, tab: str) -> dict[str, Any]:
 
 
 async def _version_rows(s, user_id: str, tab: str) -> list[SettingsVersion]:
-    """A versioned tab's rows in effect order: by `effective_from`, then by
-    id, so of two saved for the same instant the later one wins."""
     return list((await s.execute(
         select(SettingsVersion).where(SettingsVersion.user_id == user_id, SettingsVersion.tab == tab)
         .order_by(SettingsVersion.effective_from, SettingsVersion.id)
@@ -108,7 +58,6 @@ async def _version_rows(s, user_id: str, tab: str) -> list[SettingsVersion]:
 
 
 async def _versions(s, user_id: str, tab: str) -> list[tuple[datetime, dict[str, Any]]]:
-    """`(effective_from, stored blob)` per distinct effective time, in order."""
     out: list[tuple[datetime, dict[str, Any]]] = []
     for row in await _version_rows(s, user_id, tab):
         if out and out[-1][0] == row.effective_from:
@@ -118,8 +67,6 @@ async def _versions(s, user_id: str, tab: str) -> list[tuple[datetime, dict[str,
 
 
 def blob_at(versions: list[tuple[datetime, dict[str, Any]]], ts: datetime) -> dict[str, Any]:
-    """The blob of the latest version with `effective_from <= ts`; {} (every
-    default) before the first one."""
     found: dict[str, Any] = {}
     for at, blob in versions:
         if at > ts:
@@ -129,16 +76,10 @@ def blob_at(versions: list[tuple[datetime, dict[str, Any]]], ts: datetime) -> di
 
 
 async def applied_versions(s, agency_user_id: str, tab: str) -> list[tuple[datetime, dict[str, Any]]]:
-    """A versioned tab's versions as consumers apply them (`applied_blob`'s
-    rule), in effect order; `blob_at` picks the one for a time. Readers of
-    many sales or shifts take this once instead of `applied_blob` per time."""
     return [(at, parse_blob(tab, blob)[0]) for at, blob in await _versions(s, agency_user_id, tab)]
 
 
 async def _history(s, user_id: str, tab: str) -> list[dict[str, Any]]:
-    """The versioned tab's Settings history, latest effective first:
-    `{effective_from, saved_at, in_effect}`. `effective_from` is null for a
-    version in effect since before versioning (SETTINGS_EPOCH)."""
     rows = await _version_rows(s, user_id, tab)
     now = datetime.utcnow()
     current = next((r.id for r in reversed(rows) if r.effective_from <= now), None)
@@ -150,8 +91,6 @@ async def _history(s, user_id: str, tab: str) -> list[dict[str, Any]]:
 
 
 def _parse_effective(value: str | None) -> datetime:
-    """`?effective_from` → naive UTC, now when left out; 400 unless an
-    ISO-8601 time with a zone, not later than now."""
     now = datetime.utcnow()
     if value is None:
         return now
@@ -167,12 +106,6 @@ def _parse_effective(value: str | None) -> datetime:
     return max(at, SETTINGS_EPOCH)
 
 
-# Role presets (example roles beside the built-ins Owner, Admin, Team Leader, Chatter and Creator;
-# settings_schema.BUILT_IN_ROLE_IDS): seeded once per Agency as ordinary roles the owner edits, renames or
-# deletes like any other. The built-ins are not stored here. The seeding is recorded in its own `user_settings`
-# row (tab `role-presets`, not a Blob tab), so a preset the owner deleted or renamed is never put back and the
-# `roles` blob reads and saves as before. Chatter was a preset until w5-a made it a built-in with the same
-# pages; an Agency seeded before keeps its stored copy, which the built-in then reads as its permissions.
 ROLE_PRESETS: tuple[dict[str, Any], ...] = (
     {"id": "manager", "name": "Manager", "scope": "all",
      "description": "Runs the team: employees, creators and shifts, and chats too.",
@@ -190,7 +123,6 @@ _PRESETS_MARKER = "role-presets"
 
 
 def _with_presets(config: dict[str, Any]) -> dict[str, Any]:
-    """`config` with each preset added whose id or name the Agency does not already use."""
     roles = config.get("roles") if isinstance(config.get("roles"), list) else []
     ids = {r.get("id") for r in roles if isinstance(r, dict)}
     names = {str(r.get("name", "")).strip().lower() for r in roles if isinstance(r, dict)}
@@ -203,7 +135,6 @@ def _with_presets(config: dict[str, Any]) -> dict[str, Any]:
 
 
 async def ensure_role_presets(agency_user_id: str) -> None:
-    """Seed the role presets into the Agency's `roles` blob, once ever."""
     async with get_session() as s:
         if await s.get(UserSetting, (agency_user_id, _PRESETS_MARKER)) is not None:
             return
@@ -217,22 +148,16 @@ _BOOKMARKS_PAGE_MIGRATION = "20261020_bookmarks_page"
 _COLLECTIONS, _BOOKMARKS = "/of-manager/collections", "/of-manager/collections/bookmarks/all"
 
 
-# Every Employee login holds a role: one joining an Agency (Add employee, an invite, a link, its first
-# request) or left without one by a roles save gets the built-in Chatter. With enforcement on by default,
-# a login with no role would be refused every page.
 DEFAULT_LOGIN_ROLE = "chatter"
 
 
 async def _login_employee_ids(s, agency_user_id: str) -> list[int]:
-    """The Agency's Employee logins (`employees.is_login`: not the owner's own row, not a name-only row)."""
     rows = (await s.execute(select(Employee).where(
         Employee.user_id == agency_user_id, Employee.chatter_id.is_not(None)))).scalars().all()
     return [e.id for e in rows if is_login(e)]
 
 
 def _with_roles_for(blob: dict[str, Any], employee_ids: list[int], role_id: str) -> tuple[dict[str, Any], int]:
-    """`blob` (an applied roles blob) with `role_id` given to each of `employee_ids` holding no role
-    (`permissions._role`: unassigned, or a role the blob does not hold); and how many it gave."""
     unroled = [e for e in employee_ids if _role(blob, e) is None]
     if not unroled:
         return blob, 0
@@ -241,7 +166,6 @@ def _with_roles_for(blob: dict[str, Any], employee_ids: list[int], role_id: str)
 
 
 async def give_role_to_unroled(agency_user_id: str, employee_ids: list[int]) -> int:
-    """Give the built-in Chatter to each of `employee_ids` holding no role in the Agency; the count."""
     async with get_session() as s:
         blob, n = _with_roles_for(await applied_blob(s, agency_user_id, "roles"), employee_ids, DEFAULT_LOGIN_ROLE)
         if n:
@@ -251,19 +175,6 @@ async def give_role_to_unroled(agency_user_id: str, employee_ids: list[int]) -> 
 
 
 async def migrate_role_enforcement_once() -> int:
-    """ONE-TIME (2026-10-19): Role enforcement is now on unless an Agency
-    stored `enforce: false` (`permissions.enforced`); it used to be off until
-    turned on. For every Agency that never chose (no valid `enforce` stored),
-    each Employee login holding no role, or a role its blob does not hold, gets
-    the built-in Admin (every page, all data), which is what it reached before.
-    A login holding a role is NOT widened: that role's stored pages and Data
-    scope now apply, where with enforcement off it reached every page, so such a
-    login can lose pages until the owner widens its role in Role Settings.
-    Owners are never checked. Agencies and logins are read from the Employee
-    rows (`employees.is_login`): a login linked but with no Employee row yet is
-    not given Admin; its row, made on its first request or when the owner opens
-    the roster, gets the built-in Chatter. Guarded by a `data_migrations` marker (fresh
-    box too, so it never runs later). Returns the logins given Admin."""
     marker = {"n": _ENFORCE_DEFAULT_MIGRATION}
     async with get_session() as s:
         await s.execute(text(_DATA_MIGRATIONS_DDL))
@@ -290,12 +201,6 @@ async def migrate_role_enforcement_once() -> int:
 
 
 async def migrate_bookmarks_page_once() -> int:
-    """ONE-TIME (2026-10-20): Bookmarks left Collections for a page of its own
-    (permissions.PAGE_MAP), so every stored role (custom, a seeded preset, a
-    saved built-in copy) that grants Collections also gets Bookmarks, which it
-    reached before. A role already holding the Bookmarks key keeps its value.
-    Edits the stored JSON in place (the rest untouched). Guarded by a
-    `data_migrations` marker. Returns the roles widened."""
     marker = {"n": _BOOKMARKS_PAGE_MIGRATION}
     async with get_session() as s:
         await s.execute(text(_DATA_MIGRATIONS_DDL))
@@ -334,24 +239,11 @@ async def _write_blob(s, user_id: str, tab: str, blob: dict[str, Any]) -> None:
 
 
 async def applied_blob(s, agency_user_id: str, tab: str) -> dict[str, Any]:
-    """The Agency's stored blob for `tab` as consumers apply it: each invalid
-    stored field dropped (absent, so its consumer's default applies), the rest
-    and unknown keys intact, `version: 1`. Never raises on stored data. For a
-    versioned tab, the version in effect now.
-
-    ASSUMPTION: it takes the caller's session `s`, like `_read_blob`, where the
-    spec wrote `applied_blob(agency_user_id, tab)`. Rung 3: consumers read it
-    inside their own transaction. Overturned if a caller with no session needs it.
-    """
     blob, _ = parse_blob(tab, await _read_blob(s, agency_user_id, tab))
     return blob
 
 
 async def translation_allowed(s, contexts: list[AgencyContext]) -> bool:
-    """Whether AI translation applies across these Agency contexts: only if
-    every one allows it (spec story 59), a never-stored blob or key counting
-    as on. The Applied settings read and the `/admin/translate` gate both
-    answer with it."""
     for ctx in contexts:
         messaging = await applied_blob(s, ctx.agency_user_id, "messaging")
         if not messaging.get("ai_translation", True):
@@ -360,9 +252,6 @@ async def translation_allowed(s, contexts: list[AgencyContext]) -> bool:
 
 
 async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
-    """One Agency's Applied settings for one session: a never-stored or
-    invalid field reads as its default (no zone, Monday, translation on,
-    the free-trial popup shown)."""
     prefs = await applied_blob(s, ctx.agency_user_id, "preferences")
     roles = await applied_blob(s, ctx.agency_user_id, "roles")
     flags = await applied_blob(s, ctx.agency_user_id, "flags")
@@ -390,17 +279,6 @@ async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
 
 
 def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
-    """A chatter's Applied settings across all its Agencies, with no single
-    Creator in scope (spec story 13): no time-zone override, translation only
-    if every Agency allows it, a page if any Agency grants it.
-
-    ASSUMPTION: the week start reads as Monday, `enforced` is true if any
-    Agency enforces, the Data scope is "self" if any Agency narrows it, and a
-    feature flag is on only if every Agency turns it on, and the free-trial
-    popup is hidden only if every Agency hides it.
-    Rung 4: never wider than one of the Agencies allows. Overturned if the
-    owner wants the week start or Data scope taken from one chosen Agency.
-    """
     pages: set[str] | None = set()
     for part in parts:
         granted = part["permissions"]["pages"]
@@ -413,20 +291,15 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
             "enforced": any(p["permissions"]["enforced"] for p in parts),
             "pages": None if pages is None else sorted(pages),
             "scope": narrowest_scope(p["permissions"]["scope"] for p in parts),
-            # A My Automations page if any Agency grants it, as the Relay allows it.
             "opt_in": sorted({h for p in parts for h in p["permissions"]["opt_in"]}),
-            # An action any Agency denies, as the Relay refuses a request naming no Creator.
             "denied_actions": sorted({k for p in parts for k in p["permissions"]["denied_actions"]}),
-            # A Dashboard card any Agency hides, as the Relay refuses its routes then.
             "denied_cards": sorted({k for p in parts for k in p["permissions"]["denied_cards"]}),
         },
         "flags": {name: all(p["flags"][name] for p in parts) for name in FLAGS},
-        # Several Agencies' layouts: the first one's (the app falls back to its default when none is stored).
         "reports": parts[0]["reports"],
     }
 
 
-# Declared before /{tab}, so "applied" is never read as a tab name.
 @router.get("/applied")
 async def get_applied(request: Request) -> dict[str, Any]:
     """`{preferences: {tz, report_tz, week_start, hide_trial_popup}, messaging: {ai_translation},
@@ -467,8 +340,6 @@ async def get_settings(tab: str) -> dict[str, Any]:
 
 
 async def _answer(s, user_id: str, tab: str) -> dict[str, Any]:
-    """GET's and PUT's answer: the blob in effect now, and on a versioned tab
-    its `history`."""
     out: dict[str, Any] = {"tab": tab, "config": await _read_blob(s, user_id, tab)}
     if tab in VERSIONED_SETTINGS_TABS:
         out["history"] = await _history(s, user_id, tab)
@@ -499,13 +370,11 @@ async def put_settings(tab: str, request: Request, effective_from: str | None = 
             await s.flush()
             return await _answer(s, user.id, tab)
         if tab == "roles":
-            # No login is left without a role: one whose assignment this save drops gets Chatter.
             blob, _ = _with_roles_for(blob, await _login_employee_ids(s, user.id), DEFAULT_LOGIN_ROLE)
             events.on_commit(s, "permissions_changed", agency=user.id)
         if tab == "security" and blob.get("require_2fa") is True and (
             await applied_blob(s, user.id, tab)
         ).get("require_2fa") is not True:
-            # 2FA just became required: employees without it sign in again and set it up.
             await revoke_unenrolled_employees(s, user.id)
         await _write_blob(s, user.id, tab, blob)
     return {"tab": tab, "config": blob}

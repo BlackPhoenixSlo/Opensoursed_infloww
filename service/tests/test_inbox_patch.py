@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Inbox cache patched in place on a DM, and stale-while-revalidate (backend 1.1).
-
-An inbound DM used to `invalidate("list_chats")`, so the next inbox load (and
-the next badge fold) re-read OF: a 3-call page assembly, p50 ~2 s, on ~24% of
-loads. Now `_inbox_patcher` rewrites the cached page-0 windows instead. These
-cases pin:
-
-  • relay_cache.patch — keeps/rewrites, drops on None or a raising fn, keeps
-    the expiry, and bumps the pair generation (a fetch in flight cannot write
-    its pre-DM snapshot over the patched entry).
-  • relay_cache.get_or_fetch(stale_while_revalidate=) — an expired entry is
-    served at once and ONE background fetch refreshes it.
-  • _inbox_patcher — fan re-topped, lastMessage/unread/hasUnreadTips set; a
-    frame not newer than the row's lastMessage (replay, or already in the
-    window) leaves the window untouched; deeper pages / other orders / a fan
-    outside the window / a frame without an id are dropped.
-  • list_chats reconciles the local `chats` mirror from a fresh OF read only,
-    never from a cached (stale or WS-patched) window.
-  • the measurement: OF fetches over a burst of DMs + inbox polls, invalidate
-    vs patch.
-
-Run:  ./venv/bin/python service/tests/test_inbox_patch.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -66,7 +43,6 @@ def case_patcher_retops_and_counts():
     assert top["hasUnread"] is True and top["hasUnreadTips"] is True, top
     assert out["hasMore"] is True
     assert value["list"][2]["unreadMessagesCount"] == 1, "patcher mutated the cached value"
-    # The same WS frame again (replay): the window is left exactly as it is.
     assert fn(_WINDOW, out) is out, "a replayed frame must not touch the window"
 
 
@@ -105,7 +81,6 @@ def case_patcher_stubs_new_fan_on_top():
         assert rows[0]["unreadMessagesCount"] == 1 and rows[0]["hasUnreadTips"] is True, rows[0]
         assert out.value["hasMore"] is has_more and out.value["asked_at"] == 5, out.value
     assert len(value["list"]) == 2, "patcher mutated the cached value"
-    # The worker's later patch with the same frame: the stub is there, nothing moves.
     stubbed = fn(_WINDOW, value).value
     assert fn(_WINDOW, stubbed) is stubbed
 
@@ -156,8 +131,6 @@ async def case_stub_expires_entry_and_swr_rereads():
 
 
 async def case_receipt_patch_before_broadcast():
-    """handle_event patches the cached window before SSE fan-out, hands the prior row to the
-    worker, and the worker neither re-patches nor double counts the Unread total."""
     import server  # noqa: F401 — accounts_admin_api must be imported through it
     import events
     import events_persist
@@ -272,7 +245,6 @@ async def case_stale_while_revalidate():
         return f"v{len(calls)}"
     first = await relay_cache.get_or_fetch(ns, aid, ("k",), ttl_seconds=60.0, fetcher=_f)
     assert first == "v1"
-    # Age the entry past its TTL.
     key = (ns, aid, ("k",))
     relay_cache._cache[key] = (relay_cache._cache[key][0], time.monotonic() - 1)
     stale = await asyncio.gather(*[
@@ -285,7 +257,6 @@ async def case_stale_while_revalidate():
     fresh = await relay_cache.get_or_fetch(ns, aid, ("k",), ttl_seconds=60.0, fetcher=_f,
                                            stale_while_revalidate=600.0)
     assert fresh == "v2", fresh
-    # Without SWR an expired entry is still a plain miss.
     relay_cache._cache[key] = (relay_cache._cache[key][0], time.monotonic() - 1)
     assert await relay_cache.get_or_fetch(ns, aid, ("k",), ttl_seconds=60.0, fetcher=_f) == "v3"
     relay_cache.invalidate(ns, aid)
@@ -314,20 +285,20 @@ async def case_list_chats_reconciles_only_fresh_reads():
     kw = dict(limit=25, offset=0, order="recent", filter=None, list_id=None,
               query=None, search=None)
     try:
-        await server.list_chats(refresh=False, **kw)        # miss: fresh OF read
+        await server.list_chats(refresh=False, **kw)
         await asyncio.sleep(0)
         assert reads == [1] and reconciled == [(aid, 2)], (reads, reconciled)
-        await server.list_chats(refresh=False, **kw)        # hit: no reconcile
+        await server.list_chats(refresh=False, **kw)
         relay_cache.patch("list_chats", aid, _inbox_patcher(2, _dm(2, 99)))
-        await server.list_chats(refresh=False, **kw)        # WS-patched hit
+        await server.list_chats(refresh=False, **kw)
         key = ("list_chats", aid, (25, 0, "recent", None, None, None))
         relay_cache._cache[key] = (relay_cache._cache[key][0], time.monotonic() - 1)
         reads_before = len(reads)
-        await server.list_chats(refresh=False, **kw)        # stale (SWR) answer
-        await asyncio.sleep(0.05)                           # ...its background refresh
+        await server.list_chats(refresh=False, **kw)
+        await asyncio.sleep(0.05)
         assert len(reads) == reads_before + 1, reads
         assert len(reconciled) == 2, f"only the two fresh reads reconcile: {reconciled}"
-        await server.list_chats(refresh=True, **kw)         # ?refresh=1: fresh
+        await server.list_chats(refresh=True, **kw)
         await asyncio.sleep(0)
         assert len(reconciled) == 3, reconciled
     finally:
@@ -337,8 +308,6 @@ async def case_list_chats_reconciles_only_fresh_reads():
 
 
 async def case_measure_of_reads_invalidate_vs_patch():
-    """20 inbound DMs from fans already in the window, an inbox poll after each:
-    invalidating re-read OF 20 times, patching reads it zero times."""
     async def _run(on_dm) -> int:
         aid = f"acct-measure-{on_dm.__name__}"
         relay_cache.invalidate("list_chats", aid)

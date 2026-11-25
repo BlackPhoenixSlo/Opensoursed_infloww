@@ -1,33 +1,3 @@
-"""vault_jev_manual.py — an operator's Jev picks (the vault item popup's "More info") laid over a `_jev`. Pure.
-
-The picks live in `operator_overrides_json["_jev"]` ({key: value}, only the keys touched; a cleared key is removed)
-and are the source of truth: `overlay` materialises them into the stored `_jev` (`vault_jev_rules.blob` shape), on
-every write of it — the edit route, the Jev pass (`vault_jev_pass._stamp` / `_hold`, so a re-read keeps them) and a
-duplicate's copy (`vault_ai_vision_decide.jev_for_copy`). Options are the Jev questions' own (`vault_jev.Q`).
-
-  regions      breasts / crotch / butt: a `state_opts` answer → `state[r]`; breasts / crotch also set their verdict
-               (`*_bare` y iff bare), butt only `tags.butt_bare` (never the lane)
-  toggles      y / n: `tags[q]` + `P[q]` 1.0 / 0.0 (penetration: the `penetration` verdict)
-  choices      `tags[q]`, one-hot `C[q]` for `FACT_CHOICES`, the collapsed tags + `*_any` lines re-derived
-  feet         any feet toggle y → `feet_any` y, `feet_subject` 1.0, `feet_detail` never not_in_picture (else the
-               pack picker damps the feet subject under its gate)
-  lane         free / $10 / $50 / $100: wins, coerces the verdicts (free all n, $10 breasts y, $50 crotch y, $100
-               penetration y) and clears a clip's `review` / `read_lane5`. Not picked: a breasts / crotch /
-               penetration pick re-ranks the lane on the verdicts (pen y $100, crotch y $50, breasts y $10, an
-               unsure left keeps the read lane, else free); `vault_jev_rules.lane_rule` needs probabilities.
-  no reading   (none yet, or a clip the Jev pass gave up on: `rules.retries_spent`, its retry state kept) a lane
-               (picked or ranked) builds a whole current blob (every FACT_CHOICES in `C`, uniform where not
-               picked, so the flags / tier map it; Describe waits for the scan, `ai_read`); none: `status` "manual" (not current, the sweep still reads
-               the item, unless it gave up, and its picks are laid over the reading).
-  failed read  a reading whose re-read failed (status error / fetch_failed, fields kept) with a lane known after
-               the picks (not a clip's review) is current again: `status` ok, so the flags map it.
-
-Clearing a pick restores the reading: `overlay` records what it overwrote (`undo`: per path the value it wrote and
-the one it replaced) and always starts from the blob with that undone, so it is idempotent and a pick removed later
-gives the AI's answer back. A path some other writer changed since (a clip hold's `lane5` review) is left alone.
-Stamped: `op` (the picked keys), `ai` (the reading's value of each picked key, for the popup), `made` "manual" on a
-blob built without a reading.
-"""
 from __future__ import annotations
 
 import copy
@@ -38,11 +8,10 @@ import vault_jev
 import vault_jev_rules as rules
 from jsonsafe import load_json
 
-PICKS_KEY = rules.JEV_KEY   # where the picks live in `operator_overrides_json`
+PICKS_KEY = rules.JEV_KEY
 LANES = ("free", "$10", "$50", "$100")
 YES_NO = ("y", "n")
 REGIONS = ("breasts", "crotch", "butt")
-# pick key → the Jev Choice question whose criteria are its options
 CHOICE_Q = {"breasts": "breasts_state_a", "crotch": "crotch_state_a", "butt": "butt_state_a",
             "feet_detail": "feet_detail_a",
             **{q: q for q in ("outfit", "toy", "people_count", "pose", "framing", "face_visible", "setting",
@@ -54,19 +23,16 @@ TOGGLES = ("penetration", "censor_edit", "watermark", "see_through", "topless", 
            *FEET_TOGGLES)
 assert all(vault_jev.Q[q]["type"] == "noul" for q in TOGGLES)
 KEYS = (*CHOICE_Q, *TOGGLES, "lane")
-# picks the lane is ranked from; with the butt and the lane itself, the picks that decide the vis flags
 LANE_PICKS = ("breasts", "crotch", "penetration")
 BODY_PICKS = (*REGIONS, "penetration", "lane")
 MANUAL = rules.MANUAL
-_VERDICT = rules.REGION_BODY   # region pick → the body answer it sets (one map, `vault_jev_rules`)
+_VERDICT = rules.REGION_BODY
 _COERCE = {"$10": "breasts_bare", "$50": "crotch_bare", "$100": "penetration"}
-# a feet toggle's footwear, for a feet_detail Jev left not_in_picture (first y wins; else bare)
 _FEET_DETAIL = (("wears_heels", "heels"), ("wears_stockings_or_fishnets", "stockings_fishnets_nylons"),
                 ("wears_socks", "socks"))
 
 
 def options(key: str) -> tuple[str, ...] | None:
-    """The values `key` may take (None: not a pick key)."""
     if key == "lane":
         return LANES
     if key in TOGGLES:
@@ -77,7 +43,6 @@ def options(key: str) -> tuple[str, ...] | None:
 
 
 def check(patch: Any) -> dict[str, Any]:
-    """A pick patch ({key: value | None}, None clears) validated; ValueError(key) on an unknown key or value."""
     if not isinstance(patch, Mapping):
         raise ValueError("jev")
     for k, v in patch.items():
@@ -88,21 +53,18 @@ def check(patch: Any) -> dict[str, Any]:
 
 
 def stored(overrides: Any) -> dict[str, Any]:
-    """The picks in a row's `operator_overrides_json` (text or parsed; {} when none)."""
     o = load_json(overrides, {}) if isinstance(overrides, str) else overrides
     p = o.get(PICKS_KEY) if isinstance(o, Mapping) else None
     return dict(p) if isinstance(p, Mapping) else {}
 
 
 def kind_of(jev: Any, kind: Any = None) -> str:
-    """photo / video for `overlay`: the row's kind, else the blob's."""
     if kind in rules.JEV_KINDS:
         return kind
     return "video" if isinstance(jev, Mapping) and jev.get("kind") == "video" else "photo"
 
 
 def merged(stored: Any, patch: Mapping[str, Any]) -> dict[str, Any]:
-    """The stored picks with `patch` applied (None removes a key)."""
     out = dict(stored) if isinstance(stored, Mapping) else {}
     for k, v in patch.items():
         if v is None:
@@ -113,7 +75,6 @@ def merged(stored: Any, patch: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def value(jev: Mapping[str, Any] | None, key: str) -> Any:
-    """What a blob says for one pick key."""
     j = jev or {}
     if key == "lane":
         return j.get("lane5")
@@ -125,8 +86,6 @@ def value(jev: Mapping[str, Any] | None, key: str) -> Any:
 
 
 def ai_reading(jev: Any) -> dict[str, str]:
-    """What the AI's own reading says per pick key (the popup's unset option, served as `jev_ai`): a picked
-    key's kept `ai` answer; a manual blob (nothing read) says nothing for the rest. Keys with no answer left out."""
     if not isinstance(jev, Mapping):
         return {}
     op, kept = set(jev.get("op") or ()), jev.get("ai") or {}
@@ -138,7 +97,6 @@ def ai_reading(jev: Any) -> dict[str, str]:
     return out
 
 
-# ── path writes, recorded so they can be undone ─────────────────────
 
 _ABSENT = object()
 
@@ -164,7 +122,6 @@ def _restore(b: dict[str, Any], path: str, rec: Mapping[str, Any]) -> None:
 
 
 def undo(jev: Any) -> dict[str, Any] | None:
-    """`jev` with every pick `overlay` laid over it taken off (a path changed since stays); None for nothing left."""
     if not isinstance(jev, dict):
         return None
     b = copy.deepcopy(jev)
@@ -172,7 +129,7 @@ def undo(jev: Any) -> dict[str, Any] | None:
     for k in ("op", "ai", "made"):
         b.pop(k, None)
     for path, r in (rec.items() if isinstance(rec, dict) else ()):
-        if _get(b, path) == r.get("set", _ABSENT):   # nobody changed it since
+        if _get(b, path) == r.get("set", _ABSENT):
             _restore(b, path, r)
     return b or None
 
@@ -184,7 +141,6 @@ class _Writer:
     def put(self, path: str, v: Any) -> None:
         parts = path.split(".")
         top = parts[0]
-        # a sub-dict the reading did not have is recorded whole (undo drops it)
         self.paths.add(top if not isinstance(self.base.get(top), dict) or len(parts) == 1 else path)
         cur = self.b
         for p in parts[:-1]:
@@ -215,17 +171,14 @@ class _Writer:
         return out
 
 
-# ── the overlay ─────────────────────────────────────────────────────
+# overlay always starts from the blob with its earlier writes undone, so it is idempotent and a removed pick gives the AI's answer back; a path another writer changed since is left alone.
 
 
 def _read(b: Mapping[str, Any]) -> bool:
-    """`b` carries a reading to lay picks over (a lane and the region states), not just a manual skeleton. A clip the
-    Jev pass gave up on (`rules.retries_spent`) has none: its picks build a manual blob (`made`, not `ai_read`)."""
     return "lane5" in b and isinstance(b.get("state"), dict) and not rules.retries_spent({rules.JEV_KEY: b})
 
 
 def _fine(b: Mapping[str, Any]) -> str:
-    """The free lane's fine name (`lane_rule`'s last rungs, on the region states and the stored P)."""
     st = set((b.get("state") or {}).values())
     P = b.get("P") or {}
     if "hidden_not_worn" in st or (P.get("censor_edit") or 0) >= .65:
@@ -236,7 +189,6 @@ def _fine(b: Mapping[str, Any]) -> str:
 
 
 def _ranked(b: Mapping[str, Any]) -> str | None:
-    """The lane the verdicts give (a verdict not known reads unsure); None: an unsure decides it (keep the read lane)."""
     v = [b.get(k) or "unsure" for k in ("penetration", "crotch_bare", "breasts_bare")]
     for verdict, lane in zip(v, ("$100", "$50", "$10")):
         if verdict == "y":
@@ -251,8 +203,6 @@ def _set_lane(w: _Writer, lane: str) -> None:
 
 
 def overlay(jev: Any, picks: Mapping[str, Any] | None, kind: str, *, at: str | None = None) -> dict[str, Any] | None:
-    """`jev` with `picks` materialised (module doc); `jev` unchanged in shape when there are none (None stays None).
-    `kind` (photo / video) shapes a blob built without a reading; `at` stamps one (default: its old `at`, else now)."""
     base = undo(jev) or {}
     picks = {k: v for k, v in (picks or {}).items() if k in KEYS and v is not None}
     if not picks:
@@ -295,7 +245,6 @@ def overlay(jev: Any, picks: Mapping[str, Any] | None, kind: str, *, at: str | N
         if q in rules.FACT_CHOICES:
             w.put(f"C.{q}", {o: 1.0 if o == picks[q] else 0.0 for o in options(q) or ()})
 
-    # feet: a feet answer y means feet are in the picture, whatever the detail read
     tags = w.b.get("tags") or {}
     feet_y = [q for q in FEET_TOGGLES if picks.get(q) == "y"]
     if "feet_focus" in picks:
@@ -332,7 +281,7 @@ def overlay(jev: Any, picks: Mapping[str, Any] | None, kind: str, *, at: str | N
     elif any(k in picks for k in LANE_PICKS):
         ranked = _ranked(w.b)
         if ranked is not None:
-            if read and w.b.get("review") and ranked != "$100":   # a clip that may read too low stays unknown-priced
+            if read and w.b.get("review") and ranked != "$100":
                 w.put("lane5", "review")
                 w.put("read_lane5", ranked)
                 w.put("lane", ranked if ranked in rules.PAID else _fine(w.b))
@@ -342,7 +291,6 @@ def overlay(jev: Any, picks: Mapping[str, Any] | None, kind: str, *, at: str | N
                 w.drop("read_lane5")
         lane = ranked
     if read and lane and w.b.get("status") != "ok" and w.b.get("lane5") in LANES:
-        # a failed re-read keeps the last reading's fields; the operator's lane makes it a reading again
         w.put("status", "ok")
     if not read:
         for k in ("breasts_bare", "crotch_bare", "penetration"):

@@ -1,23 +1,3 @@
-"""
-stats.py — read-only admin reporting endpoints.
-
-Read paths, all driven by the already-persisted SQLite tables:
-
-  GET /admin/stats/revenue          → transactions, grouped by day or kind
-  POST /admin/stats/xlsx            → the reports' Excel export (reads nothing)
-
-Employee reports' per-employee and chatting-stats live in stats_employees.py,
-sales-records in stats_sales_records.py, per-model in stats_per_model.py, Fan
-reports in stats_fans.py, and grok-cost, grok-calls, per-automation,
-automation-runs and attribution-coverage in stats_ops.py; their routers are
-included here.
-
-Revenue is derived from rows the ingest path already wrote (event_transcoder
-for transactions, kept in the rollups) and OF's own daily figures
-(of_stats_daily). We never hit OF here and never recompute counters that
-already live denormalized on `fans` / `chats`.
-"""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -42,23 +22,14 @@ import tx_rollup
 import xlsx_io
 from attribution_backfill import REVERSED_STATUSES, TRACKED_STATUSES
 
-# Attribution is read from the row (`transactions.credit_*`) and money from the
-# rollups (`tx_daily`, `tx_hourly`), all kept by triggers (tx_rollup.py); the view
-# `per_employee_revenue_with_attribution` stays only as their oracle.
 
 
-# Moved to stats_window.py; the old names stay for the routes below and for
-# importers (messages.py and transactions.py `from stats import _parse_date`).
 stats_guard = stats_window.stats_guard
 _parse_date = stats_window.parse_date
 scope_ids = stats_window.scope_ids
-# Also moved there; the old names stay for the tests (test_chatting_series.py).
 _bucket_allowed = stats_window.bucket_allowed
 _range_days = stats_window.range_days
 _bucket_edges = stats_window.bucket_edges
-# Moved to stats_per_model.py / stats_ops.py; the old names stay for the tests
-# (test_of_stats_daily.py, test_stats_revenue.py, test_fansly_revenue.py,
-# test_automation_attribution.py).
 per_model = stats_per_model.per_model
 _kind_bucket = stats_per_model._kind_bucket
 per_automation = stats_ops.per_automation
@@ -67,44 +38,13 @@ per_automation = stats_ops.per_automation
 router = APIRouter(dependencies=[Depends(stats_guard)])
 
 
-# Statuses we count toward revenue. `pending` ("loading" in OF's vocab)
-# clears in ~7d so excluding it lags reality by a week — the dashboard
-# would underreport an account that's actively earning. Including it
-# matches OF's own /statistics page (which counts pending subs the moment
-# they fire). If a pending row later flips to `chargedback`/`refunded`
-# the next ingest tick updates the row in place and the metric self-
-# corrects. `refund_pending` (was cleared, now being returned) is
-# excluded — that money is leaving.
 
 
 async def _report_zone(account_id: str | None) -> ZoneInfo | None:
-    """The caller's Agency's report time zone, or None for today's UTC
-    midnight: no session, a chatter linked to several Agencies that names no
-    Creator, an Agency with no `report_tz`, or one stored invalid (its
-    default applies, spec story 8). The Agency is Phase 1's Agency context,
-    a chatter's named through the Creator in `account_id`.
-
-    ASSUMPTION: any refusal from the Agency context (401 signed out, 400/403/
-    503) reads as UTC here, and the endpoint's own `clamp_account_filter`
-    keeps answering who may see what. Rung 4: a report never fails over its
-    day boundaries. Overturned if a report should surface that refusal.
-
-    ASSUMPTION: the zone applies to the Analytics reports' routes: revenue
-    (here), per-automation and attribution-coverage (stats_ops.py), per-model
-    (stats_per_model.py), fan-report (stats_fans.py), sales-records
-    (stats_sales_records.py), per-employee and chatting-stats
-    (stats_employees.py, the latter via `_report_prefs`);
-    grok-cost and grok-calls keep UTC days, since `grok_daily_cost` is stored
-    per UTC day and cannot be re-cut. The echoed `from`/`to` of coverage and
-    per-model stay the UTC dates of the bounds, as before. Rung 5. Overturned
-    if the AI cost views must follow the report zone too.
-    """
     return (await _report_prefs(account_id))[0]
 
 
 async def _report_prefs(account_id: str | None) -> tuple[ZoneInfo | None, str]:
-    """`_report_zone` and the same Agency's week start ("monday", its
-    default, or "sunday"), read once."""
     from employees import agency_contexts
     from settings_api import applied_blob
     try:
@@ -120,13 +60,6 @@ async def _report_prefs(account_id: str | None) -> tuple[ZoneInfo | None, str]:
 
 async def _day_sums(s, dims: tuple[str, ...], zone: ZoneInfo | None, *, fmt: str = "%Y-%m-%d",
                     **scope: Any) -> list[Any]:
-    """`tx_rollup.window_sums` per local day (`day`) in the report zone,
-    each UTC hour placed by the zone's offset at that hour, so a
-    daylight-saving change moves no sale across a day edge (roadmap S8); a
-    zone whose offset is not a whole hour is read by the minute. `fmt`
-    '%Y-%m-%dT%H:00' cuts local hours instead (still under `day`); the hour
-    a daylight-saving end repeats holds both. `_WEEK_SLOT` cuts the weekday
-    and hour."""
     days = None
     if tx_rollup.whole_hours(zone, scope.get("start"), scope.get("end")):
         rows = await tx_rollup.window_sums(s, dims, bucket="hour", **scope)
@@ -137,7 +70,7 @@ async def _day_sums(s, dims: tuple[str, ...], zone: ZoneInfo | None, *, fmt: str
     out: dict[tuple, dict[str, Any]] = {}
     for r in rows:
         if (day := days.get(r.bucket)) is None:
-            continue  # an occurred_at SQLite could not parse
+            continue
         key = (day, *(getattr(r, d) for d in dims))
         acc = out.setdefault(key, {"day": day, **dict(zip(dims, key[1:])), **{m: 0 for m in tx_rollup.MEASURES}})
         for m in tx_rollup.MEASURES:
@@ -145,23 +78,17 @@ async def _day_sums(s, dims: tuple[str, ...], zone: ZoneInfo | None, *, fmt: str
     return list(out.values())
 
 
-# ── Revenue ──────────────────────────────────────────────────────
 
-# `group_by=hour_of_week`'s local slot, "<ISO weekday> <hour>", written by
-# `_day_sums(fmt=)` and read back by `_week_slot`.
 _WEEK_SLOT = "%u %H"
 
 
 def _week_slot(slot: str) -> dict[str, int]:
-    """A `_WEEK_SLOT` string as `{weekday, hour}`."""
     weekday, hour = slot.split()
     return {"weekday": int(weekday), "hour": int(hour)}
 
 
-# Moved to of_top_up.py. revenue calls the module global `_of_top_ups` by name and
-# per_model (stats_per_model.py) reads `stats._of_top_ups` at call time, so assigning
-# `stats._of_top_ups` (slop fault of-zero-erases-db-sale) bites.
 _of_top_up_rows = of_top_up.rows_sql
+# revenue and stats_per_model call `_of_top_ups` through this module global at call time: slop faults patch it here, so keep the alias.
 _of_top_ups = of_top_up.top_ups
 _plus = of_top_up.plus
 
@@ -251,27 +178,20 @@ async def revenue(
     statuses = REVERSED_STATUSES if status == "reversed" else TRACKED_STATUSES
     scope = {"account_ids": account_ids, "start": start, "end": end, "where": {"status": statuses}}
 
-    # Earnings by day or kind add OnlyFans' own figure where it is over the
-    # ledger's (`_of_top_ups`: max per Creator, UTC day and category); hours,
-    # the heatmap and reversals stay the ledger's (OF charts no hour, no reversal).
     of_cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
     gaps = None
     if status == "tracked" and group_by in ("day", "kind"):
         of_cells, gaps = await of_stats_daily.earnings_window(account_ids, start, end)
 
     async with get_session() as s:
-        # One read, day x kind; the day rows and the nested by_kind rows are
-        # both sums of it, so the children always sum to their parent day.
         if by_time:
             unit = "%Y-%m-%dT%H:00" if group_by == "hour" else "%Y-%m-%d"
             cells = await _day_sums(s, ("kind",), zone, fmt=unit, **scope)
         elif group_by == "hour_of_week":
-            # `day` holds the local slot (`_WEEK_SLOT`).
             cells = await _day_sums(s, (), zone, fmt=_WEEK_SLOT, **scope)
         else:
             cells = [{"day": None, **r._asdict()}
                      for r in await tx_rollup.window_sums(s, ("kind",), **scope)]
-        # OF's UTC day lands on the report day of the same date (`window_days`).
         top = await _of_top_ups(s, of_cells, ("day",) if by_time else ())
     if top:
         cells = _plus(cells, top if by_time else [{**c, "day": None} for c in top], ("day", "kind"))
@@ -325,45 +245,32 @@ async def revenue(
 
     resp: dict[str, Any] = {"rows": out}
     if gaps is not None:
-        # (Creator, day) pairs before a Creator was added with no OF earnings
-        # stored: unknown, not $0.00, so a growth against this window is "-".
         resp["history_missing_days"] = gaps
     return resp
 
 
-# Grok cost, Grok calls and per-automation (stats_ops.py), included here so the
-# route order holds.
 router.include_router(stats_ops.router)
 
 
-# Per-fan data and Fan reports (stats_fans.py), included here so the route order holds.
 router.include_router(stats_fans.router)
 
 
-# Automation runs (stats_ops.py), included here so the route order holds.
 router.include_router(stats_ops.runs_router)
 
 
-# Per-employee and Chatting statistics (stats_employees.py), included here
-# so the route order holds.
 router.include_router(stats_employees.router)
 
 
-# Attribution coverage (stats_ops.py), included here so the route order holds.
 router.include_router(stats_ops.coverage_router)
 
 
-# Per-model KPIs (stats_per_model.py), included here so the route order holds.
 router.include_router(stats_per_model.router)
 
 
-# Sales records (stats_sales_records.py), included here so the route order holds.
 router.include_router(stats_sales_records.router)
 
 
-# ── Excel export ────────────────────────────────────────────────────
 
-# The widest report export is a few dozen columns; this bounds the workbook built in memory.
 XLSX_MAX_CELLS = 1_000_000
 
 

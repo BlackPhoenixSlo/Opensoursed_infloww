@@ -1,41 +1,3 @@
-"""service/link_share_api.py — Infloww's Share links: a public, read-only
-report on some of one Creator's free trial links or tracking links, for
-someone outside the agency (Infloww's third "Share links" tab: name, links,
-"Include earnings"; viewable for 7 days, then expired).
-
-The URL is /share/<id>.<secret> (the Next page app/app/share/[token]); its data
-is GET /share/<id>.<secret>/data here, outside the share-token gate
-(server._PUBLIC_PREFIXES). The id is not secret; the secret is
-secrets.token_urlsafe(24), compared in constant time. Unknown or wrong: 404.
-Revoked or past expires_at: 410.
-
-What the public sees is `rows_json`, one row per picked link: its name, date
-created and OF's counts (a free trial link's claims and clicks; a tracking
-link's clicks and subscribers), and, with "Include earnings", the link's net
-Earnings, Fans who spent and fans counted, as the list shows them. Never a fan
-(no names, ids or per-fan spend), never the account id, the link URL, the
-Promo cost, Source or Tag.
-
-The public request does nothing but read that row: no OnlyFans call, no
-ledger read, so it costs one primary-key lookup and needs no rate limit. The
-rows are built only from the owner's own reads of the links (the free trial
-links list, the tracking links earnings), which call `refresh_shares`: create
-stores the share with every row pending (Infloww's "may take up to 30
-minutes"), the page reads the links again at once and that read fills them;
-each later read rebuilds them, so a report is as fresh as the last time
-someone opened the page. A link not in a read keeps its last row (a link never
-read is left out of the report); a read with OnlyFans down rebuilds nothing.
-That matches the house's no-scheduler rule (link_metrics' List adds).
-
-Owner-only: a chatter session is refused (403), and every route checks the
-account is the caller's.
-
-Routes:
-  GET    /admin/link-shares?account_id=&kind=trial|campaign   the shares not revoked
-  POST   /admin/link-shares   {account_id, kind, name, of_ids, include_earnings}
-  DELETE /admin/link-shares/{share_id}?account_id=   revoke (the report answers 410)
-  GET    /share/{key}/data   public: the report
-"""
 from __future__ import annotations
 
 import json
@@ -60,9 +22,9 @@ log = logging.getLogger("of-relay.link_share_api")
 router = APIRouter()
 
 KINDS = ("trial", "campaign")
-TTL = timedelta(days=7)        # Infloww: "Once ready, the link can be viewed for the next 7 days"
-MAX_ACTIVE = 50                # Infloww's share-limit, per agency; ours per Creator
-MAX_LINKS = 100                # Infloww's links per share link
+TTL = timedelta(days=7)
+MAX_ACTIVE = 50
+MAX_LINKS = 100
 
 
 def _now() -> datetime:
@@ -70,13 +32,10 @@ def _now() -> datetime:
 
 
 def _refuse_chatter() -> None:
-    """Share links are the owner's: a chatter session is refused; the anonymous
-    admin hatch is left to `assert_account_owned`."""
     if current_actor() is not None:
         assert_owner()
 
 
-# ── The public rows ───────────────────────────────────────────────────
 
 def _text(v: Any) -> str | None:
     return v if isinstance(v, str) else None
@@ -86,10 +45,8 @@ def _count(v: Any) -> int | None:
     return None if v is None else safe_int(v)
 
 
+# Whitelisted: no fan, account id, link URL, promo cost, source or tag may reach the public report.
 def public_row(kind: str, r: dict, include_earnings: bool) -> dict[str, Any]:
-    """One link as the public sees it, from a row of the owner's read (a free
-    trial links list row, or a tracking link's campaign with its figures).
-    Whitelisted: nothing else of the row can reach the report."""
     out: dict[str, Any] = {"name": _text(r.get("name")) or "", "created_at": _text(r.get("created_at"))}
     if kind == "trial":
         out.update(claims=_count(r.get("claim_counts")), clicks=_count(r.get("clicks_count")))
@@ -104,11 +61,8 @@ def public_row(kind: str, r: dict, include_earnings: bool) -> dict[str, Any]:
     return out
 
 
+# Never raises: the owner's read must not fail on a share.
 async def refresh_shares(account_id: str, kind: str, rows: dict[int, dict]) -> None:
-    """Rebuild the rows of the account's live share links of `kind` from an
-    owner read just made (`rows` by OF id). A link missing from it keeps its
-    last row (null while never read). Never raises: the owner's read must not
-    fail on a share."""
     try:
         now = _now()
         async with get_session() as s:
@@ -119,7 +73,7 @@ async def refresh_shares(account_id: str, kind: str, rows: dict[int, dict]) -> N
                 ids = json.loads(sh.of_ids_json)
                 old = json.loads(sh.rows_json)
                 if not any(o in rows for o in ids):
-                    continue    # none of its links in this read: nothing rebuilt, not "updated"
+                    continue
                 sh.rows_json = json.dumps([public_row(kind, rows[o], sh.include_earnings) if o in rows else prev
                                            for o, prev in zip(ids, old)])
                 sh.snapshot_at = now
@@ -127,7 +81,6 @@ async def refresh_shares(account_id: str, kind: str, rows: dict[int, dict]) -> N
         log.warning("link share refresh failed account=%s kind=%s", account_id, kind, exc_info=True)
 
 
-# ── Owner routes ──────────────────────────────────────────────────────
 
 def _status(row: LinkShare, now: datetime) -> str:
     if row.expires_at <= now:
@@ -214,7 +167,6 @@ async def revoke_link_share(share_id: int, account_id: str = Query(...)) -> dict
     return {"revoked": share_id}
 
 
-# ── Public ────────────────────────────────────────────────────────────
 
 @router.get("/share/{key}/data")
 async def share_data(key: str, response: Response) -> dict[str, Any]:

@@ -1,68 +1,7 @@
 #!/usr/bin/env python3
-"""
-PPV payment→message linking + orphan-PPV attribution visibility.
-
-Covers the 2026-07-10 attribution fix: the ledger linker no longer requires
-the candidate message to be unpaid (the WS pump flips `is_paid` within seconds
-while the ledger ticks every ~5 min — the old filter orphaned the FASTEST
-buyers or matched a stale same-price message), links only when UNAMBIGUOUS,
-and orphaned PPV sales become visible (view rev 0042 branch 3) + manually
-assignable (panel arm 3).
-
-  case_race_paid_message_still_links:
-      the fan's unlock already flipped Bill's $30 message to is_paid before
-      the ledger tick; an older UNPAID same-price Automation message exists.
-      The linker must pick Bill's flipped message, not the stale unpaid one
-      (the exact prod failure: tx 4051 credited Automation instead of Bill).
-  case_automation_keeps_its_own_sale:
-      mirror case — only the Automation mass message carries the flip; it
-      wins. "Sometimes automations may win" stays true.
-  case_sequential_double_unlock_links_two_messages:
-      two same-price PPVs unlocked one after the other → each tx links a
-      DIFFERENT message (the claim guard excludes already-linked ones).
-  case_ambiguous_left_unlinked:
-      two paid-unlinked same-price candidates (and separately two unpaid,
-      none flipped) → NO link; the sale stays for the manual panel.
-  case_relink_dry_run_is_read_only:
-      dry run reports the would-link plan but writes nothing — not even
-      message flips.
-  case_relink_fill_only_idempotent_and_stamp_paid:
-      relink links an orphan, re-run finds nothing new; stamp_paid=False
-      (bulk/backfill mode) sets ONLY tx.message_id and leaves the message's
-      is_paid/purchased_at untouched.
-  case_relink_same_price_race_two_orphans:
-      two orphan txs, two same-price messages (one flipped): first tx takes
-      the flipped one, second tx then has exactly one candidate left → links
-      it. No IntegrityError, no double-claim (uq_tx_msg).
-  case_view_exactly_once:
-      one tx of every shape (linked ppv / standalone tip / orphan ppv with
-      NULL message_id / orphan ppv with dangling message_id / attributed tip
-      with dangling message_id) → the view emits exactly one row per tx.
-  case_view_orphan_ppv_visibility_and_manual_assign:
-      an orphan PPV shows in the view's NULL (Unattributed) bucket; setting
-      attributed_employee_id moves it under that employee (the manual panel's
-      write path actually changes the stats now).
-  case_per_employee_endpoint:
-      GET /admin/stats/per-employee — ppv_conversions counts ppv_message
-      sales (the old kind=='ppv' equality counted nothing real); the
-      Unattributed row carries a real revenue_by_kind.ppv split; every row
-      reconciles revenue_cents == by_kind.ppv + by_kind.tip (no custom kinds
-      seeded here).
-  case_panel_lists_orphan_ppv:
-      GET /admin/ingest/transactions/sales-needing-attribution lists an
-      unlinked PPV (arm 3), hides it once assigned, shows it again with
-      include_assigned=true.
-
-The two endpoint cases call the API as a signed-in owner (the shared
-two-Agency fixture): the account is linked to that owner's Agency and Bill is
-one of its Employees, so they pass with or without ALLOW_ANONYMOUS_ADMIN=1
-(the reassign route takes an owner session, ticket 34).
-
-Run: ./venv/bin/python service/tests/test_ppv_link_attribution.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -96,22 +35,16 @@ async def _seed_base() -> None:
         if await s.get(Account, AID) is None:
             s.add(Account(id=AID, nickname="Acc 1"))
         if await s.get(Employee, AUTOMATION) is None:
-            # inactive, as employees.get_automation_employee_id finds the sentinel
             s.add(Employee(id=AUTOMATION, display_name="Automation", is_active=False))
         if await s.get(Employee, BILL) is None:
-            # Bill works for the signed-in owner's Agency
             s.add(Employee(id=BILL, display_name="Bill", is_active=True,
                            user_id=_IDS[_OWNER]))
     async with get_session() as s:
-        # the signed-in owner's Agency holds this Creator
         if await s.get(UserAccount, (_IDS[_OWNER], AID)) is None:
             s.add(UserAccount(user_id=_IDS[_OWNER], account_id=AID))
 
 
 async def _create_view() -> None:
-    # The view's current revision, 0099 (Converters: the last human chatter
-    # within the default hour); it carries `tx_id`, which the reassign route
-    # reads (ticket 34).
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(here, "db", "migrations", "versions",
                         "20261027_0100_converters_window.py")
@@ -145,8 +78,6 @@ def _tx(fan_id: int, *, kind: str = "ppv_message", cents: int = 3000,
 
 
 async def _link_inline(tx_row: Transaction) -> bool:
-    """Run the linker the way the live insert path does — inside the session
-    that holds the (already persisted, for test simplicity) tx row."""
     async with get_session() as s:
         tx = (await s.execute(
             select(Transaction).where(Transaction.id == tx_row.id)
@@ -181,15 +112,12 @@ async def _msg_state(fan_id: int, message_id: int) -> tuple[bool | None, datetim
     return row.is_paid, row.purchased_at
 
 
-# ── linker ──────────────────────────────────────────────────────────
 
 async def case_race_paid_message_still_links() -> None:
     await _seed_base()
     fan = 201
     async with get_session() as s:
-        # Old stale UNPAID $30 from Automation (the old linker's wrong pick).
         s.add(_msg(fan, 20101, SALE - timedelta(days=3), AUTOMATION, price_cents=3000))
-        # Bill's $30, ALREADY flipped paid by the WS pump before the tick.
         s.add(_msg(fan, 20102, SALE - timedelta(minutes=5), BILL,
                    price_cents=3000, is_paid=True))
         tx = _tx(fan)
@@ -212,8 +140,6 @@ async def case_automation_keeps_its_own_sale() -> None:
     await _seed_base()
     fan = 202
     async with get_session() as s:
-        # Bill's newer $30 sits UNPAID; the Automation mass message carries
-        # the flip — the fan bought the blast, and Automation keeps it.
         s.add(_msg(fan, 20201, SALE - timedelta(days=2), AUTOMATION,
                    price_cents=3000, is_paid=True))
         s.add(_msg(fan, 20202, SALE - timedelta(minutes=10), BILL, price_cents=3000))
@@ -240,15 +166,12 @@ async def case_sequential_double_unlock_links_two_messages() -> None:
                    price_cents=3000, is_paid=True))
         s.add(_msg(fan, 20302, SALE - timedelta(hours=1), BILL,
                    price_cents=3000, is_paid=True))
-    # Two paid-unlinked candidates → the FIRST unlock is ambiguous only if
-    # both are unclaimed; simulate the real sequence: tick 1 sees ONLY the
-    # first unlock's flip (second message not flipped yet).
     async with get_session() as s:
         m2 = (await s.execute(select(Message).where(
             Message.account_id == AID, Message.fan_id == fan,
             Message.message_id == 20302,
         ))).scalar_one()
-        m2.is_paid = None  # not flipped yet at tick 1
+        m2.is_paid = None
     tx1 = _tx(fan, occurred=SALE - timedelta(minutes=50))
     async with get_session() as s:
         s.add(tx1)
@@ -257,7 +180,6 @@ async def case_sequential_double_unlock_links_two_messages() -> None:
     assert await _link_inline(tx1)
     mid1, _ = await _tx_state(tx1_id)
     assert mid1 == 20301, f"tick 1 links the flipped first message, got {mid1}"
-    # Tick 2: second message now flipped; first is claimed → single candidate.
     async with get_session() as s:
         m2 = (await s.execute(select(Message).where(
             Message.account_id == AID, Message.fan_id == fan,
@@ -277,7 +199,6 @@ async def case_sequential_double_unlock_links_two_messages() -> None:
 
 async def case_ambiguous_left_unlinked() -> None:
     await _seed_base()
-    # (a) two PAID unclaimed same-price candidates → refuse.
     fan_a = 204
     async with get_session() as s:
         s.add(_msg(fan_a, 20401, SALE - timedelta(hours=3), BILL,
@@ -290,7 +211,6 @@ async def case_ambiguous_left_unlinked() -> None:
         tx_a_id = tx_a.id
     assert not await _link_inline(tx_a), "two paid candidates → must refuse"
     assert (await _tx_state(tx_a_id))[0] is None
-    # (b) two UNPAID candidates, none flipped → refuse.
     fan_b = 205
     async with get_session() as s:
         s.add(_msg(fan_b, 20501, SALE - timedelta(hours=3), BILL, price_cents=3000))
@@ -304,7 +224,6 @@ async def case_ambiguous_left_unlinked() -> None:
     _ok("case_ambiguous_left_unlinked")
 
 
-# ── relink sweep / backfill ─────────────────────────────────────────
 
 async def case_relink_dry_run_is_read_only() -> None:
     await _seed_base()
@@ -326,7 +245,7 @@ async def case_relink_dry_run_is_read_only() -> None:
 
 async def case_relink_fill_only_idempotent_and_stamp_paid() -> None:
     await _seed_base()
-    fan = 206  # reuse the orphan seeded above — now apply for real
+    fan = 206
     stats = await relink_orphan_ppvs(account_id=AID, stamp_paid=False)
     linked_ids = {j["tx_id"] for j in stats["journal"]}
     async with get_session() as s:
@@ -338,10 +257,8 @@ async def case_relink_fill_only_idempotent_and_stamp_paid() -> None:
     assert tx_id in linked_ids, (stats, tx_id)
     mid, _ = await _tx_state(tx_id)
     assert mid == 20601
-    # stamp_paid=False: message untouched — attribution only.
     paid, purchased = await _msg_state(fan, 20601)
     assert not paid and purchased is None, "bulk mode must not mutate the message"
-    # Idempotent: nothing left to link for this fan.
     again = await relink_orphan_ppvs(account_id=AID)
     assert all(j["tx_id"] != tx_id for j in again["journal"]), again
     _ok("case_relink_fill_only_idempotent_and_stamp_paid")
@@ -353,14 +270,12 @@ async def case_relink_same_price_race_two_orphans() -> None:
     t1 = SALE - timedelta(minutes=30)
     async with get_session() as s:
         s.add(_msg(fan, 20701, SALE - timedelta(hours=2), BILL,
-                   price_cents=4500, is_paid=True))   # flipped
+                   price_cents=4500, is_paid=True))
         s.add(_msg(fan, 20702, SALE - timedelta(hours=1), BILL,
-                   price_cents=4500))                  # not flipped
+                   price_cents=4500))
         s.add(_tx(fan, cents=4500, occurred=t1))
         s.add(_tx(fan, cents=4500, occurred=SALE))
     stats = await relink_orphan_ppvs(account_id=AID, newest_first=False)
-    # tx1 (older): two candidates, exactly one paid → links 20701.
-    # tx2: one candidate left (20702) → links it. No conflicts.
     assert stats["linked"] == 2, stats
     assert stats["conflict_skipped"] == 0, stats
     async with get_session() as s:
@@ -373,25 +288,18 @@ async def case_relink_same_price_race_two_orphans() -> None:
     _ok("case_relink_same_price_race_two_orphans")
 
 
-# ── view ────────────────────────────────────────────────────────────
 
 async def case_view_exactly_once() -> None:
     await _seed_base()
     await _create_view()
     fan = 208
     async with get_session() as s:
-        # A: linked ppv (message match), sent 2 h before: no chatter in the
-        # hour, so these sales stay Unattributed under Converters.
         s.add(_msg(fan, 20801, SALE - timedelta(hours=2), BILL,
                    price_cents=777, is_paid=True))
         s.add(_tx(fan, cents=777, message_id=20801))
-        # C: standalone tip (message_id NULL).
         s.add(_tx(fan, kind="tip", cents=778))
-        # D: orphan ppv, message_id NULL.
         s.add(_tx(fan, cents=779))
-        # B: orphan ppv, DANGLING message_id (no such message row).
         s.add(_tx(fan, cents=780, message_id=999_999_001))
-        # B-tip: attributed tip with dangling message_id.
         s.add(_tx(fan, kind="tip", cents=781, message_id=999_999_002,
                   attributed=BILL))
     async with get_session() as s:
@@ -408,7 +316,7 @@ async def case_view_orphan_ppv_visibility_and_manual_assign() -> None:
     await _create_view()
     fan = 209
     async with get_session() as s:
-        tx = _tx(fan, cents=8888)  # orphan ppv, no message ever
+        tx = _tx(fan, cents=8888)
         s.add(tx)
         await s.flush()
         tx_id = tx.id
@@ -427,7 +335,6 @@ async def case_view_orphan_ppv_visibility_and_manual_assign() -> None:
 
     assert await _bucket_amount(None) == 8888, "orphan ppv must show as Unattributed"
     assert await _bucket_amount(BILL) == 0
-    # Manual assignment (what the panel's POST does) must MOVE the row.
     async with get_session() as s:
         row = (await s.execute(
             select(Transaction).where(Transaction.id == tx_id)
@@ -438,7 +345,6 @@ async def case_view_orphan_ppv_visibility_and_manual_assign() -> None:
     _ok("case_view_orphan_ppv_visibility_and_manual_assign")
 
 
-# ── endpoints ───────────────────────────────────────────────────────
 
 async def case_per_employee_endpoint() -> None:
     await _seed_base()
@@ -450,15 +356,12 @@ async def case_per_employee_endpoint() -> None:
     by_id = {row["employee_id"]: row for row in rows}
     bill = by_id.get(BILL)
     assert bill is not None, f"Bill row missing: {list(by_id)}"
-    # ppv_message sales count now (kind=='ppv' equality counted nothing real).
     assert bill["ppv_conversions"] >= 1, bill
     unattr = by_id.get(None)
     assert unattr is not None, "Unattributed bucket missing"
     assert unattr["revenue_by_kind"]["ppv"] > 0, (
         f"orphan PPV revenue must show a real by-kind split: {unattr}"
     )
-    # Reconciliation: no custom kinds seeded in this file, so every row's
-    # total must equal its ppv+tip fold exactly.
     for row in rows:
         folded = row["revenue_by_kind"]["ppv"] + row["revenue_by_kind"]["tip"]
         assert row["revenue_cents"] == folded, (row["employee_id"], row)
@@ -469,7 +372,7 @@ async def case_panel_lists_orphan_ppv() -> None:
     await _seed_base()
     fan = 210
     async with get_session() as s:
-        tx = _tx(fan, cents=9999)  # unlinked ppv orphan
+        tx = _tx(fan, cents=9999)
         s.add(tx)
         await s.flush()
         tx_id = tx.id
@@ -480,7 +383,6 @@ async def case_panel_lists_orphan_ppv() -> None:
     mine = [r for r in rows if r["id"] == tx_id]
     assert mine, "unlinked PPV must appear in the manual panel (arm 3)"
     assert mine[0]["kind"] == "ppv_message"
-    # Assign via the real endpoint → drops off the default view.
     r = client.post(f"/admin/ingest/transactions/{tx_id}/attribute",
                     json={"employee_id": BILL})
     assert r.status_code == 200, r.text

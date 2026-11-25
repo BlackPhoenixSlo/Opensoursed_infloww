@@ -1,13 +1,3 @@
-"""agency_notifications.dismissed_at — the owner's "Clear" on an Agency notification
-
-One nullable timestamp: a dismissed row leaves the list but stays (its `dedupe_key` keeps a
-sweep from filing the same event again) until the retention prune drops it.
-Inspector-guarded + idempotent; init_db's additive-column catch-up adds it on boot too.
-
-Revision ID: 0109_agency_notification_dismissed
-Revises: 0108_tracking_link_bot_check
-Create Date: 2026-11-10
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,22 +1,3 @@
-"""agency_notifications — the Agency owner's notification centre
-
-  agency_notifications — one notification for one Agency (users.id): a role
-                         change, a deactivated employee, an unsent message, a
-                         missed clock-in or a Creator's dead session
-                         (service/notifications_api.py). Unread while
-                         `read_at` is NULL; `dedupe_key` is unique per Agency.
-                         Indexed by (Agency, created_at) for the feed and by
-                         created_at for the sweep's 90-day retention DELETE.
-
-The ORM model declares the same table and indexes, so `init_db()`'s
-create_all brings it to a booting box; this revision keeps the alembic chain
-canonical. Idempotent (inspector-guarded, house convention). Downgrade drops
-the table, losing only notifications.
-
-Revision ID: 0089_agency_notifications
-Revises: 0088_fan_salary
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence

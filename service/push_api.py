@@ -1,24 +1,3 @@
-"""
-/push/*: the signed-in session's Web Push subscriptions (push_send sends; design.md B1 + amendment-1).
-
-  GET    /push/key           {key}: the VAPID public key (b64url raw), the applicationServerKey;
-                             503 {detail: {reason}} while push is off (push_send.disabled)
-  PUT    /push/subscription  {endpoint, keys:{p256dh,auth}, types, platforms} -> {id}. Upsert by
-                             endpoint, bound to the caller's cookie (kind, id, issued_ms); a row of
-                             another principal is re-bound only when both keys match (else 409);
-                             400 unless push_decide.endpoint_allowed and p256dh / auth decode to
-                             65 / 16 bytes; at most MAX_PER_PRINCIPAL (oldest evicted);
-                             RATE_PUT per minute per principal (429); 503 while push is off. Two
-                             first PUTs racing on one endpoint: the loser's insert hits the unique
-                             index and is retried once as the update
-  DELETE /push/subscription  {endpoint} -> {deleted}: only the caller's own row
-  POST   /push/test          {id, delay_s<=15} -> {status, reason}: one visible test notice to the
-                             caller's sub, as the push service answered it
-
-A signed-in principal is required (401); impersonation gets 403 (read-only, and the subs
-are the founder's). `forget_cookies` is the logout hook: auth.logout / chatters.logout call it
-before clearing the cookies.
-"""
 from __future__ import annotations
 
 import json
@@ -47,7 +26,6 @@ _puts: dict[tuple[str, str], deque] = {}
 
 
 def _cookie_principals(request: Request) -> list[tuple[str, str, int]]:
-    """(kind, id, issued_ms) for every valid principal cookie the request carries."""
     import auth
     import chatters
     out = []
@@ -61,7 +39,6 @@ def _cookie_principals(request: Request) -> list[tuple[str, str, int]]:
 
 
 def _principal(request: Request) -> tuple[str, str, int]:
-    """The acting principal (owner wins, as chatters.current_actor) and its cookie's issue time."""
     import auth
     import chatters
     if auth.get_impersonation() is not None:
@@ -138,8 +115,6 @@ async def put_subscription(request: Request, body: _SubBody = Body(...)) -> dict
 
 
 async def _save(kind: str, pid: str, issued: int, body: _SubBody) -> str:
-    """_store, retried once as the update when a concurrent first PUT inserted the endpoint;
-    then the memory side. -> the sub id."""
     try:
         sub, evicted = await _store(kind, pid, issued, body)
     except IntegrityError:
@@ -151,7 +126,6 @@ async def _save(kind: str, pid: str, issued: int, body: _SubBody) -> str:
 
 
 async def _store(kind: str, pid: str, issued: int, body: _SubBody) -> tuple[push_send.Sub, list[str]]:
-    """Upsert the row by endpoint and evict past MAX_PER_PRINCIPAL -> (its Sub, evicted ids)."""
     types = json.dumps(sorted(set(body.types) & TYPE_KEYS))
     prefs = json.dumps({k: bool(v) for k, v in body.platforms.items() if k in platforms.KEYS})
     now = datetime.utcnow()
@@ -209,8 +183,6 @@ async def post_test(request: Request, body: _TestBody = Body(...)) -> dict:
 
 
 async def forget_cookies(request: Request) -> int:
-    """Logout: delete the subscriptions of every principal session whose cookie the request
-    carries (both logout routes clear them all). Never raises."""
     n = 0
     try:
         for kind, pid, issued in _cookie_principals(request):

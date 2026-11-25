@@ -77,7 +77,7 @@ _SERVICE = Path(__file__).resolve().parents[1]
 ALLOWED = {
     "platforms.py", "accounts.py", "fansly_backend.py", "fansly_revenue.py",
     "accounts_admin_api.py",
-    "automations/_outbound_guard.py",  # "fansly" is a banned outbound word there
+    "automations/_outbound_guard.py",
 }
 
 

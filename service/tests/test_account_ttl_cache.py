@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""Per-account TTL cache on the OF account reads (roadmap W2 2.7).
-
-`/users/me`, `/users/me/stats/*`, `/payouts/*` and `/earnings/chart` are
-answered from `server._account_ttl` for 60-120 s. Pinned over HTTP with real
-session cookies and a fake OF transport (the real OFClient methods run; only
-the socket call is replaced, so no request leaves the process):
-
-  • one account's entry never answers another: two accounts, two upstream
-    calls, each sees its own body; a caller who does not own an account is
-    refused (403) even when that account's entry is warm;
-  • every parameter is in the key (limit=10 and limit=20 are two entries);
-  • concurrent misses on one key share ONE upstream call;
-  • an upstream error is not cached;
-  • `/users/me?max_age=` (the app's identity reads): the plain 60 s entry while fresh, else its own entry of
-    the clamped age; the plain read keeps 60 s; a write clears both; the ledger page holds 900 s;
-  • write-through: an accepted OF write clears the reads it changes, for
-    every caller of the client (a route, or code holding the client the way
-    promotions_api and the promo re-arm automation do), and only for that
-    account; a refused write and an unrelated write clear nothing.
-
-Run: ./venv/bin/python service/tests/test_account_ttl_cache.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -40,7 +18,7 @@ import server  # noqa: E402
 
 IDS = fx.seed_two_agencies()
 A, B = IDS["creator_a"], IDS["creator_b"]
-for _aid in (A, B):   # meta, so an explicit X-Account-Id resolves (not 404)
+for _aid in (A, B):
     accounts.upsert_account(_aid, nickname=f"creator {_aid}")
 OWNER_A = fx.login_owner("agency_a_owner")
 OWNER_B = fx.login_owner("agency_b_owner")
@@ -59,8 +37,6 @@ class _Resp:
 
 
 class _FakeOF:
-    """One account's OFClient with only the socket call replaced: records
-    (method, path) and answers `{"account": id, "n": call number}`."""
 
     def __init__(self, account_id: str) -> None:
         self.client = of_client.OFClient.__new__(of_client.OFClient)
@@ -108,7 +84,6 @@ def _get(client, path: str, account: str):
     return r.json()
 
 
-# ── Isolation ───────────────────────────────────────────────────────────────
 
 def case_two_accounts_get_their_own_entry_and_a_repeat_is_served_from_it():
     _fresh()
@@ -139,7 +114,6 @@ def case_every_parameter_is_part_of_the_key():
     p20 = _get(OWNER_A, "/api/of/v2/payouts/requests?limit=20", A)
     assert p10 != p20 and FAKES[A].gets("/api2/v2/payouts/requests") == 2
     assert _get(OWNER_A, "/api/of/v2/payouts/requests?limit=10", A) == p10
-    # A path parameter too: two /stats/top kinds are two entries.
     _get(OWNER_A, "/api/of/v2/users/me/stats/top/message", A)
     _get(OWNER_A, "/api/of/v2/users/me/stats/top/story", A)
     _get(OWNER_A, "/api/of/v2/users/me/stats/top/message", A)
@@ -174,7 +148,6 @@ def case_an_upstream_error_is_not_cached():
     assert FAKES[A].gets("/api2/v2/payouts/balances") == 2
 
 
-# ── Write-through ───────────────────────────────────────────────────────────
 
 def case_a_payout_request_clears_the_payout_reads_and_users_me_of_that_account_only():
     _fresh()
@@ -187,8 +160,8 @@ def case_a_payout_request_clears_the_payout_reads_and_users_me_of_that_account_o
     assert r.status_code == 200, r.text
     assert _get(OWNER_A, "/api/of/v2/payouts/balances", A) != bal
     assert _get(OWNER_A, "/api/of/v2/users/me", A) != me
-    assert _get(OWNER_A, "/api/of/v2/users/me/stats/overview", A) == stats  # not a payout read
-    assert _get(OWNER_B, "/api/of/v2/payouts/balances", B) == b_bal         # other account kept
+    assert _get(OWNER_A, "/api/of/v2/users/me/stats/overview", A) == stats
+    assert _get(OWNER_B, "/api/of/v2/payouts/balances", B) == b_bal
 
 
 def case_profile_bundle_and_promotion_writes_clear_users_me():
@@ -212,7 +185,7 @@ def case_profile_bundle_and_promotion_writes_clear_users_me():
 def case_a_write_made_outside_any_route_clears_too_the_way_the_promo_automation_writes():
     _fresh()
     before = _get(OWNER_A, "/api/of/v2/users/me", A)
-    FAKES[A].client.create_promo(subscribe_counts=1, discount=50)   # promo_reactivate's call
+    FAKES[A].client.create_promo(subscribe_counts=1, discount=50)
     assert _get(OWNER_A, "/api/of/v2/users/me", A) != before
 
 
@@ -249,7 +222,6 @@ def case_a_failing_cache_bust_never_fails_the_accepted_write():
     assert out == {"account": A, "n": 1}, out
 
 
-# ── Long-lived reads (All Models open cost) ─────────────────────────────────
 
 def _expire(account: str, extras: tuple) -> None:
     key = ("users_me", account, extras)
@@ -267,7 +239,7 @@ def case_users_me_max_age_serves_identity_reads_long_and_keeps_the_plain_read_at
     plain = _get(MASTER, "/api/of/v2/users/me", A)
     assert _get(MASTER, "/api/of/v2/users/me?max_age=1800", A) == plain, "the fresh plain entry answers"
     assert FAKES[A].gets(me) == 1
-    _expire(A, ("users_me",))                                     # 61 s later
+    _expire(A, ("users_me",))
     long1 = _get(MASTER, "/api/of/v2/users/me?max_age=1800", A)
     assert FAKES[A].gets(me) == 2 and long1 != plain
     assert _get(MASTER, "/api/of/v2/users/me?max_age=1800", A) == long1 and FAKES[A].gets(me) == 2
@@ -276,7 +248,7 @@ def case_users_me_max_age_serves_identity_reads_long_and_keeps_the_plain_read_at
     _get(MASTER, "/api/of/v2/users/me", A)
     assert FAKES[A].gets(me) == 3, "the plain read (mirror counters) still re-reads past 60 s"
     assert 50 < relay_cache._cache[("users_me", A, ("users_me",))][1] - time.monotonic() <= 60
-    for asked, held in ((99999, 1800), (10, 60)):                 # clamped to [60, 1800]
+    for asked, held in ((99999, 1800), (10, 60)):
         _expire(A, ("users_me",))
         _get(MASTER, f"/api/of/v2/users/me?max_age={asked}", A)
         assert ("users_me", A, ("users_me", "max_age", held)) in relay_cache._cache, (asked, held)

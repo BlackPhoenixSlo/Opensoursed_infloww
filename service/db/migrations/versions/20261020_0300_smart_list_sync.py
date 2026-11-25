@@ -1,20 +1,3 @@
-"""smart_list_sync — a Smart List can own and sync a real OnlyFans user list
-
-`smart_lists` gains the sync state the `smart_list_sync` automation keeps:
-of_list_id / of_list_name (the OF list it created and the name it last wrote),
-is_active (synced or not, under a per-account quota), sync_state (syncing |
-ok | pending | error | deleting — `syncing` is the edit/delete lock,
-deleting a tombstone awaiting its OF list delete), sync_error,
-synced_at ("Last updated") and member_count.
-
-The ORM model declares the same columns, so `init_db()`'s ADD-COLUMN catch-up
-brings them to a booting box; this revision keeps the alembic chain canonical.
-Idempotent (inspector-guarded, house convention). Downgrade drops the columns.
-
-Revision ID: 0080_smart_list_sync
-Revises: 0079_link_shares
-Create Date: 2026-10-20
-"""
 from __future__ import annotations
 
 from typing import Sequence

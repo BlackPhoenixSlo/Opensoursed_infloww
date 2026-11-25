@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_live_trigger — the live reply waits its reply speed (04a ticket 67, full_ai_live.{due,enqueue}).
-
-The wait is the job's `run_at` (no wake job, no held state). "Time passes" = the pending job's
-`run_at` moved to now. OF, Jev and the Writers faked (`_full_ai_fixtures.live_world`). Temp DB only.
-
-  case_one_dm_waits_reply_speed     one pending job at dm.created_at + hold(config, mid), a wake then; run_once
-                                    before it: no job claimed, no OF call; at run_at: the reply sends
-  case_same_anchor_same_run_at      same Anchor id + config -> same run_at, here and in a fresh process
-                                    on its own temp DB
-  case_burst_one_reply              three DMs 5 s apart: one job, one reply, row on the third DM, the
-                                    Jev state holds all three
-  case_reply_by_webhook_off         the hook queues nothing for a live rule
-  case_rule_off_while_waiting       job dropped at claim: no OF client, no row
-  case_leased_fan_retried           another Lane's lease: back at +20 s, tries 1, same `_rule_id`; a DM
-                                    meanwhile adds no job; lease gone -> sends; three busy runs ->
-                                    skipped busy, no fourth job; a retry job of a rule switched off
-                                    is dropped at claim
-  case_cooldown_fan_retried         a Fan on cooldown: the same retry
-  case_shadow_rule_job_unchanged    a Shadow rule's DM: one immediate job, no `tries` key
-  case_hook_failure_keeps_w7        live branch raising: `full_ai_hook_failed`, W7's job still queued
-
-Run: ./venv/bin/python service/tests/test_full_ai_live_trigger.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -49,7 +26,7 @@ from automations import full_ai_config, full_ai_live, full_ai_test  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import AccountAiConfig, AutomationRule, ScheduledJob  # noqa: E402
 
-CFG = full_ai_config.DEFAULTS                     # reply_speed "0-2m"
+CFG = full_ai_config.DEFAULTS
 PROBE = "FAI_TRIGGER_PROBE"
 
 
@@ -79,7 +56,6 @@ async def _jobs(aid: str) -> list[ScheduledJob]:
 
 
 async def _time_passes(aid: str) -> None:
-    """The pending jobs' `run_at` is reached."""
     async with get_session() as s:
         await s.execute(update(ScheduledJob).where(
             ScheduledJob.account_id == aid, ScheduledJob.status == "pending")
@@ -87,7 +63,6 @@ async def _time_passes(aid: str) -> None:
 
 
 def _slow_mid(start: int, at_least_s: float = 30.0) -> int:
-    """A message id whose seeded draw waits at least `at_least_s`."""
     mid = start
     while full_ai_test.hold(CFG, str(mid)) < at_least_s:
         mid += 1
@@ -208,8 +183,6 @@ async def _stats(res: dict) -> dict:
 
 
 async def _busy_then(aid: str, fan: int, mid: int, free) -> None:
-    """Busy run -> the job is back at +20 s with tries 1 and its `_rule_id`, no OF call; his next DM
-    adds no job; `free()` -> the next run sends, to both DMs."""
     rid = await full_ai_live.live_rule(aid)
     with live_world() as w:
         await wd.on_inbound_message(aid, fan, mid)
@@ -247,7 +220,6 @@ async def _three_busy(aid: str, fan: int, mid: int) -> None:
 
 
 async def _retry_rule_off(aid: str, fan: int, mid: int) -> None:
-    """A busy retry job whose rule is switched off is dropped at claim."""
     rid = await full_ai_live.live_rule(aid)
     with live_world() as w:
         await wd.on_inbound_message(aid, fan, mid)
@@ -300,7 +272,7 @@ async def case_cooldown_fan_retried():
 
 async def case_shadow_rule_job_unchanged():
     aid, fan = "fa_trig_shadow", 612
-    rid = await _seed(aid, rule=True, gate=False)      # no `mode`: Shadow
+    rid = await _seed(aid, rule=True, gate=False)
     t0 = datetime.utcnow()
     await _msg(aid, fan, 8801, "in", "hey you", t0 - timedelta(minutes=3))
     await wd.on_inbound_message(aid, fan, 8801)
@@ -320,14 +292,14 @@ async def case_hook_failure_keeps_w7():
     full_ai_live.enqueue = boom
     try:
         with _logs("of-relay.webhook_dispatch") as lines:
-            await wd.on_inbound_message(aid, fan, 8901)     # never raises
+            await wd.on_inbound_message(aid, fan, 8901)
     finally:
         full_ai_live.enqueue = real
     assert [j.kind for j in await _jobs(aid)] == ["welcome_chatter_for_info"], await _jobs(aid)
     assert any(l.startswith(f"full_ai_hook_failed account={aid} fan={fan}") for l in lines), lines
 
 
-if os.environ.get(PROBE):           # case_same_anchor_same_run_at's second DB: this process's own temp DB
+if os.environ.get(PROBE):
     _mid, _at = os.environ[PROBE].split("|")
     asyncio.run(_probe(int(_mid), datetime.fromisoformat(_at)))
     sys.exit(0)

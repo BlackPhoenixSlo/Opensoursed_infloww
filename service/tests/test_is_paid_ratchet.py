@@ -1,26 +1,6 @@
-"""messages.is_paid is a RATCHET: once True, no later write turns it off.
-
-Why this is worth a test of its own: `is_paid` is derived from the platform's
-`isOpened`, and on Fansly that answer comes from the purchases NOTIFICATION
-feed — one page, account-wide, which ages out. Once a purchase scrolls off,
-an honest re-scrape reports the message unpaid again. Before the ratchet, that
-answer was written straight through and ERASED a real sale.
-
-The blast radius is money, not cosmetics: revenue reads sum price_cents over
-is_paid rows, and ownership.py gates "does he already own
-this" on it — so a flipped-back row under-reports income AND re-offers content
-the fan already bought.
-
-TWO writers upsert this column (a third would silently reintroduce the bug):
-  - automations.scrape_chats — the scrape/backfill upsert
-  - event_transcoder    — the live WebSocket frame upsert
-Both must go through db.models.is_paid_ratchet, and both are asserted here.
-
-Run: ./venv/bin/python service/tests/test_is_paid_ratchet.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -43,7 +23,6 @@ def check(cond: bool, label: str) -> None:
 
 
 async def _upsert(message_id: int, is_paid, price_cents: int = 300):
-    """One is_paid write through the shared ratchet, then read it back."""
     async with get_session() as s:
         await s.execute(
             sqlite_insert(Message)
@@ -67,23 +46,18 @@ def upsert(message_id: int, is_paid, price_cents: int = 300):
 
 
 def main() -> int:
-    # The sale survives the feed aging out — the whole point.
     check(upsert(1, False) is False, "a fresh unpaid PPV stores False")
     check(upsert(1, True) is True, "the purchase flips it to True")
+    # Fansly isOpened comes from a purchases feed that ages out; a re-scrape must not erase a real sale.
     check(upsert(1, False) is True, "an aged-out feed must NOT erase the sale")
     check(upsert(1, None) is True, "nor may a NULL write erase it")
     check(upsert(1, False) is True, "still True after repeated unpaid scrapes")
 
-    # A free message is NULL and stays NULL — the ratchet must not invent a sale.
     check(upsert(2, None, price_cents=0) is None, "a free message stores NULL")
     check(upsert(2, None, price_cents=0) is None, "a free message stays NULL")
 
-    # False -> False is untouched; only the True->anything direction is pinned.
     check(upsert(3, False) is False, "unpaid stays unpaid until a real purchase")
 
-    # Both writers must route through the helper, or the invariant is one
-    # forgetful edit away from gone. Assert on source, since a behavioural test
-    # of the WS path would need a full frame fixture to say the same thing.
     import automations.scrape_chats as scrape_chats
     import event_transcoder
     for mod in (scrape_chats, event_transcoder):

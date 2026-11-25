@@ -1,63 +1,3 @@
-"""service/purchase_notifications.py — learn about a PPV purchase in ~30s
-instead of hours, from OF's own purchases notification feed.
-
-OF pushes NO purchase event over the WebSocket. Verified against 25,672 raw
-events across the full `event_inbox` retention window: the wire carries
-`typing`, `chat_messages`, `toasts`, `stories`, … and nothing else — no
-`paidMessage`, no `messageUnlock`, no `purchase`. The three handlers
-`event_transcoder` has always had for those names have fired zero times, and
-toasts decode to only `favorited`/`subscribed`/`commented`/`release_forms`.
-
-The ledger DOES record every purchase, but late: measured
-`ingested_at - occurred_at` lags of 209, 560 and 628 minutes. Polling it harder
-does not help — a 30s poll of an hours-stale source is still hours stale.
-
-`GET /api2/v2/users/notifications?type=purchases` is the fresh source, and it is
-richer than the ledger for this job:
-
-    {"id": 117301756206,
-     "type": "paided_message",
-     "subType": "subscriber_pay_for_chat_message",
-     "createdAt": "2026-07-21T15:26:00+00:00",
-     "replacePairs": {"{NAME}": "Daniel",
-                      "{AMOUNT}": "$6.00",
-                      "{MESSAGE_LINK}": "…/chats/chat/800000741?firstId=10491720677794"}}
-
-`firstId` is **the exact message that was bought**. That is what makes this worth
-having: the global payment→message linker bails `ambiguous` whenever a fan holds
-more than one unpaid same-priced PPV, so `is_paid` never flips and the seller
-keeps saying "waiting on your tip" over content he already owns. Here OF names
-the message outright — no inference, no price heuristic, no ambiguity.
-
-The same feed also names WALL-POST purchases — the ledger's `ppv_post` row
-carries NO post id anywhere (verified live 07-23: `descriptionDetails.params`
-is just the fan's profile URL + name), but the notification does:
-
-    {"type": "paided_post",
-     "subType": "your_post_purchased",
-     "replacePairs": {"{POST_URL}": "https://onlyfans.com/<post_id>/<handle>",
-                      "{PRICE}": "$10.00"},
-     "user": {"id": <fan_id>, …}}
-
-That post id is what lets ownership stamping work for wall buys (Phase 2 of
-plan/PREVENTION_FIX_NO_DUPLICATE_PPV.md — the 07-23 incident: a wall post
-re-sold inside a PPV eight minutes later, because both dedup readers were
-blind to post purchases).
-
-**Scope: resolution + ownership only. This module never writes money.** It
-flips `messages.is_paid` and stamps `vault_sends.was_purchased` (via
-service/ownership.py) and nothing else. The `transactions` ledger stays the
-single writer of revenue, so there is no path by which a notification and its
-later ledger row could both be counted.
-
-Idempotent by construction: the UPDATE only matches rows that are still
-unpaid, and every ownership stamp is SELECT-first, so re-seeing the same
-notification (every 30s, until it ages out of the feed) can never
-double-apply anything. `_DONE_NOTIFS` below is NOT a correctness mechanism —
-it only spares a re-sighting's repeat queries (and, for posts, repeat OF
-fetches); it is process-local, and a restart simply reprocesses each
-notification once.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -82,42 +22,29 @@ from purchase_poll_decide import Outcome
 
 log = logging.getLogger("of-relay.purchase_notif")
 
-# The notification kinds that mean "a fan paid for a chat message". `type` is the
-# coarse bucket; `subType` distinguishes chat purchases from post/stream ones,
-# which have no message to flip.
 _PAID_TYPES = {"paided_message"}
 _PAID_SUBTYPES = {"subscriber_pay_for_chat_message"}
 
-# A fan bought a WALL POST (captured live 2026-07-23). No message to flip —
-# these feed ownership stamping only.
 _POST_TYPES = {"paided_post"}
 _POST_SUBTYPES = {"your_post_purchased"}
 
-# `…/chats/chat/<fan_id>?firstId=<message_id>` — the purchased message.
 _MSG_LINK_RE = re.compile(r"/chats/chat/(\d+)\?firstId=(\d+)")
-# `https://onlyfans.com/<post_id>/<username>` — the purchased wall post.
 _POST_LINK_RE = re.compile(r"onlyfans\.com/(\d+)(?:/|$|[\"'?])")
 _AMOUNT_RE = re.compile(r"([0-9]+(?:\.[0-9]{1,2})?)")
 
 
 def _parse_amount_cents(raw: Any) -> int:
-    """"$6.00" → 600. 0 when absent/unparseable — the amount is informational
-    here (we resolve by message id, not by price), so a odd currency format
-    must not drop an otherwise-valid purchase."""
     m = _AMOUNT_RE.search(str(raw or ""))
     return cents_or_zero(m.group(1)) if m else 0
 
 
 def parse_purchase(n: Any) -> dict[str, Any] | None:
-    """One notification → {notif_id, fan_id, message_id, amount_cents, created_at,
-    name}, or None when it isn't a chat-message purchase we can act on."""
     if not isinstance(n, dict):
         return None
     if str(n.get("type") or "") not in _PAID_TYPES:
         return None
     sub = str(n.get("subType") or "")
-    # Tolerate a missing subType (older payloads) but reject a KNOWN non-chat one:
-    # a post/stream purchase has no chat message and must not flip anything.
+    # A missing subType passes (older payloads) but a known non-chat one has no message to flip.
     if sub and sub not in _PAID_SUBTYPES:
         return None
     pairs = n.get("replacePairs")
@@ -130,8 +57,6 @@ def parse_purchase(n: Any) -> dict[str, Any] | None:
     if not m:
         return None
     fan_id, message_id = int(m.group(1)), int(m.group(2))
-    # Prefer the link's fan id; fall back to the user blob only if the link
-    # somehow lacked one (it always carries it in practice).
     if not fan_id:
         fan_id = int(((n.get("user") or {}) if isinstance(n.get("user"), dict) else {}).get("id") or 0)
     if not fan_id or not message_id:
@@ -144,24 +69,16 @@ def parse_purchase(n: Any) -> dict[str, Any] | None:
         "message_id": message_id,
         "amount_cents": amount,
         "created_at": n.get("createdAt"),
-        # OF names the payer right here; the live announce puts it on the
-        # toast so a chatter sees WHO bought without a lookup.
         "name": (pairs or {}).get("{NAME}") if isinstance(pairs, dict) else None,
     }
 
 
 def parse_post_purchase(n: Any) -> dict[str, Any] | None:
-    """One notification → {notif_id, fan_id, post_id, amount_cents, created_at},
-    or None when it isn't a wall-post purchase. Chat purchases stay with
-    `parse_purchase` — the two vocabularies never overlap (`paided_message` vs
-    `paided_post`)."""
     if not isinstance(n, dict):
         return None
     if str(n.get("type") or "") not in _POST_TYPES:
         return None
     sub = str(n.get("subType") or "")
-    # Same tolerance rule as parse_purchase: missing subType passes, a KNOWN
-    # foreign one (a stream, say) does not.
     if sub and sub not in _POST_SUBTYPES:
         return None
     pairs = n.get("replacePairs")
@@ -190,9 +107,6 @@ def parse_post_purchase(n: Any) -> dict[str, Any] | None:
 
 
 def _notified_time(created_at: Any) -> datetime | None:
-    """The notification's own `createdAt` as naive UTC — when the fan BOUGHT, not
-    when this poll noticed — or None when OF sent no readable time. Never a
-    future instant (clock skew is clamped to now)."""
     raw = str(created_at or "").strip()
     try:
         ts = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
@@ -206,27 +120,11 @@ def _notified_time(created_at: Any) -> datetime | None:
 
 
 def _purchase_time(created_at: Any) -> datetime:
-    """`purchased_at` for a flip: the notification's time (a backfill or a restart
-    re-walks old notifications, and stamping those "now" made months-old sales
-    read as fresh), falling back to now only when OF sent no readable time."""
     return _notified_time(created_at) or datetime.utcnow()
 
 
 async def _flip_paid(account_id: str, fan_id: int, message_id: int,
                      created_at: Any = None) -> bool:
-    """Mark exactly this outbound priced message paid, at the notification's
-    purchase time (`created_at`). Returns True when THIS call did the flip (so
-    callers only log real transitions).
-
-    Deliberately narrow: scoped to the (account, fan, message) triple, requires
-    `direction='out'` and `price_cents > 0`, and only matches rows still unpaid.
-    A malformed parse therefore cannot mark an inbound or free message as
-    bought, and a repeat of the same notification updates zero rows.
-
-    The notification's time is also kept in `purchase_notices` whether or not
-    this call flipped the row: another writer (the isOpened fast path)
-    often flips it first, stamping "now", and purchase_followup needs the real
-    time as proof. The first notice for a message wins."""
     notified = _notified_time(created_at)
     async with get_session() as s:
         if notified is not None:
@@ -250,65 +148,37 @@ async def _flip_paid(account_id: str, fan_id: int, message_id: int,
 
 
 class _NotifKey(NamedTuple):
-    """What the two memos below are keyed on. A plain tuple would do — this
-    exists so the `notif_id is None` guard reads as itself everywhere it is
-    asked, rather than as `key[2]`."""
-    kind: str            # "msg" | "post" — namespaces the two lanes explicitly
+    kind: str
     account_id: str
-    notif_id: Any        # OF's own id; None when the payload carried none
+    notif_id: Any
 
 
-# Notifications fully handled this process-lifetime — the feed re-serves the
-# same events every poll until they age out, so without this every sighting
-# re-runs the stamp queries (and, for posts, could re-hit OF). A relay restart
-# just reprocesses each once (everything downstream is idempotent).
+# The feed re-serves events every poll; a restart reprocesses each once (downstream is idempotent).
 _DONE_NOTIFS: dict[_NotifKey, None] = {}
 
 
-# Notifications already DELIVERED to at least one browser. Deliberately
-# separate from _DONE_NOTIFS: "resolved" and "announced" are different
-# questions. A purchase whose message row hasn't been scraped yet stays un-done
-# and retries every poll — but it must not re-toast on each of those retries,
-# and conversely a purchase somebody else flipped first is still news worth
-# announcing. An entry lands here only once the ping REACHED a live subscriber:
-# a broadcast into an empty room leaves the memo untouched, so the sale is
-# offered again on the next poll instead of being remembered as told.
+# Separate from _DONE_NOTIFS: only a ping that reached a live subscriber lands here, so an empty room re-offers the sale.
 _ANNOUNCED_NOTIFS: dict[_NotifKey, None] = {}
 
-# Shared bound for both memos above.
 _NOTIF_MEMO_MAX = 4096
 
-# Accounts whose last catch-up (poll_purchases, pages > 1) failed part-way: its
-# handled pages are in _DONE_NOTIFS now, so the retry must not stop at them.
 _CATCHUP_UNFINISHED: set[str] = set()
 
-# Only announce purchases this fresh. Bounds the noise when the relay restarts
-# and re-walks a feed page it already announced (same rationale as the ledger's
-# 48h insert cap), without needing durable state. Generous next to the 30s
-# poll, so an ordinary gap or a slow tick still notifies.
+# Bounds toast noise when a restart re-walks an already announced feed page.
 _ANNOUNCE_MAX_AGE_S = 2 * 60 * 60
 
 
 def _remember(memo: dict[_NotifKey, None], key: _NotifKey) -> None:
-    """Record `key` in one of the two memos, evicting oldest-first past
-    _NOTIF_MEMO_MAX — an insertion-ordered dict as a cheap ring buffer."""
     while len(memo) >= _NOTIF_MEMO_MAX:
         memo.pop(next(iter(memo)))
     memo[key] = None
 
 
 def _is_done(key: _NotifKey) -> bool:
-    """Has this notification already been fully resolved this process-lifetime?
-    An id-less one is never remembered (nothing to key on), so it can never be
-    done either."""
     return key.notif_id is not None and key in _DONE_NOTIFS
 
 
 def _is_fresh(created_at: Any) -> bool:
-    """Is this notification recent enough to be worth a live ping? An
-    unparseable timestamp counts as fresh: going silent on an OF format change
-    is a worse failure than an occasional stale toast, and the browser dedupes
-    on the notification id anyway."""
     raw = str(created_at or "").strip()
     if not raw:
         return True
@@ -322,52 +192,13 @@ def _is_fresh(created_at: Any) -> bool:
 
 
 def _should_announce(key: _NotifKey, created_at: Any) -> bool:
-    """Is this purchase worth a live ping we have not already landed? Says no
-    to an id-less notification (nothing the browser could dedupe on) and to
-    anything stale.
-
-    Pure: the memo is written by the caller, and only on a real delivery. Two
-    concurrent polls of one account can therefore both answer True and both
-    broadcast — deliberate, because the ping carries OF's real notification id
-    and the browser claims ids before rendering. That is the same dedupe this
-    design already leans on to collapse the ping against the feed row, so a
-    claim-and-rollback protocol here would buy nothing."""
     return (key.notif_id is not None
             and _is_fresh(created_at)
             and key not in _ANNOUNCED_NOTIFS)
 
 
 async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> bool:
-    """Tell every open browser a PPV was just unlocked. Returns whether the
-    ping had anywhere to land.
-
-    OF pushes no purchase event and its own `toasts` feed carries none either,
-    so without this a sale is invisible until something refetches. The ledger
-    can't do this job: it is the money record, but it lands late and by its own
-    measurement sometimes hours late.
-
-    `notif_id` is OF's REAL notification id — the same id the browser sees when
-    it lists `users/notifications?type=purchases`. That's the point: the client
-    can key on it, so the live ping and the eventual feed row dedupe against
-    each other instead of showing one sale twice.
-
-    **A broadcast with no subscriber is not a delivery.** SSE has no mailbox,
-    so `events.broadcast` returns how many queues it actually handed the event
-    to, and zero is reported as False rather than pretending. The caller then
-    leaves the memo unwritten and the next 30s poll offers the sale again —
-    the whole difference between "toasted the moment someone was looking" and
-    "silently never toasted, because the tab was closed at 18:33".
-
-    Never raises: a broadcast failure must not cost us the is_paid flip. It
-    returns False, which only costs a retry.
-    """
-    # Unconditional, and NOT under the delivery question below: the bust is
-    # server-side truth (this account's money changed), so it must happen even
-    # with nobody watching — the tab that connects two seconds from now
-    # refetches on its own and must not be served our pre-sale snapshot. This
-    # is the ONLY money lane that fires in production: the WS carries no
-    # purchase frame, so event_transcoder's unlock handlers never run and this
-    # 30s poll is how a sale becomes visible at all.
+    # Unconditional, even with nobody watching: the WS carries no purchase frame, so this poll is the only money bust in prod.
     relay_cache.invalidate_money_feeds(str(account_id))
     try:
         from events import broadcast as _sse_broadcast
@@ -390,9 +221,6 @@ async def _broadcast_purchase(account_id: str, p: dict[str, Any]) -> bool:
 
 
 async def _announce_vault_history(account_id: str, fan_id: int) -> None:
-    """`vault_history_changed {fan_id}` after a stamp committed: an open picker re-reads the Fan's
-    badges (useInboxRealtime). Sent after the stamp, never with `purchase_notified`, which goes
-    before it. Never raises."""
     try:
         from events import broadcast as _sse_broadcast, js_safe_id
         await _sse_broadcast({
@@ -414,9 +242,6 @@ async def _message_paid(account_id: str, fan_id: int, message_id: int) -> bool:
 
 
 def classify(n: Any) -> str:
-    """Pure: "chat_purchase" | "post_purchase" | "other" — the one decision
-    `_handle_items` dispatches on. Chat wins when both parsers could match (they
-    cannot: `paided_message` vs `paided_post`)."""
     if parse_purchase(n):
         return "chat_purchase"
     if parse_post_purchase(n):
@@ -426,19 +251,11 @@ def classify(n: Any) -> str:
 
 async def _apply_chat(account_id: str, n: Any, out: dict[str, int],
                       *, announce: bool) -> bool:
-    """Chat purchase (`classify(n) == "chat_purchase"`) → announce, flip is_paid,
-    stamp the message's media. Returns whether THIS sighting finished a fresh
-    purchase (pokes followup)."""
     parsed = parse_purchase(n)
     assert parsed, "classify said chat_purchase"
     out["seen"] += 1
     key = _NotifKey("msg", str(account_id), parsed["notif_id"])
-    # The ANNOUNCE lane, deliberately above the _is_done gate: a
-    # purchase is news whether or not this call is the one that flips
-    # is_paid, and on a live seller the ledger linker usually wins that
-    # race — so the very first sighting is already marked done, and
-    # gating on _is_done first would retire the announcement before it
-    # was ever heard. Remembered only on a real delivery.
+    # Announce sits above the _is_done gate: the ledger linker often flips first, which would retire the announcement unheard.
     if (announce and _should_announce(key, parsed["created_at"])
             and await _broadcast_purchase(account_id, parsed)):
         _remember(_ANNOUNCED_NOTIFS, key)
@@ -459,8 +276,6 @@ async def _apply_chat(account_id: str, n: Any, out: dict[str, int],
     out["stamped"] += stamped
     if stamped:
         await _announce_vault_history(account_id, parsed["fan_id"])
-    # Done once flipped/stamped/already-paid; a message row that
-    # hasn't landed yet (scrape lag) stays retryable.
     if key.notif_id is not None and (
         flipped or stamped
         or await _message_paid(account_id, parsed["fan_id"],
@@ -473,8 +288,6 @@ async def _apply_chat(account_id: str, n: Any, out: dict[str, int],
 
 async def _apply_post(account_id: str, client: Any, n: Any,
                       out: dict[str, int]) -> None:
-    """Post purchase (`classify(n) == "post_purchase"`) → stamp the post's media
-    as owned (retryable until resolved)."""
     post = parse_post_purchase(n)
     assert post, "classify said post_purchase"
     out["posts"] += 1
@@ -495,16 +308,6 @@ async def _apply_post(account_id: str, client: Any, n: Any,
 
 async def _handle_items(account_id: str, client: Any, items: list,
                         *, announce: bool = False) -> dict[str, int]:
-    """Shared per-notification dispatch for the 30s poll and the deep backfill:
-    `classify` each, then `_apply_chat` / `_apply_post`. The STAMP legs are
-    isolated (the try_stamp_* wrappers swallow and leave the notification
-    retryable); an error in the is_paid flip or paid-check propagates to the
-    caller — the 30s poll swallows it there and unfinished notifications retry
-    on the next sighting. Fully-handled events are remembered so re-sightings
-    stop costing queries; an event whose message row hasn't landed yet (scrape
-    lag) or whose post can't be resolved yet (wall scan lag) is NOT marked
-    done and retries on the next poll. `known`: sightings already remembered done (the
-    catch-up's stop: poll_purchases)."""
     out = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0, "known": 0}
     fresh_purchase = False
     for n in (items or []):
@@ -515,21 +318,13 @@ async def _handle_items(account_id: str, client: Any, items: list,
         elif kind == "post_purchase":
             await _apply_post(account_id, client, n, out)
     if fresh_purchase:
-        # A chat purchase is now provable (is_paid), so the post-purchase
-        # follow-up need not wait out its cadence (W2 2.10). Once per batch, on
-        # the sighting that finished the notification, never on a re-sighting.
-        # The follow-up's own claims keep it to one message per purchase.
-        from automation_executor import poke_rule  # lazy: the executor is heavy
+        # Lazy: the executor is heavy.
+        from automation_executor import poke_rule
         poke_rule(account_id, "purchase_followup")
     return out
 
 
 def _fetch_feed(client: Any, limit: int, offset: int) -> list:
-    """Blocking OF GET + JSON decode — always call via asyncio.to_thread; the
-    supervisor holds the per-account tick lock while polling, and a
-    synchronous socket read on the event loop would stall every account.
-    Status-checked (OFClient.get_json): a non-2xx raises OFAPIError with OF's
-    response, never reads as an empty page (`feed_outcome` names it)."""
     raw = client.get_json(
         f"/api2/v2/users/notifications?limit={int(limit)}"
         f"&offset={int(offset)}&type=purchases")
@@ -538,9 +333,6 @@ def _fetch_feed(client: Any, limit: int, offset: int) -> list:
 
 
 def feed_outcome(exc: BaseException) -> Outcome:
-    """A failed feed read as the poll's outcome: `dead` only when the strict classifier
-    (account_health.is_session_dead_error) names a reason; OF's 429 `rate_limited`; any other 401
-    `unauthorized` (backs off, never flags); everything else `error` (a proxy failure included)."""
     reason = account_health.is_session_dead_error(exc)
     if reason:
         return Outcome("dead", reason=reason)
@@ -553,12 +345,6 @@ def feed_outcome(exc: BaseException) -> Outcome:
 
 
 def _of_lane(account_id: str):
-    """The serving relay's per-account OF lane at background priority
-    (server._priority_lane_background), so this feed read counts against
-    ACCOUNT_LANE_TOTAL like every other server-side OF call. Looked up, never
-    imported: uvicorn loads the module as `service.server`, and a bare
-    `import server` would run a second copy with lanes of its own (see
-    remote_login.live_server). No server loaded (a script): no lane."""
     for name in ("service.server", "server"):
         lane = getattr(sys.modules.get(name), "_priority_lane_background", None)
         if lane is not None:
@@ -567,38 +353,18 @@ def _of_lane(account_id: str):
 
 
 def _fetch_feed_in_lane(account_id: str, client: Any, limit: int, offset: int) -> list:
-    """`_fetch_feed` inside the account's OF lane. Blocking — the lane is a
-    thread semaphore, so this too runs via asyncio.to_thread."""
     with _of_lane(account_id):
         return _fetch_feed(client, limit, offset)
 
 
 async def poll_purchases(account_id: str, client: Any, *, limit: int = 10,
                          pages: int = 1) -> dict[str, Any]:
-    """Fetch the newest purchase notifications; flip is_paid for chat buys and
-    stamp media ownership for chat AND wall-post buys.
-
-    `pages` > 1 is the catch-up after a gap (purchase_poll_decide.catch_up): it
-    reads further pages of `limit` until a page holds a notification already
-    handled (`_handle_items`' `known`: in the done memo when sighted), a short page
-    (the feed's end), or `pages` pages. A catch-up that failed part-way is
-    retried without the `known` stop (its own pages are in the memo) until one
-    finishes ok (`_CATCHUP_UNFINISHED`).
-
-    Never raises: this rides on the freshness tick, and a notifications hiccup
-    must not take down transaction ingest. Returns counts for the caller's log
-    plus `outcome` (purchase_poll_decide.Outcome: ok, or what the failing read
-    answered, `feed_outcome`); pages read before a failure keep their counts.
-    """
     totals = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
     catch_up = int(pages) > 1
     resume = catch_up and str(account_id) in _CATCHUP_UNFINISHED
     try:
         for page in range(max(1, int(pages))):
             items = await asyncio.to_thread(_fetch_feed_in_lane, account_id, client, limit, page * int(limit))
-            # BOTH callers announce — the 30s fast tick AND the post-ownership sweep
-            # (transaction_ingest); noise stays bounded by the _ANNOUNCED_NOTIFS dedupe
-            # + the 2h freshness gate. The silent path is backfill_purchases below.
             got = await _handle_items(account_id, client, items, announce=True)
             known = got.pop("known")
             for k, v in got.items():
@@ -619,19 +385,6 @@ async def poll_purchases(account_id: str, client: Any, *, limit: int = 10,
 async def backfill_purchases(
     account_id: str, client: Any, *, page_size: int = 50, max_pages: int = 20
 ) -> dict[str, int]:
-    """Walk the purchases feed as deep as OF retains it and stamp everything —
-    the historical repair for wall-post buys that pre-date the paided_post
-    parser (and a belt for any chat buy the 30s poll missed while down).
-    Idempotent: every stamp is SELECT-first. Stops on an empty page, a repeat
-    page (OF ignores an offset past the end and re-serves the tail — verified
-    live 07-23), or max_pages. Run in-container:
-
-        docker exec -w /app/service fastt-relay python -c "
-        import asyncio, purchase_notifications as pn
-        from of_client import OFClient
-        aid='<ACCOUNT_ID>'
-        print(asyncio.run(pn.backfill_purchases(aid, OFClient.from_account(aid))))"
-    """
     totals = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0, "pages": 0}
     seen_ids: set = set()
     for page in range(int(max_pages)):
@@ -647,8 +400,6 @@ async def backfill_purchases(
         if not fresh:
             break
         seen_ids.update(n.get("id") for n in fresh)
-        # Silent by construction: a deep repair walks months of purchases, and
-        # announcing them would fire hundreds of toasts for sales long past.
         got = await _handle_items(account_id, client, fresh)
         got.pop("known")
         for k, v in got.items():

@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""
-A11 reply_mass_funnel — guard characterisation (pins TODAY's behaviour).
-
-reply_mass_funnel has no `force_ids` knob; its operator-explicit targeting is
-`test_fan`, which (a) scopes the sweep to that one fan and (b) is exempt from the
-include-only audience fence (`_audience_allows`). That is the gate pinned here.
-
-  case_cap_stops_run_no_send:
-      two due repliers on a generated (LLM) step; llm_client.chat raises
-      LLMCapExceeded → the run ends `ok` with cap_hit=True, advanced=0,
-      errors=0, the model is asked ONCE (the cap stops the sweep), nothing is
-      sent, both states stay at step 0 pending, leases released, and the
-      automation_runs row carries cap_hit.
-  case_audience_fence_blocks_without_test_fan:
-      control: enforce-mode audience whose include list is missing fails CLOSED
-      → the replier is not enrolled, nothing sent, audience_skipped counted.
-  case_test_fan_bypasses_audience_fence:
-      the same fenced account with `test_fan=<target>` → the target is enrolled
-      and advanced; a second replier on the same broadcast is not touched.
-
-Run: ./venv/bin/python service/tests/test_reply_mass_funnel_guards.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -50,9 +28,8 @@ from db.models import (  # noqa: E402
 )
 from llm_client import LLMCapExceeded  # noqa: E402
 
-a11._STEP_GAP_S = 0  # skip the human pause between bubbles (as the sibling does)
+a11._STEP_GAP_S = 0
 
-# Relative clock: discovery is bounded to young broadcasts (see sibling test).
 T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)
 T_REPLY = T0 + timedelta(minutes=5)
 SEND_AT = (T0 + timedelta(hours=2)).isoformat() + "+00:00"
@@ -90,8 +67,6 @@ def _patch_llm(*, cap: bool = False, calls: list | None = None) -> None:
 
 
 async def _seed_broadcast(aid: str, steps: list[dict], repliers: list[int]) -> int:
-    """Account + funnel + an ok mass_run, an opener to each replier, and his
-    reply after it (discovery reads exactly these rows)."""
     async with get_session() as s:
         if await s.get(Account, aid) is None:
             s.add(Account(id=aid))
@@ -114,7 +89,6 @@ async def _seed_broadcast(aid: str, steps: list[dict], repliers: list[int]) -> i
 
 
 async def _fence_closed(aid: str) -> None:
-    """Enforce-mode include audience pointing at no list → fails CLOSED."""
     async with get_session() as s:
         s.add(AccountAiConfig(account_id=aid, audience_mode="enforce",
                               audience_list_id=None))
@@ -125,7 +99,6 @@ async def _state(mr: int, fid: int) -> FunnelState | None:
         return await s.get(FunnelState, (mr, fid))
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 async def case_cap_stops_run_no_send():
     aid, a, b = "acc_rmfg_cap", 6101, 6102
@@ -139,7 +112,7 @@ async def case_cap_stops_run_no_send():
     assert res["cap_hit"] is True, res
     assert res["advanced"] == 0 and res["errors"] == 0, res
     assert res["discovered"] == 2, res
-    assert len(calls) == 1 and calls[0] in (a, b), calls   # cap stops the sweep
+    assert len(calls) == 1 and calls[0] in (a, b), calls
     assert fake.sent == [], fake.sent
 
     for fid in (a, b):
@@ -180,7 +153,7 @@ async def case_test_fan_bypasses_audience_fence():
     res = await run_once(aid, "reply_mass_funnel", payload={"test_fan": target})
     assert res["status"] == "ok", res
     assert res["discovered"] == 1 and res["advanced"] == 1, res
-    assert fake.sent == [(target, "m1")], fake.sent          # only the target
+    assert fake.sent == [(target, "m1")], fake.sent
     st = await _state(mr, target)
     assert st is not None and st.current_step == 1, st
     assert await _state(mr, other) is None, "non-target untouched"

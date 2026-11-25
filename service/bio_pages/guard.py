@@ -1,7 +1,3 @@
-"""The bio app's in-memory limits (click-guard.js:9-38): a fixed wall-clock-minute window per key, the whole table
-dropped when a new minute starts, every call counted (refused ones too), allowed while the count <= the limit.
-Reveal's window is keyed by client IP; the Page View ping's by client IP and the lower-cased Username, so pings never
-use up a Visitor's Reveals. One process (A2), so the counts are exact."""
 from __future__ import annotations
 
 import time
@@ -9,6 +5,7 @@ from collections import OrderedDict
 from typing import Callable
 
 
+# Every call is counted, refused ones too; allowed while count <= limit.
 WINDOW_S = 60
 MAX_KEYS = 10_000
 
@@ -31,8 +28,6 @@ class FixedWindow:
         return n <= self.limit
 
 
-# Set by configure() (bio_pages.app import, or a test). The functions below stay the same objects so a slop fault
-# can patch them before startup.
 _reveal = FixedWindow(60)
 _ping = FixedWindow(60)
 

@@ -1,20 +1,3 @@
-"""One `req id=… method=… path=… status=… ms=…` line per HTTP request.
-
-A pure ASGI layer, registered last in server.py so it is the OUTERMOST: not one
-more BaseHTTPMiddleware (http_hooks: each costs a task group and a body
-re-stream). `ms` is wall clock from entry to the final body chunk, so a
-streamed body counts whole. `path` is the route template FastAPI's router left
-in `scope["route"]` (unmatched: the raw path, through `redact`). `user` /
-`chatter` are the principals the session hooks put on their ContextVars (the
-hook chain runs in this task, so they are still set when the app returns);
-`acct` is an `account_id`/`aid` path param or the `X-Account-Id` header.
-The id (incoming `X-Request-Id`, cleaned, else random) is echoed on the response
-and is `request.state.request_id`. No query, cookies, auth headers or bodies.
-
-WARNING past `CHATTERLY_SLOW_REQ_MS` (default 1000, read per request). SSE
-(`text/event-stream`) is logged `stream=1` at INFO whatever it lasts; health
-probes and websockets are not logged.
-"""
 from __future__ import annotations
 
 import logging

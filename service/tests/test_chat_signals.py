@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""/chats serve-time smart signals (`server._annotate_chat_rows`).
-
-The Fan List paints "restricted", "needs human" and "auto-renew off" straight
-off the chat rows, with no extra call, from data we already store (the
-restricted stamp's own cases live in test_of_restrict.py):
-  - needsHuman:   fans.customs_owed_at is set (a custom is owed);
-  - autoRenewOff: the account's LAST roster crawl (subscriber_snapshot) listed
-                  the fan with renew off and an expiry still ahead; a crawl
-                  older than a day vouches for nothing.
-Stamps go on a COPY (the cached window is shared), and with nothing to stamp
-the exact same object comes back.
-
-Run:  ./venv/bin/python service/tests/test_chat_signals.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -79,12 +65,12 @@ async def case_last_crawl_renew_off_stamps_auto_renew_off():
     now = datetime.utcnow()
     last, older = now - timedelta(minutes=5), now - timedelta(hours=3)
     await _snapshot([
-        (21, False, now + timedelta(days=3)),   # renew off, still subscribed → stamped
-        (22, True, now + timedelta(days=3)),    # renew on
-        (23, False, now - timedelta(hours=1)),  # already lapsed: expired, not "off"
-        (24, False, None),                      # no expiry known: still listed active
+        (21, False, now + timedelta(days=3)),
+        (22, True, now + timedelta(days=3)),
+        (23, False, now - timedelta(hours=1)),
+        (24, False, None),
     ], seen_at=last)
-    await _snapshot([(25, False, now + timedelta(days=3))], seen_at=older)  # gone since
+    await _snapshot([(25, False, now + timedelta(days=3))], seen_at=older)
     out = await server._annotate_chat_rows(AID, _page(21, 22, 23, 24, 25))
     stamped = [r["withUser"]["id"] for r in out["list"] if r["withUser"].get("autoRenewOff")]
     assert stamped == [21, 24], stamped
@@ -109,8 +95,6 @@ async def case_non_numeric_ids_are_skipped():
 
 
 async def case_chats_key_and_every_signal_in_one_copy():
-    """A page under "chats" (not "list") is stamped too, and a fan carrying all
-    three signals gets them on ONE copied row."""
     await _reset()
     now = datetime.utcnow()
     async with get_session() as s:

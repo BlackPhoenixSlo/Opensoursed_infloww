@@ -1,28 +1,3 @@
-"""link_metrics — per-link local state and claimers for Growth's link figures
-
-Backs service/link_metrics.py (Free trial links' and Profile promotions'
-Earnings, Fans who spent, Spend/Claim and AEPS; the Edit dialog's Promo cost,
-Source and Tag on Free trial links and Tracking links):
-
-  link_meta      — one row per (account, kind, OF id): the operator's Promo
-                   cost, Source and Tags (never written to OnlyFans), and the
-                   claimers cache state (claim count at the last walk, walk and
-                   check times, our promo campaign id across re-arms).
-  link_claimers  — the fans OnlyFans lists under a trial link or promotion,
-                   with subscribeAt as first seen (never moved later) and OF's
-                   lifetime spend sums.
-
-Both foreign keys to `accounts` are ON DELETE CASCADE. The ORM models in
-db/models.py declare the same tables, so `init_db()`'s create_all brings them
-to a booting box; this revision keeps the alembic chain canonical. Idempotent
-(inspector-guarded, house convention). Downgrade drops both tables; that loses
-only cached claimers (re-walked from OnlyFans) and the operator's cost, source
-and tags.
-
-Revision ID: 0073_link_metrics
-Revises: 0072_saved_reply_tags_notes
-Create Date: 2026-10-18
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -89,6 +64,7 @@ def upgrade() -> None:
         )
 
 
+# downgrade drops the operator's promo cost/source/tags (never on OF); claimers re-walk from OF
 def downgrade() -> None:
     tables = set(sa.inspect(op.get_bind()).get_table_names())
     for t in ("link_claimers", "link_meta"):

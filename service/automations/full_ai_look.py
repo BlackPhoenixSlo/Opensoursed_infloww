@@ -58,6 +58,7 @@ async def _newest_inbound(look: Look) -> tuple[datetime, int] | None:
 
 
 def overtaken(look: Look) -> str | None:
+    """He wrote again after the Anchor and none of her bubbles is out yet: the next Turn answers both."""
     newest = look.facts.get("overtaken")
     return "overtaken" if look.sent == 0 and newest is not None and tuple(newest) > tuple(look.anchor) else None
 

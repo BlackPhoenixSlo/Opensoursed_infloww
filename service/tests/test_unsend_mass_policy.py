@@ -58,6 +58,9 @@ class FakeClient:
         self.cancel_calls.append(int(queue_id))
         return {"success": True}
 
+    def mass_message_history(self, **_kw):
+        return {"items": [], "hasMore": False}
+
 
 class PagingClient(FakeClient):
     """A client whose `mass_message_history` serves a FLAT broadcast timeline sliced

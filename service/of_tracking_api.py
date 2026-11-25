@@ -1,52 +1,3 @@
-"""service/of_tracking_api.py — OnlyFans-NATIVE tracking links (/campaigns).
-
-Distinct from the internal /t/<slug> redirector (tracking_links_api.py). These
-are OnlyFans' OWN tracking links: OF mints a short profile URL per campaign and
-reports, natively, how many people CLICKED it (countTransitions) and how many of
-those actually SUBSCRIBED (countSubscribers) — real subscriber attribution the
-internal redirect can never have.
-
-OF is the entire source of truth (it stores the name too), so there is NO mirror
-table — we read/create/delete straight against /campaigns.
-
-The public share URL:
-    https://onlyfans.com/<username>/c<campaignCode>
-
-The /campaigns payload carries only `campaignCode`; OF's web app builds the link
-client-side. Its Copy-link (statistics-reach-campaigns.js, `copyLink`) is
-"https://onlyfans.com" + "/" + authUser.username + "/c" + campaignCode, and the
-profile route takes `/:userId/:campaignCode` with the code as `c<digits>`:
-exactly `_campaign_url` below, so `url_verified` is True. OF offers Copy-link
-only while `endDate` is null (a live link).
-
-Earnings per link (Infloww's Earnings, Fans who spent, Details):
-  OF's `GET /campaigns/{id}/claimers` (OFClient.campaign_claimers) lists the
-  fans each link brought in — ids, no money. Their spend comes from our own
-  `transactions` ledger (gross `amount_cents`, OF's own `net_cents`), in
-  TRACKED_STATUSES only (refunds / chargebacks / failed are not revenue).
-  Infloww attributes "each fan's spending to the last ... link clicked by the
-  fan"; OF gives no claim time, so each transaction goes to the fan's claiming
-  link created most recently before it whose window (createdAt to endDate) is
-  still open (`_spend`). A link with no createdAt gets no figure. Claimer lists
-  are cached per link for _CLAIMERS_TTL (refetched early when countSubscribers
-  moves; zero-subscriber links cost no OF call; a failure waits
-  _CLAIMERS_FAIL_TTL), and the whole computation is memoised per account for
-  _COMPUTED_TTL behind a per-account lock.
-
-Routes (owner-gated, under /admin/*):
-  GET    /admin/of-tracking-links?account_id=   list campaigns (+ url, stats),
-         every page, deleted ones included with is_deleted:true
-  POST   /admin/of-tracking-links               create {name[, promo_cost, source,
-         tags, list_id, list_name]}: the name goes to OF; the rest is kept
-         locally (link_metrics), as the Edit dialog's save
-  GET    /admin/of-tracking-links/earnings?account_id=   per-link earnings
-         (gross + net, fans who spent); available:false when OF is down
-  GET    /admin/of-tracking-links/{campaign_id}/fans?account_id=   the link's
-         fans with spend by kind (Subs, Posts, Messages, Streams, Tips)
-  DELETE /admin/of-tracking-links/{campaign_id}?account_id=   delete on OF
-         (the UI's "Deactivate": permanent, as Infloww's own; OF keeps the
-         deleted campaign and its counts behind with_deleted=1)
-"""
 from __future__ import annotations
 
 import asyncio
@@ -71,7 +22,6 @@ log = logging.getLogger("of-relay.of_tracking_api")
 
 router = APIRouter()
 
-# The share-URL format lives in exactly one place. See the module note.
 _URL_VERIFIED = True
 
 
@@ -89,7 +39,6 @@ def _serialize(c: dict, username: str | None) -> dict:
         "name": c.get("campaignName") or "",
         "url": _campaign_url(username, code),
         "url_verified": _URL_VERIFIED,
-        # OF's native attribution — the whole reason to prefer these.
         "clicks": safe_int(c.get("countTransitions")),
         "subscribers": safe_int(c.get("countSubscribers")),
         "created_at": c.get("createdAt"),
@@ -100,8 +49,6 @@ def _serialize(c: dict, username: str | None) -> dict:
 
 
 async def _client_and_username(account_id: str):
-    """(client, username) or raises 502 if the account has no live session.
-    username is best-effort — a missing me() must not break list/create."""
     client = await asyncio.to_thread(ax._make_client, account_id)
     username = None
     try:
@@ -114,13 +61,10 @@ async def _client_and_username(account_id: str):
 
 # /campaigns pages ({list, hasMore}); a bare read returns only the first page.
 _PAGE = 100
-_MAX_PAGES = 50  # 5,000 links: a guard against an offset OF ignores, not a real cap
+_MAX_PAGES = 50
 
 
 def _read_all(client) -> list[dict] | None:
-    """Every campaign, deleted ones included, paging offset while hasMore
-    holds. None when any page is not a list shape (OF unavailable): a silently
-    partial list would read as links that vanished."""
     out: list[dict] = []
     seen: set = set()
     offset = 0
@@ -159,11 +103,9 @@ async def list_of_tracking_links(account_id: str = Query(...)) -> dict[str, Any]
     if rows is None:
         return {"links": [], "username": username, "url_verified": _URL_VERIFIED,
                 "of_available": False}
-    # Deleted (Infloww's "Deactivated") rows ride along with is_deleted:true;
-    # the UI hides them unless "Show deactivated links" is on.
+    # Deleted rows ride along with is_deleted:true; the UI hides them unless asked.
     links = [_serialize(c, username) for c in rows]
-    # The Edit dialog's Promo cost / Source / Tag, kept locally (link_metrics).
-    from link_metrics import meta_fields, meta_for   # link_metrics imports this module
+    from link_metrics import meta_fields, meta_for
     meta, sources, tags = await meta_for(account_id, "campaign")
     for r in links:
         r.update(meta.get(safe_int(r["id"])) or meta_fields(None))
@@ -171,10 +113,8 @@ async def list_of_tracking_links(account_id: str = Query(...)) -> dict[str, Any]
             "of_available": True, "sources": sources, "tags": tags}
 
 
-# ── Earnings: claimers (OF) x transactions (ours) ─────────────────────
 
-# Infloww's Details columns, from our ledger kinds. A kind not listed lands in
-# "other" so Total still holds every cent the fan spent.
+# A kind not listed lands in "other" so Total still holds every cent the fan spent.
 _BUCKET = {
     "subscription": "subs", "rebill": "subs",
     "ppv_post": "posts",
@@ -185,24 +125,19 @@ _BUCKET = {
 _BUCKETS = ("subs", "posts", "messages", "streams", "tips", "other")
 
 _CLAIMERS_TTL = 2 * 3600.0
-_CLAIMERS_FAIL_TTL = 5 * 60.0   # an OF error (a 429) is not retried for this long
+_CLAIMERS_FAIL_TTL = 5 * 60.0
 _CLAIMERS_PAGE = 50
-_CLAIMERS_PAGE_SLEEP_S = 0.4    # between pages, as transaction_ingest paces OF
-_CLAIMERS_MAX_PAGES = 400       # 20,000 fans per link: a guard against an ignored offset
-# (account_id, campaign_id) -> (countSubscribers, fetched_at monotonic, fans)
+_CLAIMERS_PAGE_SLEEP_S = 0.4
+_CLAIMERS_MAX_PAGES = 400
 _CLAIMERS_CACHE: dict[tuple[str, int], tuple[int, float, list[dict]]] = {}
-# (account_id, campaign_id) -> monotonic time of the last OF failure
 _CLAIMERS_FAILED: dict[tuple[str, int], float] = {}
 
-# The whole computation per account, memoised briefly so opening Details (or a
-# refetch) reuses it instead of re-reading every OF page; one at a time per account.
 _COMPUTED_TTL = 60.0
 _COMPUTED: dict[str, tuple[float, "_Computed"]] = {}
-_LOCKS: dict[str, asyncio.Lock] = {}   # _compute's; a walk takes it only to merge what it read
-# One background OF walk per account at a time (prewarm here; link_metrics' refreshes, re-walks
-# and list adds). The Growth routes never take it: no paced page or sleep holds _LOCKS.
+_LOCKS: dict[str, asyncio.Lock] = {}
+# One background OF walk per account at a time; Growth routes never take it (no paced page or sleep holds _LOCKS).
 _WALK_LOCKS: dict[str, asyncio.Lock] = {}
-_CLAIMERS_WALKING: set[tuple[str, int]] = set()   # links a prewarm is re-reading now
+_CLAIMERS_WALKING: set[tuple[str, int]] = set()
 
 
 def walk_lock(account_id: str) -> asyncio.Lock:
@@ -210,10 +145,6 @@ def walk_lock(account_id: str) -> asyncio.Lock:
 
 
 def _parse_of_time(v: Any) -> datetime | None:
-    """OF's createdAt ("…T…+00:00") or endDate ("YYYY-MM-DD HH:MM:SS") as naive
-    UTC, the way transactions.occurred_at is stored. endDate carries no zone and
-    is UTC: live 2026-10-18, 24 links created and deleted seconds apart read
-    createdAt 03:01:27+00:00, endDate 03:01:31 on a UTC+2 creator."""
     if not v or not isinstance(v, str):
         return None
     try:
@@ -224,8 +155,6 @@ def _parse_of_time(v: Any) -> datetime | None:
 
 
 def _fetch_claimers(client, campaign_id: int) -> list[dict]:
-    """Every fan OF lists under the link, paging offset while hasMore holds.
-    Raises on an OF error (the caller marks that link unavailable)."""
     fans: list[dict] = []
     seen: set[int] = set()
     offset = 0
@@ -252,14 +181,11 @@ def _fetch_claimers(client, campaign_id: int) -> list[dict]:
 
 
 def _claim_due(key: tuple[str, int], subs: int) -> bool:
-    """The link's claimers may be read from OF now: it has subscribers and OF did not
-    fail on it within _CLAIMERS_FAIL_TTL."""
     failed_at = _CLAIMERS_FAILED.get(key)
     return subs > 0 and (failed_at is None or time.monotonic() - failed_at >= _CLAIMERS_FAIL_TTL)
 
 
 def _claim_record(key: tuple[str, int], subs: int, fans: list[dict] | None, now: float) -> None:
-    """Store one claimers read: its fans (cached at `subs`), or None: OF failed (backs off)."""
     if fans is None:
         _CLAIMERS_FAILED[key] = now
     else:
@@ -268,10 +194,6 @@ def _claim_record(key: tuple[str, int], subs: int, fans: list[dict] | None, now:
 
 
 def _claimers_cached(client, account_id: str, c: dict) -> list[dict]:
-    """The link's fans from cache, refetched past the TTL or as soon as OF's
-    countSubscribers moves. Zero subscribers: no fans, no OF call. A recent OF
-    failure re-raises without calling OF again. A link a prewarm is re-reading
-    right now: its cached fans (the walk's merge drops the memo after)."""
     cid = safe_int(c.get("id"))
     subs = safe_int(c.get("countSubscribers"))
     if subs <= 0:
@@ -292,14 +214,13 @@ def _claimers_cached(client, account_id: str, c: dict) -> list[dict]:
 
 
 class _Computed:
-    """One account's earnings: per link, per fan, per bucket."""
 
     def __init__(self, campaigns, fans_by, unknown, spend, ledger_since):
         self.campaigns: list[dict] = campaigns
-        self.fans_by: dict[int, list[dict]] = fans_by      # links OF answered for
-        self.unknown: set[int] = unknown                   # OF failed, or no createdAt
-        self.spend: dict[tuple[int, int], dict] = spend    # (campaign, fan) -> buckets
-        self.ledger_since: datetime | None = ledger_since  # the account's earliest ledger row
+        self.fans_by: dict[int, list[dict]] = fans_by
+        self.unknown: set[int] = unknown
+        self.spend: dict[tuple[int, int], dict] = spend
+        self.ledger_since: datetime | None = ledger_since
         self.claimed_by: dict[int, list[int]] = {}
         for cid, fans in fans_by.items():
             for f in fans:
@@ -312,9 +233,6 @@ def _blank() -> dict[str, Any]:
 
 
 def _gather(client, account_id: str, campaigns: list[dict]) -> tuple[dict[int, list[dict]], set[int]]:
-    """{campaign_id: fans} for every dated link OF answered for, and the ids with
-    no figure: OF failed on them, or they carry no createdAt (no window start,
-    so no honest spend; never all-time)."""
     fans_by: dict[int, list[dict]] = {}
     unknown: set[int] = set()
     for c in campaigns:
@@ -333,19 +251,6 @@ def _gather(client, account_id: str, campaigns: list[dict]) -> tuple[dict[int, l
 
 
 async def _spend(account_id: str, campaigns: list[dict], fans_by: dict[int, list[dict]]):
-    """((campaign, fan) -> buckets, the account's earliest ledger time).
-
-    Time-sliced attribution (Infloww's "last link clicked wins", OF giving no
-    claim time): each transaction of a fan goes to the fan's claiming link with
-    the latest createdAt at or before it whose window is still open (before its
-    endDate); past a deactivated link's end it falls back to the next-latest open
-    one. A fan claimed by one link counts inside that link's window only.
-
-    One read of the account's ledger since the earliest link, filtered to
-    claimers here (no IN list, so no bound-parameter ceiling). TRACKED_STATUSES
-    only: refunds, chargebacks and failed rows are not revenue. fan_id is the OF
-    user id on every ledger row, rebills included; a row without one can't be
-    tied to a link and is not counted."""
     window = {safe_int(c.get("id")): (_parse_of_time(c.get("createdAt")), _parse_of_time(c.get("endDate")))
               for c in campaigns}
     claims: dict[int, list[tuple[datetime, int, datetime | None]]] = {}
@@ -354,7 +259,7 @@ async def _spend(account_id: str, campaigns: list[dict], fans_by: dict[int, list
         for f in fans:
             claims.setdefault(f["fan_id"], []).append((start, cid, end))
     for lst in claims.values():
-        lst.sort(reverse=True)   # latest createdAt first, ties to the higher id
+        lst.sort(reverse=True)
 
     out: dict[tuple[int, int], dict] = {}
     async with get_session() as s:
@@ -391,14 +296,10 @@ async def _spend(account_id: str, campaigns: list[dict], fans_by: dict[int, list
 
 
 def _is_spender(row: dict | None) -> bool:
-    """Infloww's Spending CVR counts "fans who spent on content or gave tips":
-    any spend beyond the subscription itself."""
     return bool(row) and row["total_cents"] - row["subs_cents"] > 0
 
 
 async def _compute(account_id: str) -> _Computed | None:
-    """The account's earnings, memoised for _COMPUTED_TTL, one computation at a
-    time per account. None when OF is unavailable (not memoised)."""
     lock = _LOCKS.setdefault(account_id, asyncio.Lock())
     async with lock:
         hit = _COMPUTED.get(account_id)
@@ -417,10 +318,7 @@ async def _compute(account_id: str) -> _Computed | None:
 
 
 async def _sync_lists(account_id: str, client, campaigns: list[dict]) -> None:
-    """The Edit dialog's List: OF's add-to-list again for a link whose countSubscribers grew past the last add
-    (link_metrics.sync_lists; under _LOCKS from _compute, the walk lock from prewarm; paced, an OF error backs the
-    account off)."""
-    from link_metrics import sync_lists   # link_metrics imports this module
+    from link_metrics import sync_lists
     try:
         await sync_lists(account_id, "campaign", client,
                          {safe_int(c.get("id")): safe_int(c.get("countSubscribers")) for c in campaigns})
@@ -429,8 +327,6 @@ async def _sync_lists(account_id: str, client, campaigns: list[dict]) -> None:
 
 
 def _read_moved(client, account_id: str, moved: list[dict]) -> dict[tuple[str, int], tuple[int, list[dict] | None]]:
-    """prewarm's claimer re-reads, holding no lock: {key: (countSubscribers, fans)}, fans None where
-    OF failed. Skipped as `_claimers_cached` skips them: no createdAt, no subscribers, failed recently."""
     out: dict[tuple[str, int], tuple[int, list[dict] | None]] = {}
     for c in moved:
         cid, subs = safe_int(c.get("id")), safe_int(c.get("countSubscribers"))
@@ -446,17 +342,6 @@ def _read_moved(client, account_id: str, moved: list[dict]) -> dict[tuple[str, i
 
 
 async def prewarm(account_id: str, lists: set[int] | None) -> bool:
-    """link_prewarm.prewarm_all's tracking-link pass, one walk per account
-    (walk_lock): OF's /campaigns read, the claimers re-read only for a link
-    whose countSubscribers moved since its cached read, then the List adds.
-    `lists` (LINK_PREWARM_SCOPE list_sync): only the links with a List among
-    them are re-read; None: every moved link. A
-    link whose count held keeps its claimers, renewed (an expired _CLAIMERS_TTL
-    alone costs no OF call here); one never read since boot waits for its page.
-    A link OF failed on within _CLAIMERS_FAIL_TTL is not retried. No OF read or
-    pause holds _LOCKS: the Growth routes keep answering from the cache (a link
-    being re-read serves its cached fans), and the re-read fans are merged
-    under _LOCKS at the end. False when OF's /campaigns read failed."""
     async with walk_lock(account_id):
         client = await asyncio.to_thread(ax._make_client, account_id)
         campaigns = await asyncio.to_thread(_read_all, client)
@@ -504,20 +389,16 @@ async def of_tracking_links_earnings(account_id: str = Query(...)) -> dict[str, 
     if got is None:
         return {"available": False, "links": []}
     links = link_figures(got)
-    # Share links on these links take the read just made (link_share_api; never fails the read).
     await link_share_api.refresh_shares(account_id, "campaign", {
         r["id"]: {**_serialize(c, None), **r} for c, r in zip(_dated(got), links)})
     return {"available": True, "links": links}
 
 
 def _dated(got: _Computed) -> list[dict]:
-    """The campaigns that have an id, in OF's order: link_figures' rows."""
     return [c for c in got.campaigns if safe_int(c.get("id"))]
 
 
 def link_figures(got: _Computed) -> list[dict[str, Any]]:
-    """Per link (`_dated`'s order): earnings (gross and net), fans who spent,
-    fans counted; all None for a link with no figure."""
     links = []
     for c in _dated(got):
         cid = safe_int(c.get("id"))
@@ -574,12 +455,9 @@ async def of_tracking_link_fans(campaign_id: int, account_id: str = Query(...)) 
 class _MetaFields(BaseModel):
     """The Edit dialog's fields, kept locally (link_metrics): PUT /admin/link-meta
     and the create below take the same ones."""
-    # Dollars, as Infloww's "Promo cost ($)" (11 characters with its commas):
-    # up to 99,999,999.99. None or 0 is unset (its "—" rules).
     promo_cost: float | None = Field(None, ge=0, le=99_999_999.99)
     source: str | None = Field(None, max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=20)
-    # OF's custom fan list (a number; built-in lists take no adds) and its name for the List column.
     list_id: str | None = Field(None, pattern=r"^\d{1,20}$")
     list_name: str | None = Field(None, max_length=64)
 
@@ -599,8 +477,8 @@ async def create_of_tracking_link(body: _CreateBody = Body(...)) -> dict[str, An
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(422, "name is required")
-    from link_metrics import clean_meta, meta_fields, store_meta   # link_metrics imports this module
-    meta = clean_meta(body)          # a bad field is refused before OF creates anything
+    from link_metrics import clean_meta, meta_fields, store_meta
+    meta = clean_meta(body)
 
     try:
         client, username = await _client_and_username(body.account_id)
@@ -614,7 +492,6 @@ async def create_of_tracking_link(body: _CreateBody = Body(...)) -> dict[str, An
     if isinstance(res, list) and res:
         created = res[0]
     if not isinstance(created, dict):
-        # Fall back to re-reading the list to find it by name.
         try:
             rows = await asyncio.to_thread(_read_all, client) or []
             created = next((c for c in rows

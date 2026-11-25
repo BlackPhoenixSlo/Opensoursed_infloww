@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
+# Live tail of all relay + ui logs, color-coded by source. Use this as
+# your default "what's happening right now" view. Optional filters for
+# fast triage.
 #
+# Usage:
+#   ./scripts/tail.sh           # everything from all 3 logs, live
+#   ./scripts/tail.sh -e        # errors / warnings / tracebacks only
+#   ./scripts/tail.sh -s        # slow API calls only (>2s)
+#   ./scripts/tail.sh -i        # /img calls only (the bulk of the noise)
+#   ./scripts/tail.sh -n 200    # static snapshot, last N lines instead of live
 #
+# Stop with Ctrl-C.
 
 set -u
 

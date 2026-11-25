@@ -1,7 +1,3 @@
-"""Private artwork shared by an agency's Vault Pro categories.
-
-Part of a Creator's `vault_settings.standard_folders` switch (off by default): off, the read answers
-`enabled: false` with no icons and the writes 404."""
 from __future__ import annotations
 
 import base64
@@ -47,7 +43,6 @@ def _slot(category: str) -> str:
 
 
 def square_thumbnail(data: bytes, x: float, y: float) -> str:
-    """Decode the selected still and save only the square crop, without metadata."""
     try:
         with Image.open(io.BytesIO(data), formats=["JPEG", "PNG", "WEBP"]) as source:
             if source.width * source.height > MAX_PIXELS:

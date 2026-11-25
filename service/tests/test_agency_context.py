@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""Agency context and Employee identity on the Relay (docs/spec/phase-01).
-
-The seam is the Relay over HTTP with real session cookies: every principal logs
-in through `/auth/login` or `/chatter/login` via the shared two-Agency fixture,
-and probe routes registered on the app in THIS process only answer with
-`agency_context(account_id=<query>)` or with the outbound Employee resolver's
-verdict. No ContextVar is set by hand and no production route is added.
-
-The outbound probe pins chat-send "Sent by" attribution across the Mirror
-Employee get-or-create split: owner header pick, anonymous header fallback and
-the chatter's Mirror Employee all answer exactly as before.
-
-Run: ./venv/bin/python service/tests/test_agency_context.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -35,10 +21,6 @@ from db.models import (  # noqa: E402
     Account, Chatter, ChatterAccountAccess, ChatterUser, Employee, UserAccount,
 )
 
-# ASSUMPTION: the probe lives under /admin so the account isolation middleware
-# guards it like the production outbound routes; the anonymous case opts in
-# via ALLOW_ANONYMOUS_ADMIN. Overturned if the spec names a different prefix
-# or an anonymous path that needs no env flag.
 OUTBOUND_PROBE = "/admin/_probe/outbound-employee"
 
 
@@ -48,16 +30,9 @@ async def _outbound_probe(request: Request, account_id: str | None = None) -> di
 
 server.app.add_api_route(OUTBOUND_PROBE, _outbound_probe, methods=["GET"])
 
-# ASSUMPTION: the agency_context probe sits beside the outbound probe under
-# /admin for the same reason (the isolation middleware guards it as it will
-# guard later Phases' endpoints). Overturned with the outbound probe's prefix.
 AGENCY_PROBE = "/admin/_probe/agency-context"
 
 
-# The Creator arrives as `?creator=`, a parameter the isolation middleware does
-# not read — the stand-in for a Creator in a body or path, where only
-# agency_context's own check can refuse it. Its refusals are the handler's
-# JSON `{"detail": ...}`, never the middleware's plain text.
 async def _agency_probe(creator: str | None = None) -> dict:
     return dataclasses.asdict(await employees.agency_context(account_id=creator))
 
@@ -67,9 +42,6 @@ server.app.add_api_route(AGENCY_PROBE, _agency_probe, methods=["GET"])
 IDS = fx.seed_two_agencies()
 
 
-# ASSUMPTION: roster Employees are this test file's own seed, not the shared
-# fixture's — no other Phase needed them yet. Overturned once a second test
-# file needs roster Employees per Agency (then move them into _agency_fixtures).
 async def _seed_roster_employee(owner_id: str, name: str) -> int:
     async with get_session() as s:
         row = Employee(display_name=name, is_active=True,
@@ -83,14 +55,8 @@ ROSTER_A = asyncio.run(_seed_roster_employee(IDS["agency_a_owner"], "roster_a"))
 ROSTER_B = asyncio.run(_seed_roster_employee(IDS["agency_b_owner"], "roster_b"))
 
 
-# ASSUMPTION: the chatter cases' extra rows (a second Creator in Agency A, a
-# Creator cross-granted to both Agencies, two Chatter Access allowlists and a
-# chatter whose links get removed) are this test file's own seed, like the
-# roster Employees. Overturned once a second test file needs them (then move
-# them into _agency_fixtures).
-CREATOR_A2 = "1000003"         # a second Creator held by Agency A
-CREATOR_SHARED = "1000004"     # held by both Agencies (the cross-grant edge)
-# Owner ids are random hex, so which Agency sorts first is read at seed time.
+CREATOR_A2 = "1000003"
+CREATOR_SHARED = "1000004"
 FIRST_AGENCY, LATER_AGENCY = sorted(("agency_a_owner", "agency_b_owner"), key=IDS.get)
 _OWN_CREATOR = {"agency_a_owner": "creator_a", "agency_b_owner": "creator_b"}
 
@@ -110,11 +76,8 @@ async def _seed_chatter_cases() -> str:
         for owner in ("agency_a_owner", "agency_b_owner"):
             s.add(UserAccount(user_id=IDS[owner], account_id=CREATOR_SHARED))
         s.add(ChatterUser(chatter_id=orphan_id, user_id=IDS["agency_a_owner"], created_at=now))
-        # chatter_a may work only Creator A in Agency A, so Creator A2 is out.
         s.add(ChatterAccountAccess(chatter_id=IDS["chatter_a"], user_id=IDS["agency_a_owner"],
                                    account_id=IDS["creator_a"]))
-        # chatter_ab is allowlisted out of the shared Creator under the
-        # alphabetically first Agency only; the later Agency grants it.
         s.add(ChatterAccountAccess(chatter_id=IDS["chatter_ab"], user_id=IDS[FIRST_AGENCY],
                                    account_id=IDS[_OWN_CREATOR[FIRST_AGENCY]]))
     return orphan_id
@@ -123,7 +86,6 @@ async def _seed_chatter_cases() -> str:
 ORPHAN = asyncio.run(_seed_chatter_cases())
 
 
-# The query parameter each probe reads its Creator from.
 _CREATOR_PARAM = {OUTBOUND_PROBE: "account_id", AGENCY_PROBE: "creator"}
 
 
@@ -157,7 +119,6 @@ async def _mirror_rows(chatter_id: str) -> list[tuple[int, str]]:
         return [tuple(r) for r in res.all()]
 
 
-# ── The fixture ──────────────────────────────────────────────────────
 
 def case_seeded_creators_pass_the_isolation_check_only_for_their_own_owner():
     owner_a = fx.login_owner("agency_a_owner")
@@ -178,7 +139,6 @@ def case_fixture_ids_are_neutral_and_seeding_twice_is_the_same_mapping():
     fx.login_owner("agency_master")
 
 
-# ── Owner header pick ("Sent by") ──────────────────────────────────
 
 def case_owner_header_naming_an_employee_of_its_own_agency_is_returned():
     r = _probe(fx.login_owner("agency_a_owner"), OUTBOUND_PROBE, IDS["creator_a"], ROSTER_A)
@@ -187,8 +147,6 @@ def case_owner_header_naming_an_employee_of_its_own_agency_is_returned():
 
 
 def case_owner_header_naming_an_employee_of_another_agency_falls_back_to_the_owner():
-    # The owner acts as self: a header naming another Agency's row is a spoof,
-    # so the write is stamped with the owner's own Owner row, never ROSTER_B.
     owner_a = fx.login_owner("agency_a_owner")
     own = _probe(owner_a, OUTBOUND_PROBE, IDS["creator_a"]).json()["employee_id"]
     assert isinstance(own, int) and own != ROSTER_B, own
@@ -197,11 +155,8 @@ def case_owner_header_naming_an_employee_of_another_agency_falls_back_to_the_own
     assert r.json() == {"employee_id": own}, r.json()
 
 
-# ── Internal cron fallback, unchanged ────────────────────────────────
 
 def case_anonymous_digit_header_is_returned_as_is():
-    # The isolation middleware 401s an anonymous /admin caller unless the
-    # deployment sets ALLOW_ANONYMOUS_ADMIN; set it for this call only.
     os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
     try:
         r = _probe(_harness.make_client(), OUTBOUND_PROBE, None, 777)
@@ -211,7 +166,6 @@ def case_anonymous_digit_header_is_returned_as_is():
     assert r.json() == {"employee_id": 777}, r.json()
 
 
-# ── Chatter Mirror Employee ──────────────────────────────────────────
 
 def case_chatter_gets_its_mirror_employee_and_a_second_call_reuses_it():
     chatter_a = fx.login_chatter("chatter_a")
@@ -254,7 +208,6 @@ def case_chatter_resolver_calls_the_split_get_or_create_with_the_owning_agency()
 
 
 
-# ── agency_context: owner, Master, impersonation, anonymous ──────────
 
 def case_owner_is_the_agency_with_no_employee():
     r = _probe(fx.login_owner("agency_a_owner"), AGENCY_PROBE)
@@ -296,7 +249,6 @@ def case_master_keeps_its_own_agency_with_the_master_flag():
     r = _probe(master, AGENCY_PROBE)
     assert r.status_code == 200, f"{r.status_code} {r.text}"
     assert r.json() == _owner_context("agency_master", is_master=True), r.json()
-    # Naming another Agency's Creator does not move the Master into it.
     r = _probe(master, AGENCY_PROBE, IDS["creator_b"])
     assert r.status_code == 200, f"{r.status_code} {r.text}"
     assert r.json() == _owner_context("agency_master", is_master=True), r.json()
@@ -315,8 +267,6 @@ def case_master_impersonating_owner_b_sees_agency_b():
 
 
 def case_anonymous_is_401_even_with_anonymous_admin_allowed():
-    # The flag lets the isolation middleware pass an anonymous caller through,
-    # so the 401 below is agency_context's own refusal.
     anon = _harness.make_client()
     os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
     try:
@@ -329,7 +279,6 @@ def case_anonymous_is_401_even_with_anonymous_admin_allowed():
             f"{resp.status_code} {resp.text}"
 
 
-# ── agency_context: chatters ─────────────────────────────────────────
 
 def case_chatter_a_gets_agency_a_and_its_own_mirror_employee_reused():
     chatter_a = fx.login_chatter("chatter_a")
@@ -365,8 +314,6 @@ def case_chatter_a_naming_creator_b_is_403():
 
 
 def case_chatter_allowlisted_away_from_a_creator_of_its_own_agency_is_403():
-    # Owner A holds Creator A2, so the refusal is chatter_a's allowlist and
-    # not its Agency links.
     r = _probe(fx.login_owner("agency_a_owner"), AGENCY_PROBE, CREATOR_A2)
     assert r.status_code == 200, f"owner A, Creator A2: {r.status_code} {r.text}"
     r = _probe(fx.login_chatter("chatter_a"), AGENCY_PROBE, CREATOR_A2)
@@ -399,8 +346,6 @@ def case_cross_granted_creator_resolves_past_the_agency_that_allowlists_it_out()
     assert r.json() == _chatter_context(LATER_AGENCY, emp), r.json()
     assert asyncio.run(_employee_row(emp)) == (IDS[LATER_AGENCY], IDS["chatter_ab"])
 
-    # The chat-send resolver keeps its unfiltered tie-break: alphabetically
-    # first Agency, allowlist or not.
     sent = _probe(chatter_ab, OUTBOUND_PROBE, CREATOR_SHARED)
     assert sent.status_code == 200, f"{sent.status_code} {sent.text}"
     sent_emp = sent.json()["employee_id"]
@@ -413,7 +358,7 @@ def case_chatter_with_every_agency_link_removed_is_403():
     r = _probe(orphan, AGENCY_PROBE)
     assert r.status_code == 200, f"while linked: {r.status_code} {r.text}"
 
-    async def _unlink():  # as the product's unlink: `assignment_changed` on commit
+    async def _unlink():
         async with get_session() as s:
             await s.execute(delete(ChatterUser).where(ChatterUser.chatter_id == ORPHAN))
             events.on_commit(s, "assignment_changed", agency=IDS["agency_a_owner"])
@@ -450,15 +395,13 @@ def case_chatter_agency_context_and_outbound_resolver_name_the_same_employee():
 
 
 def case_a_duplicate_mirror_row_resolves_to_the_lowest_id_not_a_500():
-    """A box without uq_employees_chatter_owner can race in a second Mirror row:
-    the shared-session read (role hook) and get-or-create both take the lowest id."""
     import types
     import agency_context as agency_ctx
 
     from sqlalchemy import text
 
     async def run():
-        async with get_session() as s:   # as on a box that came up without it
+        async with get_session() as s:
             await s.execute(text("DROP INDEX IF EXISTS uq_employees_chatter_owner"))
         ids = []
         for _ in range(2):

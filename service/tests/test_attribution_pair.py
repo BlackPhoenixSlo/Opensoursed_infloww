@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-"""
-attribution_pair — table tests over attribution.py's pure half. No DB, no OF.
-
-  case_pair_table:           pair_placeholders: exact twin; two candidates, nearest wins;
-                             `<br />` echo == stored `\\n`; 6 h pairs, 6 h + 1 s refused;
-                             no twin; two stubs one real (no double adopt); media-only
-                             key refused; unusable clock refused; a row another run
-                             holds is left, and does not fence a later pair.
-  case_pair_order_independent: the same rows in any order give the same pairs.
-  case_adopt_windows_table:  adopt_windows: none, one, overlap merges, touching merges,
-                             apart stays two, unsorted input, a burst is one range.
-  case_hard_yield_table:     hard_yield per sender kind (human 1:1, mass, automation,
-                             unknown, sentinel lookup failed).
-  case_manual_yield_table:   manual_yield_s: absent / bad JSON / non-numeric -> 60,
-                             0 disables, positive passes through, NEGATIVE -> 0 (pinned:
-                             clamps, so it disables; it is not "bad -> default").
-
-Run: ./venv/bin/python service/tests/test_attribution_pair.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness
 
 import itertools  # noqa: E402
 from dataclasses import dataclass  # noqa: E402

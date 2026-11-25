@@ -1,36 +1,3 @@
-"""service/account_health.py — per-account OF session health.
-
-When OF rejects an account's stored session with "Wrong user." (the creator
-got logged out / the login was re-linked elsewhere) or with code 101 otpState
-(the login now needs a 2FA code), EVERY authenticated call for that account
-fails until a human re-captures the session (for a 2FA code: Browserbase login,
-which takes the code). Letting the
-automations keep firing against a dead session burns run slots, OF-proxy
-round-trips and LLM spend for zero delivery — so the account is paused
-wholesale instead:
-
-  • `mark_session_dead()` flags the account. Called from the executor's
-    run_once failure path (an automation hit the signature), from server.py's
-    `_proxy`, the Creators strip's roster-counts and `_persist_unhandled_errors`
-    (a UI-originated OF call hit it)
-    and from the WS pump (its /users/me before a reconnect hit it; the pump
-    then parks until the flag clears).
-  • `automation_executor.run_once` SKIPS every run for a flagged account —
-    pending jobs stay parked and resume untouched once the flag clears.
-  • The executor re-probes each flagged account with a fresh-from-disk
-    `client.me()` on a WIDENING schedule (see `probe_interval_s`); the first
-    success clears the flag.
-  • A session re-capture (`POST /admin/session/bootstrap`) clears the flag
-    immediately — no waiting for the next probe.
-  • Newly flagging an account files one `session_dead` agency notification
-    per owner of it (notifications_api.notify_session_dead).
-
-The same row carries the owner's Creator deactivate switch (`deactivated_at`,
-see "Deactivation" below), which pauses the same loops on purpose.
-
-Kept in its own tiny module so BOTH server.py and automation_executor.py can
-import it without a circular import (same reasoning as automation_registry.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -48,30 +15,10 @@ from db.models import AccountHealth
 log = logging.getLogger("of-relay.account-health")
 
 
+# Strict: only wrong_user (301), otp_required (101) and no_session flag an account; transient 429/5xx must never pause a healthy one.
+# 101 = OF re-inits auth and never retries; 105 is a per-request step-up, not session death.
 def is_session_dead_error(exc: BaseException) -> str | None:
-    """Classify `exc`: a short reason string when it definitely means "this
-    account has no working session", else None.
-
-    Deliberately STRICT — only three signatures flag an account:
-      • OF's unlink rejection: HTTP 400 +
-        `{"error":{"code":301,"message":"Wrong user."}}` → "wrong_user"
-      • OF's 2FA demand: HTTP 400 + `{"error":{"code":101,"message":…,
-        "payload":{"otpState":{…},"strong":…}}}` on an authenticated call
-        → "otp_required". OF's web bundle (the fccdn app.js, 2026-10-16) answers
-        that code by re-initialising auth for the whole session
-        (`101===d … commit("init/setInitAuth",!0)`) and opening its 2FA modal;
-        it does not retry the request, so nothing but a sign-in with the code
-        revives the session. Not 105: the same bundle answers `400===i&&105===d`
-        by retrying THAT one request with a code (a per-request step-up).
-        docs/direct-login/DIRECT_LOGIN_SPEC.md §4.5 lists both 105 and 101 as
-        "2FA required", but for the LOGIN response, where either means "send
-        the code"; this classifier sees the session's later calls.
-      • `OFClient.from_account`'s FileNotFoundError ("has no captured
-        session") — the session dir is missing entirely, e.g. the account
-        was deleted or never captured on this host → "no_session"
-    Transient 429s / 5xx / signing hiccups must never pause a healthy account;
-    they already have retry paths of their own."""
-    from of_client import OFAPIError  # lazy — keep this module import-light
+    from of_client import OFAPIError
 
     if isinstance(exc, OFAPIError) and "Wrong user" in str(exc):
         return "wrong_user"
@@ -83,9 +30,6 @@ def is_session_dead_error(exc: BaseException) -> str | None:
 
 
 def _wants_otp(exc: BaseException) -> bool:
-    """True when OF answered 400 with code 101 and `payload.otpState`. Read
-    from the raw response when the error carries one, else from the message
-    (OFAPIError's "<status> for <url>\n<body[:500]>", or "<status> <body>")."""
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None) if response is not None else None
     if status is None:
@@ -96,7 +40,7 @@ def _wants_otp(exc: BaseException) -> bool:
     body = None
     try:
         body = exc.response.json() if getattr(exc, "response", None) is not None else None
-    except Exception:  # not JSON (HTML, empty): fall back to the message
+    except Exception:
         body = None
     if body is None:
         message = str(exc)
@@ -111,7 +55,6 @@ def _wants_otp(exc: BaseException) -> bool:
 
 
 async def is_session_dead(account_id: str) -> bool:
-    """True while the account's session is flagged dead (automations pause)."""
     async with get_session() as s:
         dead_at = (await s.execute(
             select(AccountHealth.session_dead_at)
@@ -121,23 +64,11 @@ async def is_session_dead(account_id: str) -> bool:
 
 
 async def mark_session_dead(account_id: str, reason: str) -> bool:
-    """Flag the account's session as dead. Returns True only when this call
-    NEWLY flagged it (was healthy before) so callers can log the transition
-    once instead of on every subsequent failure.
-
-    The healthy -> dead transition is claimed atomically: callers that hit OF's
-    rejection at the same moment (automation kinds, an HTTP route, the WS pump)
-    would otherwise all read "healthy" and each notify the owner. The first
-    statement is a write, so the transaction holds SQLite's write lock before it
-    reads; the conditional UPDATE then matches for exactly one caller.
-
-    The claim and the owner's notification run shielded from the caller's
-    cancellation (a WS pump rerouted by a proxy switch, a request whose client
-    left): every later caller's claim matches nothing, so a winner cancelled
-    between its commit and the notification would leave the episode untold."""
+    # Shielded: later callers' claims match nothing, so a cancelled winner would leave the episode untold.
     return await asyncio.shield(_claim_session_dead(account_id, reason))
 
 
+# First statement is a write so the txn holds SQLite's write lock; the conditional UPDATE then matches exactly one caller.
 async def _claim_session_dead(account_id: str, reason: str) -> bool:
     now = datetime.utcnow()
     async with get_session() as s:
@@ -152,14 +83,12 @@ async def _claim_session_dead(account_id: str, reason: str) -> bool:
         if newly:
             _announce(s, "session_dead", account_id, dead=True, reason=reason)
     if newly:
-        from notifications_api import notify_session_dead  # lazy — keep this module import-light
+        from notifications_api import notify_session_dead
         await notify_session_dead(account_id, reason, now)
     return newly
 
 
 async def clear_session_dead(account_id: str) -> bool:
-    """Unflag the account (session verified working again). Returns True if
-    it was flagged."""
     async with get_session() as s:
         row = (await s.execute(
             select(AccountHealth).where(AccountHealth.account_id == account_id)
@@ -174,31 +103,16 @@ async def clear_session_dead(account_id: str) -> bool:
 
 
 def _announce(s, event_type: str, account_id: str, **fields: object) -> None:
-    """An account-state SSE event once `s` commits (events.STATE_TYPES), so an
-    open tab badges or un-badges the account without its next poll."""
-    import events  # lazy — keep this module import-light
+    import events
     events.on_commit(s, event_type, account_id=account_id, **fields)
 
 
-# ── Deactivation (Creators › ⋮ › Deactivate) ────────────────────────────
-# The owner's switch, not a health verdict, but it gates the same loops the
-# dead-session flag does and lives on the same row. Every background loop that
-# walks the roster (WS pumps, ledger polls, the chat-link seed, the automation
-# executor, the link-metrics prewarm, the daily OF stats, the referrals read)
-# skips a deactivated Creator, and OFClient refuses any write for it (the
-# mirror below); every LISTING still returns it, stamped
-# `is_active=False`, so analytics, grants and history keep their rows.
 
-# The switch's in-process mirror, for the one gate that cannot await the
-# database: OFClient._http_call (it runs in worker threads) refuses every OF
-# write for a Creator in it, whichever route or job asked. One process serves
-# everything (scripts/start.sh): load_write_gate() fills it once at startup, and
-# deactivate/activate are its only other writers.
+# In-process mirror: OFClient._http_call runs in worker threads and cannot await the DB.
 _writes_off: frozenset[str] = frozenset()
 
 
 def refuses_writes(account_id: str) -> bool:
-    """True while the Creator is deactivated, as of the mirror above."""
     return str(account_id) in _writes_off
 
 
@@ -207,13 +121,11 @@ def write_gate_snapshot() -> frozenset[str]:
 
 
 async def load_write_gate() -> None:
-    """Fill the mirror from the rows, once, at startup."""
     global _writes_off
     _writes_off = frozenset(await deactivated_ids())
 
 
 async def deactivated_since(account_id: str) -> datetime | None:
-    """When the owner deactivated the Creator; None while it is active."""
     async with get_session() as s:
         return (await s.execute(
             select(AccountHealth.deactivated_at)
@@ -222,12 +134,10 @@ async def deactivated_since(account_id: str) -> datetime | None:
 
 
 async def is_deactivated(account_id: str) -> bool:
-    """True while the owner has the Creator deactivated."""
     return await deactivated_since(account_id) is not None
 
 
 async def deactivated_ids() -> set[str]:
-    """Every deactivated Creator — the set the roster loops subtract."""
     async with get_session() as s:
         rows = (await s.execute(
             select(AccountHealth.account_id)
@@ -237,7 +147,6 @@ async def deactivated_ids() -> set[str]:
 
 
 async def deactivate(account_id: str) -> bool:
-    """Stamp the Creator deactivated. True only when it was active before."""
     async with get_session() as s:
         row = (await s.execute(
             select(AccountHealth).where(AccountHealth.account_id == account_id)
@@ -255,8 +164,6 @@ async def deactivate(account_id: str) -> bool:
 
 
 async def activate(account_id: str) -> datetime | None:
-    """Clear the deactivation. Returns when it had been deactivated (the gap
-    the caller may need to backfill), None when it was already active."""
     async with get_session() as s:
         row = (await s.execute(
             select(AccountHealth).where(AccountHealth.account_id == account_id)
@@ -273,29 +180,16 @@ async def activate(account_id: str) -> datetime | None:
 
 @dataclass(frozen=True, slots=True)
 class DeadSession:
-    """Since when an account's automations have been paused, and why.
 
-    A typed row rather than a loose dict because BOTH account-listing endpoints
-    copy these two fields onto their own shape: a mistyped string key there would
-    silently render a paused account as healthy, which is the exact failure this
-    whole surface exists to prevent."""
-
-    at: str | None = None       # ISO-Z instant it was flagged
-    reason: str | None = None   # "wrong_user" | "otp_required" | "no_session"
+    at: str | None = None
+    reason: str | None = None
 
 
-# Null object for "this account is fine" (same idiom as _daylog.NO_DAY), so a
-# listing endpoint stamps its two fields unconditionally instead of branching on
-# presence at every call site.
+# Typed row, not dict: a mistyped key would render a paused account as healthy.
 NO_DEAD_SESSION = DeadSession()
 
 
 async def dead_session_map() -> dict[str, DeadSession]:
-    """account_id → DeadSession, for every FLAGGED account (healthy accounts are
-    absent — callers should fall back to NO_DEAD_SESSION). The account listings
-    stamp this onto their rows so the UI can badge the account "unlinked", and
-    say which repair it needs, instead of it merely LOOKING idle next to accounts
-    that are genuinely working."""
     async with get_session() as s:
         rows = (await s.execute(
             select(
@@ -311,44 +205,22 @@ async def dead_session_map() -> dict[str, DeadSession]:
     }
 
 
-# Recovery-probe backoff: (this account has been dead LESS than, probe every N
-# base intervals). Expressed as MULTIPLES of the executor's base interval so
-# there stays exactly one knob, and closed with an unbounded final rung so the
-# lookup is total — every age hits a row.
-#
-# A session that died a minute ago is worth re-checking often: the creator may
-# be re-linking right now. One that died three weeks ago is not — probing it
-# every 10 minutes forever is ~4k pointless authenticated OF calls a month per
-# account, every one of them failing.
-#
-# This IS a real trade: the probe's whole job is catching a session that starts
-# working again on its own, and past a week this finds it up to 6h late instead
-# of 10min. That is affordable only because it is not the path a human uses — a
-# re-capture (`POST /admin/session/bootstrap`) calls clear_session_dead directly
-# and resumes automations on the next tick, whatever this ladder says.
+# Widening ladder: probing weeks-dead sessions every base interval is pointless; a re-capture clears the flag directly.
 _PROBE_BACKOFF: tuple[tuple[timedelta, int], ...] = (
-    (timedelta(hours=1), 1),   # first hour   — every base interval (10 min)
-    (timedelta(days=1), 3),    # first day    — every 30 min
-    (timedelta(days=7), 6),    # first week   — hourly
-    (timedelta.max, 36),       # older        — every 6 hours
+    (timedelta(hours=1), 1),
+    (timedelta(days=1), 3),
+    (timedelta(days=7), 6),
+    (timedelta.max, 36),
 )
 
 
 def probe_interval_s(base_interval_s: int, dead_for: timedelta) -> int:
-    """Seconds to wait between recovery probes for an account flagged
-    `dead_for` ago. Widens with age and never drops below `base_interval_s`
-    (a negative `dead_for` from clock skew lands in the first rung)."""
     return base_interval_s * next(
         mult for horizon, mult in _PROBE_BACKOFF if dead_for < horizon
     )
 
 
 async def due_probe_ids(base_interval_s: int) -> list[str]:
-    """Flagged accounts due a recovery probe — never probed, or last probed
-    longer ago than their backoff interval. Filtered in Python rather than SQL
-    because the per-row interval depends on `session_dead_at` (a CASE over
-    julianday() arithmetic would be far less readable), and the flagged set is
-    inherently small — it is bounded by the number of broken accounts."""
     now = datetime.utcnow()
     async with get_session() as s:
         rows = (await s.execute(
@@ -373,7 +245,6 @@ async def due_probe_ids(base_interval_s: int) -> list[str]:
 
 
 async def stamp_probe(account_id: str) -> None:
-    """Record that a recovery probe ran now (rate-limits the next one)."""
     async with get_session() as s:
         await s.execute(
             update(AccountHealth)

@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""
-"Auto-accept OnlyFans consent" on the WIRE BODY (of_consent + of_sends).
-
-OF answers a media send from a consent-flagged Creator without consent
-`400 Consent not accepted`; OF's web client adds `isConsentAccepted: true` (top
-level, beside `mediaFiles`) only after its "Yes?" and only when the send has media.
-The account switch (`of_consent_accepts`, newest row wins) is that "Yes" given once.
-
-  case_on_media_adds_the_field_on_every_media_send: switch on + media → the field
-      is `True` on the DM, mass, scheduled mass, scheduled DM, queued-mass edit,
-      post, post edits and story bodies.
-  case_off_never_adds_it: no row, or the newest row off → no field anywhere.
-  case_on_text_only_never_adds_it: switch on, no media (a text DM / mass / post,
-      a GIF) → no field.
-  case_other_account_and_no_account_stay_off: one account's switch never reaches
-      another's sends, nor a client without an account id.
-  case_a_failed_read_is_off: the lookup raising → no field.
-
-Run: ./venv/bin/python service/tests/test_of_consent.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -48,7 +28,6 @@ asyncio.run(_seed())
 
 
 def _client(account_id: str | None):
-    """An OFClient that skips __init__ and captures each body instead of the network."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     if account_id is not None:
         c.account_id = account_id
@@ -60,7 +39,6 @@ def _client(account_id: str | None):
 
 
 def _media_sends(c) -> list[tuple[str, dict]]:
-    """Every of_sends media send once; answers [(kind, body)]."""
     m = [111, 222]
     claim = [{"processId": "p1", "host": "h", "name": "n", "extra": "e"}]
     c.send_message(5, "hi", media_files=m, price=10, auto_tag=False)

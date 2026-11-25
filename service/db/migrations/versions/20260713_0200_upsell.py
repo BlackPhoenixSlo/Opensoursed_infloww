@@ -1,28 +1,3 @@
-"""upsell — qualification gate + hot-window ladder (offer engine)
-
-Revision ID: 0044_upsell
-Revises: 0043_rhythm
-Create Date: 2026-07-13
-
-Additive:
-  • ladder_state(account_id, fan_id)  — selling state machine per fan.
-      NOTE offers_paused_until lives HERE, not on fans.automation_paused_until:
-      that column is shared by every automation, so routing a decline into it
-      would blank the fan out of welcome/followup/mass as well — a 3-day
-      cross-automation blackout with no UI. A poverty plea stops selling, not talking.
-  • ladder_quote(...)  — one row per price we QUOTED (the conversion log + the
-      price experiment's instrument). pre_clamp_cents/clamped_by exist so quotes
-      truncated at the library ceiling can be EXCLUDED from the price analysis
-      instead of silently biasing it.
-  • pending_offer(account_id, fan_id) — offers the gate blocked, parked until the
-      fan's next qualifying inbound (a gate that can only delete sends cannot beat
-      its own revenue metric).
-
-Ships inert: with selling.qualification_gate_enabled false, none of these tables
-is written and ppv_send/ai_chatter behave byte-identically to today.
-
-Additive + idempotent (inspector-guarded).
-"""
 from __future__ import annotations
 
 from typing import Sequence

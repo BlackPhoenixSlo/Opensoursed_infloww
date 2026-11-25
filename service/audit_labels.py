@@ -1,16 +1,9 @@
-"""service/audit_labels.py — the audit log's names for people (roadmap W6
-6.16): `action_label` maps an `actions.action` ("METHOD path", as
-employees.audit_action writes it, or a named row such as `clock.in`) to a
-short label; GET /admin/audit returns it as each row's `label`.
-"""
 from __future__ import annotations
 
 import re
 
 
-# (method, path, label): `{x}` is one path segment. First match wins, so a
-# specific path goes above the general one. A row the middleware did not
-# write (`clock.in`, ...) has no method.
+# First match wins: put a specific path above the general one.
 _ACTION_LABELS: tuple[tuple[str, str, str], ...] = (
     ("PUT", "/admin/settings/roles", "Changed role settings"),
     ("PUT", "/admin/system/switches/{x}", "Changed a runtime switch"),
@@ -77,6 +70,4 @@ _LABEL_PATTERNS = tuple((_pattern(m, p), label) for m, p, label in _ACTION_LABEL
 
 
 def action_label(action: str) -> str | None:
-    """The audit log's name for an `actions.action` ("METHOD path" or a
-    named row such as `clock.in`), or None when the table has none."""
     return next((label for pat, label in _LABEL_PATTERNS if pat.match(action)), None)

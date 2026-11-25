@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""GET /admin/fans/{aid}/{fid}/insights — Fan insights' computed figures.
-
-Contract under test:
-  • Spending power ranks the fan's org-wide 30-day spend against every org
-    spender; "No Spending History" with no spend ever, "Insufficient Data" under
-    20 spenders, "Bottom" with nothing this month. Accounts outside the
-    principal's org never count, and a chargeback is not spend.
-  • Chargeback risk = reversed cents / paid cents, org lifetime; High >66,
-    Medium >33, else Low; None (the drawer's "—") with nothing paid.
-  • A chatter scoped to some of the org's accounts sees only those accounts'
-    totals, and gets a 403 on an account outside the set.
-  • ppv_recent reads the last 30 priced messages this creator sent: Buy rate
-    = unlocked / sent, Highest and Lowest price; unsent and inbound rows drop.
-  • The fan row's local_timezone resolves the stored city / country, None if
-    ambiguous.
-  • The fan PATCH validates and stores Salary, Salary frequency, Last pay date.
-
-Run: ./venv/bin/python service/tests/test_fan_insights_api.py  (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
@@ -31,12 +12,11 @@ from db.models import Account, Fan, Message, Transaction  # noqa: E402
 from fan_insights_api import chargeback_label, fan_insights, spending_power_label  # noqa: E402
 from fans import FanUpdateBody, get_fan, update_fan  # noqa: E402
 
-_A, _B, _OTHER = "fi_a", "fi_b", "fi_other"   # _A and _B are one org; _OTHER is not
+_A, _B, _OTHER = "fi_a", "fi_b", "fi_other"
 _FAN = 70001
 
 
 def _as_org(fn):
-    """Run `fn` signed in as the owner of _A and _B."""
     async def wrapped():
         tok = auth._request_user.set(auth.AuthedUser("u-fi", "fi_owner", frozenset({_A, _B})))
         try:
@@ -93,13 +73,10 @@ async def case_no_history():
 
 
 async def case_spending_power_ranks_org_wide():
-    # 24 other org spenders at $10..$33 across both org accounts; our fan spends
-    # $30 on _A plus $20 on _B = $50, so he is rank 1 of 25 (4%): Top 5%.
     for i in range(24):
         await _tx(_A if i % 2 else _B, 80000 + i, 1000 + 100 * i)
     await _tx(_A, _FAN, 3000)
     await _tx(_B, _FAN, 2000)
-    # Ignored: another org's whale, a chargeback, and spend older than 30 days.
     await _tx(_OTHER, 80100, 999_900)
     await _tx(_A, 80101, 999_900, status="chargedback")
     await _tx(_A, 80102, 999_900, days_ago=45)
@@ -108,27 +85,20 @@ async def case_spending_power_ranks_org_wide():
 
 
 async def case_bottom_when_nothing_this_month():
-    # 80102 spent only 45 days ago: history, but nothing in the window.
     sp = (await _as_org(lambda: fan_insights(_A, 80102))())["spending_power"]
     assert sp["label"] == "Bottom" and sp["spend_30d_cents"] == 0, sp
 
 
 async def case_chargeback_risk_org_lifetime():
-    # _FAN so far: $50 paid. Add a $40 chargeback on _B and a $10 refund on _A,
-    # plus a failed row and another org's chargeback (both ignored).
     await _tx(_B, _FAN, 4000, status="chargedback", days_ago=90)
     await _tx(_A, _FAN, 1000, status="refunded")
     await _tx(_A, _FAN, 7777, status="failed")
     await _tx(_OTHER, _FAN, 50_000, status="chargedback")
     cb = (await _as_org(lambda: fan_insights(_A, _FAN))())["chargeback_risk"]
-    # 5000 reversed of 10000 paid = 50% → Medium.
     assert cb == {"label": "Medium", "pct": 50.0, "paid_cents": 10000, "reversed_cents": 5000}, cb
 
 
 async def case_chatter_sees_only_its_accounts():
-    # A chatter on _A alone. _FAN's _A rows: $30 cleared, $10 refunded, a failed
-    # row; _B's $20 and $40 chargeback are not his to see. 13 fans spent on _A in
-    # the window (12 of the 24 plus _FAN), under 20: Insufficient Data.
     identity = chatters.ChatterIdentity(
         id_="ch-fi", username="fi_chatter", display_name=None, color=None,
         owner_user_ids=frozenset({"u-fi"}), account_ids=frozenset({_A}))
@@ -145,19 +115,15 @@ async def case_chatter_sees_only_its_accounts():
         chatters._request_chatter.reset(tok)
     assert resp["spending_power"] == {"label": "Insufficient Data", "spend_30d_cents": 3000,
                                       "population": 13}, resp
-    # 1000 refunded of 4000 paid = 25% -> Low.
     assert resp["chargeback_risk"] == {"label": "Low", "pct": 25.0, "paid_cents": 4000,
                                        "reversed_cents": 1000}, resp
 
 
 async def case_ppv_recent_last_30():
-    # 32 sent PPVs, newest first by minutes_ago; the two oldest ($1 and $99) fall
-    # outside the window. Of the newest 30, every third is unlocked (10 of 30).
     await _ppv(_FAN, 1, 100, paid=False, minutes_ago=500)
     await _ppv(_FAN, 2, 9900, paid=True, minutes_ago=499)
     for i in range(30):
         await _ppv(_FAN, 10 + i, 500 + 100 * i, paid=(i % 3 == 0), minutes_ago=100 - i)
-    # Dropped: an unsent PPV, an inbound priced row, a free message.
     await _ppv(_FAN, 90, 50_000, paid=False, unsent=True)
     await _ppv(_FAN, 91, 50_000, paid=None, direction="in")
     await _ppv(_FAN, 92, 0, paid=None)
@@ -172,9 +138,7 @@ async def case_local_timezone():
         s.add(Fan(account_id=_A, fan_id=_FAN + 1, home_country="United States"))
         await s.commit()
     assert (await _as_org(lambda: get_fan(_A, _FAN))())["local_timezone"] == "America/Chicago"
-    # A multi-zone country alone is ambiguous: no guess.
     assert (await _as_org(lambda: get_fan(_A, _FAN + 1))())["local_timezone"] is None
-    # It follows Location: a PATCH's response carries the new zone.
     row = await _as_org(lambda: update_fan(_A, _FAN + 1, FanUpdateBody(home_city="Denver")))()
     assert row["local_timezone"] == "America/Denver", row
 
@@ -195,7 +159,6 @@ async def case_salary_fields_patch():
     row = await _as_org(lambda: get_fan(_A, _FAN))()
     assert (row["salary"], row["salary_frequency"], row["last_pay_date"]) == \
         ("$4k / month", "biweekly", "2026-10-15"), row
-    # "" clears; bad values are refused.
     await _as_org(lambda: update_fan(_A, _FAN, FanUpdateBody(salary="", last_pay_date="")))()
     row = await _as_org(lambda: get_fan(_A, _FAN))()
     assert row["salary"] is None and row["last_pay_date"] is None, row
@@ -208,5 +171,4 @@ async def case_salary_fields_patch():
         raise AssertionError(f"accepted {bad}")
 
 
-# Definition order matters: later cases add to the earlier cases' rows.
 _harness.run()

@@ -1,14 +1,3 @@
-"""Runtime settings for the standalone bio listener.
-
-BIO_PRIMARY_HOSTS is a comma list. BIO_FILES_DIR defaults to service/bio_files.
-TRUSTED_PROXIES and EDGE_PROXIES use the shared client-address policy.
-BIO_REVEAL_LIMIT_PER_MINUTE defaults to 60; BIO_FLUSH_SECONDS defaults to 5.
-BIO_ESCAPE_TAP (default on; off: 0/false/no/off) is the kill switch of the Escape Overlay
-card's tap escape (script.js), rendered on the card.
-BIO_PATH_PREFIX (default empty) turns on path mode next to host mode: a request under it
-(`/p/<username>` as the Next app's `/p/:path*` rewrite forwards it) is served with the
-prefix cut, and every URL its page names carries it again (decide.parse_path_prefix).
-"""
 from __future__ import annotations
 
 import os

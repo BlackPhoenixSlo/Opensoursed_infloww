@@ -1,53 +1,13 @@
 #!/usr/bin/env python3
-"""
-Include-only automation audience — resolver, fence, at-fire, API.
-
-  case_resolver_off_by_default:
-      no config → mode off, filter/allow are byte-identical passthroughs.
-  case_shadow_counts_never_gates:
-      shadow returns every candidate AND counts the would-be skips with their
-      denominator (audience_before / audience_skipped / _with_intent).
-  case_enforce_intersects_and_extra_allowed:
-      enforce keeps members only; extra_allowed_ids (a forced fan) admits.
-  case_enforce_never_synced_sits_in_shadow:
-      enabling enforce before the first sync lands must NOT darken the roster —
-      effective mode is shadow with reason pending_first_sync (plan §5.4).
-  case_enforce_stale_halts_loudly:
-      snapshot older than grace → healthy False → EMPTY candidates + a stats
-      reason; a stale mirror never silently unscopes.
-  case_kill_switch_pauses_never_unscopes:
-      paused meta → enforce holds everything (reason kill_switch).
-  case_at_fire_manual_stamp_bypasses:
-      typed send_purpose="manual" payload beats the fence; untamped is checked.
-  case_scheduled_send_at_fire:
-      a queued job for an outside fan is blocked AT FIRE; the same job with the
-      manual stamp sends (the creation route stamps every human schedule).
-  case_fence_build_verify_zero_diff:
-      AUTOFENCE reconcile = adds before removals + verify; an un-addable id is
-      skipped-and-counted; a transient add failure (timeout) halts
-      fence_add_failed; a verify mismatch raises AudienceHalt.
-  case_mass_send_attaches_fence:
-      enforce-mode list broadcast carries the stable fence id in
-      excluded_user_lists; original user_lists audience is UNCHANGED.
-  case_mass_send_halts_on_unhealthy_fence:
-      stale mirror → the broadcast returns an error and OF is never called.
-  case_put_branches_and_shadow_before_enforce:
-      PUT round-trip creates the mirror row; direct off→enforce 422s without
-      the logged override.
-
-Run: ./venv/bin/python service/tests/test_audience_include.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
 import os  # noqa: E402
 from _of_fixtures import UNLISTABLE_403, of_error  # noqa: E402
 
-# House pattern for driving /admin route coroutines directly (test_ai_chatter,
-# test_account_isolation_gate case14): re-open the 08-10 fail-closed auth gate.
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 import json  # noqa: E402
@@ -67,11 +27,8 @@ from db.models import (  # noqa: E402
 )
 
 
-# ── FakeOF ──────────────────────────────────────────────────────────────────
 
 class FakeOF:
-    """OF list + send surface. Lists are dicts id → set of fan ids;
-    paging is offset-sliced like the wire (list_users_in is a BARE list)."""
 
     def __init__(self, *, lists=None, fail_add=()):
         self.lists: dict[int, set[int]] = {int(k): set(v) for k, v in (lists or {}).items()}
@@ -83,7 +40,6 @@ class FakeOF:
         self.removed: list[tuple[int, int]] = []
         self._next_list_id = 900
 
-    # lists
     def get_lists(self, *, limit=20, offset=0):
         rows = [{"id": lid, "name": self.names.get(lid, f"list{lid}")}
                 for lid in sorted(self.lists)]
@@ -101,6 +57,7 @@ class FakeOF:
         return [{"id": m} for m in members[offset:offset + limit]]
 
     def add_user_to_list(self, list_id, user_id):
+        # OF 403s the odd deleted account: un-addable, skipped and counted, not a wedge.
         if int(user_id) in self.fail_add:
             raise of_error(403, UNLISTABLE_403)
         self.added.append((int(list_id), int(user_id)))
@@ -112,7 +69,6 @@ class FakeOF:
         self.lists.setdefault(int(list_id), set()).discard(int(user_id))
         return {}
 
-    # sends
     def send_message(self, fan_id, text, **kw):
         self.sent.append({"fan_id": int(fan_id), "text": text, **kw})
         return {"id": 77_000 + len(self.sent)}
@@ -126,13 +82,11 @@ def _use_fake(fake) -> FakeOF:
     return fake
 
 
-# ── seeding ─────────────────────────────────────────────────────────────────
 
 async def _seed_audience(
     aid: str, *, mode: str, members=(), of_list_id=500, synced_hours_ago=0.0,
     auto_add=False, meta=None, synced=True,
 ) -> int:
-    """Account + include mirror + config. Returns the LOCAL list id."""
     async with get_session() as s:
         if await s.get(Account, aid) is None:
             s.add(Account(id=aid))
@@ -161,7 +115,6 @@ async def _mirror(aid: str, list_id: int) -> set[int]:
     return {int(r) for r in rows}
 
 
-# ── resolver ────────────────────────────────────────────────────────────────
 
 async def case_resolver_off_by_default():
     aid = "aud_off"
@@ -181,7 +134,7 @@ async def case_shadow_counts_never_gates():
     stats: dict = {}
     got = await filter_candidates(aid, [1, 2, 3, 4], kind="x", stats=stats,
                                   intent_ids=[3])
-    assert got == [1, 2, 3, 4], got                      # gates NOTHING
+    assert got == [1, 2, 3, 4], got
     assert stats["audience_mode"] == "shadow", stats
     assert stats["audience_before"] == 4, stats
     assert stats["audience_skipped"] == 2, stats
@@ -194,7 +147,7 @@ async def case_enforce_intersects_and_extra_allowed():
     stats: dict = {}
     got = await filter_candidates(aid, [1, 2, 3, 4], kind="x", stats=stats,
                                   extra_allowed_ids=[4])
-    assert got == [1, 2, 4], got                          # 4 = forced admit
+    assert got == [1, 2, 4], got
     assert stats["audience_skipped"] == 1, stats
     ok, why = await audience_allows_fan(aid, 3, kind="x")
     assert not ok and why == "outside_audience", (ok, why)
@@ -207,7 +160,7 @@ async def case_enforce_never_synced_sits_in_shadow():
     assert pol.mode == "shadow" and pol.configured_mode == "enforce", pol
     assert pol.reason == "pending_first_sync", pol
     got = await filter_candidates(aid, [1, 9], kind="x", policy=pol)
-    assert got == [1, 9], got                             # nothing darkened
+    assert got == [1, 9], got
 
 
 async def case_enforce_stale_halts_loudly():
@@ -217,7 +170,7 @@ async def case_enforce_stale_halts_loudly():
     assert not pol.healthy and pol.reason == "snapshot_stale", pol
     stats: dict = {}
     got = await filter_candidates(aid, [1, 2], kind="x", policy=pol, stats=stats)
-    assert got == [], got                                 # fail CLOSED
+    assert got == [], got
     assert stats["audience_halted"] == "snapshot_stale", stats
 
 
@@ -227,7 +180,7 @@ async def case_kill_switch_pauses_never_unscopes():
                          meta={"paused": True})
     stats: dict = {}
     got = await filter_candidates(aid, [1, 2], kind="x", stats=stats)
-    assert got == [], got                                 # 1 is a member; PAUSED holds him too
+    assert got == [], got
     assert stats["audience_halted"] == "kill_switch", stats
 
 
@@ -260,22 +213,19 @@ async def case_scheduled_send_at_fire():
 def case_fence_build_verify_zero_diff():
     fake = FakeOF(lists={700: {2, 9}})
     built = _build_autofence_blocking(fake, 700, {1, 2, 3})
-    assert fake.lists[700] == {1, 2, 3}, fake.lists       # adds 1,3 · removes 9
+    assert fake.lists[700] == {1, 2, 3}, fake.lists
     assert built == {"size": 3, "unaddable": 0}, built
     add_order = [u for (l, u) in fake.added if l == 700]
     rem_order = [u for (l, u) in fake.removed if l == 700]
     assert add_order and rem_order and fake.added and fake.removed, "both legs ran"
 
-    # Un-addable id (OF 403s the odd deleted account) — skipped and counted,
-    # not a permanent wedge.
     fake2 = FakeOF(lists={701: set()}, fail_add=(5,))
     built2 = _build_autofence_blocking(fake2, 701, {4, 5})
     assert built2 == {"size": 1, "unaddable": 1}, built2
 
-    # A transient add failure (timeout / 429 / 5xx) is not an un-addable fan:
-    # that fan would sit outside the fence, so the build halts.
     from curl_cffi.requests import exceptions as curl_exc
 
+    # A transient add failure is not un-addable: that fan would sit outside the fence, so the build halts.
     class TimeoutOF(FakeOF):
         def add_user_to_list(self, list_id, user_id):
             if int(user_id) == 5:
@@ -287,10 +237,9 @@ def case_fence_build_verify_zero_diff():
     except AudienceHalt as e:
         assert e.reason == "fence_add_failed", e.reason
 
-    # Verify mismatch → AudienceHalt (here: a removal that silently fails).
     class StickyOF(FakeOF):
         def remove_user_from_list(self, list_id, user_id):
-            return {}                                      # claims ok, does nothing
+            return {}
     fake3 = StickyOF(lists={702: {8}})
     try:
         _build_autofence_blocking(fake3, 702, set())
@@ -300,10 +249,6 @@ def case_fence_build_verify_zero_diff():
 
 
 def case_fence_lookup_incomplete_halts_never_creates():
-    """No stored AUTOFENCE id and OF repeating page 1 of `/lists` without it:
-    the find-or-create halts `fence_lookup_incomplete` and creates no list
-    (a duplicate AUTOFENCE). Found on that page, or absent from a complete
-    read, it is used or made as before."""
     class RepeatListsOF(FakeOF):
         def get_lists(self, *, limit=20, offset=0):
             return super().get_lists(limit=limit, offset=0)
@@ -325,7 +270,7 @@ async def case_mass_send_attaches_fence():
     from automations.send_mass_message import run as mass_run
     aid = "aud_fence_mass"
     await _seed_audience(aid, mode="enforce", members=(1, 2), of_list_id=610)
-    async with get_session() as s:                         # local universe
+    async with get_session() as s:
         for fid in (1, 2, 3, 4):
             s.add(Fan(account_id=aid, fan_id=fid))
     fake = _use_fake(FakeOF(lists={610: {1, 2}}))
@@ -334,11 +279,11 @@ async def case_mass_send_attaches_fence():
     assert out.get("queue_id"), out
     assert len(fake.mass_sent) == 1, fake.mass_sent
     sent = fake.mass_sent[0]
-    assert sent["user_lists"] == ["fans"], sent            # ORIGINAL audience kept
+    assert sent["user_lists"] == ["fans"], sent
     fence_ids = sent.get("excluded_user_lists") or []
     assert len(fence_ids) == 1, sent
     fence = fake.lists[int(fence_ids[0])]
-    assert fence == {3, 4}, fence                          # universe − members
+    assert fence == {3, 4}, fence
     assert out.get("audience_fence_list_id") == int(fence_ids[0]), out
 
 
@@ -354,7 +299,6 @@ async def case_mass_send_halts_on_unhealthy_fence():
     assert fake.mass_sent == [], "an unfenced enforce-mode blast must NEVER fire"
 
 
-# ── transfer + config API ───────────────────────────────────────────────────
 
 
 async def case_put_branches_and_shadow_before_enforce():
@@ -365,7 +309,6 @@ async def case_put_branches_and_shadow_before_enforce():
     async with get_session() as s:
         s.add(Account(id=aid))
 
-    # off → enforce directly: refused without the logged override.
     try:
         await put_account_config(_ConfigBody(account_id=aid, config={
             "audience_mode": "enforce", "audience_of_list_id": 620}))
@@ -373,7 +316,6 @@ async def case_put_branches_and_shadow_before_enforce():
     except HTTPException as e:
         assert e.status_code == 422 and "shadow" in str(e.detail), e.detail
 
-    # shadow + folder: creates the mirror row.
     out = await put_account_config(_ConfigBody(account_id=aid, config={
         "audience_mode": "shadow", "audience_of_list_id": 620,
         "audience_list_name": "VIP", "audience_auto_add": True}))
@@ -386,17 +328,14 @@ async def case_put_branches_and_shadow_before_enforce():
             ListModel.kind == audience_include.AUDIENCE_INCLUDE_KIND))).scalars().one()
         assert int(row.of_list_id) == 620 and row.name == "VIP", (row.of_list_id, row.name)
 
-    # A PUT WITHOUT the audience keys must not touch the fence (absent = unchanged).
     out = await put_account_config(_ConfigBody(account_id=aid, config={
         "persona": "hello"}))
     assert out["config"]["audience_mode"] == "shadow", out["config"]
 
-    # shadow → enforce: allowed without any override.
     out = await put_account_config(_ConfigBody(account_id=aid, config={
         "audience_mode": "enforce"}))
     assert out["config"]["audience_mode"] == "enforce", out["config"]
 
-    # a mode without a folder is refused for a fresh account.
     aid2 = "aud_put2"
     async with get_session() as s:
         s.add(Account(id=aid2))

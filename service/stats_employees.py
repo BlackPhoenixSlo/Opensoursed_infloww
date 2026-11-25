@@ -1,18 +1,3 @@
-"""
-stats_employees.py — Employee reports' reads, split out of stats.py.
-
-  GET /admin/stats/per-employee     → revenue, PPV conversions and messages
-                                       sent per Employee, as the Sales
-                                       Settings rules credit each sale
-  GET /admin/stats/chatting-stats   → Chatting statistics per Employee, or
-                                       with `bucket` the charts' time series
-
-stats.py includes this router where these routes stood (route order). The
-report zone is read as `stats._report_zone` / `stats._report_prefs` at call
-time (imported in the route, no import-time cycle), so a patch on `stats` reaches
-these routes as before the split.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -41,9 +26,6 @@ _UNATTRIBUTED_BUCKET = "Unattributed"
 
 
 async def _only_chatters(own: set[int] | None, chatter_only: bool) -> set[int] | None:
-    """The Employee ids a report may show (`own`, None for all), narrowed with
-    `chatter_only` to the built-in Chatter role's (`permissions.role_holders`):
-    Employee reports' "Show employees with chatter role only" (roadmap W5 5.13)."""
     if not chatter_only:
         return own
     from permissions import role_holders
@@ -51,29 +33,21 @@ async def _only_chatters(own: set[int] | None, chatter_only: bool) -> set[int] |
     return chatters if own is None else own & chatters
 
 
-# The Employee sales series' "From Messages" and "From Tips": the kinds the
-# Dashboard header's Messages and Tips tiles sum (DashboardHeader.tsx
-# `CHANNEL_KINDS`), so the two cards on one page agree. Keep in sync with
-# app/components/home/DashboardHeader.tsx CHANNEL_KINDS (messages, tips).
+# Keep in sync with app/components/home/DashboardHeader.tsx CHANNEL_KINDS so the Messages/Tips cards on one page agree.
 SERIES_MESSAGE_KINDS: tuple[str, ...] = ("ppv_message", "custom")
 SERIES_TIP_KINDS: tuple[str, ...] = ("tip", "tip_post")
 
 
 def _query_zone(name: str | None) -> ZoneInfo | None:
-    """The `tz` query parameter as a zone, None when absent or not a known
-    IANA name (never a 500 over a bad zone)."""
     if not name:
         return None
     try:
         return ZoneInfo(name)
-    except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
+    except (KeyError, ValueError, OSError):
         return None
 
 
 def bucket_of(edges: list[datetime], at: datetime) -> int:
-    """The index of the bucket of `edges` (naive UTC starts, ascending) a
-    moment falls in: the last starting at or before `at`, the first for one
-    before every edge."""
     return max(0, bisect.bisect_right(edges, at) - 1)
 
 
@@ -147,12 +121,8 @@ async def per_employee(
         if start is None or end is None:
             raise HTTPException(status_code=422, detail="include_series needs both from and to")
         series_bucket = "hour" if tx_rollup.whole_hours(zone, start, end) else "minute"
-    # Clamp to the signed-in friend's accounts so per-employee rollups
-    # don't mix in other friends' chatter activity.
     account_ids = clamp_account_filter(None)
 
-    # ── Q1: messages_sent per employee: its own sends, no mass or automated
-    # ones (`msg_stats.chatter_sends`, roadmap S4). ─────────────────────
     mq = (
         select(
             Message.sent_by_employee_id.label("employee_id"),
@@ -172,28 +142,13 @@ async def per_employee(
     else:
         mq = mq.group_by(Message.sent_by_employee_id)
 
-    # ── Q2: each sale credited by its Creator's Agency's Sales Settings
-    # rules (sales_attribution; Converters is the attribution view's answer).
-    # Nothing is written, so switching a rule back restores the old figures.
 
-    # Each task opens its OWN AsyncSession — a single AsyncSession is not
-    # safe for concurrent execute() under asyncio.gather (raises
-    # IllegalStateChangeError); the engine's pool hands one connection
-    # per task and SQLite WAL handles parallel readers fine.
     async def _run(stmt: Any) -> list[Any]:
+        # Each task opens its own AsyncSession: one is not safe for concurrent execute() under asyncio.gather.
         async with get_session() as ss:
             return (await ss.execute(stmt)).all()
 
-    # Label lookup only — display_name isn't sensitive and the actual
-    # data isolation already happened via `clamp_account_filter` above
-    # (messages/transactions are scoped to the principal's accounts).
-    # Filtering this lookup by user_id used to surface bare "Employee
-    # #N" labels in the table whenever a message's sent_by_employee_id
-    # pointed at a row outside the principal's roster — typically a
-    # chatter mirror Employee created under a co-owner, or a legacy row
-    # whose owner is no longer the current user. Lookup-everything keeps
-    # the table readable; no rows that weren't already visible become
-    # visible, since the data join is account-scoped.
+    # Unfiltered by user_id on purpose: data isolation is already account-scoped, and filtering this lookup showed bare "Employee #N" labels for chatter mirror Employees under a co-owner.
     emp_lookup_q = select(Employee.id, Employee.display_name)
     if by_account:
         acct_lookup_q = select(Account.id, Account.nickname)
@@ -213,10 +168,6 @@ async def per_employee(
 
     names: dict[int, str | None] = {eid: dname for eid, dname in emp_rows}
 
-    # ── Merge ───────────────────────────────────────────────────────────
-    # We key by (employee_id, account_id?) so by_account=True produces a
-    # per_account[] list per employee. `None` employee_id is the
-    # synthetic "Unattributed" bucket holding standalone-tip orphans.
     by_emp: dict[int | None, dict[str, Any]] = {}
 
     def _bucket(eid: int | None) -> dict[str, Any]:
@@ -245,10 +196,6 @@ async def per_employee(
         }
         return sub_map[aid]
 
-    # Apply message counts. Messages with sent_by_employee_id IS NULL
-    # don't appear here (mq filters them out) — those land in
-    # /admin/stats/attribution-coverage, not the per-employee revenue
-    # rollup. The Unattributed bucket exists only for orphan tip revenue.
     for r in msg_rows:
         eid = int(r.employee_id)
         emp_row = _bucket(eid)
@@ -258,11 +205,6 @@ async def per_employee(
             sub = _acct_sub(emp_row, aid)
             sub["messages_sent"] += int(r.messages_sent or 0)
 
-    # Credited sales → revenue, PPV conversions and the {ppv, tip} split.
-    # None-employee rows feed the synthetic "Unattributed" bucket its real
-    # split (orphan PPVs and tips, and whatever a rule leaves Unattributed).
-    # ASSUMPTION: each Employee sharing a split PPV sale counts it as one
-    # conversion. Rung 6. Overturned if a split sale should count once in all.
     for c in credited:
         is_ppv = c.kind in PPV_KINDS
         ppv_c = c.amount_cents if is_ppv else 0
@@ -276,7 +218,6 @@ async def per_employee(
             row["revenue_by_kind"]["ppv"] += ppv_c
             row["revenue_by_kind"]["tip"] += tip_c
 
-    # Flatten per_account map → sorted list (highest revenue first).
     if by_account:
         for emp_row in by_emp.values():
             sub_map: dict[str | None, dict[str, Any]] = emp_row["per_account"]
@@ -306,16 +247,12 @@ async def per_employee(
     return result
 
 
-# The counts of a Chatting statistics row, summed over an Employee's Creators.
 _CHAT_COUNTS = ("direct_messages_sent", "direct_ppvs_sent", "ppvs_unlocked", "character_count", "fans_chatted",
                 "sales_cents", "ppv_sales_cents", "tip_sales_cents", "direct_message_sales_cents",
                 "mass_message_sales_cents", "priority_mass_message_sales_cents", "fans_who_spent", "replies")
 
 
 def _shown(eid: int | None, auto: int | None, own: set[int] | None) -> bool:
-    """Whether Chatting statistics show Employee `eid`'s figures: not the
-    Unattributed sales (None), not the Automation sentinel, and only the
-    Data scope's own Employees when it narrows (`scoped_employee_ids`)."""
     return eid is not None and eid != auto and (own is None or eid in own)
 
 
@@ -324,10 +261,6 @@ def _pct(num: float, den: float) -> float | None:
 
 
 async def _clocked_minutes(employee_ids: list[int], start: datetime, end: datetime) -> dict[int, int]:
-    """Each Employee's Clock events clipped to [start, end], an open one
-    running to now, rounded up to the minute: the Timesheet's worked time
-    (`shifts_api.timesheet`, no call for this: owner-only, at most 42 days,
-    and it reads Shifts too)."""
     if not employee_ids:
         return {}
     now = datetime.utcnow()
@@ -465,30 +398,15 @@ async def chatting_stats(
             "fans_chatted_per_clocked_hour": hourly(row["fans_chatted"]),
         })
     out.sort(key=lambda x: x["sales_cents"], reverse=True)
-    # chatter_only: the Chatter role's whole roster (active or not), which the Timesheet's scheduled hours filter by;
-    # owner sessions only, as the Timesheet is.
     roster = sorted(own) if chatter_only and own is not None and not is_chatter else None
     return {"employees": out, "attribution_fallback": fallback, "chatter_ids": roster}
 
 
-# A chart point's figures: Sales, and Message statistics' four lines.
 _SERIES = ("sales_cents", "direct_messages_sent", "direct_ppvs_sent", "ppvs_unlocked", "fans_chatted")
 
 
 async def _chatting_series(bucket: str, *, start: datetime, end: datetime, zone: ZoneInfo | None,
                            week_start: str, own: set[int] | None, account_ids: list[str] | None) -> dict[str, Any]:
-    """Employee reports' charts (roadmap W5 5.10, Infloww's Overview and
-    Employee performance tabs): `series`, one point per `bucket` of the
-    report zone, `start` its local wall time ("YYYY-MM-DDTHH:MM"), with
-      • sales_cents — the sales credited by the Sales Settings rules, as
-        Chatting statistics' Sales (every tracked status, pending too)
-      • direct_messages_sent, direct_ppvs_sent, ppvs_unlocked, fans_chatted —
-        Chatting statistics' own sends, fans distinct per Creator and
-        Employee within the point
-    summed over the Employees Chatting statistics show (`_shown`: the Data
-    scope's), and `by_employee`, each one's points (no `start`: the same
-    buckets in order). Weeks begin on `week_start`. 400 on a granularity the
-    range's calendar days do not allow (`stats_window.bucket_allowed`)."""
     days = stats_window.range_days(start, end)
     if not stats_window.bucket_allowed(bucket, days):
         raise HTTPException(status_code=400, detail=f"Shown by {bucket} does not fit a {days}-day range")
@@ -508,13 +426,6 @@ async def _chatting_series(bucket: str, *, start: datetime, end: datetime, zone:
 
 def fold_series(edges: list[datetime], sends: list[Any], credited: list[Any], auto: int | None,
                 own: set[int] | None, tz: tzinfo) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, int]]]]:
-    """`_chatting_series`' fold, pure: the points, one per bucket of `edges`
-    (naive UTC, ascending), each's `start` its wall time in `tz`, and each
-    Employee's points keyed by its id as a string, in id order. A send names
-    its bucket (`r.bucket`); a credited sale lands in the last bucket starting
-    at or before `occurred_at` (`bucket_of`), none without it. Only the Employees `_shown` counts: no
-    Unattributed (None), no Automation sentinel `auto`, only `own` when the
-    Data scope narrows."""
     points = [{"start": e.replace(tzinfo=timezone.utc).astimezone(tz).strftime("%Y-%m-%dT%H:%M"),
                **dict.fromkeys(_SERIES, 0)} for e in edges]
     by_emp: dict[int, list[dict[str, int]]] = {}

@@ -1,15 +1,3 @@
-"""vault_of_search — harvest OF's own vault search into our index
-
-Revision ID: 0048_vault_of_search
-Revises: 0047_vault_folders
-Create Date: 2026-07-20
-
-Adds `vault_items.of_terms` (OF-search terms an item matched, folded into
-search_text) + `vault_of_query_log` (harvested-query TTL/dedup) so our local
-search is a superset of OF's server-side search.
-
-Additive + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence

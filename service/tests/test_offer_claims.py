@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""Growth's Details reads: who claimed an offer, with OF's per-fan spend (app/components/growth/OfferClaimers.tsx).
-
-A user-supplied HAR of OF's own free trial link claimers list (2026-10-18) pins the trial read:
-
-  GET /api2/v2/subscriptions/subscribers?limit=10&offset=0&format=infinite&filter[trial_id]=<id>
-  GET ...same with offset=10                     -> {list: [user], hasMore}
-
-Each user carries subscribedOnData {totalSumm, subscribesSumm, postsSumm, messagesSumm, streamsSumm, tipsSumm},
-which the relay must hand through untouched: the page sums it. The promotion (filter[promoId]) and tracking link
-(/campaigns/{id}/claimers) reads are OF's bundle read statically, not in the HAR.
-
-Plain-assert, OF faked (no request leaves the process); synthetic ids and amounts.
-
-Run: ./venv/bin/python service/tests/test_offer_claims.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -30,7 +15,6 @@ PAGE = {"list": [FAN], "hasMore": True}
 
 
 def _client(reply=None):
-    """An OFClient whose every GET is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.sent = []
     c.get_json = lambda path, params=None: c.sent.append((path, params)) or (reply if reply is not None else {"ok": 1})
@@ -38,7 +22,6 @@ def _client(reply=None):
 
 
 def _via_route(fn, *args, reply=None, **kw):
-    """Call a relay route with OF faked; return (body, [(path, params)])."""
     c = _client(reply)
     orig = server._get_client
     server._get_client = lambda: c
@@ -52,7 +35,6 @@ def _via_route(fn, *args, reply=None, **kw):
 def case_trial_claims_reach_of_as_captured():
     _, sent = _via_route(of_stats_api.of_trial_claims, trial_id=4242, limit=10, offset=0)
     assert sent == [(SUBSCRIBERS, {"limit": 10, "offset": 0, "format": "infinite", "filter[trial_id]": 4242})], sent
-    # The HAR's own query order.
     assert list(sent[0][1]) == ["limit", "offset", "format", "filter[trial_id]"], list(sent[0][1])
 
 

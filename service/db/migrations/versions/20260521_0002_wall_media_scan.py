@@ -1,14 +1,3 @@
-"""wall-media incremental scan tables
-
-Revision ID: 0003_wall_media_scan
-Revises: 0002_saved_replies
-Create Date: 2026-05-21
-
-Replaces the prior stateless 5-page (~250-post) wall walk with persistent
-storage so the blue "posted on wall" ring in the vault picker stays
-eventually-correct for prolific creators and warm opens skip the 13.5s
-re-walk. See models.WallMedia / WallScanState for the algorithm notes.
-"""
 from __future__ import annotations
 
 from typing import Sequence

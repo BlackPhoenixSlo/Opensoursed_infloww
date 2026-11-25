@@ -1,30 +1,3 @@
-"""service/chat_screen_api.py — a thread open's local reads in one relay call (screens_api's pattern).
-
-A phone 250 ms from the host opened a thread with 22 requests in three waves (slop slow-connections jp): the DB
-seed, the Fan record, attribution (three times), fan-history (twice), saved replies, sensitive words, scheduled
-sends, each its own round trip. This route answers the local (relay DB) ones at once:
-
-  GET /admin/screens/chat?account=&fan=&lacks=savedReplies,sensitiveWords&deadline_ms=
-      {answers: [{accountId, read, body} | {accountId, read, status, detail}], thumbs, asOf}   (screens_api's envelope)
-
-`read` names the field; every body is the exact one its own route answers, from that route's function with every argument explicit:
-`seed` = GET /admin/messages/{account}/{fan}?limit=30 (useChatMessagesLocal), `fan` = GET /admin/fans/{account}/{fan},
-`attribution` = GET /admin/messages/{account}/{fan}/attribution (bare: the last 200 outbound rows; the client derives
-its `since_id` read from it when it holds fewer than 200), `fanHistory` = GET /admin/vault/fan-history,
-`scheduledSends` = GET /api/of/v2/scheduled-sends?fan_id= (X-Account-Id), `savedReplies` / `sensitiveWords` = their
-lists, read only when `lacks` names them (the client's copy is missing or stale). `thumbs`: the seed page's media
-thumbnail URLs, newest first, at most THUMBS, a signature already expired left out, so the client starts those /img
-loads with this answer instead of after OnlyFans' page.
-
-OnlyFans reads (the thread's page, pinned, users/me) are NOT here: each is OF-bound (prod ~1 s), and bundled they
-would hold the DB-first paint hostage; the client sends them alongside, as before.
-
-Authorization: the caller must own `account` (403 before any read), then screens_api's per read (`_serve`: a real
-inner Request per route, the role hook and the ownership resolver before it, the route's own checks); every read is the
-open thread's, so all keep the caller's priority (`focus=account`). An answer's accountId: the X-Account-Id the
-browser's read would send, null for the /admin routes; past the deadline
-`bundle_deadline` (the client then reads that route itself; no follow-up bundle).
-"""
 from __future__ import annotations
 
 import json
@@ -45,15 +18,14 @@ from screens_api import DEADLINE_MAX_MS, DEADLINE_MS, Read, deadline_at, run_scr
 
 router = APIRouter()
 
-SEED_PAGE = 30     # useChatMessagesLocal's default limit
-ATTRIBUTION_LIMIT = 200   # the attribution route's default (and max) limit
-THUMBS = 6         # the newest media tiles a phone's first screen shows (the client's first-screen image preload)
+# OF reads (page, pinned, users/me) stay out: OF-bound, they would hold the DB-first paint hostage.
+SEED_PAGE = 30
+ATTRIBUTION_LIMIT = 200
+THUMBS = 6
 LACKS = ("savedReplies", "sensitiveWords")
 
 
 def thumbs(seed: Any, now: float | None = None) -> list[str]:
-    """The seed page's photo thumbnails (the URL MessageMedia paints: a video's tile is its still), newest message
-    first, at most THUMBS, none expired."""
     now = time.time() if now is None else now
     out: list[str] = []
     for m in (seed or {}).get("messages") or []:
@@ -82,7 +54,7 @@ async def chat_screen(
 ) -> dict[str, Any]:
     """A thread open's local reads in one call (module docstring)."""
     until = deadline_at(deadline_ms)
-    assert_account_owned(account)  # 403 before any read: every read here is this Creator's
+    assert_account_owned(account)
     srv = relay_host.live_server()
     want = {x for x in (lacks or "").split(",") if x in LACKS}
     base = f"/admin/messages/{account}/{fan}"

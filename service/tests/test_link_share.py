@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""Share links (link_share_api): a public read-only report on some of a
-Creator's free trial links or tracking links, for 7 days. OF is faked.
-
-Locks:
-  • The report carries per link only the name, date created, OF's counts and,
-    with "Include earnings", the net Earnings / Fans who spent / fans counted:
-    no fan, no account id, no URL, cost, source or tag.
-  • The URL's secret is checked (wrong secret or id: 404); revoked or expired:
-    410; the public route reads its row and calls nothing (no OF client).
-  • /share/ passes the share-token gate with no cookie; /admin/link-shares
-    does not, and is owner-only (a chatter 403, another agency 403).
-  • Create stores the rows pending (`ready` false); the owner's next read of
-    the links fills them and every later one rebuilds them; a link no longer
-    read keeps its last row, one never read is left out; a read with OF down
-    rebuilds nothing; a revoked or expired share is left alone.
-  • At most MAX_ACTIVE live shares per Creator.
-  • No log keeps a share URL's secret (our access log, uvicorn's).
-
-Run: ./venv/bin/python service/tests/test_link_share.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -45,7 +25,7 @@ _owner = fx.login_owner("agency_a_owner")
 _T0 = datetime(2026, 9, 1, 12, 0, 0)
 
 _spawned: list = []
-lm._spawn = _spawned.append        # the list's background refresh runs only when a case runs it
+lm._spawn = _spawned.append
 
 
 class FakeOF:
@@ -108,7 +88,6 @@ _seed_spend()
 
 
 def _read(kind="trial"):
-    """The owner's read of the links, as the page makes it right after a create."""
     ot._COMPUTED.clear()
     path = "/admin/trial-links" if kind == "trial" else "/admin/of-tracking-links/earnings"
     assert _owner.get(f"{path}?account_id={AID}").status_code == 200
@@ -137,7 +116,6 @@ def _set(share_id: int, **values):
     asyncio.run(go())
 
 
-# ── The report ──
 
 def case_create_is_pending_until_the_owners_read():
     _use()
@@ -150,7 +128,6 @@ def case_create_is_pending_until_the_owners_read():
     _read()
     d = _report(share).json()
     assert d["ready"] is True and [l["name"] for l in d["links"]] == ["Reddit trial"], "999 was never read: left out"
-    # A share none of whose links the read returns stays pending, not "updated".
     lone = _create(of_ids=[999]).json()
     assert _report(lone).json()["ready"] is False
     listed = {s["id"]: s for s in _owner.get(f"/admin/link-shares?account_id={AID}&kind=trial").json()["shares"]}
@@ -236,7 +213,6 @@ def case_public_report_calls_no_onlyfans():
     assert _report(share).status_code == 200
 
 
-# ── The gates ──
 
 def case_share_prefix_passes_the_share_token_gate_admin_does_not():
     import server
@@ -264,7 +240,6 @@ def case_owner_only_and_per_agency():
     other = fx.login_owner("agency_b_owner")
     assert _create(client=other).status_code == 403
     assert other.get(f"/admin/link-shares?account_id={AID}&kind=trial").status_code == 403
-    # Agency B naming its own Creator cannot reach agency A's share.
     r = other.delete(f"/admin/link-shares/{share['id']}?account_id={IDS['creator_b']}")
     assert r.status_code == 404, r.text
     assert _report(share).status_code == 200
@@ -290,7 +265,6 @@ def case_validation_and_cap():
         lsa.MAX_ACTIVE = saved
 
 
-# ── Fresh from the owner's reads ──
 
 def case_owner_read_refreshes_live_shares_only():
     f = _use()
@@ -298,7 +272,7 @@ def case_owner_read_refreshes_live_shares_only():
     gone = _create(of_ids=[501], include_earnings=False).json()
     _set(gone["id"], revoked_at=datetime.utcnow())
     f.trials[0]["clicksCounts"] = 55
-    f.trials = [f.trials[0]]            # 502 no longer in OF's answer (and has no mirror row)
+    f.trials = [f.trials[0]]
     assert _owner.get(f"/admin/trial-links?account_id={AID}").status_code == 200
     rows = _report(live).json()["links"]
     assert rows[0]["clicks"] == 55, rows

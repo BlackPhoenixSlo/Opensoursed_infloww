@@ -1,32 +1,4 @@
 #!/usr/bin/env python3
-"""
-`container_limits` — what the container's cgroup says it is limited to.
-Plain-assert, no pytest (repo convention).
-
-Why this suite exists. This module has exactly one wrong answer available to it,
-and it is the plausible one: reporting **"no limit"** for a cgroup file it merely
-failed to open. "Unlimited" and "could not tell" send an operator to opposite
-conclusions — one says there is headroom to spend, the other says go and look —
-and the panel renders them differently only because every reader returns
-`(value, readable)` instead of a bare `None`.
-
-The first version of this code got that right for CPU and wrong for memory: a
-single `readable` flag was derived from the CPU read alone, so a container under
-`mem_limit: 2g` whose `memory.max` was unparseable rendered "memory: no limit"
-next to a correctly-shown CPU ceiling. That is the worse half to get wrong —
-`docker-compose.yml` calls `mem_limit` "the one that BITES: exceeding it is an
-OOM-kill, not a slowdown". `case_unreadable_memory_is_not_unlimited` is that bug,
-pinned.
-
-Cases:
-  case_cgroup_v2_cpu_is_read
-  case_cgroup_v1_cpu_is_read
-  case_unreadable_cpu_is_not_unlimited
-  case_unreadable_memory_is_not_unlimited
-  case_v1_memory_sentinel_is_unlimited_not_nine_exabytes
-  case_never_raises_on_any_garbage
-  case_container_id_is_stripped_and_truncated
-"""
 import importlib
 import sys
 import tempfile
@@ -38,8 +10,6 @@ import _harness  # noqa: E402
 
 
 def _fresh(cgroup: Path, hostname: Path | None = None):
-    """A container_limits pointed at a fake cgroup tree. Re-imported per case so
-    one case's `_CGROUP` can never leak into the next."""
     sys.modules.pop("container_limits", None)
     mod = importlib.import_module("container_limits")
     mod._CGROUP = cgroup
@@ -62,8 +32,6 @@ def case_cgroup_v2_cpu_is_read():
 
 
 def case_cgroup_v1_cpu_is_read():
-    """The v1 branch is unreachable on this laptop and on the prod box, so
-    nothing else would ever execute it — and a fleet can move hosts."""
     with tempfile.TemporaryDirectory() as d:
         cg = Path(d)
         (cg / "cpu").mkdir()
@@ -93,9 +61,6 @@ def case_unreadable_cpu_is_not_unlimited():
 
 
 def case_unreadable_memory_is_not_unlimited():
-    """The bug this suite exists for: memory must carry its OWN readable flag.
-    A readable cpu.max beside an unparseable memory.max must not borrow the
-    former's confidence."""
     with tempfile.TemporaryDirectory() as d:
         cg = Path(d)
         (cg / "cpu.max").write_text("120000 100000", "utf-8")
@@ -109,19 +74,13 @@ def case_unreadable_memory_is_not_unlimited():
                 f"'no limit' is an OOM-kill an operator was told not to expect"
             )
 
-        # THE DOMINANT REAL-WORLD PATH, and it had zero coverage: the file is
-        # simply ABSENT. Review regressed `if raw is None: return None, False`
-        # to `return None, True` and this suite stayed green — the same species
-        # of defanged assertion this module exists to prevent. The CPU reader's
-        # mirror branch was covered; memory's was not, on the reader the module
-        # docstring calls out as mattering most.
+        # the dominant real-world path: the file is simply absent
         (cg / "memory.max").unlink()
         limits = _fresh(cg).describe()
         assert limits["mem_bytes"] is None, limits
         assert limits["mem_readable"] is False, (
             "an ABSENT memory.max is 'could not tell', not 'no limit'"
         )
-        # A directory where the file belongs is the other unreadable shape.
         (cg / "memory.max").mkdir()
         assert _fresh(cg)._mem() == (None, False), _fresh(cg)._mem()
         (cg / "memory.max").rmdir()
@@ -146,40 +105,29 @@ def case_v1_memory_sentinel_is_unlimited_not_nine_exabytes():
 
 
 def case_never_raises_on_any_garbage():
-    """It feeds a page. A box whose cgroup files are missing, empty, binary or
-    a directory must render 'unknown', not 500 the panel that shows every other
-    ceiling. Asserts the VALUES, not just that keys exist — key presence alone
-    would pass if the parser returned 999.0 for "banana"."""
     with tempfile.TemporaryDirectory() as d:
         cg = Path(d)
-        # Split per reader, because the two files have different grammars: "1"
-        # is nonsense for cpu.max (which needs "quota period") and a perfectly
-        # legal — if absurd — one-byte ceiling for memory.max. Asserting one
-        # junk list against both would demand the memory reader THROW AWAY a
-        # number it can read, which is the opposite of this module's job.
+        # split per reader: "1" is nonsense for cpu.max but a legal one-byte memory.max
         cpu_junk = ("", "   ", "banana", "1", "1 2 3", "-1 0", "0 0", "��")
         mem_junk = ("", "   ", "banana", "1 2 3", "-1", "0", "��")
         for junk in cpu_junk:
             (cg / "cpu.max").write_text(junk, "utf-8")
-            limits = _fresh(cg).describe()               # must not raise
+            limits = _fresh(cg).describe()
             assert limits["cpus"] is None, (junk, limits)
             assert limits["cpus_readable"] is False, (junk, limits)
         for junk in mem_junk:
             (cg / "memory.max").write_text(junk, "utf-8")
-            limits = _fresh(cg).describe()               # must not raise
+            limits = _fresh(cg).describe()
             assert limits["mem_bytes"] is None, (junk, limits)
             assert limits["mem_readable"] is False, (junk, limits)
 
-        # A directory where a file belongs raises IsADirectoryError, an OSError.
         (cg / "cpu.max").unlink()
         (cg / "cpu.max").mkdir()
         assert _fresh(cg).describe()["cpus_readable"] is False
 
 
+# the id is pasted onto a root shell's `docker update --cpus=N <id>`: a trailing newline or a full 64-char id breaks it
 def case_container_id_is_stripped_and_truncated():
-    """This string is pasted onto a root shell's command line as
-    `docker update --cpus=N <id>`. A trailing newline or a full 64-char id
-    makes that command wrong."""
     with tempfile.TemporaryDirectory() as d:
         cg = Path(d)
         (cg / "cpu.max").write_text("max 100000", "utf-8")

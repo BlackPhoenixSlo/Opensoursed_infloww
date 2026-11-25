@@ -49,27 +49,27 @@ def _clock() -> int:
 
 _lock = threading.Lock()
 _frames: dict[str, list[decide.CounterFrame]] = {}
-_counter: dict[str, int] = {}                   # Creator -> the newest frame's OF counter
-_seen_at: dict[str, int] = {}                   # Creator -> the newest frame's receipt time
-_frame_n: dict[str, int] = {}                   # Creator -> counter frames received so far
+_counter: dict[str, int] = {}
+_seen_at: dict[str, int] = {}
+_frame_n: dict[str, int] = {}
 _gates: dict[str, decide.Gate] = {}
 _first_read_events: dict[str, decide.UnreadSet] = {}
-_sets: dict[str, decide.UnreadSet] = {}         # Creator -> the latest Unread set
+_sets: dict[str, decide.UnreadSet] = {}
 _dms: dict[str, list[decide.Activity]] = {}
 _echoes: dict[str, list[decide.Activity]] = {}
 _echo_ids: dict[str, dict[str, None]] = {}
-_replied: dict[tuple[str, int], tuple[bool | None, int]] = {}  # (Creator, fan) -> his state before our reply, landed at
+_replied: dict[tuple[str, int], tuple[bool | None, int]] = {}
 _retry_due: set[str] = set()
-_ids: dict[str, frozenset[int]] = {}            # Creator -> the restricted registry as of its last read
-_muted: dict[tuple[str, int], tuple[bool, int]] = {}   # (Creator, fan) -> a mute / unmute through the Relay, landed at
+_ids: dict[str, frozenset[int]] = {}
+_muted: dict[tuple[str, int], tuple[bool, int]] = {}
 _intents: dict[str, tuple[decide.Intent, ...]] = {}
 _intent_ids = itertools.count(1)
-_reads: set[asyncio.Task] = set()               # the reads in flight (held: a bare task may be collected)
-_proxy_down: frozenset[str] = frozenset()       # Open-tab Creators whose proxy is down, as of `_proxy_at`
+_reads: set[asyncio.Task] = set()  # held: a bare task may be collected
+_proxy_down: frozenset[str] = frozenset()
 _proxy_at: int | None = None
-_polled: dict[str, int] = {}                    # Creator -> its last socket-down poll ask (first: the drop seen)
-_queued: set[str] = set()                       # Creators a finished mass asked one window re-read for
-_arrivals: dict[str, dict[int, dict[str, int]]] = {}   # Creator -> fan -> kind -> newest arrival (`utd.overlay`)
+_polled: dict[str, int] = {}
+_queued: set[str] = set()
+_arrivals: dict[str, dict[int, dict[str, int]]] = {}
 _latest_message_at: dict[tuple[str, int], int] = {}
 _task: asyncio.Task | None = None
 
@@ -135,12 +135,12 @@ def restricted_unread(account_id: str) -> int | None:
         return None if s is None else _score_restricted(aid, s, _ids.get(aid, frozenset())).n
 
 
-_busts: dict[str, tuple[int, asyncio.Task[dict[str, int]]]] = {}    # Creator -> its last `?bust=` read's start, task
+_busts: dict[str, tuple[int, asyncio.Task[dict[str, int]]]] = {}
 
 
 async def hover(account_id: str, read: Callable[[], Awaitable[dict[str, int]]],
                 held: Callable[[], Awaitable[dict[str, int] | None]]) -> dict[str, int] | None:
-    """Not an Attribution start: hover reads stay out of the gate."""
+    # Not an Attribution start: hover reads stay out of the gate.
     aid, now = str(account_id), _clock()
     with _lock:
         last = _busts.get(aid)
@@ -173,8 +173,8 @@ class _List:
     calls: int
     asked_at: int
     frames_at_ask: int
-    failed: BaseException | None = None     # page 2's error, kept for its 429 (the exit hold)
-    sent_at: int | None = None              # page 1's answer time, past any pacer wait
+    failed: BaseException | None = None
+    sent_at: int | None = None
 
 
 def on_frame(account_id: str | None, event_type: str | None, event: Any) -> None:
@@ -278,8 +278,6 @@ def on_mute(aid: str, chat_id: int, muted: bool) -> None:
 
 
 def request_window_read(account_id: str) -> None:
-    """A finished mass of 5+ (`event_transcode_decide.queue_reread`): one page-0 window re-read through the gate
-    (`kind=queue`), so Fans it answered leave amber. No I/O; a request while one is pending joins it."""
     if not ENABLED:
         return
     try:
@@ -310,8 +308,6 @@ def _cause(aid: str, live: str | None) -> str | None:
 
 def record_intent(account_id: str, fan_id: int | None, *, at: int | None = None,
                   only_if_unread: bool = False) -> int | None:
-    """A Write intent, recorded before the OF write (`at`: its pre-write time, else now); its id, None when not
-    recorded."""
     if not ENABLED:
         return None
     try:
@@ -357,7 +353,6 @@ def on_reply(account_id: str, fan_id: int, at: int) -> None:
 
 
 def on_read_flip(account_id: str, fan_id: int | None, unread: int, at: int | None) -> None:
-    """A read flip of ours that landed: ReadDone / UnreadDone on the held set, stamped `at` (before the write)."""
     if not ENABLED or at is None or (unread and fan_id is None):
         return
     try:
@@ -655,7 +650,6 @@ def _walk_calls(account_id: str, kind: str) -> int:
 
 
 async def _queue_read(account_id: str) -> None:
-    """The mass's window re-read: the one page-0 reader (it publishes flips), paced as a background walk."""
     aid = account_id
     before = _walk_calls(aid, "badge_queue")
     try:

@@ -1,13 +1,3 @@
-"""bio pages (ofl.ink ported): bio_profiles, bio_links, bio_custom_domains, bio_spare_domains, bio_daily
-
-Five NEW tables, read by the public bio app (service/bio_pages on BIO_PORT); no existing row is touched.
-`create_all()` brings them (and the partial unique index, declared on the model) to a booting box; this file
-keeps the alembic chain linear. Each table and index is created only when the inspector lacks it.
-
-Revision ID: 0115_bio_pages
-Revises: 0114_tracking_click_labels
-Create Date: 2026-11-11
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -20,11 +10,10 @@ down_revision: str | Sequence[str] | None = "0114_tracking_click_labels"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_TABLES = ("bio_daily", "bio_spare_domains", "bio_custom_domains", "bio_links", "bio_profiles")  # drop order
+_TABLES = ("bio_daily", "bio_spare_domains", "bio_custom_domains", "bio_links", "bio_profiles")
 
 
 def _s(name: str) -> sa.Column:
-    """A NOT NULL text column defaulting to ''."""
     return sa.Column(name, sa.String, nullable=False, server_default=sa.text("''"))
 
 

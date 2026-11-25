@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-"""test_model_cap — the Relay-wide Model-call cap on off-slot automation `llm_client.chat` calls.
-
-Runs are real `run_slot.hold(SlotPool(k))` + `run_slot.freed(llm_client.chat(...))`; the wire is
-`_full_ai_fixtures.FakeWriterHTTP`, its `park` posts waiting until released. Temp DB only; no paid call.
-
-  case_cap_bounds_freed_calls          (a) cap + 5 freed calls: peak in flight = cap, all complete
-  case_employee_and_operator_bypass    (b) cap saturated: a no-run call and an operator run's call return
-  case_run_holding_its_slot_bypasses   (c) release kill switch off: a held run's call never waits
-  case_queued_call_times_out_clean     (d) LLMModelCapTimeout at min(timeout_s, WAIT_S); no row, no spend,
-                                           no request
-  case_cancel_returns_permits          (e) a cancelled holder / waiter gives its permit / place back
-  case_knob_read_at_use                (f) env, then stored, change the bound at the next call; never pending
-  case_long_wait_and_timeout_log       (g) long wait -> one outcome=got line, timeout -> outcome=timeout,
-                                           short wait -> none
-  case_writer_reads_cap_as_timeout     (h) full_ai_writers._outcome(...) == "timeout"
-  case_retries_keep_one_permit         (i) 429 then 200 inside one chat: one permit across both attempts
-
-Run: nice -n 10 ./venv/bin/python service/tests/test_model_cap.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -44,13 +25,11 @@ from db.models import Account, AccountAiConfig, GrokCall, GrokDailyCost  # noqa:
 
 AID = "model_cap_acct"
 MODEL = "deepseek-v4-flash"
-B = 120.0          # the run's take-back budget (rhythm.INLINE_MAX_S)
+B = 120.0
 HOST = "api.deepseek.com"
 
 
 def Wire(*script: str) -> FakeWriterHTTP:
-    """The shared Writers' wire on the DeepSeek host: `script` answered one per post (`park`
-    waits for `.go`); each request records `cap` = (in_flight, queued) at its post."""
     return FakeWriterHTTP({HOST: list(script)},
                           on_post=lambda r: r.update(cap=(model_cap.in_flight(), model_cap.queued())))
 
@@ -65,7 +44,6 @@ def chat(text: str = "hi", **kw):
 
 
 async def run_call(pool: run_slot.SlotPool, text: str = "hi", *, operator: bool = False, **kw):
-    """One automation run: holds a slot of `pool`, hands it back while its model answers."""
     async with run_slot.hold(pool, operator=operator):
         return await run_slot.freed(chat(text, **kw), budget_s=B)
 
@@ -147,7 +125,7 @@ async def case_employee_and_operator_bypass():
             res = await asyncio.wait_for(call(), 5)
             took = time.monotonic() - t0
             assert isinstance(res, llm_client.LLMResult), (who, res)
-            assert took < 1.0, f"{who} call took {took:.3f}s with the cap saturated"   # a capped call would wait 20 s
+            assert took < 1.0, f"{who} call took {took:.3f}s with the cap saturated"
             assert (model_cap.in_flight(), model_cap.queued()) == (1, 0), who
         assert not holder.done()
         w.go.set()
@@ -168,7 +146,7 @@ async def case_run_holding_its_slot_bypasses():
                 took = time.monotonic() - t0
                 assert slot.held
         assert isinstance(res, llm_client.LLMResult), res
-        assert took < 1.0, f"held run's call took {took:.3f}s"   # a capped call would wait 20 s
+        assert took < 1.0, f"held run's call took {took:.3f}s"
         assert model_cap.queued() == 0
         w.go.set()
         await settle([holder])
@@ -200,7 +178,7 @@ async def case_queued_call_times_out_clean():
             assert want - 0.02 <= took < want + 0.3, (timeout_s, took)
             assert await _counts() == before, "a cap timeout wrote a row or moved the spend"
             assert w.clients == made, "a cap timeout constructed a client"
-            assert (model_cap.in_flight(), model_cap.queued(), pool.free) == (1, 0, 4)   # holder's slot freed
+            assert (model_cap.in_flight(), model_cap.queued(), pool.free) == (1, 0, 4)
         w.go.set()
         await settle([holder])
     assert (model_cap.in_flight(), model_cap.queued(), pool.free) == (0, 0, 4)
@@ -220,7 +198,7 @@ async def case_cancel_returns_permits():
         assert (model_cap.in_flight(), model_cap.queued()) == (1, 1)
         holder.cancel()
         await settle([holder])
-        await until(lambda: w.parking == 1 and model_cap.queued() == 0)   # b got the permit
+        await until(lambda: w.parking == 1 and model_cap.queued() == 0)
         assert model_cap.in_flight() == 1
         b.cancel()
         await settle([b])
@@ -241,17 +219,17 @@ async def case_knob_read_at_use():
                     raise AssertionError("cap 1 let a second call in")
                 except llm_client.LLMModelCapTimeout:
                     pass
-            with env(AUTOMATION_MAX_MODEL_CALLS=2):              # env changed: no restart
+            with env(AUTOMATION_MAX_MODEL_CALLS=2):
                 tasks.append(asyncio.create_task(run_call(pool, "park2")))
                 await until(lambda: w.parking == 2)
             with env(AUTOMATION_MAX_MODEL_CALLS=None):
-                lane_config.set_many({model_cap.ENV: 3})          # saved from the panel
+                lane_config.set_many({model_cap.ENV: 3})
                 tasks.append(asyncio.create_task(run_call(pool, "park3")))
                 await until(lambda: w.parking == 3)
                 assert model_cap.in_flight() == 3
                 row = next(r for r in lane_config.describe() if r["name"] == model_cap.ENV)
                 assert (row["value"], row["live"], row["default"], row["pending"]) == (3, 3, 50, False), row
-                lane_config.set_many({model_cap.ENV: 1})          # shrink: the next call waits
+                lane_config.set_many({model_cap.ENV: 1})
                 try:
                     await run_call(pool, "late")
                     raise AssertionError("shrunk to 1, yet a 4th call went in")
@@ -284,14 +262,14 @@ async def case_long_wait_and_timeout_log():
     try:
         with env(AUTOMATION_MAX_MODEL_CALLS=1), patched(model_cap, LONG_WAIT_S=0.1, WAIT_S=0.3), \
                 Wire("ok:ok", "park", "ok:ok", "park").on() as w:
-            await run_call(pool, "short")                                  # free cap: no line
+            await run_call(pool, "short")
             assert not [x for x in h.lines if "model_cap_wait" in x], h.lines
             holder = asyncio.create_task(run_call(pool, "park"))
             await until(lambda: w.parking == 1)
             waiter = asyncio.create_task(run_call(pool, "after"))
             await until(lambda: model_cap.queued() == 1)
             await asyncio.sleep(0.15)
-            w.go.set()                                                     # waiter got it after >= 0.1 s
+            w.go.set()
             await settle([holder, waiter])
             got = [x for x in h.lines if "model_cap_wait" in x]
             assert len(got) == 1 and "outcome=got" in got[0], got
@@ -334,7 +312,6 @@ async def case_retries_keep_one_permit():
         res = await settle([holder, other])
     assert all(isinstance(r, llm_client.LLMResult) for r in res), res
     assert texts(w) == ["park-retry", "park-retry", "other"], w.requests
-    # the 2nd attempt ran with the permit still held and the other call still queued
     assert w.requests[1]["cap"] == (1, 1), w.requests
 
 

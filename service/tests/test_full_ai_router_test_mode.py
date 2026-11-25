@@ -25,7 +25,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_router_test_mode.py  (exit 0 =
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -40,16 +40,11 @@ from db.engine import get_session  # noqa: E402
 from db.models import Transaction  # noqa: E402
 
 GOLDEN = Path(__file__).with_name("test_full_ai_router_test_mode.shadow_request.golden.json")
-# `_router_jev.QUESTION_VERSION` at 10481c760 (Phase 01 + `gif_fits`), before ticket 43. Re-pinned
-# 2026-11-15 only for declines_buying's threshold .5 -> .95 in `THRESHOLDS` (owner: ignore "broke");
-# the request bytes (golden) are unchanged.
 SHADOW_QUESTION_VERSION = "14f5d4f6222f"
 GOLDEN_SHA256 = "c83e5dc592bd3d5cb04d5418256f056f354cc5936f1425217833e994aa1dba31"
 
 
 def _request_bytes(call: dict) -> bytes:
-    """One recorded Jev request as bytes: the state, every question in request order
-    (`model_dump` carries the SDK type: noul / score / choice) and the model pin."""
     return json.dumps(
         {"model": call["model"], "state": call["state"],
          "questions": {qid: q.model_dump(mode="json") for qid, q in call["questions"].items()}},
@@ -57,8 +52,6 @@ def _request_bytes(call: dict) -> bytes:
 
 
 async def _shadow_call(aid: str, fan: int) -> dict:
-    """A thread with every state field filled (lines, her priced unbought message, his tip),
-    his two-DM Turn, one Shadow run: the one Jev request it made."""
     await _seed(aid, rule=True, gate=False)
     for i, (d, body) in enumerate((("in", "hey gorgeous"), ("out", "<p>hi babe &amp; welcome</p>"),
                                    ("in", "what are you up to"))):
@@ -124,10 +117,10 @@ async def case_wall_clock_caps():
             raise AssertionError("no deadline")
         except rj.GateError as e:
             assert str(e) == "deadline", e
-        assert fake.calls == [], fake.calls     # the capped one was cancelled; none with no budget
+        assert fake.calls == [], fake.calls
         assert rj.WALL_S == rj.TIMEOUT_S * (1 + rj.MAX_RETRIES) == 20.0
-        assert (await rj.ask({}, "a")).intensity == 1.0  # Shadow: 0.3 s is inside WALL_S
-        rj.WALL_S = 0.05                                  # N6: every caller is capped, Shadow too
+        assert (await rj.ask({}, "a")).intensity == 1.0
+        rj.WALL_S = 0.05
         for kw in ({}, {"mode": "test", "timeout_s": 60.0}):
             try:
                 await rj.ask({}, "a", **kw)

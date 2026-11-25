@@ -1,33 +1,3 @@
-"""
-Proxy registry — persistent store of per-account proxies.
-
-Each session JSON in service/sessions/ can be paired with a proxy in this
-registry by label. OFClient consults `get_proxy_for_session(filename)` on
-load and routes all curl_cffi traffic through it.
-
-Single source of truth lives in service/proxies.json. Schema:
-
-  {
-    "proxies": [
-      {
-        "label":              "proxy-1",
-        "scheme":             "http",      // http | https | socks5
-        "host":               "203.0.113.10",
-        "port":               12323,
-        "username":           "...",       // optional
-        "password":           "...",       // optional — plain text, see notes
-        "notes":              "Example City, XX AS64500",
-        "assigned_session":   "session_20260101T000000Z.json",  // or null
-        "verified_ip":        "203.0.113.10",
-        "verified_at":        "2026-05-17T22:14:03Z",
-        "verified_geo":       "Example City, XX"
-      }
-    ]
-  }
-
-Phase-1 (testing) stores credentials in plain text. Phase-2 should move
-secrets into the OS keychain — see TODO section O.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -55,14 +25,11 @@ def _empty() -> dict[str, Any]:
     return {"proxies": []}
 
 
-# The text of the last proxies.json that parsed as a registry (a read or this
-# process's own `save`): what a torn read falls back on. Text, not the dict, so
-# every caller gets its own copy to mutate. Swapped whole under `_good_lock`;
-# `_gen` counts `save`s, so a read that a save overtook never stores its older text.
+# Last good proxies.json text: a torn read (another process mid-write) falls back on it; `_gen` stops an older read overtaking a save.
 _last_good_text: str | None = None
 _gen = 0
 _good_lock = threading.Lock()
-_torn_logged = False  # this run of torn reads was logged: once per run, not per read
+_torn_logged = False
 
 
 @dataclass(frozen=True)
@@ -72,9 +39,6 @@ class Ok:
 
 @dataclass(frozen=True)
 class Torn:
-    """proxies.json exists but is no registry: `save` writes in place (truncate,
-    write, fsync), so a reader between the truncate and the write sees an empty
-    or half-written file. `last_good`: the previous good read, if any."""
     last_good: dict[str, Any] | None
 
 
@@ -82,7 +46,6 @@ Registry = Ok | Torn
 
 
 def registry() -> Registry:
-    """proxies.json as read now. No file is an empty registry (nothing set up)."""
     global _last_good_text, _torn_logged
     if not REGISTRY_PATH.exists():
         return Ok(_empty())
@@ -93,7 +56,7 @@ def registry() -> Registry:
     except (OSError, ValueError):
         data = None
     if not isinstance(data, dict) or not isinstance(data.get("proxies"), list):
-        if not _torn_logged:  # the first torn read after a good one (or start): not every read
+        if not _torn_logged:
             _torn_logged = True
             log.warning("proxies_registry_torn fallback=%s", "last_good" if _last_good_text else "none")
         return Torn(json.loads(_last_good_text) if _last_good_text else None)
@@ -101,33 +64,26 @@ def registry() -> Registry:
         _torn_logged = False
         log.info("proxies_registry_recovered")
     with _good_lock:
-        if _gen == gen:   # else a save landed mid-read: its text is newer than ours
+        if _gen == gen:
             _last_good_text = text
     return Ok(data)
 
 
 def load() -> dict[str, Any]:
-    """The registry; a torn read gives the last good one, never an empty one
-    while there is one (a torn read made an empty registry: every proxied
-    account's next client went direct). Empty only before any good read."""
     data = _known(registry())
     return data if data is not None else _empty()
 
 
 def _known(reg: Registry) -> dict[str, Any] | None:
-    """The registry a read tells: Ok its data, Torn the last good one (None: none)."""
     return reg.data if isinstance(reg, Ok) else reg.last_good
 
 
 class RegistryUnreadable(RuntimeError):
-    """proxies.json does not parse as a registry right now: nothing is written."""
+    pass
 
 
 def _load_for_write() -> dict[str, Any]:
-    """The registry for a writer (under `_lock`), read whole or not at all: any
-    torn read raises RegistryUnreadable. Under `_lock` a torn file is another
-    process mid-write; saving the last good one plus our edit would drop its
-    write (and with no good read, every entry)."""
+    # Writers read whole or not at all: saving the last good copy plus our edit would drop another process's mid-write.
     r = registry()
     if isinstance(r, Ok):
         return r.data
@@ -150,16 +106,11 @@ class Refuse:
 
 
 class EgressRefused(RegistryUnreadable):
-    """No client may be built: which egress the account has is unknown."""
+    pass
 
 
 def egress(reg: Registry, account_id: str, session_filename: str | None = None) -> Proxy | Direct | Refuse:
-    """Where a client for `account_id` (its session file `session_filename`)
-    sends its traffic. A torn read with a good one before it answers from that
-    one. With none before it, nothing tells whether the account is proxied (no
-    session file or account record says so), so every account is Refused:
-    going direct would show OnlyFans the host's IP for a proxied Creator; a
-    refused build is retried on its next use."""
+    # No good read and no way to tell if the account is proxied: Refuse, since going direct would show OF the host IP for a proxied Creator.
     data = _known(reg)
     if data is None:
         return Refuse("proxies.json is unreadable and was never read whole: egress unknown")
@@ -170,19 +121,11 @@ def egress(reg: Registry, account_id: str, session_filename: str | None = None) 
 
 
 def save(data: dict[str, Any]) -> None:
-    """Write in place (same inode): proxies.json is bind-mounted into the relay
-    container as a single file, where a temp-file rename fails (EXDEV/EBUSY).
-    Truncate, write, flush and fsync; a torn write reads as unparseable, which
-    no writer overwrites (`_load_for_write` raises). Mode "w" truncates
-    the existing file; it never makes a new one.
-
-    Every write goes through here, so this is where an account's egress
-    changes: each account whose proxy (or that proxy's endpoint) differs
-    from before gets a `proxy_switched` SSE event."""
+    # Write in place (same inode): proxies.json is bind-mounted as a single file, where a temp-file rename fails (EXDEV/EBUSY).
     global _last_good_text, _gen
     try:
         before = _egress_by_account(load())
-    except Exception:   # a malformed old entry must not block the write
+    except Exception:
         before = None
     text = json.dumps(data, indent=2, sort_keys=False)
     with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
@@ -199,19 +142,16 @@ def save(data: dict[str, Any]) -> None:
         after = _egress_by_account(data)
         switched = sorted(a for a in before.keys() | after.keys() if before.get(a) != after.get(a))
         if switched:
-            import events  # lazy: scripts import this module without the relay
+            import events
             for aid in switched:
                 events.publish_state("proxy_switched", account_id=aid, proxied=aid in after)
             for fn in _switch_listeners:
                 fn(switched)
-    except Exception:   # best-effort: the write above is what matters
+    except Exception:
         log.warning("proxy_switched_announce_failed", exc_info=True)
 
 
-# Called by `save` with the account ids whose egress changed (server.py drops
-# their pooled client and reconnects their chat socket, so REST and the WS move
-# to the new route together). Runs under `_lock`: a listener must not call back
-# into this module's writers.
+# Runs under `_lock`: a listener must not call back into this module's writers.
 _switch_listeners: list[Callable[[list[str]], None]] = []
 
 
@@ -220,9 +160,6 @@ def on_switch(fn: Callable[[list[str]], None]) -> None:
 
 
 def _egress_by_account(data: dict[str, Any]) -> dict[str, tuple]:
-    """account id → the endpoint its traffic leaves through (label, scheme,
-    host, port, credentials); an account on no proxy is absent. Raises on a
-    malformed entry; `save` treats that as "unknown"."""
     out: dict[str, tuple] = {}
     for p in data.get("proxies", []):
         endpoint = tuple(p.get(k) for k in ("label", "scheme", "host", "port", "username", "password"))
@@ -236,7 +173,6 @@ def list_proxies() -> list[dict[str, Any]]:
 
 
 def _by_label(data: dict[str, Any], label: str) -> dict[str, Any] | None:
-    """The entry of `label` in a registry already read (the caller's copy)."""
     return next((p for p in data["proxies"] if p.get("label") == label), None)
 
 
@@ -251,11 +187,6 @@ def _session_entry(data: dict[str, Any], session_filename: str | None) -> dict[s
 
 
 def _ids_on(p: dict[str, Any]) -> list[str]:
-    """Return the list of account ids bound to this proxy.
-
-    Reads the canonical `assigned_account_ids` list and, for legacy entries
-    written before multi-binding was supported, falls back to the singular
-    `assigned_account_id`. Callers should treat the result as a set."""
     ids = p.get("assigned_account_ids")
     if isinstance(ids, list) and ids:
         return [str(x) for x in ids]
@@ -264,12 +195,6 @@ def _ids_on(p: dict[str, Any]) -> list[str]:
 
 
 def get_for_account(account_id: str) -> dict[str, Any] | None:
-    """Return the proxy assigned to this OF account (preferred — survives
-    re-captures because each new session is bucketed under the same id).
-
-    Each account belongs to at most ONE proxy (enforced in `assign_account`);
-    a proxy may serve many accounts (and the picker flags >1 with a shared-
-    egress warning, because OF can correlate same-IP accounts)."""
     return _account_entry(load(), account_id)
 
 
@@ -281,7 +206,6 @@ def _account_entry(data: dict[str, Any], account_id: str | None) -> dict[str, An
 
 
 def proxy_url(p: dict[str, Any]) -> str:
-    """Render a proxy entry to the URL form curl_cffi/requests expects."""
     scheme = p.get("scheme", "http")
     host, port = p["host"], p["port"]
     user, pw = p.get("username"), p.get("password")
@@ -291,13 +215,11 @@ def proxy_url(p: dict[str, Any]) -> str:
 
 
 def proxies_dict_for_requests(p: dict[str, Any]) -> dict[str, str]:
-    """Shape curl_cffi.requests.Session.proxies wants."""
     u = proxy_url(p)
     return {"http": u, "https": u}
 
 
 def upsert(entry: dict[str, Any]) -> dict[str, Any]:
-    """Add or replace by label. Returns the stored entry."""
     label = entry.get("label")
     if not label:
         raise ValueError("proxy entry needs a 'label'")
@@ -306,10 +228,10 @@ def upsert(entry: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"proxy entry missing '{required}'")
     entry.setdefault("scheme", "http")
     entry.setdefault("notes", "")
-    entry.setdefault("assigned_session", None)     # legacy per-file binding
-    entry.setdefault("assigned_account_id", None)  # legacy singular — mirrored from list[0]
-    entry.setdefault("assigned_account_ids", [])   # canonical: many-accounts-per-proxy
-    entry.setdefault("user_id", None)              # owner; null = shared default pool
+    entry.setdefault("assigned_session", None)
+    entry.setdefault("assigned_account_id", None)
+    entry.setdefault("assigned_account_ids", [])
+    entry.setdefault("user_id", None)
     entry.setdefault("verified_ip", None)
     entry.setdefault("verified_at", None)
     entry.setdefault("verified_geo", None)
@@ -318,12 +240,11 @@ def upsert(entry: dict[str, Any]) -> dict[str, Any]:
         data = _load_for_write()
         for i, p in enumerate(data["proxies"]):
             if p.get("label") == label:
-                # Preserve any fields the caller didn't supply.
                 merged = {**p, **{k: v for k, v in entry.items() if v is not None or k == "assigned_session"}}
                 data["proxies"][i] = merged
                 save(data)
                 return merged
-        if is_reserved_label(label):     # a NEW label only; existing ones are edited above
+        if is_reserved_label(label):
             raise ValueError(f"label {label!r} is reserved for the {BRAND_NAME} proxy pool")
         data["proxies"].append(entry)
         save(data)
@@ -334,9 +255,6 @@ SCHEMES = ("http", "https", "socks5")
 
 
 def parse_proxy_line(line: str, default_scheme: str = "http") -> dict[str, Any]:
-    """Parse one pasted proxy line (formats: docs/proxies.md). Returns {label, host, port, scheme, username?,
-    password?}; raises ValueError with a short reason. An optional label may
-    follow the proxy after whitespace; it defaults to `host:port`."""
     parts = (line or "").strip().split(None, 1)
     if not parts:
         raise ValueError("empty line")
@@ -351,20 +269,18 @@ def parse_proxy_line(line: str, default_scheme: str = "http") -> dict[str, Any]:
     auth = None
     if "@" in spec:
         left, right = spec.rsplit("@", 1)
-        # user:pass@host:port unless the right side cannot be host:port, or
-        # both could (numeric password) and only the left host looks like one.
         lh, _, lp = left.rpartition(":")
         rh, _, rp = right.rpartition(":")
         if rp.isdigit() and not (lp.isdigit() and "." in lh and "." not in rh):
             auth, hostport = left, right
-        else:                                     # host:port@user:pass
+        else:
             hostport, auth = spec.split("@", 1)
         host, _, port_s = hostport.rpartition(":")
     else:
         bits = spec.split(":")
-        if len(bits) == 2:                        # host:port
+        if len(bits) == 2:
             host, port_s = bits
-        elif len(bits) >= 4:                      # host:port:user:pass
+        elif len(bits) >= 4:
             host, port_s = bits[0], bits[1]
             auth = ":".join(bits[2:])
         else:
@@ -387,9 +303,6 @@ def parse_proxy_line(line: str, default_scheme: str = "http") -> dict[str, Any]:
 
 
 def redact_line(line: str) -> str:
-    """Mask anything that could be a password in a pasted line that failed to
-    parse (so the position of host vs auth is unknown): every `:value` on a
-    line with `@`, and everything from the 3rd colon segment otherwise."""
     parts = (line or "").strip().split(None, 1)
     if not parts:
         return ""
@@ -410,12 +323,6 @@ def redact_line(line: str) -> str:
 
 def upsert_from_line(line: str, default_scheme: str = "http",
                      owner: str | None = None) -> dict[str, Any]:
-    """parse_proxy_line + upsert. Re-pasting an existing label refreshes its
-    host/port/credentials but keeps its account bindings and notes.
-
-    `owner` mirrors POST /admin/proxies: when set (a signed-in user), a new
-    entry is tagged with it, and an existing label must already belong to
-    it (PermissionError otherwise; shared defaults are read-only)."""
     entry = parse_proxy_line(line, default_scheme)
     existing = get_by_label(entry["label"])
     if existing is not None and is_pool(existing):
@@ -445,8 +352,6 @@ def remove(label: str) -> bool:
 
 
 def assign(label: str, session_filename: str | None) -> dict[str, Any]:
-    """Bind a proxy to a session file (LEGACY). Prefer `assign_account`.
-    Enforces 1:1 — if another proxy already owns that session, it is unassigned."""
     with _lock:
         data = _load_for_write()
         target = None
@@ -463,27 +368,13 @@ def assign(label: str, session_filename: str | None) -> dict[str, Any]:
 
 
 def _sync_legacy_singular(p: dict[str, Any]) -> None:
-    """Mirror `assigned_account_ids[0]` into the legacy `assigned_account_id`
-    so older readers (db/import_legacy.py, any out-of-band tooling) still see
-    SOMETHING when a proxy is bound. None when the list is empty."""
     ids = p.get("assigned_account_ids") or []
     p["assigned_account_id"] = str(ids[0]) if ids else None
 
 
 def assign_account(label: str, account_id: str | None) -> dict[str, Any]:
-    """Bind an OF account to a proxy. Each account belongs to AT MOST one
-    proxy — if the account is currently bound to a different proxy, it is
-    moved here. Many accounts may share the same proxy (the UI surfaces a
-    warning when >1 share egress because OF can correlate same-IP behaviour).
-
-    `account_id=None` is preserved as a no-op (the old "unbind the single
-    binding" gesture moved to `unbind_account`); silently ignoring keeps
-    legacy callers safe."""
+    # Each account belongs to at most one proxy (OF can correlate same-IP accounts); binding moves it.
     if account_id is None:
-        # Existing callers (and the older UI) sometimes hit this with null
-        # to express "unbind". With multi-binding, that gesture is ambiguous
-        # (unbind WHICH account?) so the explicit `unbind_account` path
-        # owns it. Look up the target so callers still get the proxy back.
         p = get_by_label(label)
         if p is not None:
             return p
@@ -497,43 +388,32 @@ def assign_account(label: str, account_id: str | None) -> dict[str, Any]:
 
 
 def _bind(data: dict[str, Any], label: str, aid: str) -> dict[str, Any]:
-    """`assign_account`'s registry edit on `data` (the caller holds `_lock`
-    and saves): `aid` onto `label`, off every other proxy."""
     target = None
     for p in data["proxies"]:
-        # Lift legacy singular into the list before mutating, so a
-        # pre-multi-binding entry doesn't silently lose its original
-        # binding when a second account is added.
+        # Lift the legacy singular binding into the list first so a second account does not drop it.
         ids = _ids_on(p)
         if p.get("label") == label:
             target = p
             if aid not in ids:
                 ids.append(aid)
         else:
-            # Account moves: drop it from every OTHER proxy. Same
-            # invariant the old single-binding code enforced, just
-            # expressed against a list.
+            # Account moves: drop it from every other proxy (one proxy per account).
             ids = [x for x in ids if x != aid]
         p["assigned_account_ids"] = ids
         _sync_legacy_singular(p)
     if target is None:
         raise KeyError(f"no proxy with label {label!r}")
-    # Clear the legacy filename binding so the two don't fight each other.
     target["assigned_session"] = None
     return target
 
 
 def unbind_account(label: str, account_id: str) -> dict[str, Any]:
-    """Remove a single account from a proxy's binding list. Account is left
-    without a proxy (falls back to direct egress until reassigned)."""
     aid = str(account_id)
     with _lock:
         data = _load_for_write()
         target = _by_label(data, label)
         if target is None:
             raise KeyError(f"no proxy with label {label!r}")
-        # Lift legacy singular into the list first so a pre-multi
-        # entry can be unbound just like any other.
         ids = _ids_on(target)
         target["assigned_account_ids"] = [x for x in ids if x != aid]
         _sync_legacy_singular(target)
@@ -542,19 +422,10 @@ def unbind_account(label: str, account_id: str) -> dict[str, Any]:
 
 
 def migrate_legacy_assignments(filename_to_account: dict[str, str]) -> int:
-    """Promote `assigned_session` (filename) bindings into the per-account
-    list using a {session_filename: account_id} map (built from the account
-    dirs). Idempotent. Returns how many proxies were rebound.
-
-    Also lifts any pre-multi-binding `assigned_account_id` value into the
-    `assigned_account_ids` list so reads through the canonical accessor
-    pick it up. The list is the source of truth; the singular stays
-    mirrored for legacy readers."""
     rebound = 0
     with _lock:
         data = _load_for_write()
         for p in data["proxies"]:
-            # Lift legacy singular into the list if not yet migrated.
             ids = list(p.get("assigned_account_ids") or [])
             legacy = p.get("assigned_account_id")
             if legacy and str(legacy) not in [str(x) for x in ids]:
@@ -562,15 +433,12 @@ def migrate_legacy_assignments(filename_to_account: dict[str, str]) -> int:
                 p["assigned_account_ids"] = ids
             if ids:
                 _sync_legacy_singular(p)
-                continue  # already on the new scheme
+                continue
             sf = p.get("assigned_session")
             if sf and sf in filename_to_account:
                 aid = str(filename_to_account[sf])
                 p["assigned_account_ids"] = [aid]
                 _sync_legacy_singular(p)
-                # Don't clear assigned_session immediately — keep it as an audit
-                # crumb so an admin can still see which capture originally
-                # introduced this binding.
                 rebound += 1
         if rebound:
             save(data)
@@ -579,8 +447,6 @@ def migrate_legacy_assignments(filename_to_account: dict[str, str]) -> int:
 
 def record_verification(label: str, *, ip: str | None, geo: str | None,
                         ok: bool) -> None:
-    """Persist the last egress-IP probe result for a proxy. ok with no `ip` (the trace did not answer):
-    the last verified ip/geo are kept."""
     with _lock:
         data = _load_for_write()
         p = _by_label(data, label)
@@ -596,18 +462,11 @@ def record_verification(label: str, *, ip: str | None, geo: str | None,
         save(data)
 
 
-# ── Inflowwww proxy pool ───────────────────────────────────────────────────
-# The proxies in the relay env (POOL_ENV), seeded into this
-# registry as system entries (`pool: true`, no owner) so OFClient's ordinary
-# per-account routing does the egress and the stored binding is what keeps an
-# account on its pick. Pool entries are never listed, edited, tested or bound
-# through the generic /admin/proxies routes; their host and credentials stay
-# on the relay. Contract: docs/proxies.md, "Inflowwww proxy pool".
 
 POOL_ENV = "INFLOWW_PROXIES"
-POOL_CLEAR = "none"        # the only env value that empties an existing pool
+POOL_CLEAR = "none"
 POOL_LABEL_PREFIX = "infloww-"
-POOL_TIER_BREAK = "|"      # an item of its own in the env: the proxies after it are the next failover tier
+POOL_TIER_BREAK = "|"
 
 
 def is_pool(p: dict[str, Any] | None) -> bool:
@@ -618,8 +477,6 @@ _POOL_LABEL_RE = re.compile(r"^infloww-[0-9a-f]{8}$")
 
 
 def is_reserved_label(label: str) -> bool:
-    """A label a NEW user proxy may not take: exactly the generated pool form
-    `infloww-<8 hex>`. Existing entries keep whatever label they have."""
     return bool(_POOL_LABEL_RE.match(label or ""))
 
 
@@ -629,17 +486,6 @@ def pool_entries(reg: Registry | None = None) -> list[dict[str, Any]]:
 
 
 def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
-    """Parse POOL_ENV: proxy lines in any `parse_proxy_line` format, separated
-    by newlines or commas; blank and `#` lines skipped; every good line is
-    kept (no cap). Returns (entries, errors): `errors` are lines that don't
-    parse, with the redacted line, never a password. Each entry's label is `infloww-<hash>` of
-    scheme/user/host/port (stable across password rotations, changes when the
-    proxy itself is swapped), so a removed proxy is told apart from a kept one.
-    A POOL_TIER_BREAK item starts the next tier: each entry's `tier` is the
-    number of breaks before it (0 without any), the destination check's preference
-    (`_pick_answering`); a proxy listed twice keeps its first (best) tier. A
-    POOL_TIER_BREAK inside any other item is a bad line (the sync fails closed):
-    `a:1:u:p|b:2:u:p` would read as one proxy with password `p|b:2:u:p`."""
     entries: list[dict[str, Any]] = []
     errors: list[str] = []
     tier = 0
@@ -668,15 +514,6 @@ def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def sync_pool(text: str | None, rng: random.Random | None = None) -> dict[str, Any]:
-    """Make the registry's pool entries match POOL_ENV (called at startup).
-    New proxies are added, kept ones refreshed with their bindings intact, and
-    removed ones dropped; an account that was on a removed proxy is re-bound to
-    a random remaining one (or left with no proxy when the pool is empty).
-
-    Fails closed: while pool entries exist, an unset/empty env or any line that
-    doesn't parse leaves the pool and its bindings untouched (WARNING logged),
-    so a missing env never silently moves accounts to the server IP. Only
-    `none` clears it. A proxies.json that exists but does not parse is never written."""
     rng = rng or random
     clear = (text or "").strip().lower() == POOL_CLEAR
     wanted, errors = ([], []) if clear else parse_pool(text)
@@ -704,7 +541,7 @@ def sync_pool(text: str | None, rng: random.Random | None = None) -> dict[str, A
         for p in data["proxies"]:
             label = p.get("label")
             if not is_pool(p):
-                if label in want:   # a custom proxy holds the name: never adopted
+                if label in want:
                     log.warning("%s: label %s is held by a custom proxy; that pool proxy is skipped",
                                 POOL_ENV, label)
                     seen.add(label)
@@ -745,12 +582,6 @@ def _endpoint(p: dict[str, Any]) -> str:
 
 
 def _egress_key(entries: list[dict[str, Any]]) -> Callable[[dict[str, Any]], str]:
-    """The key `_pick_pool` counts bindings by, one rule for pool and custom
-    entries alike: the egress IP a probe verified for the entry's host:port
-    (on this entry or any other with the same host:port), else host:port (a
-    gateway provider hands out one IP per port). So one endpoint held both as
-    a custom and as a pool entry counts once, verified or not, and two ports
-    verified on one IP count as one."""
     ip_of: dict[str, str] = {}
     for p in entries:
         if p.get("verified_ip"):
@@ -759,18 +590,12 @@ def _egress_key(entries: list[dict[str, Any]]) -> Callable[[dict[str, Any]], str
 
 
 def egress_identity(proxy_url: str | None, reg: Registry) -> str:
-    """The exit a client's proxy URL (as `proxy_url` renders an entry) leaves from, by `_egress_key`'s rule
-    against `reg`: a verified IP, else host:port; no proxy "direct". Never a credential: of_pacing's key."""
     if not proxy_url:
         return "direct"
-    # host:port as proxy_url writes it (after the last "@"), not parse_proxy_line's guessing.
     host, _, port = proxy_url.rsplit("@", 1)[-1].split("://", 1)[-1].rpartition(":")
     return _egress_key((_known(reg) or {}).get("proxies") or [])({"host": host, "port": port})
 
 
-# What the caller (proxy_health) knows and this module does not: a proxy's last
-# seen country, and whether it answers right now (one probe). Injected, so this
-# module never imports proxy_health.
 Geo = Callable[[dict[str, Any]], str | None]
 Verify = Callable[[dict[str, Any]], bool]
 
@@ -778,12 +603,6 @@ Verify = Callable[[dict[str, Any]], bool]
 def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
                rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
                deactivated: frozenset[str]) -> dict[str, Any]:
-    """The least-used of `candidates`: fewest other active accounts already leaving
-    from its egress (`_egress_key`; bindings on any proxy in `data` count), ties broken at
-    random, so a new account gets an IP of its own while one is free. With
-    `like`, a candidate in the same country as `like` (when both are known:
-    `geo`, else the stored verification) wins over a less-used one elsewhere:
-    a Creator moved off a dead proxy keeps its region."""
     def country(p: dict[str, Any]) -> str | None:
         return geo(p) or p.get("verified_geo") or None
 
@@ -803,14 +622,6 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
                     rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
                     verify: Verify, checked: dict[str, bool], deactivated: frozenset[str],
                     probes: int | None = None, first_tier: int | None = None) -> dict[str, Any] | None:
-    """The one destination check, for a new binding and a failover alike: from
-    the best `_tiers` group with one that answers (a later tier only when none
-    in an earlier one does; `first_tier`, a moved Creator's own, goes first), the least-used candidate (`_pick_pool`) that
-    answers `verify` right now; one that does not is passed over for the next.
-    `checked` remembers each label's answer for the caller's whole pass (a
-    failover moving several Creators probes each destination once). At most
-    `probes` new probes in all (None: no limit). None when none answers within
-    them: nobody is moved onto a proxy that failed its probe."""
     for tier in _tiers(candidates, first_tier):
         left = list(tier)
         while left:
@@ -827,8 +638,6 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
     return None
 
 
-# A login's attach step waits on its probes: at most this many candidates are
-# probed (each with the caller's short timeout) before it falls back.
 ATTACH_PROBES = 2
 
 
@@ -837,43 +646,17 @@ def _tier(p: dict[str, Any]) -> int:
 
 
 def _tiers(entries: list[dict[str, Any]], first: int | None = None) -> list[list[dict[str, Any]]]:
-    """`entries` grouped by pool `tier` (POOL_TIER_BREAK in POOL_ENV), best
-    first; one group when the env has no break (an entry from before tiers, or
-    a custom one: 0). With `first`, that tier's group leads and the rest keep
-    their order (a Creator moved off a tier-2 proxy is not downgraded to tier 0
-    while tier 2 has one that answers)."""
     return [[p for p in entries if _tier(p) == t]
             for t in sorted({_tier(p) for p in entries}, key=lambda t: (t != first, t))]
 
 
 def _pool_entry_of(data: dict[str, Any], aid: str) -> dict[str, Any] | None:
-    """The pool entry in `data` that `aid` is bound to, None when on none."""
     return next((p for p in data["proxies"] if is_pool(p) and aid in _ids_on(p)), None)
 
 
 def assign_pool(account_id: str, *, bad: set[str], dead: set[str], due: set[str], geo: Geo, verify: Verify,
                 deactivated: frozenset[str],
                 rng: random.Random | None = None) -> tuple[dict[str, Any], bool]:
-    """Bind `account_id` to an Inflowwww proxy (callers: `proxy_health.assign_pool`,
-    which injects `bad` (its unusable labels: bad or herd-guarded), `dead` (those
-    of them bad for an outage, not flapping), `due`, `geo`, `verify`). Sticky: an account already on
-    a pool proxy keeps it unless that proxy is in `due` (bad long enough that
-    its failover is due: the same predicate `proxy_health._failover` runs on);
-    then it moves as a failover would move it (its own tier first), but only onto a pick that
-    answered its probe (none answers: it stays, surfaced as `proxy_down`; a
-    move is an OnlyFans IP change). An account on no pool proxy gets the
-    least-used pool proxy not in `bad`, of the best tier, that answers a probe
-    right now (`_pick_answering`), so a login during an outage lands on one
-    that works. When none answers, the least-used of the first non-empty group,
-    best tier first within it: untried not in `bad`, then any not in `bad`, then
-    any not in `dead` (a flapping one answers most calls; a dead one, least-used
-    once its Creators moved off, none), then the whole pool (surfaced as
-    `proxy_down`): a finished login is never thrown away. At most
-    ATTACH_PROBES probes (the attach request waits on them). The bind is a
-    compare-and-set under the registry lock: when a concurrent failover or
-    assign rebound the account meanwhile, that binding is kept (one IP change,
-    not two). Several accounts share one once the pool is full. Returns
-    (entry, kept). LookupError only when the pool is empty."""
     aid = str(account_id)
     rng = rng or random
     data = load()
@@ -909,17 +692,6 @@ def assign_pool(account_id: str, *, bad: set[str], dead: set[str], due: set[str]
 def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
                   deactivated: frozenset[str],
                   rng: random.Random | None = None) -> list[str] | None:
-    """Move every account on the bad pool proxy `label` to a pool proxy not in
-    `bad` that answers right now (`_pick_answering`: the source's own tier
-    while one there answers, else the best other tier with one that answers;
-    the least-used, same country first, in it), then apply the moves in ONE registry write, so `save`
-    evicts their clients and reconnects their chat sockets together. The
-    destinations are probed outside the registry lock; the write re-reads the
-    registry. Nothing is probed, nothing moves, and None is returned (not
-    applicable), when `label` is not a pool proxy or holds no account. An
-    account no answering destination is found for stays (surfaced as
-    `proxy_down`). A custom proxy is never failed over: the user chose it.
-    Returns the moved account ids ([]: it ran and nobody moved)."""
     rng = rng or random
     data = load()
     source = _by_label(data, label)
@@ -933,9 +705,9 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
         target = _pick_answering(healthy, data, aid, rng, like=source, geo=geo, verify=verify, checked=checked,
                                  deactivated=deactivated, first_tier=_tier(source))
         if target is None:
-            break   # nobody answers: the rest stay too
+            break
         plan[aid] = target["label"]
-        target["assigned_account_ids"] = _ids_on(target) + [aid]   # the next pick counts it
+        target["assigned_account_ids"] = _ids_on(target) + [aid]
     if not plan:
         return []
     with _lock:
@@ -954,19 +726,13 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
     return moved
 
 
-# ── Scrubbing pool secrets out of free text ────────────────────────────────
-# Exception text (curl's "Failed to connect to <host> port N", a proxy URL in a
-# repr) can name a pool proxy. Anything persisted or served from such text
-# goes through `scrub_pool_secrets` first.
 
 POOL_PLACEHOLDER = "[inflowwww-proxy]"
-_SCRUB_MIN_LEN = 4      # shorter tokens would mangle ordinary words
+_SCRUB_MIN_LEN = 4
 _pool_tokens_cache: dict[tuple, tuple[str, ...]] = {}
 
 
 def _pool_tokens() -> tuple[str, ...]:
-    """Each pool entry's host:port, host, username and password, longest first.
-    Cached on the registry file's (mtime, size) so a call costs one stat."""
     try:
         st = REGISTRY_PATH.stat()
     except OSError:
@@ -988,8 +754,6 @@ def _pool_tokens() -> tuple[str, ...]:
 
 
 def scrub_pool_secrets(text: str | None) -> str | None:
-    """Replace every pool proxy's host, host:port, username and password in
-    `text` with a placeholder. Unchanged (and cheap) when the pool is empty."""
     if not text:
         return text
     toks = _pool_tokens()
@@ -1000,7 +764,6 @@ def scrub_pool_secrets(text: str | None) -> str | None:
 
 
 def unbind_pool(account_id: str) -> bool:
-    """Drop the account's pool binding, if it has one. Returns whether it did."""
     current = get_for_account(account_id)
     if not is_pool(current):
         return False

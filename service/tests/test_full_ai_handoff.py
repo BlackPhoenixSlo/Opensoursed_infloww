@@ -1,28 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_handoff — the Welcome handoff for a Fan Full AI Chat claims (spec 04b ticket 78).
-
-`welcome_turn.enqueue_turn_handoff` over a temp DB; job rows read from `scheduled_jobs`. A Fan is
-claimed by patching `full_ai_live.live_rule` (Mode live: the enabled rule's id; main: None for every
-Creator). The job is `full_ai_live.enqueue`'s (W30 F10): its payload shape, due at the reply speed and
-no sooner than the Welcome rest.
-
-  case_claimed_wcfi_on            one `full_ai_chat` job {only_fan_ids, anchor, _rule_id, tries}, 165 s
-                                  out (his DM is old: its reply-speed due has passed); no
-                                  `welcome_chatter_for_info` job
-  case_claimed_wcfi_off           the same one job (today: none)
-  case_unclaimed_today            off the Fans list / `_live` false / Full AI rule off: today's row
-                                  byte-for-byte, or none with Get to know fans off
-  case_media_only_and_no_inbound  newest inbound media only: anchored on it; no inbound row: today's path
-  case_hook_same_anchor_rule_off  the hook's pending job absorbs the handoff (one job, his anchor); rule
-                                  off before the claim: cancelled with RULE_OFF_REASON through run_once
-  case_claimed_ids_raises         a Full AI fault: today's path
-  case_wcfi_handoff_cases_unedited  test_welcome_chatter_for_info.py matches origin/main
-
-Run: ./venv/bin/python service/tests/test_full_ai_handoff.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -49,7 +28,6 @@ _n = 0
 
 
 class ListOF:
-    """OF's `/lists/{id}/users` read only: {list_id: [fan ids]}."""
 
     def __init__(self, lists: dict[int, list[int]]):
         self.lists = lists
@@ -75,7 +53,6 @@ def _live(on: bool = True):
 
 
 async def _account(*, wcfi: bool, full_ai: bool = True, fans: dict | None = None) -> tuple[str, int]:
-    """A fresh account: Get to know fans rule on/off, Full AI rule on/off, its Fans list. -> (aid, rule id)."""
     global _n
     _n += 1
     aid = f"acc-handoff-{_n}"
@@ -106,7 +83,6 @@ async def _jobs(aid: str) -> list[ScheduledJob]:
 
 
 def _today(fan: int) -> str:
-    """Byte-for-byte the payload_json main's `enqueue_turn_handoff` writes."""
     return json.dumps({"only_fan_ids": [fan], "force_ids": [fan], "turn_handoff_ids": [fan]})
 
 
@@ -162,21 +138,17 @@ async def case_claimed_wcfi_off():
 async def case_unclaimed_today():
     fan = 13
     for wcfi in (True, False):
-        # off the Fans list (an include list he is not on)
         aid, _ = await _account(wcfi=wcfi, fans={"include": [901], "exclude": []})
         await _msg(aid, fan, 1201, "in", T0)
         with _live(), _patch(ax, "_make_client", lambda account_id: ListOF({901: [77]})):
             await _assert_today(aid, fan, wcfi=wcfi)
-        # `_live` false (main)
         aid, _ = await _account(wcfi=wcfi)
         await _msg(aid, fan, 1202, "in", T0)
         await _assert_today(aid, fan, wcfi=wcfi)
-        # the Full AI rule off
         aid, _ = await _account(wcfi=wcfi, full_ai=False)
         await _msg(aid, fan, 1203, "in", T0)
         with _live():
             await _assert_today(aid, fan, wcfi=wcfi)
-    # on the Fans list: claimed (the list read is real, not bypassed)
     aid, rid = await _account(wcfi=True, fans={"include": [901], "exclude": []})
     await _msg(aid, fan, 1204, "in", T0)
     with _live(), _patch(ax, "_make_client", lambda account_id: ListOF({901: [fan]})):
@@ -203,7 +175,7 @@ async def case_hook_same_anchor_rule_off():
     with _live():
         await wd._full_ai_hook(aid, fan, mid)
         assert await welcome_turn.enqueue_turn_handoff(aid, fan) == KIND
-    (hook_job,) = await _jobs(aid)                          # his pending job absorbs the handoff
+    (hook_job,) = await _jobs(aid)
     assert hook_job.kind == KIND, hook_job.kind
     assert json.loads(hook_job.payload_json) == {
         "only_fan_ids": [fan], "anchor": mid, "_rule_id": rid, "tries": 0}, hook_job.payload_json

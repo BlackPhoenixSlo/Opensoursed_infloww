@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""One user action must not fan out into every Creator's OnlyFans call at once (5-10 Creators share a proxy).
-
-  case_s4s_profiles_reads_users_me_through_the_lane_and_skips_dead_sessions
-      GET /admin/s4s/profiles over 7 live Creators: at most `admission.OF_ME_READ`'s 4 `/users/me` reads in
-      flight, every live one read once, the dead-session Creator never (its stored copy stays).
-
-Run: ./venv/bin/python service/tests/test_pace_creator_bursts.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -26,7 +18,7 @@ from db.engine import get_session  # noqa: E402
 from db.models import Account, AccountHealth, UserAccount  # noqa: E402
 
 IDS = fx.seed_two_agencies()
-_EXTRA = [f"88030{i:02d}" for i in range(6)]   # with creator_a: 7 live Creators, one more dead
+_EXTRA = [f"88030{i:02d}" for i in range(6)]
 _DEAD = "8803099"
 
 
@@ -80,8 +72,6 @@ def case_s4s_profiles_reads_users_me_through_the_lane_and_skips_dead_sessions():
 
 
 def case_s4s_timeout_keeps_the_lane_slot_until_the_read_returns():
-    """A `/users/me` read that outlives its timeout still holds its slot: a hung proxy
-    never has more than the lane's 4 reads running."""
     import s4s_api
     lock = threading.Lock()
     state = {"now": 0, "peak": 0}
@@ -104,7 +94,7 @@ def case_s4s_timeout_keeps_the_lane_slot_until_the_read_returns():
     s4s_api.OF_IDENTITY_TIMEOUT_S = 0.05
     try:
         r = fx.login_owner("agency_a_owner").get("/admin/s4s/profiles")
-        time.sleep(1.0)   # the timed-out reads finish
+        time.sleep(1.0)
     finally:
         ax._make_client, s4s_api.OF_IDENTITY_TIMEOUT_S = orig, orig_t
     assert r.status_code == 200, f"{r.status_code} {r.text}"

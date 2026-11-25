@@ -1,5 +1,3 @@
-"""Local real transport/caller regressions; no production endpoints or database."""
-
 import asyncio
 import json
 import os

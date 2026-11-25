@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Keep running guards migration (0126): on a 0125 DB it adds promo_create_reservations,
-promo_keep_state and the six promo_campaigns columns exactly as create_all makes them
-(partial open-reservation and one-Kept indexes included), keeps rows, de-duplicates a
-legacy Creator's several Kept campaigns (case_rv_c04: the last ticked/created stays, the
-rest unticked with kept_duplicate), is idempotent (inspector guard), downgrades, and stays
-on the one head's line."""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness
 
 import os  # noqa: E402
 import sqlite3  # noqa: E402
@@ -33,7 +27,6 @@ def _cfg() -> Config:
 
 
 def _shape(path) -> dict:
-    """Columns (name, type, notnull, default, pk) and index SQL of the three tables."""
     con = sqlite3.connect(path)
     try:
         out = {}
@@ -59,7 +52,7 @@ def _alembic(url: str, fn, rev: str) -> None:
 
 def case_single_head():
     script = ScriptDirectory.from_config(_cfg())
-    heads = script.get_heads()  # later revisions chain after REV; still one head, REV on its line
+    heads = script.get_heads()
     assert len(heads) == 1 and REV in {r.revision for r in script.iterate_revisions(heads[0], PREV)}, heads
     assert script.get_revision(REV).down_revision == PREV
 
@@ -69,7 +62,7 @@ def case_rv_c04_upgrade_dedupes_legacy_double_kept_and_downgrade():
         old, fresh = Path(tmp) / "old.db", Path(tmp) / "fresh.db"
         url = f"sqlite:///{old}"
         engine = sa.create_engine(url)
-        Base.metadata.create_all(engine)   # today's schema, then back to 0125's
+        Base.metadata.create_all(engine)
         with engine.begin() as con:
             for t in TABLES:
                 con.execute(sa.text(f"DROP TABLE {t}"))
@@ -81,7 +74,6 @@ def case_rv_c04_upgrade_dedupes_legacy_double_kept_and_downgrade():
                 "INSERT INTO promo_campaigns (account_id, name, discount_percent, price_cents, subscribe_counts, "
                 "subscribe_days, promo_type, status, subscriber_count, auto_reactivate, reactivate_count, "
                 "created_at) VALUES ('a1', 'P', 50, 0, 10, 0, 'all', 'active', 0, 1, 0, '2026-11-19')"))
-            # A legacy Creator with three Kept campaigns (0125 had no index): the newest stays.
             for name, made in (("D1", "2026-11-01"), ("D3", "2026-11-03"), ("D2", "2026-11-02")):
                 con.execute(sa.text(
                     "INSERT INTO promo_campaigns (account_id, name, discount_percent, price_cents, "
@@ -96,7 +88,6 @@ def case_rv_c04_upgrade_dedupes_legacy_double_kept_and_downgrade():
         assert any("uq_promo_create_open" in i and "WHERE state IN" in i
                    for i in _shape(old)["promo_create_reservations"][1]), _shape(old)
         with engine.connect() as con:
-            # A pre-0126 Kept row: no host stamp (stays fenced), no limit, second tick on.
             assert con.execute(sa.text(
                 "SELECT name, recreates_left, keep_host_id, keep_warning, keep_ticked_at, preempt FROM promo_campaigns "
                 "WHERE account_id = 'a1'")).all() == [("P", None, None, None, None, 1)]
@@ -105,7 +96,6 @@ def case_rv_c04_upgrade_dedupes_legacy_double_kept_and_downgrade():
                 "WHERE account_id = 'a2' ORDER BY name")).all()
             assert dup == [("D1", 0, "kept_duplicate", 1), ("D2", 0, "kept_duplicate", 1),
                            ("D3", 1, None, 0)], dup
-        # The one-Kept index refuses a second Kept campaign for a Creator.
         try:
             with engine.begin() as con:
                 con.execute(sa.text("UPDATE promo_campaigns SET auto_reactivate = 1 WHERE name = 'D1'"))
@@ -113,7 +103,6 @@ def case_rv_c04_upgrade_dedupes_legacy_double_kept_and_downgrade():
             pass
         else:
             raise AssertionError("a second Kept campaign for one Creator must be refused")
-        # The partial index allows one open reservation per Creator, any number settled.
         with engine.begin() as con:
             ins = ("INSERT INTO promo_create_reservations (account_id, source, state, terms_json, created_at) "
                    "VALUES ('a1', 'auto_ended', :st, '{}', '2026-11-19')")
@@ -126,7 +115,6 @@ def case_rv_c04_upgrade_dedupes_legacy_double_kept_and_downgrade():
             pass
         else:
             raise AssertionError("a second open reservation for one Creator must be refused")
-        # Re-running is a no-op (inspector guard), and so is a partial init_db catch-up.
         _alembic(url, command.upgrade, REV)
         assert _shape(old) == _shape(fresh)
         _alembic(url, command.downgrade, PREV)
@@ -145,7 +133,6 @@ def case_rv_c04_upgrade_dedupes_legacy_double_kept_and_downgrade():
 
 
 def case_rv_c04_init_db_catchup_dedupes_double_kept():
-    """A box upgrades through init_db, not alembic: the same de-dup runs before the index."""
     import asyncio
     _harness.bootstrap()
     from db.engine import init_db

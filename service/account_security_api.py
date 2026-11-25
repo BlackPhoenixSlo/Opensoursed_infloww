@@ -1,29 +1,3 @@
-"""service/account_security_api.py — the sign-in form's one endpoint, the 2FA
-routes and "Log out other sessions" (/auth/sign-in, /auth/2fa/*,
-/auth/sessions/*; roadmap S14, 6.2; 07 M3/M4/M5). Helpers: account_security.py.
-
-The signed-in principal of a route here is `chatters.current_actor()`: the
-owner cookie when present, else the chatter's. Under the founder's
-impersonation every route here is refused, since /auth/* is exempt from its
-read-only rule and these would change the friend's account.
-
-`POST /auth/sign-in` is the sign-in form's: one password check across owners
-then employees, one throttle token per submit (account_security.password_sign_in).
-/auth/login and /chatter/login stay for scripts and single-principal callers.
-
-After a challenge, `POST /auth/2fa/login {ticket, code}` (a TOTP or backup
-code) sets the session cookie; a setup ticket goes through `/auth/2fa/init` and
-`/auth/2fa/activate`, which sets it once 2FA is on. Code attempts share the
-sign-in throttle (login_throttle) under the principal's username.
-
-Setup is stateless until it succeeds: `init` returns the new secret (shown for
-manual entry and as an otpauth:// link; the app has no QR library) with an
-enrol token signing it to the principal; `activate` checks a code against it
-and stores it only while the principal has no secret yet, so a stolen session
-cannot swap an existing factor. Turning 2FA on or off signs every other session
-out, and the caller gets a fresh cookie.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -72,6 +46,7 @@ def set_session_cookie(kind: Kind, response: Response, principal_id: str) -> Non
 
 
 def _principal() -> tuple[Kind, str]:
+    # /auth/* is exempt from impersonation's read-only rule, so refuse here
     if auth.get_impersonation() is not None:
         raise HTTPException(status_code=403, detail="exit impersonation to change this account's security")
     actor = chatters.current_actor()
@@ -81,7 +56,6 @@ def _principal() -> tuple[Kind, str]:
 
 
 async def _ticket_principal(s, ticket: str, purpose: Literal["verify", "setup"]):
-    """The row a sign-in ticket names, or 401 when it expired, was revoked or the row is gone."""
     parsed = parse_signed(ticket, purpose)
     if parsed is None:
         raise HTTPException(status_code=401, detail=_EXPIRED)
@@ -95,7 +69,6 @@ async def _ticket_principal(s, ticket: str, purpose: Literal["verify", "setup"])
 
 
 async def _setup_principal(s, ticket: str | None):
-    """Who is setting up 2FA: the setup ticket's principal at sign-in, else the session's."""
     if ticket:
         return await _ticket_principal(s, ticket, "setup")
     kind, pid = _principal()
@@ -105,9 +78,8 @@ async def _setup_principal(s, ticket: str | None):
     return kind, row
 
 
+# Step or code is spent by a conditional UPDATE: a racing request with the same code fails
 async def _consume_code(s, kind: Kind, row, code: str) -> bool:
-    """Accept a TOTP or backup code for `row` once: the step or the code is
-    spent by a conditional UPDATE, so a racing request with the same code fails."""
     model = MODELS[kind]
     if not row.totp_secret:
         return False
@@ -131,7 +103,6 @@ def _utc_iso(dt: datetime | None) -> str | None:
     return dt.replace(tzinfo=timezone.utc).isoformat() if dt is not None else None
 
 
-# ── Routes ────────────────────────────────────────────────────────────
 
 class _SignInBody(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
@@ -231,6 +202,7 @@ async def two_factor_activate(
         codes, hashed = new_recovery_codes()
         now = datetime.utcnow()
         model = MODELS[kind]
+        # Only while no secret exists: a stolen session cannot swap an existing factor
         result = await s.execute(update(model).where(
             model.id == row.id, model.totp_secret.is_(None),
         ).values(totp_secret=enrol.value, totp_enabled_at=now, totp_recovery=hashed,

@@ -20,7 +20,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_owner_io.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -45,7 +45,6 @@ _n = 0
 
 
 async def _account(*, rule: bool | None = True, kinds: tuple[str, ...] = ()) -> str:
-    """A fresh account; its full_ai_chat rule on / off / absent (None); other enabled rules `kinds`."""
     global _n
     _n += 1
     aid = f"acc-owner-{_n}"
@@ -74,7 +73,6 @@ def _live(on: bool = True):
 
 
 async def _rule(aid: str, *, enabled: bool | None) -> None:
-    """Switch the account's full_ai_chat rule on / off, or delete it (None)."""
     from sqlalchemy import delete, update
     async with get_session() as s:
         if enabled is None:
@@ -95,7 +93,7 @@ async def case_off_rule():
         assert (await io.load(aid, 1, ANCHOR)).off == "off_rule"
         await _rule(aid, enabled=None)
         assert (await io.load(aid, 1, ANCHOR)).off == "off_rule"
-    assert (await io.load(aid, 1, ANCHOR)).off == "off_rule"      # rule before Mode
+    assert (await io.load(aid, 1, ANCHOR)).off == "off_rule"
 
 
 async def case_off_global():
@@ -139,12 +137,10 @@ async def case_hard_skip():
             fans["muted_fan"]: False, fans["clear"]: False, **dict.fromkeys(hard.values(), True)}
     for f, w in want.items():
         assert (await io.load(aid, f, ANCHOR)).hard_skip is w, (f, w)
-    # graduation reasons other than too_long: each its own fan
     for i, reason in enumerate(("info", "spent", "gathered")):
         async with get_session() as s:
             s.add(SkipList(account_id=aid, fan_id=40 + i, reason=reason))
         assert (await io.load(aid, 40 + i, ANCHOR)).hard_skip is False, reason
-    # the blacklist is global: another account sees it too
     other = await _account()
     assert (await io.load(other, fans["blacklist"], ANCHOR)).hard_skip is True
     with _live():
@@ -159,7 +155,7 @@ async def case_audience():
     async def refuse(account_id, fan_id, *, kind, policy=None):
         asked.append((account_id, int(fan_id), kind))
         return False, "outside_audience"
-    assert (await io.load(aid, 1, ANCHOR)).audience_ok is True       # audience off = allowed
+    assert (await io.load(aid, 1, ANCHOR)).audience_ok is True
     io.audience_allows_fan = refuse
     try:
         f = await io.load(aid, 1, ANCHOR)
@@ -183,25 +179,23 @@ async def _walk(aid: str, fan: int, *, run_kind: str | None = None, status: str 
         s.add(FunnelState(mass_run_id=run.id, fan_id=fan, status=status, last_error=last_error))
 
 
-# A walker of its own, registered the way a walker module does at import.
 SIDE_RUN, SIDE_WALKER, SIDE_HOLD = "side_stream_run", "side_walker", "side_hold"
 _funnel_walkers.register_walker({SIDE_RUN}, SIDE_WALKER, hold_mark=SIDE_HOLD)
 
 
 async def case_walk_advancing():
     aid = await _account(kinds=("reply_mass_funnel", SIDE_WALKER))
-    await _walk(aid, 1)                                              # reply_mass_funnel walk
-    await _walk(aid, 2, last_error=SIDE_HOLD)                        # held
-    await _walk(aid, 3, last_error=SIDE_HOLD + ":4th")               # held with a reason
-    await _walk(aid, 4, status="done")                               # not pending
-    await _walk(aid, 5, run_kind=SIDE_RUN)                           # the side walk, its walker on
-    await _walk(aid, 6, last_error="send failed")                    # an error that is not a hold
+    await _walk(aid, 1)
+    await _walk(aid, 2, last_error=SIDE_HOLD)
+    await _walk(aid, 3, last_error=SIDE_HOLD + ":4th")
+    await _walk(aid, 4, status="done")
+    await _walk(aid, 5, run_kind=SIDE_RUN)
+    await _walk(aid, 6, last_error="send failed")
     other = await _account(kinds=("reply_mass_funnel",))
-    await _walk(other, 7)                                            # another account's run
+    await _walk(other, 7)
     want = {1: True, 2: False, 3: False, 4: False, 5: True, 6: True, 7: False, 8: False}
     for f, w in want.items():
         assert (await io.load(aid, f, ANCHOR)).walk_advancing is w, (f, w)
-    # walker rule off: a reply_mass_funnel walk on an account with only the side walker, and the reverse
     only_side = await _account(kinds=(SIDE_WALKER,))
     await _walk(only_side, 1)
     await _walk(only_side, 2, run_kind=SIDE_RUN)
@@ -226,19 +220,19 @@ async def case_spend():
     async with get_session() as s:
         s.add(Fan(account_id=aid, fan_id=1, lifetime_spend_cents=100000))
         s.add(Fan(account_id=aid, fan_id=2, lifetime_spend_cents=99999))
-    f0 = await io.load(aid, 3, ANCHOR)                               # no Fan row
+    f0 = await io.load(aid, 3, ANCHOR)
     assert (f0.spend_cents, f0.top_spend_cents) == (0, 100000), f0
     with _live():
-        assert who_owns(await io.load(aid, 1, ANCHOR)) == Stop("top_spend")    # equal stops
+        assert who_owns(await io.load(aid, 1, ANCHOR)) == Stop("top_spend")
         assert who_owns(await io.load(aid, 2, ANCHOR)) is None
     off = await _account()
-    await _config(off, {"top_spend_cents": 0})                       # the checkpoint, not the draft
+    await _config(off, {"top_spend_cents": 0})
     async with get_session() as s:
         s.add(Fan(account_id=off, fan_id=1, lifetime_spend_cents=10**9))
     f = await io.load(off, 1, ANCHOR)
     assert (f.spend_cents, f.top_spend_cents) == (10**9, 0), f
     with _live():
-        assert who_owns(await io.load(off, 1, ANCHOR)) is None       # 0 never stops
+        assert who_owns(await io.load(off, 1, ANCHOR)) is None
     bad = await _account()
     await _config(bad, {"top_spend_cents": "lots"})
     assert (await io.load(bad, 1, ANCHOR)).top_spend_cents == 100000

@@ -1,10 +1,3 @@
-"""_full_ai_live_helpers — a scripted live Turn for the 04a / 05 / 06 live suites (facts, folds,
-sell, scene). No case here: import after `_harness.bootstrap()`.
-
-OF faked at `ax._make_client` (`_of_fixtures.FakeOF` or a subclass), `of_write_paced` unspaced,
-the Router (`FakeJev`), the info Jev (`FakeInfoJev`) and the Writers' wire (`FakeWriterHTTP`,
-the DeepSeek extract included) faked. Temp DB only; no paid call, no real OF call.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -32,7 +25,6 @@ HOSTS = (NANO, "openrouter.ai", "api.z.ai", DEEPSEEK)
 
 
 def extract_says(**vals) -> str:
-    """The faked DeepSeek extract's reply: wcfi's JSON with `vals` filled."""
     return "ok:" + json.dumps({**dict.fromkeys(_EXTRACT_FIELDS, ""), "likes_boobs": False,
                                "likes_ass": False, "recent_events": [], "her_claims": [], **vals})
 
@@ -40,9 +32,6 @@ def extract_says(**vals) -> str:
 @contextlib.contextmanager
 def world(fake=None, jev=None, info: FakeInfoJev | None = None, writers: dict | None = None,
           heat=None, price=None):
-    """`fake` (default FakeOF) behind the client factory, unspaced OF writes, faked Jevs and
-    Writers; `heat` / `price` replace the Heat check's / the price Jev's client when given.
-    Yields (fake OF, FakeJev, FakeInfoJev, FakeWriterHTTP)."""
     from automations import _heat_jev, _price_jev
     fake = fake or FakeOF()
     jevs = jev if isinstance(jev, FakeJev) else FakeJev(*([jev or (QUIET, 1.0)] * 6))
@@ -57,7 +46,7 @@ def world(fake=None, jev=None, info: FakeInfoJev | None = None, writers: dict | 
     real_price = _price_jev._client
     try:
         with fw.on(), _fake_jev(jevs, info):
-            if heat is not None:            # `_fake_jev` restores the real client on exit
+            if heat is not None:
                 _heat_jev._client = lambda key: heat
             if price is not None:
                 _price_jev._client = lambda key: price
@@ -68,8 +57,6 @@ def world(fake=None, jev=None, info: FakeInfoJev | None = None, writers: dict | 
 
 
 async def seed_live(aid: str, config: dict | None = None, *, exists: bool = False) -> int:
-    """An account (`exists`: already seeded, e.g. `_full_ai_sell_helpers.A`) with an enabled
-    `full_ai_chat` rule in Mode live; `config` = its checkpoint (over `DEFAULTS`)."""
     async with get_session() as s:
         if exists:
             r = AutomationRule(account_id=aid, name="Full AI Chat", kind=KIND, steps_json="{}", is_enabled=True,
@@ -87,7 +74,6 @@ async def seed_live(aid: str, config: dict | None = None, *, exists: bool = Fals
 
 
 async def set_config(aid: str, config: dict | None) -> None:
-    """The account's stored checkpoint = `DEFAULTS` + `config` (None: leave it)."""
     if config is None:
         return
     blob = json.dumps({"checkpoint": {**DEFAULTS, **config}})
@@ -124,9 +110,6 @@ async def live_rows(aid: str, fan: int | None = None) -> list[AiDecision]:
 
 
 async def dm_turn(aid: str, fan: int, mid: int, body: str, *, at: datetime | None = None, **world_kw):
-    """His DM lands; one live job runs for it (`full_ai_live.run`, the job body). Returns
-    (job result, fake OF, FakeJev, FakeInfoJev, FakeWriterHTTP). The 10 s cooldown is cleared
-    after, so the next Turn runs."""
     await _msg(aid, fan, mid, "in", body, at or datetime.utcnow())
     payload = {"only_fan_ids": [fan], "anchor": mid, "_rule_id": await full_ai_live.live_rule(aid)}
     with world(**world_kw) as (fake, jevs, info, fw):
@@ -137,7 +120,6 @@ async def dm_turn(aid: str, fan: int, mid: int, body: str, *, at: datetime | Non
 
 async def her_reply(aid: str, fan: int, mid: int, body: str = "mm hey", at: datetime | None = None,
                     **kw) -> None:
-    """An outbound of hers (another Lane or a human), so his next DM starts a new run."""
     await _msg(aid, fan, mid, "out", body, at or datetime.utcnow() - timedelta(seconds=40), **kw)
 
 

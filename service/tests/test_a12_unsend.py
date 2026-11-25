@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""
-A12 unsend_messages — `case_unsend`:
-  "marks messages.is_unsent + writes actions; uses the queue/per-chat delete
-   per window."
-
-Cases:
-  case_per_chat_unsend (the acceptance):
-      target a per-chat outbound message → of_client.unsend_message called with
-      (message_id, with_user_id=fan), messages.is_unsent flips True, an actions
-      row (action=unsend_message, employee_id NULL) is written, run status=ok.
-  case_mass_unsend:
-      a {queue_id, mass_run_id} target → cancel_scheduled(queue_id) called, ALL
-      messages of that mass_run flip is_unsent, actions row action=unsend_mass.
-  case_policy_sweep_per_chat_window:
-      no explicit targets → DB sweep picks only outbound text bubbles older than
-      text_hours AND still inside the 24h window (a 30h-old one is skipped, a
-      media bubble is skipped), and unsends them.
-  case_one_failure_does_not_sink_run:
-      a target whose OF call raises is counted failed; the run still completes ok
-      and a sibling good target still unsends.
-
-Run: ./venv/bin/python service/tests/test_a12_unsend.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
@@ -42,7 +19,6 @@ from db.models import Account, Action, AutomationRun, MassRun, Message, Post, Sc
 KIND = "unsend_messages"
 
 
-# ── Fake OFClient: records every unsend/cancel call, no network ───────
 
 class FakeClient:
     def __init__(self, user_id: str = "999", fail_on: set | None = None):
@@ -93,7 +69,6 @@ async def _add_message(
         ))
 
 
-# ── The acceptance: per-chat unsend flips is_unsent + actions row ────
 
 async def case_per_chat_unsend():
     aid, fan, mid = "acc_a12_chat", 5001, 70001
@@ -107,7 +82,6 @@ async def case_per_chat_unsend():
     assert res["status"] == "ok", res
     assert res["unsent"] == 1 and res["failed"] == 0, res
     assert res["rows_flipped"] == 1, res
-    # OF reflects it: unsend_message called with withUserId=fan (mass-bubble seam).
     assert fake.unsend_calls == [(mid, fan)], fake.unsend_calls
 
     async with get_session() as s:
@@ -127,7 +101,6 @@ async def case_per_chat_unsend():
         assert len(runs) == 1 and runs[0].status == "ok", runs
 
 
-# ── Mass unsend: cancel_scheduled + flip the whole run ───────────────
 
 async def case_mass_unsend():
     aid, fan_a, fan_b = "acc_a12_mass", 5101, 5102
@@ -162,21 +135,16 @@ async def case_mass_unsend():
         assert acts[0].target_type == "queue" and acts[0].target_id == str(qid)
 
 
-# ── Policy sweep respects the 24h window + text-only ─────────────────
 
 async def case_policy_sweep_per_chat_window():
     aid, fan = "acc_a12_sweep", 5201
     await _seed_account(aid)
     now = datetime.utcnow()
-    # Eligible: outbound text, 10h old (older than 9h, inside 24h).
     await _add_message(aid, fan, 72001, created=now - timedelta(hours=10))
-    # Too fresh: 2h old — younger than text_hours.
     await _add_message(aid, fan, 72002, created=now - timedelta(hours=2))
-    # Past the per-chat window: 30h old — unsend would 400, so skip.
+    # 30h old: past the per-chat window, unsend would 400, so skip.
     await _add_message(aid, fan, 72003, created=now - timedelta(hours=30))
-    # Has media: not a text bubble — out of policy scope.
     await _add_message(aid, fan, 72004, created=now - timedelta(hours=10), media_count=3)
-    # Inbound: never unsend the fan's messages.
     await _add_message(aid, fan, 72005, direction="in", created=now - timedelta(hours=10))
     fake = _use_fake()
 
@@ -194,14 +162,13 @@ async def case_policy_sweep_per_chat_window():
             assert (await s.get(Message, (aid, fan, mid))).is_unsent is False, mid
 
 
-# ── One bad target does not sink the run ─────────────────────────────
 
 async def case_one_failure_does_not_sink_run():
     aid, fan = "acc_a12_fail", 5301
     await _seed_account(aid)
     now = datetime.utcnow()
-    await _add_message(aid, fan, 73001, created=now - timedelta(hours=10))  # will fail at OF
-    await _add_message(aid, fan, 73002, created=now - timedelta(hours=10))  # good
+    await _add_message(aid, fan, 73001, created=now - timedelta(hours=10))
+    await _add_message(aid, fan, 73002, created=now - timedelta(hours=10))
     _use_fake(fail_on={73001})
 
     await enqueue_job(aid, KIND, payload={"targets": [
@@ -223,38 +190,31 @@ async def case_one_failure_does_not_sink_run():
 
 
 async def case_bad_target_id_skips_not_aborts():
-    """A non-numeric payload id must skip that target (logged), NOT raise out of
-    _norm_targets and abort the whole run — a valid target alongside it still
-    gets unsent."""
     aid, fan, mid = "acc_a12_badid", 5401, 74001
     await _seed_account(aid)
     await _add_message(aid, fan, mid, created=datetime.utcnow() - timedelta(hours=10))
     fake = _use_fake()
 
     await enqueue_job(aid, KIND, payload={"targets": [
-        {"queue_id": "not-a-number"},            # bad → skipped, never fatal
-        {"message_id": mid, "fan_id": fan},      # valid → unsent
+        {"queue_id": "not-a-number"},
+        {"message_id": mid, "fan_id": fan},
     ]})
     res = await run_once(aid, KIND)
 
     assert res["status"] == "ok", res
-    assert res["unsent"] == 1, res               # only the valid target ran
+    assert res["unsent"] == 1, res
     assert fake.unsend_calls == [(mid, fan)], fake.unsend_calls
     assert fake.cancel_calls == [], "the bad mass target was dropped before any OF call"
 
 
-# ── W2g: dry_run previews targets without touching OF or our rows ────
 
 async def case_dry_run_sends_nothing():
-    """A `dry_run` payload returns the would-unsend list but makes NO OF call and
-    flips NO rows — both an explicit-targets preview and a policy-sweep preview."""
     aid, fan = "acc_a12_dry", 5501
     await _seed_account(aid)
     now = datetime.utcnow()
-    await _add_message(aid, fan, 75001, created=now - timedelta(hours=10))  # text, eligible
+    await _add_message(aid, fan, 75001, created=now - timedelta(hours=10))
     fake = _use_fake()
 
-    # (a) explicit targets, dry_run → preview only
     await enqueue_job(aid, KIND, payload={
         "dry_run": True,
         "targets": [{"message_id": 75001, "fan_id": fan}],
@@ -269,7 +229,6 @@ async def case_dry_run_sends_nothing():
     ], res["would_unsend"]
     assert fake.unsend_calls == [] and fake.cancel_calls == [], "dry_run hit OF"
 
-    # (b) policy sweep, dry_run → same preview, still no OF + row untouched
     await enqueue_job(aid, KIND, payload={"dry_run": True, "policy": {"text_hours": 9}})
     res2 = await run_once(aid, KIND)
     assert res2["dry_run"] is True and res2["targets"] == 1, res2
@@ -284,22 +243,14 @@ async def case_dry_run_sends_nothing():
         assert acts == [], "dry_run writes no audit rows"
 
 
-# ── W2g: media sweep is opt-in and respects policy.media_hours ───────
 
 async def case_media_hours_sweep_window():
-    """`policy.media_hours` revives media auto-unsend: a media bubble older than
-    media_hours (inside 24h) is swept; a fresher one and an out-of-window one are
-    not; text bubbles still honour text_hours alongside it."""
     aid, fan = "acc_a12_media", 5601
     await _seed_account(aid)
     now = datetime.utcnow()
-    # Media, 14h old: older than media_hours(12), inside 24h → eligible.
     await _add_message(aid, fan, 76001, created=now - timedelta(hours=14), media_count=2)
-    # Media, 6h old: younger than media_hours(12) → skip.
     await _add_message(aid, fan, 76002, created=now - timedelta(hours=6), media_count=2)
-    # Media, 30h old: past the 24h per-chat window → skip (needs queue_id).
     await _add_message(aid, fan, 76003, created=now - timedelta(hours=30), media_count=2)
-    # Text, 10h old: older than text_hours(9) → still swept alongside media.
     await _add_message(aid, fan, 76004, created=now - timedelta(hours=10))
     fake = _use_fake()
 
@@ -319,8 +270,6 @@ async def case_media_hours_sweep_window():
 
 
 async def case_media_skipped_without_media_hours():
-    """Without `policy.media_hours`, media bubbles are NOT swept even when old —
-    preserves the text-only default (and the existing sweep contract)."""
     aid, fan = "acc_a12_nomedia", 5701
     await _seed_account(aid)
     now = datetime.utcnow()
@@ -335,12 +284,8 @@ async def case_media_skipped_without_media_hours():
     assert fake.unsend_calls == [], fake.unsend_calls
 
 
-# ── P1: post-delete target deletes via /posts/{id} + flips posts row ──
 
 async def case_post_delete():
-    """A {post_id, local_post_id} target → delete_post(post_id) called, OUR posts
-    row flips status='deleted', actions row action=delete_post (target_type=post).
-    This is the cleanup leg the auto_posts automation enqueues."""
     aid = "acc_a12_post"
     of_post_id, local_id = 90001, 7
     await _seed_account(aid)
@@ -375,8 +320,6 @@ async def case_post_delete():
 
 
 async def case_post_delete_by_of_id_only():
-    """Without local_post_id, the row is matched by of_post_id — covers an
-    operator-supplied target that only knows the OF id."""
     aid, of_post_id = "acc_a12_post_ofid", 90002
     await _seed_account(aid)
     async with get_session() as s:
@@ -401,9 +344,6 @@ async def case_post_delete_by_of_id_only():
 
 
 async def case_failed_post_delete_is_requeued_with_backoff_until_retries_are_spent():
-    """A post delete OF refuses is not swallowed: it is re-queued alone (the
-    good sibling is not), 15m later, then twice as late each time, and left
-    failed after _POST_RETRY_MAX retries. The retry that succeeds flips the row."""
     aid = "acc_a12_post_retry"
     bad, good, local_bad = 90011, 90012, 11
     await _seed_account(aid)
@@ -425,7 +365,6 @@ async def case_failed_post_delete_is_requeued_with_backoff_until_retries_are_spe
         mins = (job.run_at - before).total_seconds() / 60
         assert 14.9 < mins < 15.2, mins
 
-    # The 3rd retry backs off 15 * 2**2 = 60m; the last allowed one re-queues; past it, none.
     res = await a12.run(aid, {"targets": [{"post_id": bad}], "post_retry": 2}, run_id=0)
     async with get_session() as s:
         job = await s.get(ScheduledJob, res["post_retry_job_id"])
@@ -434,7 +373,6 @@ async def case_failed_post_delete_is_requeued_with_backoff_until_retries_are_spe
     res = await a12.run(aid, {"targets": [{"post_id": bad}], "post_retry": a12._POST_RETRY_MAX}, run_id=0)
     assert res["failed"] == 1 and res["post_retry_job_id"] is None, res
 
-    # OF accepts on a retry: the row flips and nothing more is queued.
     fake._fail_on.clear()
     res = await a12.run(aid, {"targets": [{"post_id": bad, "local_post_id": local_bad}], "post_retry": 1}, run_id=0)
     assert res["unsent"] == 1 and res["post_retry_job_id"] is None, res

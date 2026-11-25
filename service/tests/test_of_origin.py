@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""of_origin.loopback_url: the one loopback rule for test seams that receive a
-signed request or a secret (OF_API_ORIGIN via parse(), TURNSTILE_VERIFY_URL in
-turnstile.verify_url).
-
-  case_loopback_url_accepts_only_loopback_http: scheme, host, userinfo, port.
-  case_parse_still_wants_a_bare_origin: parse() keeps refusing a path / query
-      and rebuilds the origin as before.
-
-Run: ./venv/bin/python service/tests/test_of_origin.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import of_origin  # noqa: E402
 

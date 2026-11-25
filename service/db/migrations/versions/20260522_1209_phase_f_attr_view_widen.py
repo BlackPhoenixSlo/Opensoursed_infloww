@@ -1,51 +1,3 @@
-"""phase_f_attr_view_widen
-
-Revision ID: 0014_phase_f_attr_view_widen
-Revises: 0013_phase_f_transaction_ingest
-Create Date: 2026-05-22
-
-Widens `per_employee_revenue_with_attribution` (originally defined by
-0012_phase_d_stats) so the Phase F ingest's richer `kind` vocabulary
-(`ppv_message`, `ppv_post`, `ppv_stream`, `tip_post`, `tip_stream`,
-`custom`) flows into per-employee revenue rollups, and adds
-`uq_tx_msg` — a partial unique index on
-`(account_id, fan_id, message_id) WHERE message_id IS NOT NULL` that
-is the cross-writer dedup target for the WS pump and the Phase F PPV
-writer.
-
-Why a SEPARATE migration (not folded into 0013):
-  0013's schema columns are independently useful + lower-risk. 0014 is a
-  pure-DDL view rewrite + one partial-unique-index add. If 0014 fails
-  (e.g. a view-body typo), 0013's columns stay intact. Per
-  library/db_data/13_convergence_plan.md §10.3.
-
-⚠ Without this migration, every Phase F PPV ledger row falls outside the
-  attribution view (0012 filters `kind IN ('ppv', 'tip')` only).
-  Per-employee revenue would silently go to ~0 for PPV the day Phase F
-  ships. This is the §6 failure mode in
-  library/db_data/13_phase_f_da_review.md.
-
-Status filter:
-  Both CTEs now include `t.status = 'cleared'` so loading / refunded /
-  chargedback rows do not inflate per-employee revenue. Pending revenue
-  surfaces via a separate `pending_revenue_cents` field on the stats
-  endpoint, not the attribution view.
-
-uq_tx_msg index — dedup target for two writers:
-  • WS pump (after Planner B's PR): ON CONFLICT DO NOTHING on insert.
-  • Phase F PPV-row writer: ON CONFLICT DO UPDATE to promote
-    kind='ppv_pending' → 'ppv_message' and fill financial fields.
-  ⚠ `kind` is deliberately NOT in the unique key. A single OF
-  message_id maps to at most one transaction (a message is either a tip
-  or a PPV, never both, and an unlock references the original PPV's
-  message_id). Including `kind` would let WS's `ppv_pending` rows fail
-  to collide with the Phase F writer's later `ppv_message` rows →
-  double-count.
-
-SELECT shape unchanged: the new view returns the same five columns
-(sent_by_employee_id, account_id, kind, amount_cents, occurred_at) so
-`service/stats.py` literal_column proxies need no edit.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -114,8 +66,6 @@ SELECT sent_by_employee_id, account_id, kind, amount_cents, occurred_at
 """
 
 
-# Pasted verbatim from 0012_phase_d_stats so downgrade restores the
-# original view definition exactly.
 _OLD_VIEW_SQL = """
 CREATE VIEW per_employee_revenue_with_attribution AS
 WITH message_linked AS (
@@ -163,6 +113,7 @@ SELECT sent_by_employee_id, account_id, kind, amount_cents, occurred_at
 """
 
 
+# kind is deliberately NOT in the key: one OF message_id is at most one transaction, and a kind in the key would let ppv_pending and the later ppv_message row both land (double-count)
 _UQ_TX_MSG_SQL = """
 CREATE UNIQUE INDEX uq_tx_msg
   ON transactions(account_id, fan_id, message_id)

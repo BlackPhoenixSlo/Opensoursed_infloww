@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""The 30 s purchase poll walks the fleet concurrently, bounded and staggered.
-
-  • Every wanted account is polled once per cycle, at most
-    _FAST_POLL_CONCURRENCY at a time, starts _FAST_POLL_STAGGER_S apart — 20
-    accounts no longer take 20 x ~0.7 s, and never hit OF in the same instant.
-  • One account's failure is still recorded and does not stop the others.
-  • The feed read runs inside the serving relay's per-account OF lane
-    (server._priority_lane_background), so ACCOUNT_LANE_TOTAL still binds it.
-
-Run:  ./venv/bin/python service/tests/test_fast_poll_concurrency.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -29,7 +18,6 @@ TICK_S = 0.1
 
 
 async def _one_cycle(fake_tick, failures):
-    """Run start_fast_poll for one cycle over ACCOUNTS with `fake_tick`."""
     async def _none(*_a, **_k):
         return None
 
@@ -54,7 +42,7 @@ async def _one_cycle(fake_tick, failures):
     pp._FAST_POLL_STAGGER_S = 0.01
     ti.account_registry.list_accounts = lambda: [{"id": a, "has_session": True} for a in ACCOUNTS]
     ti.account_health.deactivated_ids = _off
-    pp._poll_state.clear()  # in-memory poll state: every account due on this cycle
+    pp._poll_state.clear()
     try:
         task = asyncio.create_task(pp.start_fast_poll())
         await asyncio.sleep(2.0)
@@ -87,10 +75,7 @@ async def case_bounded_concurrent_and_staggered():
     assert sorted(a for a, _ in started) == sorted(ACCOUNTS), "every account once per cycle"
     assert peak == pp._FAST_POLL_CONCURRENCY, f"peak in flight {peak}"
     first_wave = sorted(t for _, t in started)[:pp._FAST_POLL_CONCURRENCY]
-    # Span, not pairwise gaps: start i sleeps i*stagger from one base, and a
-    # loaded loop only ever wakes LATE, so one late start next to an on-time
-    # one shrinks a single gap (6 ms seen at load ~40) while the wave's span
-    # cannot fall below (n-1)*stagger. All-at-once would read ~0 here.
+    # Span, not pairwise gaps: a loaded loop only wakes late, so one late start shrinks a single gap; the span cannot fall below (n-1)*stagger.
     spread = first_wave[-1] - first_wave[0]
     want = 0.8 * (pp._FAST_POLL_CONCURRENCY - 1) * 0.01
     assert spread >= want, f"starts not staggered: first wave spans {spread:.4f}s < {want}s"
@@ -131,7 +116,7 @@ async def case_feed_read_holds_the_account_lane():
 
     class _Client:
         def get_json(self, _path):
-            reads.append(inside)  # poll_purchases swallows raises: record, assert below
+            reads.append(inside)
             return {"list": []}
 
     fake = types.SimpleNamespace(_priority_lane_background=_lane)

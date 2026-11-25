@@ -1,23 +1,3 @@
-"""service/auto_follow_api.py — the Auto-follow list's numbers (Infloww parity).
-
-Infloww's Growth → Auto-follow is one row per creator: a switch, follow counts
-and a details view of the fans followed. The switch is the account's
-`auto_follow` rule, flipped through `/admin/automation-rules/switch` (a rule
-created there follows OF's recently-expired list, money gate on — see
-`automation_rules_api._CREATE_PAYLOAD`). This module only READS.
-
-  GET /admin/auto-follow/stats?account_id=&tz=
-      → {rows: [{account_id, on, total, today, yesterday, d7, d30, last_followed_at}]}
-  GET /admin/auto-follow/records?account_id=&sort=&order=&start=&end=&limit=&offset=
-      → {total, rows: [{fan_id, name, username, avatar_url, total_spend_cents,
-                        expires_at, followed_at, follow_count}]}
-
-Counts: `total` and `last_followed_at` come from `follow_ping_state` (lifetime:
-sum of ping_count, latest last_pinged_at); the day windows from `follow_log`,
-which starts when it shipped, so a window reads 0 for follows older than that.
-Days are cut at midnight in `tz` (the browser's zone; UTC when absent/invalid);
-Today is today so far, 7/30 days are the last 7/30 days including today.
-"""
 from __future__ import annotations
 
 import logging
@@ -48,8 +28,8 @@ def _zone(tz: str | None) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+# follow_log starts at its ship date, so day windows read 0 for older follows; the lifetime total is follow_ping_state.
 def _day_starts_utc(zone: ZoneInfo, now_utc: datetime) -> dict[str, datetime]:
-    """Naive-UTC instants of local midnight: today, yesterday, 6 and 29 days ago."""
     local_today = now_utc.replace(tzinfo=timezone.utc).astimezone(zone).date()
 
     def start(days_back: int) -> datetime:

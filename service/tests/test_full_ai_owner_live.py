@@ -1,41 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_owner_live — `who_owns` in the live sender (04b ticket 81, full_ai_live's four
-04b slots off_switch / fans_list / who_owns / human_yield, `full_ai_owner_io._live`).
-
-OF faked (`OwnerOF` behind `ax._make_client`), Jev + Writers faked, the other Lanes' LLM faked at
-`llm_client.chat`, holds recorded (never slept). Temp DB only.
-
-  case_two_lanes              Full AI live + Get to know fans + Auto-reply on, one DM through the hook: the
-                              W7-queued Get to know fans job and Auto-reply send 0 (0 LLM calls, claimed),
-                              Full AI answers once, every sent row full_ai_chat
-  case_off_global             FULL_AI_CHAT_OFF before the job: skipped off_switch:off_global, 0 Router calls;
-                              during bubble 1's hold: 0 bubbles, stood_down; between bubble 1 and 2: 1 sent
-  case_rule_off               rule off during the hold: off_rule, no bubble; his next DM -> Get to know fans
-  case_human_row              an employee row during bubble 2's hold: cut human, no send after it, the
-                              human's pause outlives the 10 s cooldown; 2 OF-app reads (pre-look, bubble 1)
-  case_human_of_app           an unknown creator item in the pre-look's read: skipped human_yield:human_of_app,
-                              0 Router calls, 0 rows, pause ~60 s after the item, exactly 1 get_messages
-  case_app_before_bubble_1    an OF-app item after the pre-look, before bubble 1: 0 sent, `no_send`,
-                              stood_down human_yield:human_of_app, yield started
-  case_app_before_ppv         an OF-app item after bubble 1: text bubbles go (no read before them), the
-                              card does not, cut human_of_app, Offer NULL + offer_dropped, yield started
-  case_app_reads_clear        no outside item: text+card 3 reads (pre, bubble 1, card), card alone 2, all
-                              sent; our own sent bubbles in the read never stand down (also with their
-                              `messages` rows missing); a raising read sends as today
-  case_welcome_handoff        his DM, a welcome after it, the hook's job absorbs the handoff: one reply; the
-                              sweep's pre-look (client None) makes 0 get_messages
-  case_job_start_skips        off-list / top spend / hard skip / advancing walk: skipped, 0 Router, 0 rows;
-                              off-list answered by Get to know fans, the other three by no Lane
-  case_funnel_walk            a pending funnel_state during bubble 2's hold: cut funnel_walk
-  case_under_18               says_under_18: `no_send` row; neither other Lane answers on its next run
-  case_slot_partition         every `who_owns` reason lands in exactly one of the four slots
-  case_live_gate              `_live` follows `live_rule` (a Shadow rule is not live)
-
-Run: ./venv/bin/python service/tests/test_full_ai_owner_live.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -74,7 +40,6 @@ STYLE = {k: False for k in ("autoreply", "typos_autoreply", "nonnative_autoreply
 
 
 class OwnerOF(LiveOF):
-    """LiveOF plus what Get to know fans, Auto-reply and the Fans list read call."""
 
     def __init__(self, members: list[int] | None = None, **kw):
         super().__init__(**kw)
@@ -119,7 +84,6 @@ def _env(on: bool = True):
 
 @contextlib.contextmanager
 def _on_hold(n: int, act):
-    """`act()` (async) runs at bubble n's typing hold (1-based); holds never sleep."""
     seen = []
 
     async def hold(*_a, **_k):
@@ -131,8 +95,6 @@ def _on_hold(n: int, act):
 
 
 async def _creator(aid: str, *, listed: bool = True, autoreply_on: bool = False) -> int:
-    """A live Creator (Get to know fans + reply_mass_funnel rules on, from `_seed`); `listed`: the Fans
-    list is include [LIST]; `autoreply_on`: Auto-reply on at 5 min silence."""
     rid = await seed_live(aid, {"fans": {"include": [LIST], "exclude": []}} if listed else {})
     async with get_session() as s:
         await s.execute(update(AccountAiConfig).where(AccountAiConfig.account_id == aid).values(
@@ -142,7 +104,6 @@ async def _creator(aid: str, *, listed: bool = True, autoreply_on: bool = False)
 
 
 async def _fan(aid: str, fan: int, *, ago_min: float = 6, spend: int = 0, line: str = "haha what about u") -> int:
-    """A Fan who wrote last `ago_min` ago after a short chat (every Lane's candidate): his DM's id."""
     now = datetime.utcnow()
     async with get_session() as s:
         s.add(Fan(account_id=aid, fan_id=fan, of_display_name="Jack", lifetime_spend_cents=spend,
@@ -170,7 +131,6 @@ async def _job(aid, fan, mid, rid, of, **kw):
 
 @contextlib.contextmanager
 def _lanes(of: OwnerOF):
-    """The other Lanes' world: `of` as every client, their LLM recorded (a canned line)."""
     calls = []
 
     async def chat(**kw):
@@ -182,7 +142,6 @@ def _lanes(of: OwnerOF):
 
 
 async def _lane(aid: str, kind: str, of: OwnerOF) -> tuple[list[int], list, dict]:
-    """One run of `kind`: (fans it sent to, its LLM calls, its result)."""
     before = len(of.sent)
     with _lanes(of) as calls:
         res = await run_once(aid, kind, payload={})
@@ -201,7 +160,7 @@ async def case_two_lanes():
     aid, fan = "fa_ol_two", 901
     await _creator(aid, autoreply_on=True)
     mid = await _fan(aid, fan)
-    async with get_session() as s:            # W7 on: the hook wakes Get to know fans for his DM
+    async with get_session() as s:
         await s.execute(update(AccountAiConfig).where(AccountAiConfig.account_id == aid).values(
             webhook_config_json=json.dumps({"enabled": True})))
     of = OwnerOF(members=[fan])
@@ -216,7 +175,7 @@ async def case_two_lanes():
         assert "welcome_chatter_for_info" in kinds and KIND in kinds, kinds
         before = len(of.sent)
         with _lanes(of) as wcalls:
-            wres = await run_once(aid, "welcome_chatter_for_info")     # the W7-queued job itself
+            wres = await run_once(aid, "welcome_chatter_for_info")
         wcfi = of.fans()[before:]
         ar, acalls, ares = await _lane(aid, "autoreply", of)
         res = await run_once(aid, KIND)
@@ -233,7 +192,6 @@ async def case_two_lanes():
 
 
 async def case_off_global():
-    # Set while the job waits: the pre-look stands down before the Router.
     aid, fan = "fa_ol_off0", 911
     rid = await _creator(aid, listed=False)
     mid = await _fan(aid, fan)
@@ -241,7 +199,6 @@ async def case_off_global():
         res, w = await _job(aid, fan, mid, rid, LiveOF())
     assert res == {"skipped": "off_switch:off_global"}, res
     assert (w.jev.calls, w.of.calls, w.of.reads, await live_rows(aid)) == ([], 0, 0, [])
-    # Set during bubble 1's typing hold: nothing goes out, the reason is on the row.
     aid, fan = "fa_ol_off1", 912
     rid = await _creator(aid, listed=False)
     mid = await _fan(aid, fan)
@@ -253,7 +210,6 @@ async def case_off_global():
     (row,) = await live_rows(aid)
     assert (row.status, w.of.calls) == ("no_send", 0), row.status
     assert _reply(row)["stood_down"] == {"check": "off_switch", "reason": "off_global", "index": 0}
-    # Set between bubble 1 and 2 of a 3-bubble reply: 1 sent, the rest dropped.
     aid, fan = "fa_ol_off2", 913
     rid = await _creator(aid, listed=False)
     mid = await _fan(aid, fan)
@@ -282,7 +238,6 @@ async def case_rule_off():
     (row,) = await live_rows(aid)
     assert (row.status, w.of.calls) == ("no_send", 0), row.status
     assert _reply(row)["stood_down"] == {"check": "off_switch", "reason": "off_rule", "index": 0}
-    # His next DM: Get to know fans answers him, no cleanup step.
     await _dm(aid, fan, "u there?", 30)
     of = OwnerOF()
     sent, calls, _res = await _lane(aid, "welcome_chatter_for_info", of)
@@ -298,7 +253,6 @@ async def _employee() -> int:
 
 
 async def _automation_sentinel() -> None:
-    """The Automation Employee (prod's migration 0011): `hard_yield` needs it to rest the Fan."""
     async with get_session() as s:
         if (await s.execute(select(Employee.id).where(Employee.display_name == "Automation"))).first() is None:
             s.add(Employee(display_name="Automation", is_active=False))
@@ -311,7 +265,7 @@ async def case_human_row():
     mid = await _fan(aid, fan)
     emp = await _employee()
 
-    async def human():         # a chatter types to him from the app: the row + its yield
+    async def human():
         await attribution.write_outbound_attribution(
             account_id=aid, fan_id=fan, message_id=next(_mid), sent_by_employee_id=emp, body="hey its me",
             price_cents=0, created_at=datetime.utcnow())
@@ -321,7 +275,7 @@ async def case_human_row():
     (row,) = await live_rows(aid)
     assert (row.status, of.calls) == ("sent", 1), row.status
     assert _reply(row)["cut"] == {"check": "human_yield", "reason": "human", "index": 1}
-    assert of.reads == 2, of.reads                       # the OF-app read: the pre-look + bubble 1 only
+    assert of.reads == 2, of.reads
     until = await paused(aid, fan)
     assert until is not None and until > datetime.utcnow() + timedelta(seconds=30), until
 
@@ -342,8 +296,6 @@ async def case_human_of_app():
 
 
 class AppOF(LiveOF):
-    """LiveOF whose chat read lists `chat` plus every DM it took (ours, newest first, as OF lists them);
-    `broken`: every read raises."""
 
     def __init__(self, broken: bool = False, **kw):
         super().__init__(**kw)
@@ -363,7 +315,6 @@ class AppOF(LiveOF):
 
 
 def _app_item() -> dict:
-    """A creator item typed in the OF app just now (an id none of our rows has)."""
     return {"id": 7_900_000_000_000 + next(_mid), "createdAt": datetime.utcnow().isoformat() + "+00:00",
             "text": "typed in the app", "fromUser": {"id": 1}}
 
@@ -374,7 +325,6 @@ def _three(parts: list[str]) -> list[str]:
 
 @contextlib.contextmanager
 def _sent_as(shape=_three, pick: Pick | None = PICK):
-    """Every live Turn's bubbles are `shape(parts)`; `pick`: `PICK` rides the last one (the card)."""
     real = full_ai_test.send
 
     def send(row, parts, p=None, **kw):
@@ -389,7 +339,7 @@ async def _yielded(aid: str, fan: int) -> None:
 
 
 async def case_app_before_bubble_1():
-    # Measured 2026-11-16: an outside reply landed while the Writer ran, after the pre-look's read.
+    # outside reply landing while the Writer ran, after the pre-look read
     aid, fan = "fa_ol_app0", 942
     rid = await _creator(aid, listed=False)
     mid = await _fan(aid, fan)
@@ -411,13 +361,12 @@ async def case_app_before_ppv():
     rid = await _creator(aid, listed=False)
     mid = await _fan(aid, fan)
     of = AppOF(after=lambda n, _t: of.chat.append(_app_item()) if n == 1 else None)
-    with _sent_as():                           # text, text, card
+    with _sent_as():
         res, w = await _job(aid, fan, mid, rid, of)
     (row,) = await live_rows(aid)
     reply = _reply(row)
     assert len(reply["parts"]) == 3 and "ppv" in reply["parts"][2], reply["parts"]
     assert [("message_id" in p) for p in reply["parts"]] == [True, True, False], reply["parts"]
-    # Bubble 2 (text) reads the DB only: the item is seen first at the card's look.
     assert (row.status, of.calls, of.reads) == ("sent", 2, 3), (row.status, of.calls, of.reads)
     assert not any("price" in s for s in of.sent), of.sent
     assert reply["cut"] == {"check": "human_yield", "reason": "human_of_app", "index": 2}, reply.get("cut")
@@ -435,21 +384,17 @@ async def case_app_reads_clear():
         reply = _reply(row)
         assert row.status == "sent" and "cut" not in reply and of.calls == len(reply["parts"]), (row.status, reply)
         return row, reply
-    # Text, text, card: pre-look, bubble 1, the card. Our sent bubbles are in every read after bubble 1.
     of = AppOF()
     row, reply = await turn("fa_ol_app2", 944, of, _sent_as())
     assert (len(reply["parts"]), of.reads, row.offer_price_cents) == (3, 3, 1500), (reply["parts"], of.reads)
     assert [kw.get("peek") for kw in of.read_kw] == [True] * 3, of.read_kw
     assert reply["parts"][-1]["message_id"] and "price" in of.sent[-1], of.sent
-    # The card alone: pre-look + the card.
     of = AppOF()
     row, reply = await turn("fa_ol_app3", 945, of, _sent_as(lambda p: p[-1:]))
     assert (len(reply["parts"]), of.reads) == (1, 2), (reply["parts"], of.reads)
-    # Three text bubbles: pre-look + bubble 1.
     of = AppOF()
     row, reply = await turn("fa_ol_app4", 946, of, _sent_as(pick=None))
     assert (len(reply["parts"]), of.reads) == (3, 2), (reply["parts"], of.reads)
-    # Bubble 1's `messages` row missing (a best-effort write failed): the card's read lists it, still ours.
     async def no_row(**_kw):
         return None
     of = AppOF()
@@ -458,7 +403,6 @@ async def case_app_reads_clear():
     async with get_session() as s:
         assert await s.get(Message, ("fa_ol_app5", 947, reply["parts"][0]["message_id"])) is None
     assert (len(reply["parts"]), of.reads) == (2, 3) and reply["parts"][-1]["message_id"], of.reads
-    # Every read raises: no Stop, all of it sends as today.
     of = AppOF(broken=True)
     row, reply = await turn("fa_ol_app6", 948, of, _sent_as())
     assert of.reads == 3 and reply["parts"][-1]["message_id"], of.reads
@@ -480,14 +424,11 @@ async def case_welcome_handoff():
                 ScheduledJob.account_id == aid, ScheduledJob.kind == KIND))).scalars())
             await s.execute(update(ScheduledJob).where(ScheduledJob.account_id == aid, ScheduledJob.kind == KIND)
                             .values(run_at=datetime.utcnow() - timedelta(seconds=1)))
-        # The hook's pending job absorbs the handoff (W30 F10: `full_ai_live.enqueue`): one job.
         assert len(jobs) == 1 and {json.loads(j.payload_json)["anchor"] for j in jobs} == {mid}, jobs
         first = await run_once(aid, KIND)
     (row,) = await live_rows(aid)
     assert (first["status"], row.status) == ("ok", "sent"), first
     assert of.calls == len(_reply(row)["parts"]) and len(w.jev.calls) == 1
-    # The sweep's pre-look (client None) on an open Turn with a human item on OF: 0 OF-app reads
-    # (the sweep itself is ticket 68).
     fan2 = 952
     mid2 = await _fan(aid, fan2)
     async with get_session() as s:
@@ -522,7 +463,6 @@ async def case_job_start_skips():
     wcfi, _c, wres = await _lane(aid, "welcome_chatter_for_info", of)
     ar, _c, ares = await _lane(aid, "autoreply", of)
     assert wcfi == [off_list] and ar == [], (wcfi, ar)
-    # rich, hard, walking: on the list with Full AI on = claimed, whatever who_owns says
     assert wres.get("full_ai_claimed") == 3 and ares.get("full_ai_claimed") == 3, (wres, ares)
 
 
@@ -560,7 +500,6 @@ async def case_under_18():
 
 
 def case_slot_partition():
-    """Each `who_owns` reason is answered by exactly one of the four 04b slots."""
     from automations import full_ai_owner
     from automations.full_ai_owner import Stop
     slots = (full_ai_look.off_switch, full_ai_look.fans_list, full_ai_look.who_owns, full_ai_look.human_yield)

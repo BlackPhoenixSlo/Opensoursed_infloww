@@ -1,8 +1,3 @@
-"""Standard vault categories, derived from saved effective analysis. No model calls.
-
-Categories are multi-label references, never copies of media. This module does
-not change Jev, descriptions, tags, prices, or the existing AI folder builder.
-"""
 from __future__ import annotations
 
 import re
@@ -57,12 +52,6 @@ def _words(value: Any) -> set[str]:
 
 
 def classify(item: Any) -> set[str]:
-    """No guesses from filenames, absence of flags, or mere body-part presence.
-
-Structured fields carry the strong evidence. Prose only refines settings absent
-from the existing fixed menu, and is ignored in negated/uncertain clauses.
-Manual folder decisions always win, including after Describe All is repeated.
-"""
     kind = getattr(item, "kind", "")
     if kind not in ("photo", "video") or getattr(item, "removed_at", None):
         return set()

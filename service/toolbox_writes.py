@@ -1,9 +1,3 @@
-"""service/toolbox_writes.py — the Toolbox write tools' args and echo checks, pure (step 3).
-
-`toolbox_decide.TOOLS` names them; this module imports only the leaf `toolbox_args` of the
-Toolbox, so either side loads first. A `check(args, answer)` exists only where the route can answer 2xx without
-doing all that was asked (toolbox_decide module doc); None = the answer shows it, else why not.
-"""
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Mapping
@@ -13,7 +7,7 @@ from pydantic import Field, StrictBool, StrictInt, StringConstraints
 from bio_pages.decide import RECORD_ID
 from toolbox_args import CREATOR as _CREATOR, Args
 
-MAX_MEDIA = 500  # media ids per folder write (a vault manager selection, not a whole vault)
+MAX_MEDIA = 500
 _MediaId = Annotated[StrictInt, Field(gt=0)]
 _FolderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 _ID = f"^{RECORD_ID.pattern}$"
@@ -44,7 +38,7 @@ class BioPageCreateArgs(Args):
                                    "the page starts with a link to her OnlyFans and can use her vault photos.")
 
 
-class BioPageArgs(Args):  # bio_page_get's
+class BioPageArgs(Args):
     pid: str = Field(pattern=_ID, description=_PAGE_ID)
 
 
@@ -73,9 +67,8 @@ class BioLinkBgArgs(Args):
 
 
 def check_folder_create(args: Mapping[str, Any], body: Any) -> str | None:
-    """The route swallows a failed media add (added 0) and echoes OnlyFans' own folder name."""
+    # Not "check of_folders_list": it hides empty folders, so a retry makes a second folder. The route also swallows a failed media add (added 0).
     if not isinstance(body, Mapping) or body.get("id") is None:
-        # Not "check of_folders_list": it hides empty folders, so a retry makes a second folder.
         return "OnlyFans answered with no folder id; the folder may already exist; do not retry; open open_url to check"
     fid, want, added = body["id"], len(args["media_ids"]), body.get("added")
     if added != want:
@@ -95,6 +88,7 @@ def _links(page: Any) -> list[Mapping[str, Any]]:
     return [lk for lk in links if isinstance(lk, Mapping)] if isinstance(links, list) else []
 
 
+# The route swallows a failed OnlyFans profile read and still creates the page, without her link.
 def check_bio_page_create(args: Mapping[str, Any], body: Any) -> str | None:
     p = _profile(body)
     if not p.get("id"):
@@ -102,7 +96,6 @@ def check_bio_page_create(args: Mapping[str, Any], body: Any) -> str | None:
     for key in ("username", "account_id", *(("display_name",) if args.get("display_name") else ())):
         if p.get(key) != args.get(key):
             return f"bio page {p['id']}: {key} is {p.get(key)!r}, not {args.get(key)!r}"
-    # The route swallows a failed OnlyFans profile read and still creates the page, without her link.
     if args.get("account_id") and not any(str(lk.get("destination") or "").startswith("https://onlyfans.com/")
                                           for lk in _links(body)):
         return f"page {p['id']} was created without the OnlyFans link; do not retry create; add it with bio_link_add"
@@ -110,7 +103,6 @@ def check_bio_page_create(args: Mapping[str, Any], body: Any) -> str | None:
 
 
 def check_bio_link_add(args: Mapping[str, Any], body: Any) -> str | None:
-    """The created link (the route's `link`) has the asked fields."""
     lk = body.get("link") if isinstance(body, Mapping) else None
     if not isinstance(lk, Mapping) or not lk.get("id"):
         return f"bio page {args['pid']}: the answer has no new link"

@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_live_folds — live sell / scene folds (04a ticket 70, `full_ai_live.load`).
-
-  case_parity_test_vs_live      one row set seeded as a test session and as live rows: equal
-                                owned, sent, purchases, offer_piece, Spacing, Chat tease, scene keys
-  case_spend_any_lane           a paid PPV of another Lane (no ai_decisions row) in `spent`; a tip
-                                in `tips`, not `spent`; `bought` = the newest; the Writer's spend line
-  case_pending_tease            10 min + her newest outbound its bubble -> tease + pending_offer;
-                                16 min / another Lane's outbound since / an outcome since -> None
-  case_open_offer               priced + offer_message_id -> offer_piece (list price) + pending line;
-                                no message id / 24 h + 1 min -> None; bought -> None, media Owned
-  case_spacing_one_line_per_turn  Piece row then two live rows -> his lines since = 3
-  case_scene                    saved_scene over live rows; unconfirmed newest counts; 121 min -> None
-  case_no_live_rows             every fold empty, the Turn runs and sends
-  case_null_json_rows           NULL reply_json / jev_json rows (retention) never raise
-
-Run: ./venv/bin/python service/tests/test_full_ai_live_folds.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -48,8 +31,6 @@ def _offer(price, locked, previews=(), *, kind="offer", subject="lingerie", fmt=
 
 
 async def _rows_in(aid: str, fan: int, mode: str, specs: list[dict], *, pair: str | None = None) -> list[int]:
-    """Seed `specs` (oldest first) as `mode` rows: each {ago (min), his, parts, route, route_row,
-    status, offer, outcome, outcome_ago, omid, scene, part_ids}. Returns the row ids."""
     ids = []
     async with get_session() as s:
         for n, sp in enumerate(specs, start=1):
@@ -97,8 +78,8 @@ SPECS = [
     {"ago": 60, "his": "show me", "route": "sell_now", "route_row": "sell", "offer": _offer(1500, [711, 712], [701]),
      "outcome": "bought", "omid": 81, "scene": {"n": 1, "stage": "opening", "heat": 2}},
     {"ago": 50, "his": "omg", "scene": {"n": 2, "stage": "building", "heat": 3}},
+    # a live Free item is Owned only once OF gave its id (a reaped id-less one was never sent)
     {"ago": 40, "his": "more", "route": "sell_now", "route_row": "chat_tease",
-     # A live Free item is Owned only once OF gave its id (W30 F12: a reaped id-less one was never sent).
      "offer": _offer(0, [713], kind="free"), "omid": 84, "scene": {"n": 3, "stage": "building", "heat": 3}},
     {"ago": 30, "his": "hmm", "route": "sell_now", "route_row": "scene_offer",
      "offer": _offer(2500, [721], [702], fmt="video", desc="her in the shower"), "outcome": "declined", "omid": 82},
@@ -124,7 +105,6 @@ async def case_parity_test_vs_live():
     assert {k: t.state[k] for k in keys} == {k: lv.state[k] for k in keys}, (
         {k: t.state[k] for k in keys}, {k: lv.state[k] for k in keys})
     assert [b.amount_cents for b in t.spent] == [1500]
-    # Live spend comes from `messages` / `transactions` (05), not the rows: none seeded here.
     assert lv.spent == [] and lv.tips == [] and lv.bought is None
 
 
@@ -142,7 +122,6 @@ async def case_spend_any_lane():
     assert "minutes" in lv.state["last_purchase"] or "hour" in lv.state["last_purchase"], lv.state
     line = spend_line(lv.spent, lv.tips)
     assert line and "unlocked 1 PPV ($15 total" in line and "tipped $5" in line, line
-    # On the real path the Writer's request carries it.
     _res, _f, _j, _i, fw = await dm_turn(aid, fan, 7022, "hey again")
     w = json.dumps([x["body"]["messages"] for x in fw.requests if x["host"] == NANO])
     assert "unlocked 1 PPV" in w and "tipped $5" in w, w
@@ -177,7 +156,6 @@ async def case_pending_tease():
     assert lv.tease is None and lv.state["pending_offer"] == "none", lv.state
     lv = await _tease_case("fa_folds_tease_out", 706, TEASE, outcome_row=True)
     assert lv.tease is None, lv.tease
-    # Test sessions unchanged: a test tease row still reads (test_full_ai_tease_folds.py unedited).
     assert full_ai_test.pending_tease_of([], NOW()) is None
 
 
@@ -252,7 +230,7 @@ async def case_null_json_rows():
         await s.execute(update(AiDecision).where(AiDecision.id.in_(ids)).values(reply_json=None, jev_json=None))
     lv = await _load(aid, fan, 7111)
     assert lv is not None and lv.scene is None and lv.asked == {}, lv
-    assert lv.owned == {711, 712, 713}, lv.owned        # Offer columns survive retention
+    assert lv.owned == {711, 712, 713}, lv.owned
 
 
 _harness.run()

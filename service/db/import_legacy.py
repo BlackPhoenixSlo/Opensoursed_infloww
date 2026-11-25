@@ -1,27 +1,3 @@
-"""
-One-shot importer: read every JSON file under service/sessions/ +
-service/proxies.json, upsert into SQLite. Idempotent — running it again
-is a no-op on rows it already wrote, and updates the rest.
-
-Usage (from repo root):
-    ./venv/bin/python -m service.db.import_legacy
-    ./venv/bin/python -m service.db.import_legacy --dry-run
-
-What it imports:
-  • service/proxies.json          → proxies table
-  • service/sessions/accounts/<id>/meta.json      → accounts row
-  • service/sessions/accounts/<id>/latest.json    → which session is_latest
-  • service/sessions/accounts/<id>/session_*.json → sessions rows
-  • service/sessions/active.json   → accounts.is_active_default
-
-What it does NOT import:
-  • chunk_2313_*.js — kept on disk as cache. Phase E may move to DB.
-  • XHR jsonl dumps under service/sessions/ — those are debug artifacts.
-  • Image / HTML capture artifacts.
-
-After a successful run + a few days of stable operation, the JSON files
-can be archived; the relay reads exclusively from SQL.
-"""
 from __future__ import annotations
 
 import argparse
@@ -33,8 +9,6 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-# Make this module runnable both as `python -m service.db.import_legacy`
-# and `python service/db/import_legacy.py`.
 HERE = Path(__file__).resolve().parent
 SERVICE_ROOT = HERE.parent
 REPO_ROOT = SERVICE_ROOT.parent
@@ -52,7 +26,6 @@ ACCOUNTS_DIR = SESSIONS_DIR / "accounts"
 
 
 def _parse_ts(raw: str | None) -> datetime | None:
-    """Accept the few timestamp shapes the legacy JSON used."""
     if not raw:
         return None
     raw = raw.replace("Z", "").rstrip(".")
@@ -65,13 +38,10 @@ def _parse_ts(raw: str | None) -> datetime | None:
 
 
 def import_proxies(session: Session, dry_run: bool) -> int:
-    """proxies.json → proxies table. Plaintext password is preserved
-    (phase D will encrypt at rest)."""
     if not PROXIES_FILE.exists():
         return 0
     data = json.loads(PROXIES_FILE.read_text())
-    # Inflowwww pool entries (`pool: true`) never reach SQL: their host and
-    # password stay in proxies.json on the relay. Drop any mirrored earlier.
+    # Pool entries (`pool: true`) stay in proxies.json, never in SQL.
     keep = [p for p in data.get("proxies", []) if not p.get("pool")]
     custom = {p["label"] for p in keep}
     for row in session.scalars(select(Proxy).where(Proxy.label.like("infloww-%"))).all():
@@ -81,7 +51,6 @@ def import_proxies(session: Session, dry_run: bool) -> int:
     for p in keep:
         existing = session.get(Proxy, p["label"])
         if existing:
-            # Upsert: preserve any DB-side edits but refresh known fields.
             existing.scheme = p.get("scheme", existing.scheme)
             existing.host = p.get("host", existing.host)
             existing.port = p.get("port", existing.port)
@@ -98,9 +67,6 @@ def import_proxies(session: Session, dry_run: bool) -> int:
                 host=p["host"],
                 port=int(p["port"]),
                 username=p.get("username"),
-                # The relay's plan called this "password_encrypted" but the
-                # legacy JSON stores plaintext. We carry plaintext for now;
-                # phase D ships envelope encryption + migrates in-place.
                 password_encrypted=p.get("password"),
                 notes=p.get("notes"),
                 verified_ip=p.get("verified_ip"),
@@ -123,9 +89,6 @@ def _read_active_account_id() -> str | None:
 
 
 def import_accounts_and_sessions(session: Session, dry_run: bool) -> tuple[int, int]:
-    """Walks service/sessions/accounts/<id>/, upserts one accounts row +
-    N sessions rows per directory. Marks the one named in active.json as
-    `is_active_default`."""
     if not ACCOUNTS_DIR.exists():
         return 0, 0
 
@@ -147,10 +110,7 @@ def import_accounts_and_sessions(session: Session, dry_run: bool) -> tuple[int, 
             except Exception:
                 pass
 
-        # ── accounts upsert ──────────────────────────────────────
         existing_acc = session.get(Account, account_id)
-        # Pull header fields from the latest session file so we can fill
-        # `x_of_rev`, `static_param`, `user_agent` on the account row.
         x_of_rev = static_param = user_agent = None
         if latest_name:
             sfile = adir / latest_name
@@ -165,7 +125,6 @@ def import_accounts_and_sessions(session: Session, dry_run: bool) -> tuple[int, 
                 except Exception:
                     pass
 
-        # Look up bound proxy via the proxies registry.
         bound_proxy = session.scalar(
             select(Proxy).where(Proxy.assigned_account_id == account_id)
         )
@@ -195,9 +154,6 @@ def import_accounts_and_sessions(session: Session, dry_run: bool) -> tuple[int, 
             ))
         accounts_count += 1
 
-        # ── sessions upsert ──────────────────────────────────────
-        # Match on (account_id, captured_at) — one session per timestamp.
-        # Re-running the importer doesn't create duplicates because of this.
         for sfile in sorted(adir.glob("session_*.json")):
             try:
                 sdata = json.loads(sfile.read_text())
@@ -231,15 +187,12 @@ def import_accounts_and_sessions(session: Session, dry_run: bool) -> tuple[int, 
                 ))
             sessions_count += 1
 
-        # Flip all other sessions for this account to is_latest=false.
         if latest_name and not dry_run:
             session.flush()
             for s in session.scalars(
                 select(SessionRow).where(SessionRow.account_id == account_id)
             ):
-                # Only the one matching latest_name keeps is_latest=true.
-                # Re-checking by captured_at is more reliable than filename.
-                pass  # handled above via the if/else branches
+                pass
 
     if not dry_run:
         session.flush()

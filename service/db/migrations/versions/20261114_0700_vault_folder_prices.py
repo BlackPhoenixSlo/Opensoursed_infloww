@@ -1,13 +1,3 @@
-"""vault_folder_prices — an agency's price per vault folder (Full AI Chat sell)
-
-One NEW table (`vault_folder_prices`: account_id + folder_ref `vf:<id>` / `of:<id>`, price_cents,
-updated_at). No existing row is touched. `create_all()` brings it to a booting box; this file keeps
-the alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0123_vault_folder_prices
-Revises: 0122_bio_profile_background
-Create Date: 2026-11-14
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""
-event_transcoder — which inbound DM clears the money feeds' cache (phase-01 story 52).
-
-The money feeds (`relay_cache._MONEY_FEED_NAMESPACES`: the notifications feed, its
-badge counts and the chat pins) are cleared by `invalidate_money_feeds`. An inbound
-`api2_chat_message` used to clear them on every DM; now only a frame that can move
-money does:
-
-  plain DM      isTip false and price 0          -> the money feeds stay cached
-  tip DM        isTip true (any tipAmount)        -> cleared
-  priced DM     price above 0                     -> cleared
-  unclassifiable  isTip or price missing / not a bool or a number -> cleared
-
-Unchanged by it: every inbound DM still drops `roster_count` (the unread badge).
-
-A Creator echo (no `fromUser`, `chatUserId` = the Fan) writes one out `messages` row, drops only that Fan's
-`get_chat`, keeps the money feeds and leaves the outbound debounce alone (its own cases: test_event_transcoder_echo.py).
-
-Run: ./venv/bin/python service/tests/test_event_transcoder_money_bust.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -68,13 +48,11 @@ async def _warm(ns: str, extras: tuple) -> None:
 
 
 async def _kept(ns: str, extras: tuple) -> bool:
-    """True when the cached body is still served (a cleared entry fetches anew)."""
     got = await relay_cache.get_or_fetch(ns, _AID, extras, 300.0, lambda: {"warm": False})
     return got == {"warm": True}
 
 
 def _dm(**fields) -> dict:
-    """An inbound api2_chat_message (a plain DM); `fields` override, a value of `...` drops the field."""
     m = {"id": next(_ids), "text": "<p>hey</p>", "price": 0, "isTip": False,
          "fromUser": {"id": _FAN}, "createdAt": "2026-11-09T10:00:00+00:00", "responseType": "message"}
     for k, v in fields.items():
@@ -86,7 +64,6 @@ def _dm(**fields) -> dict:
 
 
 async def _money_after(frame: dict) -> dict[str, bool]:
-    """Each money namespace -> kept, after one inbound frame."""
     await _seed_account()
     for ns, extras in _MONEY:
         await _warm(ns, extras)

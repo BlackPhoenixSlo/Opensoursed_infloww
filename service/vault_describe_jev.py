@@ -1,40 +1,3 @@
-"""vault_describe_jev.py — the pure half of the Jev-fed vault describe (D51): routing, prompts, facts, scrub.
-
-A port of the bench winner (`.scratch/jev-vault-bench/`, DV6_RESULTS.md track F, arm F-hyb30nm): every photo's
-describe call is fed its Jev reading (Jev v8 is the default for every vault photo and clip; neither has a v2 describe).
-
-  route(...)        (recipe, the `_jev` fed): photos ("prose" | "v6", `_jev`), clips ("vid", `_jev`), or (None,
-                    None) when the item has no feedable `_jev` (Jev unavailable / failed: the item is skipped,
-                    never described without it)
-    vid             a clip (D54, not benched): `_DESCRIBE_PROMPT_V2` + the clip's lane facts (`video_facts`; the
-                    hedge when `video_review`) on its storyboard frames; `video_answer` = the v6 answer over them.
-    prose           Jev lane not review: PROSE_PROMPT + facts block @640 px; qwen writes the selling description
-                    and names the garments (`clothing_items`, non-pricing: vault_scripts' outfit groups and the
-                    photo's `over_` garment names, `vault_jev_flags.garments`); every other structured field comes
-                    from `_jev` (`prose_answer`).
-    v6              Jev review lane: `_DESCRIBE_PROMPT_V2` + facts block (hedge, no lane facts) @960 px; qwen's
-                    JSON with the hard facts enforced and the lane fields from Jev (`v6_answer`).
-  facts(jev)        describe_ab.facts with VARIANTS["v6"] (source "final": lane-critical facts from the Jev lane)
-  build_prompt      describe_ab.build_prompt (the block goes right before "RULES\\n")
-  enforce / jev_struct / scrub   describe_ab.enforce / dv6_sweep.jev_struct / describe_ab.scrub, verbatim
-
-Every bench function is copied with the same thresholds and order (only names moved), and
-`tests/test_vault_describe_jev.py` replays bench records through it: facts, struct and scrub must equal the
-bench's byte for byte. Do NOT tune here: a change is a new bench session. One deliberate delta: PROSE_PROMPT is
-the bench's PROSE1 (`PROSE_BENCH`) plus the `clothing_items` ask (`_CLOTHING_ASK`; live-checked 11-12 on 6dev A,
-.scratch/jev-vault-bench/dv6-live-prodpath2.py).
-
-The bench's Jev decision `d` is derive8 + NudeNet veto/promote BEFORE settle nn.10; the stored blob is after it.
-Settle only ever moves a `review` photo and stamps `settled`, so the bench lane is `review` exactly when
-`settled` is set (`lane0`); breasts_bare / crotch_bare / penetration are untouched by settle.
-
-Not from the bench (the bench scored lane-critical claims only, downstream reads every V2 field):
-`prose_fields` fills every other V2 key from Jev — clothing_state / underwear_visible / genitals_covered /
-explicitness from `vault_jev_flags.reading` (the same table the photo's flags are stamped from, so describe and
-flags never contradict), nsfw, sellable, primary_folder, position, setting, people / face, acts, tags. The v6
-answer takes the same lane fields over qwen's. `PROSE_ABSENT` lists the two V2 keys left out and why.
-Lane-critical claims (body_focus, penetration, description) are bench-exact.
-"""
 from __future__ import annotations
 
 import json
@@ -47,14 +10,11 @@ import vault_jev_rules
 
 PROSE, V6, V2, VID = "prose", "v6", "v2", "vid"
 JEV_FED = (PROSE, V6, VID)
-RECIPE_V = "d51.2"           # bump on any change to the prompts, facts, struct or scrub below
-PX = {PROSE: 640, V6: 960, VID: 400}   # long edge sent per path (v2: the stored still as today; vid: storyboard size,
-#                                        a ~720p preview frame cut to it, W30 F13)
+RECIPE_V = "d51.2"
+PX = {PROSE: 640, V6: 960, VID: 400}
 DESCRIBE_KEY = "_describe"
-# The Jev Choice questions whose probabilities `facts` reads (stored as `_jev.C`, `vault_jev_rules.blob`).
 FACT_CHOICES = vault_jev_rules.FACT_CHOICES
 
-# ── Prompt (dv6_sweep.PROSE1, verbatim, + the clothing_items ask) ───
 
 PROSE_BENCH = (
     "You write the catalogue description of one photo (or frames IN ORDER from one clip) in an adult creator's own private vault. "
@@ -66,7 +26,6 @@ PROSE_BENCH = (
     "3. Only what is VISIBLE. If you cannot tell, leave it out.\n\n"
     'Return STRICT JSON only, no prose or fences: {"description": "<2-3 sentences>"}'
 )
-# V2's `clothing_items` (same shape: literal garments with colour / material) for vault_scripts' outfit groups.
 _CLOTHING_ASK = (
     ("3. Only what is VISIBLE. If you cannot tell, leave it out.\n\n",
      "3. Only what is VISIBLE. If you cannot tell, leave it out.\n"
@@ -80,17 +39,13 @@ for _old, _new in _CLOTHING_ASK:
     assert PROSE_PROMPT.count(_old) == 1, _old
     PROSE_PROMPT = PROSE_PROMPT.replace(_old, _new)
 
-# ── Routing ─────────────────────────────────────────────────────────
 
 
 def lane0(jev: Mapping[str, Any]) -> str:
-    """The Jev lane before settle nn.10 (the bench's `d["lane"]`)."""
     return "review" if jev.get("settled") else str(jev.get("lane"))
 
 
 def feedable(jev: Any) -> bool:
-    """A `_jev` the describe may be fed: a Jev reading (`ai_read`: this VERSION, status ok, not operator picks
-    alone) carrying what `facts` reads."""
     return (vault_jev_rules.ai_read({vault_jev_rules.JEV_KEY: jev})
             and isinstance(jev.get("C"), dict) and all(isinstance(jev["C"].get(q), dict) for q in FACT_CHOICES)
             and isinstance(jev.get("P"), dict) and isinstance(jev.get("tags"), dict)
@@ -106,9 +61,6 @@ def _path(kind: str | None, jev: Mapping[str, Any]) -> str:
 
 
 def route(*, kind: str | None, fields: Mapping[str, Any] | None) -> tuple[str | None, dict[str, Any] | None]:
-    """(recipe, the `_jev` it is fed) for one item: a photo ("prose" | "v6", its `_jev`), a clip ("vid", its video
-    `_jev`), or (None, None) — skip: no feedable `_jev` (missing, failed, stale, capped, or a blob these functions
-    cannot read). Neither is ever "v2", whatever prompt version was asked; another kind ("v2", None)."""
     if kind not in vault_jev_rules.JEV_KINDS:
         return V2, None
     try:
@@ -117,7 +69,7 @@ def route(*, kind: str | None, fields: Mapping[str, Any] | None) -> tuple[str | 
                 or vault_jev_flags.reading(jev) is None):
             return None, None
         path = _path(kind, jev)
-        # a blob the answer cannot be built from is a skip, not a crash after a paid call
+        # A blob the answer cannot be built from is a skip, not a crash after a paid call.
         answer(path, {}, jev)
         return path, jev
     except Exception:  # noqa: BLE001 — a malformed blob is a skip, never a crash
@@ -125,17 +77,12 @@ def route(*, kind: str | None, fields: Mapping[str, Any] | None) -> tuple[str | 
 
 
 def meta(path: str, jev: Mapping[str, Any] | None, model: str) -> dict[str, Any]:
-    """`ai_fields_json["_describe"]`: which recipe wrote this row's describe, on which Jev reading."""
     fed = path in JEV_FED
     return {"path": path, "v": RECIPE_V, "jev_v": (jev or {}).get("v") if fed else None,
             "jev_at": (jev or {}).get("at") if fed else None, "model": model, "px": PX.get(path)}
 
 
 def reusable(fields: Mapping[str, Any] | None, kind: str | None) -> bool:
-    """May a duplicate copy this row's describe? A photo's / clip's only when it is Jev-fed and the
-    row still holds the `_jev` it was fed (same version and `at` stamp, still routes to the same path): the copy
-    carries that `_jev` with it (`vault_ai_vision_decide.jev_for_copy`), so the pair stays consistent. A v2 /
-    pre-stamp describe is never a source (a copy of it would be a v2 describe). Another kind's always."""
     if kind not in vault_jev_rules.JEV_KINDS:
         return True
     f = fields or {}
@@ -147,7 +94,6 @@ def reusable(fields: Mapping[str, Any] | None, kind: str | None) -> bool:
             and _path(kind, jev) == d.get("path"))
 
 
-# ── Facts (describe_ab: TXT, HEDGE, OUTFIT, SETTING, final_lane_facts, facts with VARIANTS["v6"]) ──
 
 CUT, SETTING_CUT = .7, .8
 SETTING = {"bedroom": "bedroom", "bathroom": "bathroom", "kitchen": "kitchen", "outdoors": "outdoor", "car": "car"}
@@ -168,7 +114,6 @@ Fact = tuple[str, str, str]
 
 
 def final_lane_facts(d: Mapping[str, Any]) -> list[Fact]:
-    """nipple/vulva/pen facts consistent with the (pre-settle) lane. review -> none. Paid lane asserts its own trigger."""
     lane = d["lane"]; F = {}
     if lane == "review": return []
     m = {"y": "y", "n": "n"}
@@ -180,7 +125,7 @@ def final_lane_facts(d: Mapping[str, Any]) -> list[Fact]:
         F["nipple"] = "y"
         if F.get("vulva") == "y": F.pop("vulva")
         if F.get("pen") == "y": F.pop("pen")
-    else:   # free lane: never assert a paid trigger
+    else:
         for f in ("nipple", "vulva", "pen"):
             if F.get(f) == "y": F.pop(f)
     return [(f, v, TXT[(f, v)]) for f, v in F.items()]
@@ -192,7 +137,6 @@ def _d(jev: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def facts(jev: Mapping[str, Any]) -> list[Fact]:
-    """[(field, value, sentence)] — the v6 facts block for one `_jev` (describe_ab.facts, cfg v6)."""
     hi, lo = CUT, 1 - CUT; d = _d(jev); C = jev["C"]
     F = final_lane_facts(d)
     if d["lane"] == "review": F.append(("hedge", "u", HEDGE))
@@ -221,7 +165,6 @@ def build_prompt(base: str, F: list[Fact], head: str = HEAD) -> str:
 
 
 def enforce(q: Mapping[str, Any] | None, F: list[Fact]) -> dict[str, Any]:
-    """Overwrite STRUCTURED fields with the hard facts; description text untouched."""
     q = json.loads(json.dumps(q or {})); F = {f: v for f, v, _ in F}
     bf = [x for x in q.get("body_focus") or [] if isinstance(x, str)]
     if F.get("nipple") == "y" and "nipples" not in bf: bf.append("nipples")
@@ -240,8 +183,6 @@ def enforce(q: Mapping[str, Any] | None, F: list[Fact]) -> dict[str, Any]:
 
 
 def jev_struct(jev: Mapping[str, Any], F: list[Fact]) -> dict[str, Any]:
-    """Struct keys for the prose path, from Jev: hard facts first (enforce on an empty answer), then the Jev
-    reading for lane-critical fields the facts leave open: y -> claimed, unsure -> penetration 'unclear'."""
     d = _d(jev)
     q = enforce({}, F); have = {f for f, _, _ in F}; bf = q["body_focus"]
     if "nipple" not in have and d.get("breasts_bare") == "y": bf.append("nipples")
@@ -254,14 +195,13 @@ def jev_struct(jev: Mapping[str, Any], F: list[Fact]) -> dict[str, Any]:
 
 _ACTS = {"fingers": ["fingering"], "toy": ["toy_insertion"]}
 _TAG_CHOICES = ("outfit", "setting", "pose", "framing")
-# The describe fields `vault_jev_flags.reading` decides (the photo's flags are stamped from the same reading).
 LANE_FIELDS = ("clothing_state", "underwear_visible", "genitals_covered", "explicitness")
 _POSITION = {"standing": "standing", "sitting": "sitting", "kneeling": "kneeling", "lying_on_back": "lying_on_back",
              "lying_on_stomach": "lying_on_stomach", "all_fours_or_bent_over": "on_all_fours"}
 _PEOPLE = {"one": 1, "two_or_more": 2, "none": 0}
 _SETTING_ALL = {**SETTING, "living_room": "other", "gym": "other", "other": "other"}
 _SAFE_OUTFITS = ("everyday_clothes", "swimwear")
-# V2 keys the prose path deliberately leaves out: nothing downstream reads them and Jev cannot answer them.
+# V2 keys the prose path leaves out: nothing reads them and Jev cannot answer them.
 PROSE_ABSENT = {"camera": "selfie vs tripod is not a Jev question; only `mirror` is written, when Jev says so",
                 "confidence": "no consumer reads it; Jev gives no per-item figure"}
 
@@ -272,14 +212,9 @@ def _top(C: Mapping[str, Any], q: str) -> str:
 
 
 def prose_fields(jev: Mapping[str, Any], F: list[Fact], q: Mapping[str, Any]) -> dict[str, Any]:
-    """Every other V2 describe field downstream reads, from Jev (module doc: not bench). The struct `q` (body_focus,
-    penetration, toys, people/face from facts) wins over these where both exist (`prose_answer`).
-
-    clothing_state / underwear_visible / genitals_covered / explicitness are `vault_jev_flags.reading`'s, the reading
-    the photo's flags are stamped from, so the row never contradicts itself (`vault_ai_brief.contradictions`)."""
     tags, C = jev.get("tags") or {}, jev.get("C") or {}
     fv = {f: v for f, v, _ in F}
-    r = vault_jev_flags.reading(jev)   # never None here: `route` only routes a photo it can read
+    r = vault_jev_flags.reading(jev)
     bare = any(r[k] == "bare" for k in ("breasts_vis", "vulva_vis", "anus_vis"))
     outfit = _top(C, "outfit")
     lane = str(jev.get("lane"))
@@ -305,20 +240,19 @@ def prose_fields(jev: Mapping[str, Any], F: list[Fact], q: Mapping[str, Any]) ->
     words = [str(tags[k]) for k in _TAG_CHOICES if tags.get(k) not in (None, "", "other")]
     words += [k for k in (jev.get("P") or {}) if tags.get(k) == "y"]
     out: dict[str, Any] = {
-        "beats": [],                               # a photo (V2: [] for a single photo)
+        "beats": [],
         "acts": list(_ACTS.get(pen, [])) or ["posing"],
         "penetration": pen,
         "insertion_depth": "none" if pen == "none" else "unclear",
         **{k: r[k] for k in LANE_FIELDS},
-        "clothing_items": [],                      # Jev names no garment: qwen's list (`prose_answer`)
+        "clothing_items": [],
         "position": _POSITION.get(str(tags.get("pose")), "unclear"),
         "setting": fv.get("setting") or _SETTING_ALL.get(_top(C, "setting"), "other"),
         "people_count": people,
         "partner_visible": people >= 2,
         "face_visible": _top(C, "face_visible") != "no_face",
-        # free-sfw: a free lane with nothing bare in everyday clothes / swimwear
         "nsfw": paid or bare or outfit not in _SAFE_OUTFITS,
-        "sellable": True,                          # her own vault, indexed to sell (as V2 answers it)
+        "sellable": True,
         "primary_folder": folder,
         "tags": [w.replace("_", " ") for w in words],
     }
@@ -327,7 +261,6 @@ def prose_fields(jev: Mapping[str, Any], F: list[Fact], q: Mapping[str, Any]) ->
     return out
 
 
-# ── Claims + scrub (describe_ab, verbatim) ──────────────────────────
 
 NEG = re.compile(r"\b(no|not|n't|never|without|covered|covering|covers|cover|hidden|hides|hiding|obscur\w*|conceal\w*|block\w*|cropped|out of (the )?frame|under(neath)?|beneath|behind|through (the|her|a)|sheer|see-through|outline)\b", re.I)
 NIP = re.compile(r"\b(nipples?|areolae?|areolas?)\b", re.I)
@@ -344,7 +277,6 @@ VISW = re.compile(r"\b(visible|visibility|exposed|shown|seen|bare|covered|coveri
 
 
 def clauses(s: str) -> list[str]:
-    """Sentences (and ', but' halves). Not split on 'and'/'with': 'covers her breasts and genitals' must keep its negation."""
     for p in EXPOSED: s = re.sub(p, "exposed", s or "", flags=re.I)
     return [c for c in re.split(r"[.;!?]|,\s*but\b|\bbut\b", s) if c.strip()]
 
@@ -361,7 +293,7 @@ def desc_vulva(d: str) -> bool:
     return False
 
 
-def desc_hit(d: str, rx: re.Pattern) -> bool:   # oral clauses ("inserting a toy into her mouth") are not penetration
+def desc_hit(d: str, rx: re.Pattern) -> bool:
     return any(rx.search(c) and not NEGP.search(c) and not (rx is INS and ORAL.search(c)) for c in clauses(d))
 
 
@@ -369,7 +301,7 @@ def _pos(f: str, s: str) -> bool:
     return desc_nipple(s) if f == "nipple" else desc_vulva(s) if f == "vulva" else desc_hit(s, INS)
 
 
-def _neg(f: str, s: str) -> bool:   # explicit "not visible / covered / nothing inserted"; penetration talk is not a vulva claim
+def _neg(f: str, s: str) -> bool:
     if f == "pen": return any(INS.search(c) and NEGP.search(c) for c in clauses(s))
     rx = NIP if f == "nipple" else VUL
     return any(rx.search(c) and NEG_STRICT.search(c) and VISW.search(c) and not INS.search(c) for c in clauses(s))
@@ -389,9 +321,6 @@ def add_clause(f: str, q: Mapping[str, Any]) -> str:
 
 
 def scrub(desc: str | None, q: Mapping[str, Any], F: list[Fact]) -> tuple[str, dict[str, int]]:
-    """Description vs the FINAL structured fields: drops the comma-segment carrying a contradicting claim (the
-    whole sentence if the claim sits in its main clause); appends one neutral clause when a hard positive fact
-    is missing from the text."""
     want = struct_lane(q); hard_y = {f for f, v, _ in F if v == "y" and f in want}; log = Counter(); out = []
     for s in re.split(r"(?<=[.!?])\s+", (desc or "").strip()):
         bad = lambda g: any((want[f] == "n" and _pos(f, g)) or (f in hard_y and _neg(f, g)) for f in want)  # noqa: E731
@@ -407,7 +336,6 @@ def scrub(desc: str | None, q: Mapping[str, Any], F: list[Fact]) -> tuple[str, d
     return text, dict(log)
 
 
-# ── The two Jev-fed answers ─────────────────────────────────────────
 
 
 def prompt_for(path: str, jev: Mapping[str, Any], v2_prompt: str) -> str:
@@ -416,7 +344,6 @@ def prompt_for(path: str, jev: Mapping[str, Any], v2_prompt: str) -> str:
     return build_prompt(PROSE_PROMPT if path == PROSE else v2_prompt, facts(jev))
 
 
-# ── Clips (D54, not benched: the V2 describe fed the clip's lane facts) ──
 
 VIDEO_HEAD = HEAD.replace("about this image", "about this clip").replace(
     "a separate high-accuracy detector", "a separate high-accuracy detector that read 12 frames of it")
@@ -424,28 +351,20 @@ VIDEO_HEDGE = HEDGE.replace("in this photo", "in this clip")
 
 
 def video_review(jev: Mapping[str, Any]) -> bool:
-    """The clip's reading may be too low: its max frame settled out of review, or its frames were not the 720p
-    ones (`_jev.review`: no_720 / over_cap / poster_only / long)."""
     return review_lane(jev) or bool(jev.get("review"))
 
 
 def video_facts(jev: Mapping[str, Any]) -> list[Fact]:
-    """The lane-critical facts only (`final_lane_facts` on the max frame, whose lane is the clip's: no frame
-    outranks it), or the hedge when `video_review`. The photo block's other facts (toy, outfit, people, face,
-    setting, mirror) are one frame's and do not speak for the clip, so they are left out."""
     if video_review(jev):
         return [("hedge", "u", VIDEO_HEDGE)]
     return final_lane_facts(_d(jev))
 
 
 def video_answer(parsed: Mapping[str, Any], jev: Mapping[str, Any]) -> dict[str, Any]:
-    """The vid path's describe data: `v6_answer` with `video_facts` — qwen's V2 JSON (beats, acts, …) with the lane
-    facts enforced, its description scrubbed against them, the lane fields Jev's."""
     return _enforced(parsed, jev, video_facts(jev))
 
 
 def answered(path: str, parsed: Mapping[str, Any]) -> bool:
-    """Did the model answer? prose: a description; v6 (like v2): a description or tags."""
     if not isinstance(parsed, Mapping):
         return False
     if path == PROSE:
@@ -454,26 +373,20 @@ def answered(path: str, parsed: Mapping[str, Any]) -> bool:
 
 
 def garments(raw: Any) -> list[str]:
-    """qwen's `clothing_items`: the non-empty strings of a list, trimmed; anything else -> []."""
     if not isinstance(raw, list):
         return []
     return [s.strip()[:80] for s in raw if isinstance(s, str) and s.strip()][:12]
 
 
 def prose_answer(parsed: Mapping[str, Any], jev: Mapping[str, Any]) -> dict[str, Any]:
-    """The prose path's describe data: Jev struct + lane fields, qwen's prose scrubbed against them, qwen's
-    garments as `clothing_items` (no price reads them; the row's `over_` garment names come from them,
-    `vault_jev_flags.garments`, only over a region Jev already calls covered)."""
     F = facts(jev); q = jev_struct(jev, F)
-    out = {**prose_fields(jev, F, q), **q}   # the bench struct wins where both answer
+    out = {**prose_fields(jev, F, q), **q}
     out["clothing_items"] = garments((parsed or {}).get("clothing_items"))
     out["description"], _ = scrub(str((parsed or {}).get("description") or ""), out, F)
     return out
 
 
 def v6_answer(parsed: Mapping[str, Any], jev: Mapping[str, Any]) -> dict[str, Any]:
-    """The v6 path's describe data: qwen's JSON with the hard facts enforced, its description scrubbed, and the lane
-    fields (`LANE_FIELDS`) Jev's — the settled lane prices the photo, not qwen's explicitness."""
     return _enforced(parsed, jev, facts(jev))
 
 
@@ -481,16 +394,14 @@ def _enforced(parsed: Mapping[str, Any], jev: Mapping[str, Any], F: list[Fact]) 
     q = enforce(parsed, F)
     desc = (parsed or {}).get("description", "")
     q["description"], _ = scrub(desc if isinstance(desc, str) else str(desc or ""), q, F)
-    r = vault_jev_flags.reading(jev)   # never None here: `route` only routes an item it can read
+    r = vault_jev_flags.reading(jev)
     q.update({k: r[k] for k in LANE_FIELDS})
     return q
 
 
-_ANSWER = {PROSE: prose_answer, V6: v6_answer, VID: video_answer}   # Jev-fed path → its answer builder
+_ANSWER = {PROSE: prose_answer, V6: v6_answer, VID: video_answer}
 
 
 def answer(path: str | None, data: Mapping[str, Any], jev: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    """The stored answer for a describe on `path`: its builder over the parsed `data` and the `_jev` it was fed;
-    `data` as it is on any other path (v2)."""
     build = _ANSWER.get(path)
     return build(data, jev) if build else data

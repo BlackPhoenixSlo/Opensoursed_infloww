@@ -1,33 +1,4 @@
 #!/usr/bin/env python3
-"""media_prep + convert-refusal unit tests — plain asserts, no pytest, no network.
-
-Run: ./venv/bin/python service/tests/test_media_prep.py
-
-`media_prep.plan_for` is a five-branch dispatcher with a documented ordering
-constraint, and every one of its branches decides what bytes reach a creator's
-vault. `vault_upload` DELETES the spooled original the moment the upload
-returns, so a preparation pass that quietly hands back the wrong file is
-permanent content loss with a green tick beside it. These cover the four ways
-that was actually happening, each against real media this file generates:
-
-  * COVER ART. A .mkv/.mov with embedded poster art probes as (mjpeg, aac) and
-    `-map 0:v:0` picks the poster — the upload becomes a still image with a
-    soundtrack, reported as a successful remux.
-  * TRUNCATION. `ffmpeg -c copy` on a source with an intact moov and a short
-    mdat exits 0 and writes a valid, playable, SHORT mp4. Nothing about the
-    exit code or the file size says so.
-  * ORIENTATION. A height cap is not a long-edge cap: it takes 44% off the
-    width of every 9:16 master, which is this platform's dominant format.
-  * THE ESCAPE HATCH. When `compress()` produces nothing, falling back to the
-    original uploads the raw .mov the whole module exists to normalise.
-
-Plus `convert_rejected` — a status test and a regex over an exception string —
-and the claim-retry loop that reads it, because "a refusal must fail fast" was
-asserted in three docstrings while the loop retried refusals for ~4.3 minutes.
-
-The ffmpeg-driven checks need ffmpeg AND ffprobe; without them they are
-skipped, loudly, and the pure-logic checks still run.
-"""
 import shutil
 import subprocess
 import sys
@@ -74,9 +45,6 @@ def _codecs(p: Path) -> list[str]:
     return [line for line in out.split() if line]
 
 
-# ── the plan, decided from a probe and nothing else ──────────────────────
-# plan_by_codec is the pure half: no subprocess, so the ordering and the
-# codec table can be pinned without generating a file for every branch.
 print("\nmedia_prep.plan_by_codec")
 _P = M.Probe
 
@@ -99,18 +67,12 @@ check("an unprobeable .mp4 is left alone",
       M.plan_by_codec(Path("a.mp4"), _P()).action, M.PASSTHROUGH)
 check("an unprobeable .mov gets the cheap remux ATTEMPT, never a blind transcode",
       M.plan_by_codec(Path("a.mov"), _P()).action, M.REMUX)
-# The codec table answers "will we hand OF this unchanged?", not "can mp4
-# carry it?" — mjpeg can be carried and must NOT be waved through, because a
-# file whose video stream is an mjpeg still is cover art.
 check("mjpeg is not something we hand OF unchanged",
       "mjpeg" in M._OF_ACCEPTS_UNCHANGED, False)
 check("hevc is spelt the way ffprobe emits it, and h265 is not in the table",
       ("hevc" in M._OF_ACCEPTS_UNCHANGED, "h265" in M._OF_ACCEPTS_UNCHANGED),
       (True, False))
 
-# Audio legality is a per-FILE question, because -c:a applies to every stream
-# -map 0:a? selected. Judging by the first stream shipped raw PCM inside a
-# "normalised" mp4.
 check("one bad stream among good ones still forces AAC",
       _P(answered=True, audio=("aac", "pcm_s16le")).audio_needs_aac, True)
 check("all-legal audio is copied", _P(answered=True, audio=("aac", "mp3")).audio_needs_aac,
@@ -119,7 +81,6 @@ check("no audio at all is not a reason to re-encode",
       _P(answered=True, audio=()).audio_needs_aac, False)
 
 
-# ── the size escape hatch is checked FIRST, and is off by default ────────
 print("\nmedia_prep.plan_for ordering")
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
@@ -138,7 +99,6 @@ with tempfile.TemporaryDirectory() as td:
         M.have_ffmpeg = _have_ffmpeg
 
 
-# ── the long-edge cap, as a filter string ────────────────────────────────
 print("\nmedia_prep._scale_vf")
 check("the box is picked by orientation, so a portrait frame is not squashed",
       ("if(gte(iw,ih),1920,1080)" in M._scale_vf(1080)
@@ -147,7 +107,6 @@ check("and never upscales", "force_original_aspect_ratio=decrease" in M._scale_v
       True)
 
 
-# ── prepared outputs cannot clobber another item's staged source ─────────
 print("\nmedia_prep._out_path")
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
@@ -159,7 +118,6 @@ with tempfile.TemporaryDirectory() as td:
           M._out_path(a, td, "mp4"), M._out_path(a, td, "mp4"))
 
 
-# ── convert refusals: one predicate, both decision sites ─────────────────
 print("\nof_client.convert_rejected")
 
 
@@ -194,12 +152,10 @@ check("a 5041 is not a 504", of_client.convert_rejected(
     RuntimeError("convert register failed: 5041")), False)
 
 
-# ── the claim-retry loop branches on that one predicate ──────────────────
 print("\nof_client.upload_claim claim retries")
 
 
 def _client_whose_claim(fails_with: dict, then=None):
-    """An OFClient with only the two methods upload_claim calls."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     calls = {"claims": 0}
 
@@ -244,7 +200,6 @@ check("a retry that succeeds stops the ladder with a claim to carry",
       (calls["claims"], bool(res.media), res.retries), (1, True, 1))
 
 
-# ── everything below needs real media ────────────────────────────────────
 if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
     skipped.append("ffmpeg/ffprobe not installed — the real-media checks did "
                    "not run")
@@ -253,7 +208,6 @@ else:
         td = Path(td)
         out = td / "out"
 
-        # ── F1: a video with cover art must not upload the cover art ──────
         print("\nmedia_prep.prepare — a file with embedded poster art")
         _ff("-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=5",
             "-f", "lavfi", "-i", "sine=frequency=440:duration=5",
@@ -274,7 +228,6 @@ else:
         check("with the source's full running time",
               round(M.probe(made).duration or 0) == 5, True)
 
-        # ── F2: a truncated remux must never be returned as success ───────
         print("\nmedia_prep.prepare — a source whose bytes are only half there")
         full = td / "full.mov"
         _ff("-f", "lavfi", "-i", "testsrc=size=640x480:rate=25:duration=30",
@@ -293,7 +246,6 @@ else:
         check("an intact source of the same shape still prepares normally",
               M.prepare(full, out)[1], True)
 
-        # ── F3: a vertical master must not lose 44% of its width ──────────
         print("\nmedia_prep.transcode — orientation")
         portrait = td / "portrait.mov"
         _ff("-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=25:duration=2",
@@ -314,14 +266,6 @@ else:
         check("and something already small is never upscaled",
               _dims(M.prepare(small, out)[0]), (640, 480))
 
-        # ── N1: the hatch must actually COMPRESS when it is switched on ───
-        # The old version of this section only asserted the FALLTHROUGH, which
-        # is the right observation both when compression could not help AND
-        # when compression could never run at all — so it passed against a
-        # structurally dead hatch (a COMPRESS plan carrying an empty Probe, a
-        # skipped bitrate ladder and an unconditional refusal). The hatch is
-        # therefore proven by a REAL SHRINK on a source that is genuinely
-        # compressible, with the output named by the tag only `compress` writes.
         print("\nmedia_prep.prepare — the escape hatch, switched on")
         fat = td / "fat.mp4"
         _ff("-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=25:duration=20",
@@ -338,12 +282,6 @@ else:
         check("with the running time intact — a shrink is not a truncation",
               (made != fat, round(M.probe(made).duration or 0)), (True, 20))
 
-        # ── F8: the hatch must not leave a raw .mov behind ────────────────
-        # `full` is 30 s of 640x480 h264 that is already efficiently encoded, so
-        # a 190 MB target asks for a bitrate far above what it is using and the
-        # re-encode comes out BIGGER — `compress` rejects its own output. Proven
-        # directly, so that the fallthrough below cannot be confused with a
-        # compress pass that never ran.
         print("\nmedia_prep.prepare — the escape hatch produces nothing")
         check("a re-encode that comes out no smaller is thrown away — and the "
               "plan-carried probe and the self-taken one agree about it",
@@ -357,12 +295,6 @@ else:
               (_codecs(made)[0], round(M.probe(made).duration or 0)),
               ("h264", 30))
 
-        # ── N2: the duration gate must not condemn an INTACT file ─────────
-        # `format.duration` is the max over EVERY stream, including the subtitle
-        # and data tracks a remux deliberately drops. Comparing the remux's
-        # duration against it declares any subtitled .mkv TRUNCATED — which is
-        # exactly the Plex/MakeMKV shape this module exists to normalise, and
-        # exactly the file it would then upload raw.
         print("\nmedia_prep.prepare — a subtitle track that outlives the picture")
         (td / "subs.srt").write_text(
             "1\n00:00:00,000 --> 00:00:20,000\nhello\n\n", encoding="utf-8")
@@ -380,11 +312,6 @@ else:
               (_codecs(made), round(M.probe(made).duration or 0)),
               (["h264", "aac"], 5))
 
-        # ── N3: a container that will not state a duration at all ─────────
-        # OBS, a crash-recovered recording, anything written to a pipe: the
-        # matroska muxer cannot seek back to fill the header in, so neither
-        # `format.duration` nor the per-stream DURATION tags exist. The file is
-        # perfectly intact; only the header is silent.
         print("\nmedia_prep.prepare — a container with no duration at all")
         piped = td / "piped.mkv"
         with piped.open("wb") as fh:
@@ -404,13 +331,6 @@ else:
         check("and the measurement was not a licence to accept a short output",
               round(M.probe(made).duration or 0), 8)
 
-        # ── N5: the refusal must not be paid for AFTER the encode ─────────
-        # The documented trade is "cannot verify is a failure"; the documented
-        # COST of it was a cheap short-circuit. It was not: the check sat after
-        # `subprocess.run`, so a host with ffmpeg but no ffprobe spent a full
-        # remux AND up to the whole remaining hour-long budget on a transcode,
-        # and refused both. Simulated by hiding ffprobe, which is the exact host
-        # the docstring describes.
         print("\nmedia_prep.prepare — ffmpeg present, ffprobe missing")
         _real_which = M.shutil.which
         launches_blind: list[str] = []
@@ -436,7 +356,6 @@ else:
         check("...and pays NOTHING for that decision — no remux, no transcode",
               launches_blind, [])
 
-        # ── N4: "no video stream" is not "ffprobe could not say" ──────────
         print("\nmedia_prep.prepare — an audio-only file")
         audio_only = td / "audio.mkv"
         _ff("-f", "lavfi", "-i", "sine=frequency=440:duration=3",
@@ -464,7 +383,6 @@ else:
         check("and the reason logged says so",
               "no video stream" in M.plan_for(audio_only).why, True)
 
-        # ── F10: one illegal audio stream forces AAC for all of them ──────
         print("\nmedia_prep.remux — audio legality is per file")
         mixed = td / "mixed.mkv"
         _ff("-i", str(td / "base.mp4"), "-f", "lavfi",

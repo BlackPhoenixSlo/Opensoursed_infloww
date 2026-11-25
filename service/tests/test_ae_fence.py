@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""deploy/ae/ae-fence keeps AE's bio container down with the relay and app (it runs the relay image on the same DB),
-and a box without one (bio not started there) fences as before: a fake `docker`/`pgrep` on PATH and a fake docker
-root, no daemon.
-
-Run: ./venv/bin/python service/tests/test_ae_fence.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 import json  # noqa: E402
 import os  # noqa: E402
@@ -16,8 +10,6 @@ import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 FENCE = Path(__file__).resolve().parents[2] / "deploy/ae/ae-fence"
-# `docker ps/inspect/update <names>` against $FAKE_EXISTING; every call logged. Like docker, update fails for a
-# missing name (after updating the others). FAKE_DOWN=1: the daemon is unreachable, every call fails.
 DOCKER = """#!/usr/bin/env bash
 echo "$*" >> "$FAKE_LOG"
 [ -n "${FAKE_DOWN:-}" ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
@@ -35,7 +27,7 @@ def _env(existing: str) -> tuple[dict, Path]:
     d = Path(tempfile.mkdtemp(prefix="ae_fence_"))
     (d / "bin").mkdir()
     (d / "bin" / "docker").write_text(DOCKER)
-    (d / "bin" / "pgrep").write_text("#!/bin/sh\nexit 1\n")  # dockerd down
+    (d / "bin" / "pgrep").write_text("#!/bin/sh\nexit 1\n")
     for f in ("docker", "pgrep"):
         (d / "bin" / f).chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith("AE_FENCE")}
@@ -85,8 +77,8 @@ def case_arm_and_post_cover_bio_and_skip_it_when_absent():
         assert updated == want.split(), (existing, updated)
 
 
+# docker down: arm must not report restart=no for containers it never reached
 def case_arm_fails_when_docker_cannot_list():
-    # Docker down: arm must not report restart=no for containers it never reached (marker still written, as before)
     env, d = _env("ae-relay ae-app ae-bio")
     env["FAKE_DOWN"] = "1"
     r = _run(env, "arm", "test")

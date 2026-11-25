@@ -167,9 +167,8 @@ async def run(*, apply: bool, account_id: str | None, since_days: int | None) ->
         for name, n in sorted(credit.items(), key=lambda kv: -kv[1]):
             log.info("  %-24s %d", name, n)
 
-    # Journal — the rollback audit trail. One JSON line per applied link:
-    # reversal is UPDATE transactions SET message_id=NULL WHERE id IN (tx_ids).
     if journal:
+        # Journal is the only rollback trail: UPDATE transactions SET message_id=NULL for these tx ids.
         log.info("--- journal (%s) ---", "applied" if apply else "planned")
         for j in journal:
             log.info("JOURNAL %s", json.dumps(j))

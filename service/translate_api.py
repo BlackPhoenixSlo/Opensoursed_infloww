@@ -1,37 +1,3 @@
-"""
-translate_api.py — POST /admin/translate: batch-translate chat texts to English
-for the inbox's 🌐 readability toggle.
-
-The browser can't call Google's endpoint itself (no CORS), so the relay proxies
-it. We use the free web endpoint (translate.googleapis.com, client=gtx) rather
-than the paid Cloud Translation API — no key to provision, and if Google ever
-rate-limits it the UI just silently shows originals. A 429 pauses every Google
-call for _COOLDOWN_S: hammering through a rate limit only extends it. Source language is
-auto-detected and echoed back so the UI can tag bubbles with "(es)" etc.;
-messages detected as the target language render unchanged client-side.
-
-Request  : {"texts": ["hola", ...], "target": "en"}
-Response : {"results": [{"text": "hello", "lang": "es"} | null, ...]}  (same order)
-
-THREE TIERS, checked in order — process memory, the `translation_cache` table,
-then Google. The DB tier is what makes the toggle feel instant on anything but a
-brand-new thread: before it existed the only caches were a per-tab Map and this
-module's dict, so every page reload and every relay deploy re-bought the same
-translations (~1.5s per 40 uncached bubbles, measured from the VPS). Chat text
-repeats hard — 193k rendered texts over 30 days of prod collapse to 87k distinct
-— so a durable, TEXT-keyed store is worth far more than its ~10MB ceiling.
-
-Everything past tier 1 is BATCHED: one SELECT for all misses, one INSERT for all
-fresh translations. Per-text round-trips would trade a network stall for a DB one.
-
-THE GATE (docs/spec/phase-04-apply-stored-settings.md, stories 57-59): a chatter
-session is refused 403 "Turned off by your organization" while its Agency's
-`messaging.ai_translation` is off, before any tier is read. The Agency is Phase
-1's Agency context, named through the Creator in `X-Account-Id`; a chatter
-linked to several Agencies that names none is refused if any of them is off.
-Owner sessions (the Master included) are never refused, and a never-stored
-blob or key counts as on.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -68,41 +34,27 @@ class Translation(TypedDict):
     in any of them would have surfaced as a silently missing translation rather
     than as an error. Naming the shape once costs four lines and makes every
     signature below say what it means."""
-    text: str            # the target-language text
-    lang: str            # ISO 639-1 source language as DETECTED ("es", …) or "und"
+    text: str
+    lang: str
 
 GOOGLE_URL = "https://translate.googleapis.com/translate_a/single"
-MAX_TEXTS = 100          # per request; the UI chunks well below this
-MAX_CHARS = 3000         # per text; chat messages are far shorter
+MAX_TEXTS = 100
+MAX_CHARS = 3000
 _CONCURRENCY = 8
 _google_permits = asyncio.Semaphore(_CONCURRENCY)
 _CACHE_CAP = 8000
 _COOLDOWN_S = 600.0
-_cooldown_until = 0.0     # time.monotonic(); Google is skipped until then
+_cooldown_until = 0.0
 
-# Row ceiling for the durable tier. ~200 bytes/row (a 59-char mean body plus its
-# translation) puts 50k rows near 10MB — deliberately modest next to a chatterly.db
-# that has been corrupted before, and still roomy: only the accounts a chatter
-# actually reads with 🌐 on ever land here, not all 87k distinct texts.
 _DB_CAP = 50_000
 _DB_PRUNE_TO = 40_000
-# The cap check is a COUNT — cheap, but not free per request. Amortize it over
-# this many newly-cached rows; overshooting the cap by <1% between sweeps costs
-# nothing, and the steady state (every text already cached) never counts at all.
 _PRUNE_EVERY = 500
 _rows_since_prune = 0
 
-# text_hash → Translation. Successes only — a transient network failure must not
-# pin "untranslatable" until the next relay restart. Tier 1: a read-through mirror
-# of the table, so a hot thread doesn't touch SQLite either.
-#
-# It is a CACHE, not an accumulator: it evicts (see _mem_put), so no request may
-# read its own results back out of it. Each request keeps its own `resolved` map.
+# Successes only: a transient failure must not pin "untranslatable" until restart.
 _cache: dict[str, Translation] = {}
 
-# Serializes the cap sweep. Two concurrent batches both seeing count > cap would
-# otherwise each delete a slice, over-pruning; the lock makes the second one
-# re-count and no-op.
+# Serializes the cap sweep: concurrent batches would each delete a slice and over-prune.
 _prune_lock = asyncio.Lock()
 
 
@@ -111,9 +63,6 @@ def _cache_key(text: str, target: str, source: str = "auto") -> str:
     return hashlib.md5(raw.encode("utf-8", "replace")).hexdigest()
 
 
-# Google's auto-detect misreads one- or two-word texts ("Ja" → Estonian "And",
-# "Ne" → Hausa "Yes"), so short texts are translated
-# from the thread's language when one is known.
 _SHORT_WORDS = 2
 _LANG = re.compile(r"^[a-z]{2,3}$")
 
@@ -123,7 +72,6 @@ def _is_short(text: str) -> bool:
 
 
 def _mem_put(key: str, value: Translation) -> None:
-    """Write through to tier 1, shedding the oldest quarter at the cap."""
     if len(_cache) >= _CACHE_CAP:
         for k in list(_cache)[: _CACHE_CAP // 4]:
             _cache.pop(k, None)
@@ -131,9 +79,6 @@ def _mem_put(key: str, value: Translation) -> None:
 
 
 def _parse_gtx(data) -> Translation | None:
-    """The gtx payload is a bare JSON array: data[0] is the segment list
-    ([translated, original, ...] per sentence), data[2] the detected source
-    language. Anything malformed → None (caller shows the original)."""
     try:
         segments = data[0] or []
         translated = "".join(seg[0] for seg in segments if seg and seg[0])
@@ -153,8 +98,6 @@ async def _fetch_one(
     client: httpx.AsyncClient, sem: asyncio.Semaphore, text: str, target: str,
     source: str = "auto",
 ) -> Translation | None:
-    """One uncached gtx call. Knows nothing about caching — the endpoint owns
-    every tier, so there is exactly one place a hit/miss decision is made."""
     global _cooldown_until
     async with sem:
         if _cooling_down():
@@ -175,14 +118,8 @@ async def _fetch_one(
             return None
 
 
-# ── durable tier ────────────────────────────────────────────────────────
-#
-# Both halves swallow their own exceptions: a translation is a nice-to-have
-# readability aid, and a locked/corrupt DB must degrade it to "slower", never to
-# a 500 that blanks the thread.
 
 async def _db_get(hashes: list[str]) -> dict[str, Translation]:
-    """text_hash → Translation for whichever of `hashes` are stored."""
     if not hashes:
         return {}
     try:
@@ -203,12 +140,7 @@ async def _db_get(hashes: list[str]) -> dict[str, Translation]:
 async def _db_put(
     target: str, fresh: dict[str, tuple[str, Translation]], *, stale: dict[str, Translation] | None = None,
 ) -> None:
-    """Persist `text_hash → (source_text, Translation)` in one statement.
-
-    ON CONFLICT DO NOTHING rather than an upsert: two chatters opening the same
-    thread at once race here, and their answers are identical, so the loser has
-    nothing to correct. Keeping the first write also keeps `created_at` honest
-    for the age-ordered prune."""
+    # ON CONFLICT DO NOTHING: two chatters opening one thread race here with identical answers, and the first write keeps created_at honest.
     if not fresh:
         return
     try:
@@ -239,11 +171,6 @@ async def _db_put(
 
 
 async def _prune() -> None:
-    """Hold the table at _DB_CAP rows, dropping the oldest down to _DB_PRUNE_TO.
-
-    Age is the only sane eviction key here: bumping a `last_used_at` would turn
-    every cache HIT — the fast path this whole module exists to protect — back
-    into a write."""
     async with _prune_lock:
         try:
             async with get_session() as s:
@@ -269,7 +196,6 @@ async def _prune() -> None:
 class TranslateBody(BaseModel):
     texts: list[str] = Field(..., max_length=MAX_TEXTS)
     target: str = "en"
-    # The thread's language, if the caller knows it (the Fan's set language).
     hint: str | None = None
 
 
@@ -277,11 +203,6 @@ TURNED_OFF = "Turned off by your organization"
 
 
 async def require_translation_allowed(request: Request) -> None:
-    """403 `TURNED_OFF` for a chatter session any of whose Agency contexts
-    has AI translation off. Owner sessions, requests with no chatter session
-    and a chatter linked to no Agency pass, as `permissions._enforcing_roles`
-    lets them; an Agency context refusal (403 not your account, 503) stands.
-    """
     if agency_chatter() is None:
         return
     contexts = await agency_contexts(account_id=request.headers.get("x-account-id") or None)
@@ -310,8 +231,6 @@ async def _fetch_translation(
 async def _resolve(
     need: dict[str, str], target: str, source: str, *, english_shortcut: bool = False,
 ) -> dict[str, Translation]:
-    """key → Translation for the texts in `need` (key → text) that some tier
-    answers; a key left out failed."""
     resolved: dict[str, Translation] = {}
     need = dict(need)
 
@@ -322,8 +241,6 @@ async def _resolve(
             del need[key]
 
     forced = source != "auto"
-    # Legacy hinted rows can contain forced-source echoes. A separate hash
-    # identifies echoes confirmed by auto-detection after a forced attempt.
     echo_keys = {key: _cache_key(text, target, f"auto-after:{source}")
                  for key, text in need.items()} if forced else {}
     stale: dict[str, Translation] = {}
@@ -356,7 +273,7 @@ async def _resolve(
         fresh: dict[str, tuple[str, Translation]] = {}
         for (key, text), value in zip(pending, fetched):
             if value is None:
-                continue          # transient: leave uncached so the next try retries
+                continue
             _mem_put(key, value)
             resolved[key] = value
             storage_key = key if _usable(text, value, forced) else echo_keys[key]
@@ -370,8 +287,6 @@ def _thread_language(results: list[Translation], target: str) -> str | None:
     return langs.most_common(1)[0][0] if langs else None
 
 
-# The gate is a route dependency, so a direct call of `translate_batch`
-# (test_translate_cache.py) still exercises only the tiers.
 @router.post("/admin/translate", dependencies=[Depends(require_translation_allowed)])
 async def translate_batch(body: TranslateBody = Body(...)):
     target = (body.target or "en").lower().split("-")[0]
@@ -379,14 +294,9 @@ async def translate_batch(body: TranslateBody = Body(...)):
     hint = (body.hint or "").lower().split("-")[0]
     hint = hint if _LANG.match(hint) and hint != target else None
 
-    # `resolved` is this REQUEST's answers, and the only thing the response is
-    # built from. Deliberately not the module cache: that one evicts, so reading
-    # our own results back out of it would make correctness depend on an unwritten
-    # "a batch is smaller than the eviction slice" invariant.
+    # Per-request map, deliberately not the module cache: that one evicts, so reading results back from it would depend on an unwritten invariant.
     resolved: dict[str, Translation] = {}
     keys: list[str] = [""] * len(texts)
-    # Misses, deduped — the UI sends whatever is on screen, and "hey" three times
-    # is still one translation.
     need: dict[str, str] = {}
     short: list[int] = []
 
@@ -409,7 +319,6 @@ async def translate_batch(body: TranslateBody = Body(...)):
         need[keys[i]] = texts[i]
     resolved.update(await _resolve(need, target, source or "auto", english_shortcut=english_shortcut))
 
-    # A key still missing is a genuine failure → null → the UI shows the original.
     results = [resolved.get(key) if text else None for text, key in zip(texts, keys)]
     failed = sum(1 for t, r in zip(texts, results) if t and r is None)
     if failed:

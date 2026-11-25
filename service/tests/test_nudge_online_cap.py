@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-"""nudge_online — the daily LLM cap (characterisation; pins today's behaviour).
-
-TODAY the nudge has NO LLM path: the detector only scans/gates/enqueues and
-the line is a template from the slot pools (`_compose_messages`), so the
-account's LLM cost cap can neither stop nor break it. One table case pins
-that over every nudge entry point (warmup tick, newly-online tick, pinned
-test-fan tick, Settings preview) with `llm_client.chat` raising
-`LLMCapExceeded`: the LLM is never called, nothing is sent, no crash.
-The detector's own behaviour (jobs, state) is test_nudge_online.py's; the
-fire's no-LLM send is pinned in test_nudge_online_fire.py's happy case.
-
-If a nudge ever gains an LLM step, this goes red: that change must then add
-its own cap handling (record the cap, no send, no crash).
-
-House style: plain asserts, no pytest; _harness temp DB; the real `run_once`
-with a FakeOF on `ax._make_client`; `llm_client.chat` patched.
-
-Run: ./venv/bin/python service/tests/test_nudge_online_cap.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -107,8 +88,6 @@ async def _preview(aid: str) -> int:
 
 async def case_no_llm_on_any_nudge_path():
     rows = [
-        # (label, warmed, online fans, path, expected output — enqueued for a tick,
-        #  composed messages for preview; proves the path ran)
         ("warmup tick", False, [{"id": 3201}, {"id": 3202}], lambda a: _tick(a, {}), 0),
         ("newly-online tick", True, [{"id": 3101, "name": "Ann"}], lambda a: _tick(a, {}), 1),
         ("test_fan tick", False, [{"id": 3301}, {"id": 3302}],

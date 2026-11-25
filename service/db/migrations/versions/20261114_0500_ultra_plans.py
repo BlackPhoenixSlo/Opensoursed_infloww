@@ -1,13 +1,3 @@
-"""ultra_plans — owner-approved Ultra plans and their per-step run state
-
-One NEW table (`ultra_plans`: owner, source ui|mcp, the post-chain plan JSON + its sha256, status, step
-states, created/approved/finished). No existing row is touched. `create_all()` brings it to a booting box;
-this file keeps the alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0121_ultra_plans
-Revises: 0120_full_ai_offers
-Create Date: 2026-11-14
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,13 +1,3 @@
-"""assistant_turns — every help-assistant question + answer, for the owner and the asker's history
-
-One NEW table (assistant_api writes one row per POST /admin/assistant/ask; GET /admin/assistant/history
-reads it). No existing row is touched. `create_all()` brings it to a booting box; this file keeps the
-alembic chain linear. Inspector-guarded + idempotent.
-
-Revision ID: 0104_assistant_turns
-Revises: 0103_saved_reply_sequences
-Create Date: 2026-11-07
-"""
 from __future__ import annotations
 
 from typing import Sequence

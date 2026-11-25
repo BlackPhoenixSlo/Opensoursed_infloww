@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
-"""GET /admin/vault-ai/internal-folders (ticket 49): the Creator's live INTERNAL vault folders
-for Full AI Chat's Content folders picker (`vf:<id>` refs), with their item counts. No OF call.
-The editor's own fields and writes: test_vault_internal_folders.py.
-
-Real HTTP with real owner / chatter logins (pattern: test_vault_chatter_folders.py).
-
-  case_owner_lists_live_folders_with_counts   deleted folders and other accounts' folders left out; sorted by name;
-                                              items / photos / videos skip removed media; of_list_id; kind
-  case_restricted_chatter_gets_none           a chatter limited to OF folders sees no internal folder
-
-Run: ./venv/bin/python service/tests/test_full_ai_internal_folders.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 _harness.bootstrap()
 
 import uuid  # noqa: E402
@@ -47,7 +35,6 @@ async def case_seed():
         await s.flush()
         s.add_all([VaultFolderItem(account_id=AID, folder_id=ai.id, media_id=m) for m in (1, 2, 3, 4)]
                   + [VaultFolderItem(account_id=AID, folder_id=gone.id, media_id=9)])
-        # Media 3 was removed from the vault: the sell pool skips it, so the count does too.
         s.add_all([VaultItem(account_id=AID, media_id=m, kind="video" if m == 4 else "photo", created_at=now,
                              removed_at=now if m == 3 else None) for m in (1, 2, 3, 4, 9)])
         IDS.update(ai=ai.id, beach=beach.id)

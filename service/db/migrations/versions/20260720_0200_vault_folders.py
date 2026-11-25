@@ -1,16 +1,3 @@
-"""vault_folders — internal folders + per-folder manual ordering
-
-Revision ID: 0047_vault_folders
-Revises: 0046_vault_ai_mirror
-Create Date: 2026-07-20
-
-Two new tables: `vault_folders` (internal, our own — no OF write) and
-`vault_folder_items` (membership + per-folder manual_order). Lets the operator
-make folders, select media, add to a folder, and reorder inside a folder with
-zero OF writes.
-
-Additive + idempotent (inspector-guarded, house convention).
-"""
 from __future__ import annotations
 
 from typing import Sequence

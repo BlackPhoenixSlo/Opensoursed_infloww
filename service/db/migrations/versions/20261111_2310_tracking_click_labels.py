@@ -1,8 +1,3 @@
-"""Raw click labels for redirect-link stats.
-
-Revision ID: 0114_tracking_click_labels
-Revises: 0113_vault_jev_enabled
-"""
 from __future__ import annotations
 from typing import Sequence
 import sqlalchemy as sa

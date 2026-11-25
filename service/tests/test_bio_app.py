@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-"""bio_pages.app over ASGI: routing in Hono's order, Profile JSON, ping, Reveal, files, tls-ask, isolation from the
-relay and no destination in any answer or log line. Seeded by SQL into the harness temp DB.
-
-Run: ./venv/bin/python service/tests/test_bio_app.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 _harness.bootstrap()
 
@@ -189,7 +184,6 @@ def case_pages_and_hosts():
 
 
 def case_escape_tap_flag():
-    """BIO_ESCAPE_TAP (default on) reaches the rendered card; bootstrap retains v2's shape."""
     saved = os.environ.pop("BIO_ESCAPE_TAP", None)
     try:
         assert BioConfig.from_env().escape_tap is True, "default on"
@@ -240,7 +234,6 @@ def case_unknown_hosts_never_query():
 
 @contextlib.contextmanager
 def _edge(*nets: str):
-    """EDGE_PROXIES for the block (the test client's peer is 127.0.0.1)."""
     saved = client_addr.EDGE_PROXIES
     client_addr.EDGE_PROXIES = tuple(ipaddress.ip_network(n) for n in nets)
     try:
@@ -287,8 +280,6 @@ def case_reveal():
 
 
 def case_location_headers_only_from_the_edge():
-    """CF-IPCountry / X-Country / regions are believed only from an EDGE_PROXIES hop (client_addr.edge's rule):
-    sent by any other client they are ignored, so the stats say XX and the geo pick sees the default (US)."""
     same = {"sec_fetch_site": "same-origin"}
     geo = f"/.netlify/functions/reveal?id={KEY2}&trackingId=geo"
     spoof = {"cf_ipcountry": "FR", "x_country": "GB", "x_region": "ENG", **same}
@@ -302,14 +293,13 @@ def case_location_headers_only_from_the_edge():
             assert call("POST", "/v/alice", **spoof, **hop).status_code == 204
             r = call("GET", geo, **spoof, **hop)
         asyncio.run(store.flush())
-        want = DEST + "-2" + (f"/c{code}" if code else "")  # not US: Second's default code, empty
+        want = DEST + "-2" + (f"/c{code}" if code else "")
         assert r.json() == {"realUrl": want}, (nets, xff, r.json())
         new = {(row[1], row[2]) for row in set(_daily()) - set(before)}
         assert new == {("", country), (LID2, country)}, (nets, xff, new)
 
 
 def case_path_mode():
-    """BIO_PATH_PREFIX=/p: `/p/...` is served with the prefix cut and prefixed URLs; unprefixed is host mode as ever."""
     saved = os.environ.get("BIO_PATH_PREFIX")
     try:
         for raw, want in (("", ""), ("/p/", "/p"), (" /bio ", "/bio")):
@@ -343,7 +333,6 @@ def case_path_mode():
         assert call("POST", "/p/v/alice").status_code == 204
         r = call("GET", f"/p/.netlify/functions/reveal?id={KEY}&trackingId=77", **same)
         assert (r.status_code, r.json()) == (200, {"realUrl": DEST + "/c77"})
-        # A browser Origin through Next: Host is the container, X-Forwarded-Host the app's (peer 127.0.0.1, trusted).
         via = {"origin": "https://app.test", "host": "openinflowwww-bio:8788", "x_forwarded_host": "app.test",
                "x_forwarded_proto": "https"}
         rv = f"/.netlify/functions/reveal?id={KEY}"
@@ -363,7 +352,6 @@ def case_path_mode():
         assert _block(page)["profilePath"] == "/alice" and "data-base" not in page, "host mode unchanged"
         assert _block(call("GET", "/px").text)["username"] == "px", "only whole segments are the prefix"
         assert call("GET", "/api/profiles/alice.json").json()["profile"]["avatarUrl"].startswith("/api/files/")
-        # A Custom Domain stays its one Profile's: /p/bob there is two segments, no page.
         assert _block(call("GET", "/p/bob", host="alice.test").text) is None
         assert "data-base" not in call("GET", "/p", host="alice.test").text
         assert _block(call("GET", "/", host="alice.test").text)["profilePath"] == "/"
@@ -374,7 +362,6 @@ def case_path_mode():
 
 @contextlib.contextmanager
 def _turnstile(verdict, keys=True):
-    """Turnstile keys in the env and siteverify answered at the transport (None = unreachable); yields its posts."""
     import turnstile
     posts: list[str] = []
 
@@ -480,13 +467,11 @@ def case_files():
         r = call("GET", path)
         assert r.status_code == 404, (path, r.status_code, r.content[:80])
         if path.endswith("/x"):
-            continue  # 4 segments: #6
+            continue
         assert r.content == b"" and "content-type" not in r.headers and "cache-control" not in r.headers, path
 
 
 def case_custom_domain_isolation():
-    """A live Custom Domain (alice.test) is Alice's only: Bob's JSON, ping, Link and files 404 there, with and
-    without the /p prefix; Alice's own still answer; other hosts still serve every Profile."""
     lid3, key3 = "l00000000000003", "k00000000003"
     c = sqlite3.connect(_harness.DB_PATH)
     c.execute("INSERT INTO bio_links(id, profile_id, link_id, title, destination, default_tracking_code, tracking, "
@@ -522,7 +507,7 @@ def case_custom_domain_isolation():
                 assert call("POST", f"{pre}/v/alice", **a).status_code == 204
                 r = call("GET", f"{pre}/.netlify/functions/reveal?id={KEY}&trackingId=9", **a)
                 assert (r.status_code, r.json()) == (200, {"realUrl": DEST + "/c9"}), pre
-            for h in ({}, {"host": "bob.test"}, {"host": "spare.test"}):  # not a live custom domain: every Profile
+            for h in ({}, {"host": "bob.test"}, {"host": "spare.test"}):
                 assert call("GET", "/api/profiles/bob.json", **h).status_code == 200, h
                 assert call("GET", f"/api/files/links/{lid3}/b.webp", **h).status_code == 200, h
                 assert call("POST", "/v/bob", **h).status_code == 204, h
@@ -554,8 +539,6 @@ def case_tls_ask():
 
 
 def case_pending_cert_is_served_and_isolated():
-    """`pending_cert` (DNS proved, certificate on its way) serves the host as its one Profile, like `live`;
-    `pending` names nobody."""
     def status(s):
         c = sqlite3.connect(_harness.DB_PATH)
         c.execute("UPDATE bio_custom_domains SET status = ? WHERE id = 'c2'", (s,))

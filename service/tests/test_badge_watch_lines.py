@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""The two Relay lines the `badge_drift` watch check reads (creator-badges phase 0D): a real `OFClient` on a fake wire
-answering `GET /chats/{id}/messages`, counter frames and echoes through `events.handle_event`, the watch slot's
-monotonic clock injected (`badge_watch._mono`).
-
-  case_background_unpeeked_drop_logs_once: a first-page thread read under `auto:scrape_chats` with no cursor, then an
-                                 Unexplained counter drop 1 s later -> exactly one `badge_unpeeked_drop` line.
-  case_explained_drop_logs_too:  the same read, a Creator echo for that chat, then the drop 1 s after the read -> one
-                                 line.
-  case_no_line:                  the Peek cursor, the Messages Pro thread route's caller, a drop 3 s later, a counter
-                                 rise or an older-page read -> no line.
-  case_slot_keeps_8_newest:      20 un-peeked reads -> the Creator's slot holds the newest 8.
-  case_grey_on_off:              a Grey cause set then cleared -> `badge_grey state=on` / `state=off`, both with the
-                                 reason; the first slot's own Grey too.
-Run: ./venv/bin/python service/tests/test_badge_watch_lines.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402  (first: temp DB)
 
@@ -65,7 +50,6 @@ class _Resp:
 
 
 class _Wire:
-    """OF: `GET /api2/v2/chats/{id}/messages` answers an empty page; anything else fails the case."""
     def __init__(self):
         self.calls: list = []
 
@@ -88,8 +72,6 @@ def _client() -> OFClient:
 
 @contextlib.contextmanager
 def _world():
-    """Both Knobs on, the badge modules reloaded, the Live connection up, the watch clock at `t[0]` seconds; yields
-    (client, t, lines): `lines` every `badge_unpeeked_drop` / `badge_grey` message."""
     saved = {k: os.environ.get(k) for k in ("SHARED_REFRESHER", "UNREAD_TOTAL", "BADGE_READS")}
     os.environ.update(SHARED_REFRESHER="1", UNREAD_TOTAL="1")
     os.environ.pop("BADGE_READS", None)

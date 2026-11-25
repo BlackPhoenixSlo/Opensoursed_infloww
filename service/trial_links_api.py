@@ -1,22 +1,3 @@
-"""service/trial_links_api.py — Free-trial link generator (Growth surface).
-
-Mint / label / delete OnlyFans free-trial links and read their redemptions. OF
-is the source of truth (of_client.trial_links / create_trial_link /
-delete_trial_link); we keep a light `trial_link_mirrors` row per link so the
-operator's name survives and the table renders even when a live OF fetch is
-unavailable.
-
-Routes (owner-gated, under /admin/*):
-  GET    /admin/trial-links?account_id=   merged mirror ∪ live OF (best-effort)
-  POST   /admin/trial-links               create on OF + upsert mirror; Source, Promo cost,
-                                          Tag and List (of_tracking_api._MetaFields) are stored
-                                          for the new id (link_metrics.store_meta), meta_saved
-  DELETE /admin/trial-links/{mirror_id}   delete on OF + drop mirror row
-
-The GET's OF refresh is best-effort: if the account has no live session (or OF
-errors) the endpoint still returns the mirror rows, so the page never hard-fails
-on a read.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -55,7 +36,6 @@ async def list_trial_links(account_id: str = Query(...)) -> dict[str, Any]:
 
     fetched = await fetch_of_trials(account_id)
 
-    # Mirror rows carry the operator's name; live OF carries the usage counters.
     def _from_mirror(m: TrialLinkMirror, live: dict | None) -> dict:
         return {
             "id": m.id,
@@ -67,16 +47,12 @@ async def list_trial_links(account_id: str = Query(...)) -> dict[str, Any]:
             "claim_counts": (live or {}).get("claim_counts", m.claim_counts),
             "clicks_count": (live or {}).get("clicks_count"),
             "expired_at": (live or {}).get("expired_at"),
-            # Only OF knows whether a link is spent. With no live row to read
-            # (OF down, or the link no longer listed) say so rather than
-            # implying it's live — /trials ordering is unstable, so "absent"
-            # is not proof of "finished".
+            # Only OF knows whether a link is spent; /trials ordering is unstable, so absent is not proof of finished.
             "status": (live or {}).get("status", "unknown"),
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "source": "mirror",
         }
 
-    # OF links that have no mirror row (created outside Inflowwww) — read-only.
     def _from_live(t: dict) -> dict:
         return {
             "id": None,
@@ -96,9 +72,6 @@ async def list_trial_links(account_id: str = Query(...)) -> dict[str, Any]:
     out = merge_mirrors(mirrors, fetched, of_id_attr="of_trial_id",
                         live_id_key="of_trial_id",
                         from_mirror=_from_mirror, from_live=_from_live)
-    # Infloww's per-link figures (cached claimers x ledger, refreshed in the
-    # background past an hour, re-walking only links whose claimCounts moved)
-    # and the Edit dialog's Promo cost / Source / Tag.
     figures = await link_metrics.for_list(
         account_id, "trial",
         {r["of_trial_id"]: [r["of_trial_id"]] for r in out if r.get("of_trial_id")},
@@ -107,11 +80,10 @@ async def list_trial_links(account_id: str = Query(...)) -> dict[str, Any]:
     for r in out:
         r["metrics"] = figures["by"].get(r.get("of_trial_id"), dict(link_metrics._UNWALKED))
         r.update(meta.get(r.get("of_trial_id")) or link_metrics.meta_fields(None))
-    # Share links on these links take the read just made (never fails the read); with OF
-    # not reachable the mirror rows have no counts, so a report keeps its last read.
+    # With OF unreachable the mirror rows have no counts, so a report keeps its last read.
     if fetched is not None:
         await link_share_api.refresh_shares(account_id, "trial", {r["of_trial_id"]: r for r in out if r.get("of_trial_id")})
-    # None = the OF fetch failed (not reachable); [] = reachable but no links.
+    # None = the OF fetch failed; [] = reachable but no links.
     return {"links": out, "of_available": fetched is not None,
             "metrics_updated_at": figures["updated_at"], "metrics_refreshing": figures["refreshing"],
             "sources": sources, "tags": tags}
@@ -123,8 +95,7 @@ class _CreateBody(_MetaFields):
     subscribe_days: int = 7
     subscribe_counts: int = 1
     expired_at: str | None = None
-    # Offer expiration: the link's validity in days, 0 = no expiration (OF's
-    # `expireDays`, which Infloww's and OF's own Create link send). None = not sent.
+    # 0 = no expiration (OF's expireDays). None = not sent.
     expire_days: int | None = Field(None, ge=0, le=30)
 
 
@@ -134,16 +105,13 @@ async def create_trial_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(422, "name is required")
-    # OF rejects subscribeDays < 1 outright ("SubscribeDays must be at least 1"),
-    # so 0 is invalid here, NOT "unlimited". subscribeCounts=0 IS accepted and
-    # means unlimited claims. Both verified live 2026-07-23 on Ava.
+    # OF rejects subscribeDays < 1, so 0 is invalid, NOT unlimited; subscribeCounts=0 IS accepted and means unlimited claims.
     days = max(1, min(int(body.subscribe_days), 365))
     counts = max(0, min(int(body.subscribe_counts), 100000))
-    meta = link_metrics.clean_meta(body)   # a bad field is refused before OF creates anything
+    meta = link_metrics.clean_meta(body)
 
     try:
-        # _make_client is inside the try so a missing/expired session surfaces
-        # as a clean 502 (with a reason) rather than an unhandled 500.
+        # Inside the try so a missing/expired session surfaces as a clean 502, not a 500.
         client = await asyncio.to_thread(ax._make_client, body.account_id)
         res = await asyncio.to_thread(
             lambda: client.create_trial_link(
@@ -180,11 +148,9 @@ async def create_trial_link(body: _CreateBody = Body(...)) -> dict[str, Any]:
     if wanted:
         tid = safe_int(of.get("of_trial_id"))
         if tid:
-            # A new link has no claimers: count 0 is "added", so the List's first add runs
-            # once one claims (refresh() -> sync_lists).
             out.update(await link_metrics.store_meta(body.account_id, "trial", tid, meta, claim_count=0))
         else:
-            out["meta_saved"] = False   # OF's reply had no id: created, the fields could not be kept
+            out["meta_saved"] = False
     log.info("trial_link_created id=%s account=%s of_id=%s meta_saved=%s", mirror_id, body.account_id,
              of.get("of_trial_id"), out["meta_saved"])
     return out

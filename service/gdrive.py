@@ -1,31 +1,4 @@
-"""Pull publicly-shared Google Drive files down to disk, for vault upload.
-
-Scope is deliberately narrow: **anyone-with-the-link** files and folders, read
-with a plain API key. No OAuth, no consent screen, no refresh tokens — the
-operator pastes a link, we fetch the bytes.
-
-Why an API key at all, when a public file has a plain download URL? Because the
-`drive.google.com/uc?export=download` route serves an HTML interstitial for
-anything big enough to warrant a virus-scan warning, and parsing your way past
-that is a guessing game. `files.get?alt=media` on the API host just returns the
-bytes, at any size, and gives us `size`/`mimeType` up front so a batch can be
-rejected before a gigabyte moves.
-
-Get a key at console.cloud.google.com → APIs & Services → Credentials → API key,
-with the Drive API enabled on the project. Restrict it to the Drive API. Store it
-in Settings → AI keys (`GOOGLE_DRIVE_API_KEY`) or the environment.
-
-WHAT THIS CANNOT DO, and how it fails:
-  * Private files. With key-only auth Drive answers **404, not 403**, for a file
-    that exists but isn't shared — indistinguishable from a bad id. The error
-    text says both, because we genuinely cannot tell them apart.
-  * Files whose owner disabled downloading, and abuse-flagged files: 403 with a
-    `cannotDownloadFile` / `cannotDownloadAbusiveFile` reason. Surfaced as-is.
-  * Shared-drive items. Listing passes `supportsAllDrives`, but items on a shared
-    drive are rarely link-public, so expect empty results rather than an error.
-  * Google-native docs (Docs/Sheets/Slides). They have no bytes to download and
-    are skipped by mime type, not silently failed.
-"""
+# Key-only auth: Drive answers 404, not 403, for an unshared file, so a bad id and a private file look the same.
 from __future__ import annotations
 
 import logging
@@ -45,29 +18,19 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 _NATIVE_PREFIX = "application/vnd.google-apps."
 
-# Drive hands back HTML on some error paths; a media response that starts with
-# "<" is never a real image/video and would otherwise land on disk as a
-# corrupt file that only fails much later, at the S3 PUT.
+# Drive serves HTML on some error paths; it would land on disk as a corrupt file that fails only at the S3 PUT.
 _HTML_SNIFF = b"<"
 
-# Wall-clock ceiling for ONE file. The per-read `timeout=` cannot bound a
-# transfer — a server that dribbles a byte before each timeout expires holds the
-# socket open indefinitely — and the run that is waiting on it holds its
-# account's liveness claim the whole time.
+# Per-read timeout cannot bound a trickling transfer, which would hold the account's liveness claim indefinitely.
 DOWNLOAD_MAX_S = float(os.environ.get("VAULT_DOWNLOAD_MAX_S") or 2 * 3600)
 
 
 class GDriveError(RuntimeError):
-    """Anything the operator needs to read and act on."""
+    pass
 
 
 @dataclass(frozen=True)
 class DriveRef:
-    """A parsed Drive link. `kind` is 'file' | 'folder' | 'unknown'.
-
-    'unknown' is honest rather than lazy: `/open?id=` and `uc?id=` name an id
-    without saying what it is, and only a metadata call can tell us.
-    """
     id: str
     kind: str
     resource_key: str | None = None
@@ -80,30 +43,15 @@ class DriveFile:
     mime_type: str
     size: int | None
     resource_key: str | None = None
-    # Google's own md5 of the content. Free in the listing, and the key that
-    # lets an importer skip a file it already has without spending a download —
-    # which matters because Drive rate-limits hard (it starts serving an HTML
-    # "Sorry..." page) long before you notice you are wasting bandwidth.
     md5: str | None = None
-    # The folder names from the pasted folder down to this file's parent, root
-    # first: `("Shoot", "Beach")` for Shoot/Beach/a.jpg. Empty for a file that
-    # was linked on its own. Only a folder walk knows it — Drive's file record
-    # names a parent id, not a path — and the importer turns it into hashtags.
     folders: tuple[str, ...] = ()
 
 
 def folder_tags(f: DriveFile) -> list[str]:
-    """The hashtags a Drive import gives a file: the sub-folders it sits in
-    under the pasted folder, or that folder's own name for a file at its root.
-
-    `Shoot/Beach/Red/a.jpg` → `["Beach", "Red"]`; `Shoot/a.jpg` → `["Shoot"]`.
-    The folder names as they are: making them tags (case, trimming, dedupe) is
-    the vault's one tag normaliser's job, via `vault_upload.parse_meta`."""
     return list(f.folders[1:] or f.folders[:1])
 
 
 def api_key() -> str:
-    """The Drive key: secrets store first (Settings → AI keys), then the environment."""
     try:
         import secrets_store
         if k := secrets_store.get("GOOGLE_DRIVE_API_KEY"):
@@ -121,17 +69,10 @@ def api_key() -> str:
 
 
 def parse_link(link: str) -> DriveRef:
-    """Turn any Drive URL (or a bare id) into a DriveRef.
-
-    `resourcekey` matters: files shared before Google's 2021 link-security
-    change are unreachable by id alone and need the key echoed back in a
-    header. Dropping it turns a working link into a confusing 404.
-    """
     s = (link or "").strip()
     if not s:
         raise GDriveError("empty Google Drive link")
 
-    # A bare id — no slashes, no scheme, Drive's id alphabet.
     if re.fullmatch(r"[A-Za-z0-9_-]{10,}", s):
         return DriveRef(id=s, kind="unknown")
 
@@ -146,7 +87,6 @@ def parse_link(link: str) -> DriveRef:
         return DriveRef(id=m.group(1), kind="folder", resource_key=rkey)
     if m := re.search(r"/file/d/([A-Za-z0-9_-]+)", u.path):
         return DriveRef(id=m.group(1), kind="file", resource_key=rkey)
-    # /document/d/, /spreadsheets/d/ … — native docs, resolved then rejected.
     if m := re.search(r"/d/([A-Za-z0-9_-]+)", u.path):
         return DriveRef(id=m.group(1), kind="unknown", resource_key=rkey)
     if fid := (q.get("id") or [None])[0]:
@@ -156,7 +96,6 @@ def parse_link(link: str) -> DriveRef:
 
 
 def _headers(*refs) -> dict:
-    """`X-Goog-Drive-Resource-Keys: <id>/<key>,…` for every ref that has one."""
     pairs = [f"{r.id}/{r.resource_key}" for r in refs
              if r is not None and getattr(r, "resource_key", None)]
     return {"X-Goog-Drive-Resource-Keys": ",".join(pairs)} if pairs else {}
@@ -193,18 +132,8 @@ def _explain(status: int, body: str, what: str) -> GDriveError:
 _LOCAL = threading.local()
 
 
+# Per thread: requests.Session is not thread-safe and two imports run on two worker threads.
 def _session():
-    """One pooled `requests.Session` per THREAD for every Drive call.
-
-    A real session, not the module: a folder import is dozens of requests to
-    one host, and the streaming download in particular wants the connection
-    kept alive rather than a fresh TLS handshake per file.
-
-    Per-thread, not process-wide: `requests.Session` is not thread-safe, and
-    two imports for two accounts run on two relay worker threads — sharing one
-    session's connection pool between them (and racing the lazy init) buys
-    nothing and can interleave two responses.
-    """
     s = getattr(_LOCAL, "session", None)
     if s is None:
         import requests
@@ -212,24 +141,12 @@ def _session():
     return s
 
 
+# Key as a HEADER, never a `key=` query param: requests puts the full URL into ConnectionError text, which is stored and rendered.
 def _auth() -> dict:
-    """The API key as a HEADER.
-
-    NEVER as a `key=` query parameter: `requests` puts the full URL — query
-    string included — into the text of a ConnectionError, and this repo stores
-    an item's error text in the run record and renders it in the dashboard. One
-    transient DNS blip would have written the key to disk and to the screen.
-    """
     return {"x-goog-api-key": api_key()}
 
 
 def redact(text: str) -> str:
-    """Strip the API key out of anything about to be stored or displayed.
-
-    The header change above closes the URL leak; this closes every other one —
-    a stack trace, a proxy error, a Drive body that echoes the request. Call it
-    on anything derived from an exception before it leaves this module.
-    """
     text = str(text)
     try:
         key = api_key()
@@ -239,7 +156,6 @@ def redact(text: str) -> str:
 
 
 def _get(url: str, *, params: dict, refs, what: str, **kw):
-    """One Drive GET, with the key in the header and out of every error path."""
     try:
         return _session().get(url, params=params,
                               headers={**_auth(), **_headers(*refs)}, **kw)
@@ -250,7 +166,6 @@ def _get(url: str, *, params: dict, refs, what: str, **kw):
 
 
 def metadata(ref: DriveRef) -> DriveFile:
-    """One `files.get` — resolves what the id actually is."""
     r = _get(f"{API}/{ref.id}",
              params={"fields": "id,name,mimeType,size,md5Checksum,resourceKey,"
                                "shortcutDetails",
@@ -259,7 +174,6 @@ def metadata(ref: DriveRef) -> DriveFile:
     if not r.ok:
         raise _explain(r.status_code, r.text, f"Drive item {ref.id}")
     d = r.json()
-    # A shortcut is a pointer; follow it once so a folder of shortcuts works.
     if d.get("mimeType") == SHORTCUT_MIME:
         target = (d.get("shortcutDetails") or {}).get("targetId")
         if not target:
@@ -269,32 +183,15 @@ def metadata(ref: DriveRef) -> DriveFile:
     return DriveFile(id=d["id"], name=d.get("name") or d["id"],
                      mime_type=d.get("mimeType") or "application/octet-stream",
                      size=int(d["size"]) if d.get("size") else None,
-                     # The item's OWN key when Drive reports one; the link's
-                     # only as a fallback. A resource key belongs to one file —
-                     # handing a child its parent folder's is a 404 waiting to
-                     # happen (see parse_link on why the key matters at all).
+                     # A resource key belongs to one file: a child must not get its parent folder's (404).
                      resource_key=d.get("resourceKey") or ref.resource_key,
                      md5=d.get("md5Checksum"))
 
 
+# max_files is a budget for the whole tree, not per folder; keep nextPageToken in fields or only one page returns.
 def list_folder(ref: DriveRef, *, recursive: bool = True,
                 max_files: int = 500, _depth: int = 0,
                 _path: tuple[str, ...] = ()) -> list[DriveFile]:
-    """Every downloadable file in a public folder, up to `max_files`.
-
-    Paginates properly — `fields=files(...)` alone silently omits
-    `nextPageToken`, which caps you at one page and looks like a small folder.
-    Recurses into subfolders, depth-capped so a cyclic shortcut graph can't
-    spin forever.
-
-    `max_files` is a BUDGET FOR THE WHOLE TREE, not per folder. It used to be
-    handed to each subfolder in full and never re-checked by the parent, so a
-    20-subfolder tree could return 20x the cap — and every one of those listings
-    is API quota spent on files the caller was always going to drop.
-
-    `_path` is the folder names down to `ref`, root first; every file found is
-    stamped with it (see `DriveFile.folders`).
-    """
     if _depth > 8:
         log.warning("gdrive: folder nesting deeper than 8, stopping at %s", ref.id)
         return []
@@ -317,8 +214,6 @@ def list_folder(ref: DriveRef, *, recursive: bool = True,
         page = r.json()
         for d in page.get("files") or []:
             mime = d.get("mimeType") or ""
-            # Every item carries its OWN resourceKey when it has one; the
-            # parent's is not inheritable (see metadata).
             rkey = d.get("resourceKey")
             if mime == FOLDER_MIME:
                 if recursive and len(out) < max_files:
@@ -357,7 +252,6 @@ def list_folder(ref: DriveRef, *, recursive: bool = True,
 
 
 def is_uploadable(f: DriveFile) -> tuple[bool, str]:
-    """Can this become vault media? Returns (ok, reason-if-not)."""
     if f.mime_type.startswith(_NATIVE_PREFIX):
         return False, f"Google-native file ({f.mime_type.rsplit('.', 1)[-1]}) has no media to upload"
     if not f.mime_type.startswith(("image/", "video/", "audio/")):
@@ -366,24 +260,15 @@ def is_uploadable(f: DriveFile) -> tuple[bool, str]:
 
 
 def resolve(links: list[str], *, max_files: int = 500) -> list[DriveFile]:
-    """Expand a mixed list of file and folder links into concrete files.
-
-    De-duplicates by Drive id, so pasting a folder and one of its files (or the
-    same link twice) doesn't upload anything twice.
-    """
     seen: set[str] = set()
     out: list[DriveFile] = []
     for link in links:
-        # `max_files` is the budget for the whole call, not per link — three
-        # folder links must not resolve to three times the cap.
         remaining = max_files - len(out)
         if remaining <= 0:
             log.warning("gdrive: %d-file cap reached, not resolving %d more link(s)",
                         max_files, len(links) - links.index(link))
             break
         ref = parse_link(link)
-        # One metadata read for every link, folders included: a folder's NAME is
-        # the root of each file's `folders` path, and the listing never says it.
         meta = metadata(ref)
         files = (list_folder(DriveRef(id=meta.id, kind="folder",
                                       resource_key=meta.resource_key),
@@ -400,36 +285,17 @@ def download(f: DriveFile, dest_dir: str | Path, *,
              max_bytes: int | None = None,
              min_free_bytes: int | None = None,
              max_seconds: float = DOWNLOAD_MAX_S) -> Path:
-    """Stream one Drive file to `dest_dir`. Returns the written path.
-
-    Enforces `max_bytes` **while streaming**, not just against the declared
-    metadata size — Drive's `size` is absent for some items and a caller that
-    trusted it alone could still be handed a gigabyte.
-
-    `min_free_bytes` is re-checked as the bytes land, for the same reason: a
-    caller's up-front free-space guard can only guard the size Drive declared,
-    which for those same items is nothing at all.
-
-    `max_seconds` bounds the WHOLE transfer. `timeout=` below is per socket
-    read, so a server trickling one byte before every timeout streams forever
-    and never trips it — and a fetch that never returns is an import that never
-    ends, which leaves the account marked live and its carriers unswept.
-    """
     if max_bytes is not None and f.size is not None and f.size > max_bytes:
         raise GDriveError(
             f"{f.name}: {f.size / 1e6:.0f} MB exceeds the {max_bytes / 1e6:.0f} MB limit")
 
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    # Drive names are user-supplied: keep the basename only, so a name like
-    # "../../etc/x" cannot escape the spool directory.
+    # Drive names are user-supplied: basename only so "../../etc/x" cannot escape the spool dir.
     safe = re.sub(r"[^\w.\- ]+", "_", Path(f.name).name).strip() or f.id
     dest = dest_dir / f"{f.id}_{safe}"
 
-    # allow_redirects=False on purpose. `requests` strips `Authorization` when
-    # it follows a cross-host redirect, but it does NOT strip a custom header —
-    # so `x-goog-api-key` would have travelled to whatever host Drive named for
-    # the media body. Follow by hand, without the key.
+    # allow_redirects=False: requests keeps custom headers across hosts, so x-goog-api-key would leak; follow by hand without it.
     r = _get(f"{API}/{f.id}",
              params={"alt": "media", "supportsAllDrives": "true"},
              refs=(f,), what=f"downloading {f.name}", stream=True, timeout=120,
@@ -480,7 +346,7 @@ def download(f: DriveFile, dest_dir: str | Path, *,
                             f"fall below the {min_free_bytes / 1e9:.1f} GB floor")
                 fh.write(chunk)
     except Exception:
-        dest.unlink(missing_ok=True)   # never leave a partial file for the uploader
+        dest.unlink(missing_ok=True)
         raise
     log.info("gdrive: downloaded %s (%d bytes) -> %s", f.name, written, dest.name)
     return dest

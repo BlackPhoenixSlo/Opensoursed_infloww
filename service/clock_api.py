@@ -1,60 +1,3 @@
-"""service/clock_api.py — Clock events: clock in and out, the chatter's own
-view, the owner's clocked-in list, Owner edits, and the lazy Auto clock-out.
-
-Shares the `/admin/shifts` prefix and helpers (service/shifts_common.py,
-service/route_wire.py) with service/shifts_api.py, the Shift schedule; the
-check order and wire-time rules in that module's docstring apply here too.
-
-ASSUMPTION: the spec names one router module `shifts_api` with everything
-"on the same router" (docs/spec/phase-02-shifts-time-tracking.md:3, :72);
-the Clock endpoints live here on a second APIRouter. Rung 5: keeps
-shifts_api under 1000 lines, still one /admin/shifts prefix and one sweep,
-and matches the test_shifts_api/test_clock_api split. Overturned if the
-spec's Owns list is read as one module.
-
-  GET  /admin/shifts/me  (chatter) → the chatter's Creators with their own
-       Agency's time-tracking flags, its own occurrences (now to now+8 days),
-       its own open Clock events, across every linked Agency, and the
-       clock-in `reminder` (an occurrence, or null).
-  GET  /admin/shifts/clocked-in  (owner, Master) → {time_tracking_enabled,
-       clocked_in[{clock_event_id, employee, account, in_utc, shift_id,
-       shift}]}: the Agency's open Clock events.
-  POST /admin/shifts/clock-in  {account_id?, shift_id?}  (whoever may clock)
-       → the open Clock event. Without a Creator it is the agency-wide clock
-       (`account_id` NULL), as Infloww's parameterless `/sign/in_manual`.
-  POST /admin/shifts/clock-out  {clock_event_id}  (the event's own Employee)
-       → the event, closed with close_reason=manual.
-  GET  /admin/shifts/clock-status, POST /admin/shifts/clock-heartbeat
-       (any session) → `ClockStatus` (`_status`), the top bar's Clock
-       button; the heartbeat first marks the caller's open event as seen now.
-  GET  /admin/shifts/clock-events?employee_id&from&to  (owner, Master) → one
-       Employee's Clock events intersecting the range, newest first.
-  PATCH /admin/shifts/clock-events/{id}  {in_utc?, out_utc?}  (owner, Master)
-       → the event after an Owner edit; closing an open one sets
-       close_reason=owner_edit.
-  DELETE /admin/shifts/clock-events/{id}  (owner, Master) → {deleted}: an
-       Owner delete (roadmap W6 6.6).
-  GET  /admin/shifts/records?from&to&employee_id?  (owner, Master) → Shift
-       records: the Agency's Clock events intersecting the range, one row per
-       worked shift with its sales (`event_sales`; roadmap W6 6.6).
-
-Clocking in needs, checked in this order by `_clock_gate`, the Agency's
-`time-tracking` blob to hold `enabled` as literal `true` (409 otherwise), the
-caller's role in its `role_ids` (`clock_gate`; 403 otherwise) and an active
-Employee (403); each refusal's detail is `{error, message}` (`_refuse`).
-Clocking out of one's own open event needs none of them (`clock_out`). A
-chatter clocks as its Mirror Employee, an owner or the Master in its own
-Agency as the owner's own Employee row (`_my_employees`; docs/spec/phase-02,
-"Amended by w4-a").
-
-Auto clock-out has no scheduler: every request to either `/admin/shifts`
-router first sweeps the caller's Agencies' open Clock events and closes,
-with close_reason=auto and actor `system`, each one whose inactivity
-deadline has passed, at the deadline itself (`_auto_clock_out`, its pure
-rule `due_clock_outs`). server.py attaches `_sweep_callers_agencies` to both
-routers. The sweep runs whether or not time tracking is on.
-"""
-
 from __future__ import annotations
 
 import json
@@ -82,23 +25,10 @@ from shifts_common import (
 router = APIRouter(prefix="/admin/shifts", tags=["shifts"])
 
 
-# ── Clock in and out (ticket 11, amended by w4-a) ────────────────────
-#
-# A clock-in acts in one Agency as one Employee: a chatter as its own Mirror
-# Employee there (`agency_context`), so a chatter linked to two Agencies files
-# each Agency's time apart and may hold one open Clock event in each; an owner
-# or the Master as the owner's own Employee row in its own Agency
-# (`get_owner_employee_id`). Each clock-in and clock-out appends its own
-# `actions` row (`clock.in|out`, actor `employee:<id>`) in the write's
-# transaction.
 
 _OWNER_ACTS = "owner sessions act as the agency"
 _ALREADY_IN = "already clocked in"
 
-# Why a caller may not clock (ClockStatus's `reason`), as the status and
-# message a clock write refuses with. ASSUMPTION: the inactive message is
-# "this employee is inactive"; the spec fixes only the status. Rung 5.
-# Overturned if the dialog needs other wording.
 _REFUSALS: dict[str, tuple[int, str]] = {
     "time_tracking_off": (409, "time tracking is off"),
     "role_not_enabled": (403, "clock in is not enabled for your role"),
@@ -107,16 +37,11 @@ _REFUSALS: dict[str, tuple[int, str]] = {
 
 
 def _refuse(reason: str) -> HTTPException:
-    """The refusal for a `_REFUSALS` reason. Its detail is `{error, message}`,
-    the typed shape of the api-key errors (llm_client.key_error_payload), so
-    the app tells the reasons apart without reading the message."""
     status, message = _REFUSALS[reason]
     return HTTPException(status_code=status, detail={"error": reason, "message": message})
 
 
-# The Time tracking Panel's default auto clock-out, used when no valid value
-# is stored (settings_schema: a whole number from 1 to 999). Infloww's
-# `autoCheckOutMinute` defaults to 10 (ClockSetting, bundle @10663332).
+# Infloww's autoCheckOutMinute defaults to 10 (ClockSetting).
 DEFAULT_AUTO_CLOCK_OUT_MINUTES = 10
 
 
@@ -124,51 +49,31 @@ class TimeTracking(NamedTuple):
     enabled: bool
     clock_in_reminder: bool
     auto_clock_out_minutes: int
-    # "Enable clock in and clock out for"; None while never saved.
     role_ids: frozenset[str] | None
 
 
 async def _time_tracking(s, agency_user_id: str) -> TimeTracking:
-    """The Agency's `time-tracking` version in effect now through the Applied
-    read helper (`settings_api.applied_blob`), which drops any stored field
-    its schema refuses (`time_tracking_of`)."""
     return time_tracking_of(await applied_blob(s, agency_user_id, "time-tracking"))
 
 
 def time_tracking_of(blob: dict[str, Any]) -> TimeTracking:
-    """An applied `time-tracking` blob's policy: `enabled` and
-    `clock_in_reminder` default to the Time tracking Panel's off,
-    `auto_clock_out_minutes` to 10 and `role_ids` to absent."""
     minutes = blob.get("auto_clock_out_minutes", DEFAULT_AUTO_CLOCK_OUT_MINUTES)
     role_ids = frozenset(blob["role_ids"]) if "role_ids" in blob else None
     return TimeTracking(blob.get("enabled") is True, blob.get("clock_in_reminder") is True, minutes, role_ids)
 
 
 def needs_roles(tt: TimeTracking, owner: bool) -> bool:
-    """Whether `clock_gate` looks at the `roles` blob: time tracking on, a
-    saved role list, and not the owner's own row (which is role `owner`).
-    `_clock_gate` reads the blob only then."""
     return tt.enabled and tt.role_ids is not None and not owner
 
 
+# role_ids never saved means nobody may clock: Infloww's ClockSetting shows every role unticked until saved. The owner's own row counts as role "owner".
 def clock_gate(tt: TimeTracking, roles: dict[str, Any], emp: Employee | None, owner: bool) -> str | None:
-    """Why this Employee may not clock, a `_REFUSALS` reason, or None: time
-    tracking off, then its role not in "Enable clock in and clock out for",
-    then an inactive Employee. `emp` is None while the caller has no row
-    there yet.
-
-    With `role_ids` never saved nobody may clock, as Infloww's ClockSetting
-    shows every role unticked until the list is saved (live, w5-a). The
-    owner's own row counts as role `owner`, and any other Employee as its
-    assigned role in the applied `roles` blob (permissions.`_role`'s
-    `assignments`); an Employee with no role may not clock.
-    """
     if not tt.enabled:
         return "time_tracking_off"
     if needs_roles(tt, owner):
         role_id = (roles.get("assignments") or {}).get(str(emp.id if emp is not None else None))
         allowed = isinstance(role_id, str) and role_id in tt.role_ids
-    else:  # the owner's own row, or no role list saved
+    else:
         allowed = tt.role_ids is not None and "owner" in tt.role_ids
     if not allowed:
         return "role_not_enabled"
@@ -178,15 +83,11 @@ def clock_gate(tt: TimeTracking, roles: dict[str, Any], emp: Employee | None, ow
 
 
 async def _clock_gate(s, tt: TimeTracking, agency_user_id: str, emp: Employee | None, owner: bool) -> str | None:
-    """`clock_gate` for this Agency: the one gate of clock-in, ClockStatus
-    and the clock-in reminder, reading the `roles` blob only if `needs_roles`."""
     roles = await applied_blob(s, agency_user_id, "roles") if needs_roles(tt, owner) else {}
     return clock_gate(tt, roles, emp, owner)
 
 
 def _signed_in():
-    """(user, chatter) of the request, the owner cookie winning as in
-    `agency_context`; 401 with neither, even with ALLOW_ANONYMOUS_ADMIN."""
     from chatters import get_request_chatter
     user = get_request_user()
     chatter = get_request_chatter() if user is None else None
@@ -195,15 +96,8 @@ def _signed_in():
     return user, chatter
 
 
+# GET /me stays chatter-only; the top bar reads GET /clock-status, which answers every session.
 def _chatter_only():
-    """The Chatter session of `GET /me`: 401 with no session (even with
-    ALLOW_ANONYMOUS_ADMIN), 403 for an Owner or Master session.
-
-    ASSUMPTION: `GET /me` stays chatter-only now that owners may clock; the
-    top bar reads `GET /clock-status`, which answers every session. Rung 4,
-    least exposure: answering owners later is additive. Overturned if an
-    owner surface needs `me` itself.
-    """
     user, chatter = _signed_in()
     if user is not None:
         raise HTTPException(status_code=403, detail=_OWNER_ACTS)
@@ -211,11 +105,6 @@ def _chatter_only():
 
 
 async def _my_employees(s, user, chatter) -> dict[str, Employee]:
-    """The caller's own Employee in each Agency it clocks in, by Agency id,
-    read without creating any: an Owner or Master session's own row in its
-    own Agency (`find_owner_employee_id`), a Chatter session's Mirror Employee
-    in each linked Agency. The one answer to whose clock a session holds, for
-    clock-in, clock-out, ClockStatus and the reminder."""
     if user is not None:
         own = await find_owner_employee_id(s, user)
         emp = await s.get(Employee, own) if own is not None else None
@@ -242,11 +131,6 @@ _AS_WRITTEN = object()
 
 def _clock_audit(s, action: str, ev: ClockEvent, before: dict[str, Any] | None,
                  actor: str | None = None, after: Any = _AS_WRITTEN) -> None:
-    """One `actions` row for a clock write, in the write's transaction (the
-    same rule as the Shift rows' `_audit`). With no `actor` the Employee wrote
-    it and is recorded as both actor and `employee_id`; an owner or the sweep
-    passes its actor and leaves `employee_id` NULL (the spec's Audit rules).
-    `after` is the event as written unless given (None for a delete)."""
     s.add(Action(
         employee_id=ev.employee_id if actor is None else None,
         account_id=ev.account_id,
@@ -260,9 +144,6 @@ def _clock_audit(s, action: str, ev: ClockEvent, before: dict[str, Any] | None,
 
 
 def _occurrence_at(sh: Shift, t: datetime) -> tuple[datetime, datetime] | None:
-    """The Shift's occurrence that contains instant `t`, or None. A cancelled
-    Shift has none: it no longer holds anyone's time (the same rule as the
-    `status == "scheduled"` filters of clock-in and the my-shifts read)."""
     if sh.status != "scheduled":
         return None
     held = shift_occurrences(sh, t, t + timedelta(microseconds=1))
@@ -272,10 +153,6 @@ def _occurrence_at(sh: Shift, t: datetime) -> tuple[datetime, datetime] | None:
 async def _assigned_shift_now(
     s, agency_user_id: str, employee_id: int, account_id: str | None, now: datetime,
 ) -> list[int]:
-    """The ids of the live Shifts whose occurrence contains `now` and that
-    assign this Employee to this Creator (to any Creator when `account_id` is
-    None, the agency-wide clock): earliest occurrence start first, then
-    lowest id."""
     q = select(Shift).join(ShiftAssignment, ShiftAssignment.shift_id == Shift.id).where(
         Shift.agency_user_id == agency_user_id, Shift.status == "scheduled",
         Shift.start_utc <= now, ShiftAssignment.employee_id == employee_id,
@@ -287,19 +164,8 @@ async def _assigned_shift_now(
     return [sid for _, sid in sorted(found)]
 
 
+# Runs before each handler's own 401/403/404 checks; a refused request may still close an overdue event, which only writes what the next request would.
 async def _sweep_callers_agencies() -> None:
-    """Run `_auto_clock_out` over the signed-in caller's Agencies: an
-    Owner or Master session's own Agency, a Chatter session's every linked
-    Agency. Nothing for a signed-out request.
-
-    ASSUMPTION: "at the start of every /admin/shifts request" is a dependency
-    of both `/admin/shifts` routers (server.py's include_router), so it runs
-    before each handler's own 401/403/404/422 checks for any signed-in caller
-    (owner, Master or chatter) and never for a signed-out one. Rung 5: one
-    hook instead of a call in every handler; a refused request may still close
-    an overdue event, which only writes what the next request would.
-    Overturned if a refused request must write nothing.
-    """
     user = get_request_user()
     if user is not None:
         agencies = {user.id}
@@ -314,9 +180,6 @@ async def _sweep_callers_agencies() -> None:
 def due_clock_outs(
     open_events: list[ClockEvent], now: datetime, minutes: dict[str, timedelta], latest: dict[int, datetime],
 ) -> list[tuple[ClockEvent, datetime]]:
-    """The open events whose deadline is at or before `now`, each with its
-    deadline: the last activity (the latest of the clock-in, `last_seen_utc`
-    and the Employee's `latest` audit time) plus its Agency's `minutes`."""
     due: list[tuple[ClockEvent, datetime]] = []
     for ev in open_events:
         last = max(ev.in_utc, ev.last_seen_utc or ev.in_utc, latest.get(ev.employee_id) or ev.in_utc)
@@ -326,30 +189,10 @@ def due_clock_outs(
     return due
 
 
+# Deadline = last activity plus the Agency's minutes, for every event Shift or not: Infloww clocks out on inactivity only, so working past the Shift's end stays clocked in.
+# out_utc is the deadline, so up to N idle minutes count as worked (Infloww's client clocks out when it notices the idle).
+# Conditional UPDATE (out_utc IS NULL), audit only when it changed the row: overlapping sweeps or a race with clock-out never close one event twice.
 async def _auto_clock_out(agency_user_ids: set[str], now: datetime) -> None:
-    """Close every open Clock event of these Agencies whose deadline is at
-    or before `now`, with `out_utc` = the deadline and close_reason=auto, and
-    one `clock.auto_out` audit row (actor `system`) each.
-
-    One rule for every event, Shift or not: the deadline is the last activity
-    plus the Agency's `auto_clock_out_minutes`, where last activity is the
-    latest of the clock-in, the event's last heartbeat (`last_seen_utc`) and
-    the Employee's latest `actions.at` (but the app's
-    `employees.BACKGROUND_WRITES`). Infloww clocks out on inactivity only
-    (`useMouseMoveDetection`, bundle @10588799), so a chatter still working
-    past the Shift's end stays clocked in.
-
-    ASSUMPTION: `out_utc` is the deadline, so up to N idle minutes count as
-    worked, Infloww's client clocking out when it notices the idle. Rung 5,
-    the convention already in place. Overturned if the owner wants `out_utc`
-    = the last activity.
-
-    ASSUMPTION: each event is closed by a conditional UPDATE (`out_utc IS
-    NULL`), and the audit row is written only when it changed the row, so two
-    overlapping sweeps, or a sweep racing a clock-out, never close one event
-    twice or write two rows. Rung 4: a no-op when nothing raced. Overturned
-    if a clock-out that races the sweep must win over the deadline.
-    """
     async with get_session() as s:
         events = (await s.execute(
             select(ClockEvent).where(ClockEvent.agency_user_id.in_(agency_user_ids),
@@ -408,7 +251,7 @@ async def clock_in(request: Request) -> dict[str, Any]:
     account_id = body.get("account_id")
     if account_id is not None and (not isinstance(account_id, str) or not account_id):
         raise HTTPException(status_code=422, detail="account_id must be a Creator id or left out")
-    ctx = await agency_context(account_id=account_id)  # a chatter's Mirror Employee, created on first use
+    ctx = await agency_context(account_id=account_id)
     shift_id = body.get("shift_id")
     if shift_id is not None and (not isinstance(shift_id, int) or isinstance(shift_id, bool)):
         raise HTTPException(status_code=422, detail="shift_id must be an integer or null")
@@ -422,7 +265,7 @@ async def clock_in(request: Request) -> dict[str, Any]:
                                    ctx.is_owner)
         if reason is not None:
             raise _refuse(reason)
-        # The Master clears `agency_context`'s account check for every Creator.
+        # The Master clears agency_context's account check for every Creator.
         if ctx.is_owner and account_id is not None and \
                 account_id not in await agency_account_ids(s, ctx.agency_user_id):
             raise HTTPException(status_code=422, detail="account_id: not a Creator of this agency")
@@ -492,7 +335,7 @@ async def clock_out(request: Request) -> dict[str, Any]:
         return _clock_json(ev)
 
 
-# How far ahead the my-shifts read lists occurrences: today plus seven days.
+# Today plus seven days.
 MY_SHIFTS_AHEAD = timedelta(days=8)
 
 
@@ -536,7 +379,7 @@ async def my_shifts() -> dict[str, Any]:
 
     accounts: list[dict[str, Any]] = []
     open_clocks: list[dict[str, Any]] = []
-    mine: list[tuple[datetime, datetime, Shift, str, bool]] = []  # (start, end, Shift, account, due)
+    mine: list[tuple[datetime, datetime, Shift, str, bool]] = []
     async with get_session() as s:
         nicknames = dict((await s.execute(
             select(Account.id, Account.nickname).where(Account.id.in_(list(chatter.account_ids)))
@@ -655,37 +498,14 @@ async def clocked_in() -> dict[str, Any]:
     }
 
 
-# ── The top bar's Clock button (w4-a) ───────────────────────────────
-#
-# Infloww's `HeaderSignButton` reads `GET /sign/query_signStatus` and, while
-# clocked in, renews through `GET /sign/in_renew` (bundle @10626350). Ours is
-# one status read and one heartbeat that returns the same status, so a renew
-# that arrives after the inactivity deadline finds the event already closed by
-# the router's sweep and reads `last_closed.close_reason == "auto"`.
 
+# A renew after the inactivity deadline finds the event already closed by the router's sweep and reads last_closed.close_reason == "auto".
 LAST_CLOSED_WITHIN = timedelta(hours=24)
 
 
+# For a chatter in several Agencies can_clock is true if any allows it and auto_clock_out_minutes is the smallest, so the heartbeat is never slower than the strictest policy.
+# A read never creates an Employee row: with none yet, nothing is open and the role reads as unassigned.
 async def _status() -> dict[str, Any]:
-    """`ClockStatus {can_clock, reason, open, last_closed,
-    auto_clock_out_minutes, server_now}` for the signed-in caller.
-
-    `reason` says why `can_clock` is false (`_clock_gate`), or, with
-    `can_clock` true, `pick_creator` for a chatter linked to several Agencies,
-    which must name a Creator (`ClockDialog`). `open` is the caller's open
-    Clock event (in any of its Agencies), `last_closed` its latest event
-    closed in the last 24 hours `{clock_event_id, out_utc, close_reason}`.
-
-    ASSUMPTION: for a chatter linked to several Agencies `can_clock` is true
-    when any of them lets it clock, and `auto_clock_out_minutes` is that of
-    the open event's Agency, else the smallest of its Agencies', so the
-    heartbeat is never slower than the strictest policy. Rung 5. Overturned
-    if such a chatter must see each Agency's status apart.
-
-    ASSUMPTION: a read never creates the owner's or a chatter's Employee row;
-    with none yet, the role is checked as an Employee with no role assigned
-    and nothing is open. Rung 4: a read that writes nothing.
-    """
     user, chatter = _signed_in()
     if user is None and not chatter.owner_user_ids:
         raise HTTPException(status_code=403, detail="chatter is not linked to an agency")
@@ -748,7 +568,6 @@ async def clock_heartbeat() -> dict[str, Any]:
     return await _status()
 
 
-# ── Clock records (w4-a) ────────────────────────────────────────────
 
 @router.get("/clock-events")
 async def list_clock_events(
@@ -778,9 +597,6 @@ async def list_clock_events(
 
 async def _events_in_range(s, employee_id: str | None, from_: str | None, to: str | None, *,
                            required: bool) -> list[ClockEvent]:
-    """The caller's Agency's Clock events intersecting [from, to), newest
-    clock-in first; one Employee's when `employee_id` is given or
-    `required` (another Agency's or a missing one 404, not an integer 422)."""
     ctx = await shift_owner_context()
     start, end = parse_range(from_, to)
     q = select(ClockEvent).where(
@@ -799,8 +615,6 @@ async def _events_in_range(s, employee_id: str | None, from_: str | None, to: st
 
 
 async def _records(s, events: list[ClockEvent]) -> list[dict[str, Any]]:
-    """Each event as a clock record: `minutes` rounded up (null while open)
-    and `edited`."""
     edited = set((await s.execute(select(Action.target_id).where(
         Action.action == "clock.owner_edit", Action.target_type == "clock_event",
         Action.target_id.in_([str(ev.id) for ev in events]),

@@ -1,20 +1,3 @@
-"""phase_a_indexes
-
-Revision ID: 0009_phase_a_indexes
-Revises: 0008_phase_a_drop_bought_amount
-Create Date: 2026-05-22
-
-Originally slated as "indexes and stragglers." After 0005-0008 the only
-straggler left is `prompts.response_schema_json` (T-A3 follow-up — adds
-a nullable Text field to Prompt for future response-schema validation).
-No new indexes turned up; the partial / composite indexes all landed
-with their owning column in 0005 / 0007.
-
-Still excluded (autogenerate keeps proposing them; out of scope):
-  • messages.{unsent_*, is_promise, promise_due_date} — T-A2 columns
-    deferred until B.5. A standalone follow-up migration must add them
-    before any code that touches them ships.
-"""
 from __future__ import annotations
 
 from typing import Sequence

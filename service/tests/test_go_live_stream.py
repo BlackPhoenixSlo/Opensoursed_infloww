@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Phase 4's Relay routes for Go live and the stream schedule form, OF faked on the client: nothing leaves the process.
-
-docs/spec/ofm-not-yet/phase-04-go-live.md (Testing Decisions, Relay; stories 35, 42); ticket 83 stands up the table.
-Each Phase 4 route ticket adds one `ROUTES` row in its own `# ticket NN` block; `assert_contract` holds every row to:
-
-  - the route is registered (method and path template on the app);
-  - the body passes through unchanged: the outbound OF call (method, path, JSON body) is the row's;
-  - an OF refusal is the usual structured 502 carrying OF's status and message;
-  - `permissions.route_pages` maps the route to Go live's page (`/of-manager/streaming`), and a chatter whose
-    enforcing role grants Go live alone is not refused (the chatter check).
-
-A row: {"method", "route": "<registered path template>", "relay": "/api/of/v2/<path, ids filled>",
-"of": "/api2/v2/<OF's path, ids filled>", "body": {...}}. Ids are synthetic. Go live's own routes (start, finish:
-track B) join only after its gate ticket closes (D7, D28).
-
-  case_every_route_row_holds_the_contract          (zero rows until the first Phase 4 route ticket)
-  case_the_contract_holds_on_a_planted_known_route (harness self-check: the schedule form's POST /streams)
-  case_the_contract_fails_a_planted_route_missing_from_go_live
-
-These are not test hooks in service/: product routes tested from outside.
-
-Run: ./venv/bin/python service/tests/test_go_live_stream.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -34,7 +11,6 @@ from _relay_contract import CHATTER_A, CREATOR, OWNER_A, roles, send  # noqa: E4
 GO_LIVE = "/of-manager/streaming"
 ROUTES: list[dict] = []
 
-# ticket 84: the schedule form's right column search (Home's reads), a GET each: no body.
 ROUTES += [
     {"method": "GET", "route": "/api/of/v2/users/search", "relay": "/api/of/v2/users/search?q=synth&limit=5",
      "of": "/api2/v2/users?limit=5&offset=0&query=synth&view=se", "body": None},
@@ -81,8 +57,6 @@ def case_every_route_row_holds_the_contract():
         assert_contract(row)
 
 
-# The schedule form's existing route (service/server.py of_schedule_stream; test_schedule_stream.py): proves the
-# helper itself, never a Phase 4 row.
 _PLANTED = {"method": "POST", "route": "/api/of/v2/streams", "relay": "/api/of/v2/streams", "of": "/api2/v2/streams",
             "body": {"description": "Synthetic stream", "scheduledDate": "2026-10-20T18:30:00+02:00",
                      "isShowTips": True}}
@@ -93,7 +67,6 @@ def case_the_contract_holds_on_a_planted_known_route():
 
 
 def case_the_contract_fails_a_planted_route_missing_from_go_live():
-    # A known route that passes through unchanged but is OF settings', not Go live's (server.py _SECURITY_PATCH_KEYS).
     row = {"method": "PATCH", "route": "/api/of/v2/users/me/settings/security",
            "relay": "/api/of/v2/users/me/settings/security", "of": "/api2/v2/users/me/settings/security",
            "body": {"isAutoFollowBack": True}}

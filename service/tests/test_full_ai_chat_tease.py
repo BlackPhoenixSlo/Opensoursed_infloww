@@ -1,45 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_chat_tease — config `chat_tease` (Chat tease: an unasked teasing photo rides her
-ordinary reply in a normal chat, priced by the tease price Jev from `chat_tease_prices`),
-`ask_implied` (`wants_content`'s wider wording) and `info_wide` (what he is watching / playing now
-is a hobby), all test Mode only.
-
-  case_flag_table            defaults, validation (bools, prices), labels, merge of an old side, the
-                             retired `chat_tease_rungs` read without an error, refused on a write
-  case_switches              tease/implied/wide flags: test Mode only; `tease_turn` (row chat_tease,
-                             or a not-hot offer_moment)
-  case_route_row             row chat_tease: last flagged row, only replaces chat; sell flag drops it
-                             naming nothing; ignored without the flag
-  case_folds                 pure `spacing_of(free=)`, `teases_sent_of` (free, bought, unbought, said
-                             no; a tease-priced offer_moment row counts), `chat_tease_of`
-  case_tease_price_pure      `tease_options`, `tease_state`, the Choice's options, `TEASE_PRICE_VERSION`;
-                             `PRICE_VERSION` unmoved
-  case_pick_one_photo        `pick(ride=True, ride_max=n)`: n photos (1, 5); ride_max 2 unchanged
-  case_folder_final_one_clamp_in_sell  rwl3 A9: a final folder price survives a tease quote
-                             and a haggle through `_sell`'s one clamp; not final, the haggle moves it
-  case_ride_soft_only        rwl-a F4: `_sell`'s ride draws only soft-lane photos (<= $10); a free
-                             tease only ones past the free guard; none left -> Refusal("no_match")
-  case_router_request        flags off: the request is the one before them, byte for byte (pinned on
-                             a1622d58b); `chat_tease` asked with the flag only; `ask_implied` swaps
-                             `wants_content`'s wording in test Mode only; Shadow's digest unmoved
-  case_info_request          `info_wide` swaps `stated_hobbies`; digest; extract system line
-  case_wording_in_catalog    every new wording is in docs/prompts/new/current-repo.md
-  case_api_tease             Test chat: Jev's "free" -> one free photo (price 0, kind free, RIDE_NOTE,
-                             no caption) -> `teases_sent` names it -> Jev's "$3" -> one photo at $3
-                             -> Decline -> "he said no" -> Jev's "$40" -> up to 8 photos at $40 -> Buy
-                             -> "he bought it", `spent_so_far`; the Offer price Jev never asked
-  case_api_tease_jev_fails   tease price Jev error / unoffered answer: a plain chat reply, no pick
-  case_api_prices_from_config   the options are the side's `chat_tease_prices`, recorded on the row
-  case_api_flag_off          `chat_tease` off: neither question is asked, a fired one is ignored
-  case_api_info_wide         a fired hobbies extract carries HOBBIES_EXTRACT; off, wcfi's messages
-  case_api_broke_ignored     owner 2026-11-15: an ask with `declines_buying` fired routes, picks and
-                             prices (Offer price Jev asked) as without it; only BROKE_JOKE is added
-
-Run: ./venv/bin/python service/tests/test_full_ai_chat_tease.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 from _jev_fixtures import mapped  # noqa: E402
 
 from _full_ai_sell_helpers import (  # noqa: E402
@@ -84,7 +46,6 @@ CHATTY = "ok:haha stop it, what are u watching tonight"
 VAULT = {101: "$10", 102: "$10", 103: "$10", 104: "$10", 202: "$50"}
 
 
-# ── Pure ──────────────────────────────────────────────────────────────
 
 def case_flag_table():
     assert DEFAULTS["chat_tease"] is DEFAULTS["ask_implied"] is DEFAULTS["info_wide"] is True
@@ -110,8 +71,6 @@ def case_flag_table():
     pre = {k: v for k, v in DEFAULTS.items() if k not in new}
     got = merged({"checkpoint": pre, "previous": pre, "draft": pre, "rev": 3})
     assert all(got[s][k] == DEFAULTS[k] for s in ("checkpoint", "draft") for k in new), got
-    # The retired `chat_tease_rungs` (PR #669's key): a stored side still holding it reads and
-    # validates, the key dropped; a write carrying it is refused, naming its successor.
     old = {**pre, "chat_tease": False, "chat_tease_rungs": [0, 1000]}
     got = merged({"checkpoint": old, "previous": old, "draft": old, "rev": 4})
     for side in ("checkpoint", "previous", "draft"):
@@ -132,7 +91,7 @@ def _facts(mode="test", **cfg):
 def case_switches():
     for fn, key in ((wr.tease_flag, "chat_tease"), (wr.implied_flag, "ask_implied"), (wr.wide_flag, "info_wide")):
         for mode, flag, want in (("test", True, True), ("test", False, False), ("shadow", True, False),
-                                 ("live", True, True)):   # live = test (04a Mode gate)
+                                 ("live", True, True)):
             assert fn(_facts(mode, **{key: flag})) is want, (key, mode, flag)
     D = lambda route, row, *fired: Decision(route, 2, row, frozenset(fired))   # noqa: E731
     on = _facts()
@@ -140,8 +99,8 @@ def case_switches():
                        (D("sell_now", "chat_tease", "chat_tease"), _facts(chat_tease=False), False),
                        (D("sell_now", "chat_tease", "chat_tease"), _facts("shadow"), False),
                        (D("chat", "otherwise", "chat_tease"), on, False),
-                       (D("sell_now", "offer_moment", "offer_moment"), on, True),             # not hot
-                       (D("sell_now", "offer_moment", "offer_moment", "sexual_now"), on, False),   # hot
+                       (D("sell_now", "offer_moment", "offer_moment"), on, True),
+                       (D("sell_now", "offer_moment", "offer_moment", "sexual_now"), on, False),
                        (D("sell_now", "offer_moment", "offer_moment"), _facts(chat_tease=False), False),
                        (D("sell_now", "offer_moment", "offer_moment"), _facts("shadow"), False),
                        (D("sell_now", "sell", "wants_content"), on, False)):
@@ -157,7 +116,6 @@ def _decide(fired, **kw):
 def case_route_row():
     d = _decide({"chat_tease"})
     assert (d.route, d.row, d.dropped) == ("sell_now", "chat_tease", ()), d
-    # Every other matching row wins (an ask, tease, haggle, offer_moment, scene_offer, any sext).
     for fired, kw, want in (({"wants_content"}, {}, "sell"), ({"price"}, {}, "tease_price"),
                             ({"counter_offer"}, {"open_offer": True, "draft_on": True}, "haggle"),
                             ({"offer_moment"}, {"draft_on": True}, "offer_moment"),
@@ -168,11 +126,9 @@ def case_route_row():
         got = _decide(fired | {"chat_tease"}, **kw)
         assert got.row == want, (fired, got)
         assert (got.route, got.dropped) == ((w := _decide(fired, **kw)).route, w.dropped), (fired, got, w)
-    # Without the flag the id is ignored, not recorded; sell off drops it naming nothing.
     assert _decide({"chat_tease"}, chat_tease=False) == Decision("chat", 2, "otherwise", frozenset({"chat_tease"}))
     off = _decide({"chat_tease"}, sell_on=False)
     assert (off.route, off.row, off.dropped) == ("chat", "otherwise", ("chat_tease",)), off
-    # Sexting off with sexual_now: the sext row drops (sext_off), the tease may still send.
     so = _decide({"sexual_now", "chat_tease"}, sext_on=False)
     assert (so.route, so.row, so.dropped) == ("sell_now", "chat_tease", ("sexual_now",)), so
 
@@ -182,9 +138,6 @@ T = datetime(2026, 7, 1, 12)
 
 def _r(i, text, *, row="otherwise", price=None, outcome=None, minutes=None, parts=("ok",), media=None,
        tease=False):
-    """A session row as `send` leaves it: his line in `jev_json`, her parts, the Offer columns
-    (`media`: the locked ids, default [i]); `tease`: the tease price Jev priced it
-    (`reply_json.chat_tease.cents`)."""
     at = T + timedelta(minutes=i if minutes is None else minutes)
     offer = price is not None
     return SimpleNamespace(
@@ -199,9 +152,6 @@ def _r(i, text, *, row="otherwise", price=None, outcome=None, minutes=None, part
 
 
 def case_live_photo_outcome_is_not_a_photo_line():
-    """A live row keeps the photo read's outcome in `reply_json.fan_photo` (no `text`): the folds
-    read his line from `jev_json`, never `photo["text"]` (public 2026-11-15: every live Turn after
-    the first raised KeyError)."""
     r = _r(1, "hey")
     r.reply_json = json.dumps({**json.loads(r.reply_json), "fan_photo": {"outcome": "none", "model": None, "ms": 3}})
     lines = ft.test_thread([r])
@@ -215,33 +165,28 @@ def case_folds():
     free = _r(5, "line 5", row="chat_tease", price=0)
     after = [_r(6, "line 6"), _r(7, "line 7")]
     rows = chat + [free] + after
-    # Flag off: a free photo is no Piece (today's outputs).
     assert ft.spacing_of(rows, now) == {"his_lines_since_last_piece": "no piece yet", "pieces_this_sitting": 0,
                                         "unasked_pieces_this_sitting": 0}
-    # `free`: it ends the line count (2 rows after it + this Turn), the piece counts stay priced.
     assert ft.spacing_of(rows, now, free=True) == {"his_lines_since_last_piece": 3, "pieces_this_sitting": 0,
                                                    "unasked_pieces_this_sitting": 0}
-    # A free make_right item is not a Chat tease photo.
     mr = [*chat, _r(5, "line 5", row="complains_now", price=0), *after]
     assert ft.spacing_of(mr, now, free=True)["his_lines_since_last_piece"] == "no piece yet"
     paid = _r(8, "line 8", row="chat_tease", price=1000)
     sp = ft.spacing_of([*rows, paid], now, free=True)
     assert sp == {"his_lines_since_last_piece": 1, "pieces_this_sitting": 1, "unasked_pieces_this_sitting": 1}, sp
-    assert ft.spacing_of([*rows, paid], now)["unasked_pieces_this_sitting"] == 1      # UNASKED_ROWS
-    # Teases sent: every chat_tease row with a photo, oldest first, in words with its outcome.
+    assert ft.spacing_of([*rows, paid], now)["unasked_pieces_this_sitting"] == 1
     assert ft.teases_sent_of(chat) == "none yet" == ft.NO_TEASES
     assert ft.teases_sent_of(rows) == ["free photo"]
     sent = [*rows, _r(8, "x", row="chat_tease", price=1000, outcome="bought", media=[8, 9]),
-            _r(9, "x", row="offer_moment", price=1000, outcome="bought"),           # not a Chat tease
+            _r(9, "x", row="offer_moment", price=1000, outcome="bought"),
             _r(10, "x", row="chat_tease", price=4000, media=[10, 11, 12]),
             _r(11, "x", row="chat_tease", price=4000, outcome="declined", media=[13, 14]),
             _r(12, "x", row="chat_tease", price=300, outcome="declined"),
             _r(13, "x", row="chat_tease", price=1250, outcome="bought"),
-            _r(14, "x", row="chat_tease")]                                          # no photo went out
+            _r(14, "x", row="chat_tease")]
     assert ft.teases_sent_of(sent) == ["free photo", "$10 photo set, he bought it", "$40 photo set, he did not buy it",
                                        "$40 photo set, he said no", "$3 photo, he said no",
                                        "$12.50 photo, he bought it"], ft.teases_sent_of(sent)
-    # A Chat tease fired on row offer_moment (a not-hot unasked offer) counts as one, free or priced.
     om = [*chat, _r(5, "line 5", row="offer_moment", price=0, tease=True), *after]
     assert ft.teases_sent_of(om) == ["free photo"] and ft.is_tease(om[4]) and not ft.is_tease(om[0])
     assert ft.spacing_of(om, now, free=True)["his_lines_since_last_piece"] == 3
@@ -249,17 +194,13 @@ def case_folds():
     assert ft.teases_sent_of(om2) == ["free photo", "$10 photo, he bought it"], ft.teases_sent_of(om2)
     assert ft.chat_tease_of(chat, now) == {"his_lines_this_sitting": 5, "teases_sent": "none yet"}
     assert ft.chat_tease_of(sent, now)["teases_sent"] == ft.teases_sent_of(sent)
-    assert ft.chat_tease_of(sent, now)["his_lines_this_sitting"] == 15        # 14 rows + this Turn
-    # A new Sitting (a gap over 2 h) restarts his line count; the teases sent stay the session's.
+    assert ft.chat_tease_of(sent, now)["his_lines_this_sitting"] == 15
     late = T + timedelta(hours=5)
     assert ft.chat_tease_of(rows, late) == {"his_lines_this_sitting": 1, "teases_sent": ["free photo"]}
     assert tuple(ft.chat_tease_of(chat, now)) == rj.TEASE_STATE_KEYS == ("his_lines_this_sitting", "teases_sent")
     assert not hasattr(ft, "tease_rung") and not hasattr(ft, "NONE_LEFT")
 
 
-# The Offer price Jev's digest before Chat tease's price (main 5a5d433d4): Chat tease must not
-# move it. Re-pinned 2026-11-15: PRICE's $10 criterion back to before 11-14's "broke" clause
-# (owner: ignore "broke").
 MAIN_PRICE_VERSION = "a8c6c0da0b86"
 
 
@@ -267,7 +208,7 @@ def case_tease_price_pure():
     opts = _price_jev.tease_options(DEFAULTS["chat_tease_prices"])
     assert opts == {"free": 0, "$3": 300, "$10": 1000, "$40": 4000, "$80": 8000, "$120": 12000, "$160": 16000,
                     "$200": 20000}, opts
-    assert _price_jev.tease_options([1250, 0]) == {"$12.50": 1250, "free": 0}       # config order kept
+    assert _price_jev.tease_options([1250, 0]) == {"$12.50": 1250, "free": 0}
     crit = _price_jev._tease_criteria(opts)
     assert crit["free"] == _price_jev.TEASE_PRICE["free"]
     assert crit["$10"] == "Up to 2 teasing photos of her, locked: he pays $10 to see them", crit
@@ -301,7 +242,6 @@ DRESSED = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none
 
 
 def _row(mid, lane="$10"):
-    """A vault row as test_full_ai_ride builds it (a dressed photo, settled)."""
     j = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane, "state": {}, "kind": "photo",
          "breasts_bare": "n", "crotch_bare": "n", "penetration": "n", "tags": {}}
     fields = vault_ai_brief.settled_reading(mapped({**DRESSED, vault_jev_rules.JEV_KEY: j}))
@@ -332,7 +272,6 @@ def case_pick_one_photo():
 
 
 async def _ride(rows, cents):
-    """`full_ai_turn._sell` on a fresh Chat tease Turn over `rows`, the tease price Jev said `cents`."""
     from automations import full_ai_turn
     from automations.full_ai_sell import Refusal
 
@@ -359,7 +298,6 @@ async def _ride(rows, cents):
 
 
 async def case_folder_final_one_clamp_in_sell():
-    """rwl3 A9: `_sell` clamps a final folder price once, after the tease quote and the haggle."""
     from automations import full_ai_turn
     final = {"folder_final": True}
     for cents in (300, 0):          # a tease quote (paid or free) never moves a final $10
@@ -396,11 +334,11 @@ async def case_folder_final_one_clamp_in_sell():
 async def case_ride_soft_only():
     from automations.full_ai_sell import Refusal
     big = [_row(i, lane="$50") for i in (1, 2)] + [_row(3, lane="$100")]
-    for cents in (0, 300):          # no soft photo: no ride, free or $3
+    for cents in (0, 300):
         assert await _ride(big, cents) == Refusal("no_match"), cents
     bare = _row(4, lane="$10")
     bare["fields"] = {**bare["fields"], "_jev": {**bare["fields"]["_jev"], "breasts_bare": "y"}}
-    assert await _ride([*big, bare], 0) == Refusal("no_match")     # free guard fails: never free
+    assert await _ride([*big, bare], 0) == Refusal("no_match")
     got = await _ride([*big, bare], 300)
     assert isinstance(got, Pick) and got.media == (4,) and got.price_cents == 300, got
     got = await _ride([*big, _row(5, lane="$10")], 0)
@@ -443,7 +381,6 @@ def case_router_request():
         assert on["chat_tease"].criteria["true"] == rj.TEST_NOULS["chat_tease"]["criteria"]["true"]
         assert on["wants_content"].instructions == rj.TEST_IMPLIED["wants_content"]["instructions"]
         assert q["wants_content"].instructions == rj.QUESTIONS["wants_content"]["instructions"]
-    # Shadow never takes either, whatever is passed.
     sh = rj._questions("shadow", False, False, False, tease=True, implied=True)
     assert "chat_tease" not in sh and sh["wants_content"].instructions == rj.QUESTIONS["wants_content"]["instructions"]
     assert rj.question_version() == rj.QUESTION_VERSION == SHADOW_VERSION
@@ -483,15 +420,11 @@ def case_wording_in_catalog():
     for v in _price_jev.TEASE_PRICE.values():
         assert json.dumps(v) in doc, v[:40]
     text149 = doc.split("### NEW-149 ", 1)[1].split("### NEW-150 ", 1)[0].split("```text", 1)[1]
-    assert "next_chat_tease" not in text149      # the wording block is today's
+    assert "next_chat_tease" not in text149
 
 
-# ── Through the Test chat API ─────────────────────────────────────────
 
 class FakeTeaseJev:
-    """`_price_jev._client`: each call pops a verdict (an option label, a label -> P map, or an
-    exception) and records {state, questions}; with none left it raises (a failure, never an
-    answer). Shared by the Offer price Jev's seam, so `questions` shows which one was asked."""
 
     def __init__(self, *verdicts):
         self.verdicts, self.calls = list(verdicts), []
@@ -501,7 +434,7 @@ class FakeTeaseJev:
         v = self.verdicts.pop(0) if self.verdicts else RuntimeError("no verdict left")
         if isinstance(v, Exception):
             raise v
-        if isinstance(v, float):        # the Offer price Jev's Score
+        if isinstance(v, float):
             return SimpleNamespace(scores={"price": SimpleNamespace(score=v, probabilities={1: .5, 2: .5})})
         p = {v: .8, **{k: .2 / len(questions.get(_price_jev.TEASE_QID).criteria)
                        for k in questions[_price_jev.TEASE_QID].criteria if k != v}} if isinstance(v, str) else dict(v)
@@ -514,7 +447,6 @@ TJ = FakeTeaseJev()
 
 @contextlib.contextmanager
 def _deepseek_key():
-    """Creator A's Agency DeepSeek key for the block (a fake value: the wire is faked), then restored."""
     owner = IDS["agency_a_owner"]
     before = _db(lambda: tenant_keys.get_key(owner, "deepseek"))
     _db(lambda: tenant_keys.set_keys(owner, {"deepseek": "test-deepseek-agency-key"}))
@@ -526,7 +458,6 @@ def _deepseek_key():
 
 @contextlib.contextmanager
 def _draft(**cfg):
-    """A's draft sells, `cfg` over it; the price Jev seam is `TJ` (reset), so no call reaches TypeSafe."""
     _put_draft({**DEFAULTS, "sell_on": True, **cfg})
     real = _price_jev._client
     TJ.verdicts, TJ.calls = [], []
@@ -556,13 +487,10 @@ def _settle(pair, row_id, outcome):
 
 
 TEASE = {"chat_tease": .9}
-# Six $10 photos: room for a $40 tease's up to 8.
 MANY = {101: "$10", 102: "$10", 103: "$10", 104: "$10", 105: "$10", 106: "$10", 202: "$50"}
 
 
 def _tease_call(tj, n=1):
-    """The tease price Jev's last call, after checking it was asked `n` times in all, each time the
-    Choice alone (never the Offer price Score)."""
     assert len(tj.calls) == n and all(list(c["questions"]) == [_price_jev.TEASE_QID] for c in tj.calls), tj.calls
     return tj.calls[-1]
 
@@ -582,7 +510,6 @@ def case_api_tease():
         st = call["state"]
         assert (st["his_lines_this_sitting"], st["teases_sent"]) == (4, "none yet"), st
         assert "chat_tease" in call["questions"] and not tj.calls
-        # Jev's "free": one free photo, unlocked, riding her plain reply.
         tj.verdicts = ["free"]
         g, call, row, fw, (pick,) = turn("mm what about u", TEASE)
         assert (g["route"], g["route_row"]) == ("sell_now", "chat_tease"), g
@@ -607,15 +534,13 @@ def case_api_tease():
         assert rep["ride"] is True and "price" not in rep and rep["claim_fail"] == [], rep
         assert rep["level"] == "soft", rep          # rwl-a F11: the lane the ride used
         assert "ppv" in g["parts"][-1], g["parts"]
-        assert _settle(pair, row.id, "bought").status_code == 422          # a free photo is no priced Offer
-        # The free photo is her last piece: the line count restarts; Jev reads it in `teases_sent`.
+        assert _settle(pair, row.id, "bought").status_code == 422
         g, call, row, _, _ = turn("haha nice")
         st = call["state"]
         assert (st["his_lines_since_last_piece"], st["pieces_this_sitting"], st["teases_sent"]) == (
             1, 0, ["free photo"]), st
         for t in ("so what now", "tell me more"):
             turn(t)
-        # Jev's "$3": one photo locked at $3 (price / $5, at least 1), the Offer price Jev not asked.
         tj.verdicts = ["$3"]
         g, call, row, fw, (pick,) = turn("u are fun", TEASE)
         assert _tease_call(tj, 2)["state"]["teases_sent"] == ["free photo"]
@@ -627,7 +552,6 @@ def case_api_tease():
         assert call["state"]["teases_sent"] == ["free photo", "$3 photo, he said no"], call["state"]
         for t in ("lol", "what are u doing later"):
             turn(t)
-        # Jev's "$40": more than the old 2-photo cap (up to 8; the vault's six $10 photos).
         tj.verdicts = ["$40"]
         g, call, row, fw, (pick,) = turn("u are cute", TEASE)
         assert _tease_call(tj, 3)["state"]["teases_sent"] == ["free photo", "$3 photo, he said no"]
@@ -636,7 +560,6 @@ def case_api_tease():
         assert _settle(pair, row.id, "bought").status_code == 200
         g, call, row, _, _ = turn("wow")
         assert call["state"]["teases_sent"][-1] == "$40 photo set, he bought it", call["state"]
-        # A later tease's state: he bought, and what he spent.
         for t in ("hehe", "so"):
             turn(t)
         tj.verdicts = ["$80"]
@@ -715,18 +638,17 @@ def case_api_info_wide():
 
 
 def case_api_broke_ignored():
-    """Owner 2026-11-15 ("just be ignorant of this broke stuff"): same Route, Pick and price."""
     ask, got = {"wants_content": .99}, {}
     for broke in (False, True):
         with _draft(sext_scene=True) as tj, _vault(MANY):
-            tj.verdicts = [2.0]                     # the Offer price Jev says $35
+            tj.verdicts = [2.0]
             g, call, row, fw, picks = _turn(f"ct-broke-{broke}", 1, "send me one, im broke tho",
                                             {**ask, **({"declines_buying": .99} if broke else {})})
         assert len(tj.calls) == 1 and "price" in json.loads(row.reply_json), (broke, tj.calls)
         assert ("declines_buying" in json.loads(row.jev_json)["fired"]) is broke, row.jev_json
         assert _system(fw).count(wr.BROKE_JOKE) == (1 if broke else 0), _system(fw)
         got[broke] = (g["route"], g["route_row"], g["offer"]["price_cents"], g["offer"]["list_cents"],
-                      [sorted(MANY[m] for m in p.media) for p in picks])     # media ids: seeded by pair
+                      [sorted(MANY[m] for m in p.media) for p in picks])
     assert got[True] == got[False] and got[False][:2] == ("sell_now", "sell"), got
 
 

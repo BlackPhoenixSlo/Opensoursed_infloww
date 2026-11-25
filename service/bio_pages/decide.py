@@ -1,9 +1,3 @@
-"""Pure decisions of the bio app (and its owner admin API's validation, PR2a): byte-compatible with ofl.ink v2 (~/oflinkv2/app, Hono 4.13.13 + @hono/node-server).
-
-Every function here is pure (no DB, no clock, no env); app.py feeds it the request and store.py's rows. Refs like
-`server.js:68` are ~/oflinkv2/app/<file>. Regexes are ASCII-only and used with fullmatch: Python's `\\d`/`\\w` match
-non-ASCII digits and letters, and its `$` allows a trailing newline, where JS's do neither.
-"""
 from __future__ import annotations
 
 import ipaddress
@@ -16,13 +10,11 @@ from urllib.parse import unquote
 
 from bio_pages.jsval import geo_tracking_code, js_str, js_truthy
 
-# gateway.js:25-32, verbatim
 USERNAME = re.compile(r"[a-z0-9_]+")
 LINK_ID = re.compile(r"[a-z0-9]{12}")
 RECORD_ID = re.compile(r"[a-z0-9]{15}")
+# Regexes are ASCII-only and used with fullmatch: Python's \d/\w/$ match more than JS's.
 HOSTNAME = re.compile(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
-# bin/reserved-usernames: the fixed names plus the routed top-level segments; a new Username must be USERNAME_NEW and
-# not one of these (enforced by the editor, PR2).
 RESERVED = ("api", "edit", "images", "internal", "netlify")
 USERNAME_NEW = re.compile(r"[a-z0-9_]{3,30}")
 MODES = ("direct", "escape_ig")
@@ -30,13 +22,12 @@ FILE_COLLECTIONS = ("profiles", "links")
 FILENAME = re.compile(r"[A-Za-z0-9_.-]+")
 _DIGITS = re.compile(r"[0-9]+")
 
-CODE_MAX = 12  # the longest code a bio_daily row keeps (A10); a longer one is stored as ''
-VERIFIED = ("pending_cert", "live")  # custom-domain statuses that serve it (store, admin; sync script copy pinned)
+CODE_MAX = 12  # a longer code is stored as ''
+VERIFIED = ("pending_cert", "live")
 
 
 def reveal(link: Mapping | None, tracking_id: str | None, location: Mapping) -> tuple[str | None, str]:
-    """destination.js:24-35: (the URL Reveal answers or None, the code it appended for bio_daily or ''). A stored
-    destination the editor's DESTINATION rule refuses (a javascript:/data: scheme, say) is None too: never answered."""
+    # A stored destination the editor's DESTINATION rule refuses (javascript:/data:) is never answered.
     if not link or not isinstance(link.get("destination"), str) or not DESTINATION.fullmatch(link["destination"]):
         return None, ""
     url = link["destination"]
@@ -53,13 +44,11 @@ def reveal(link: Mapping | None, tracking_id: str | None, location: Mapping) -> 
     return url + "/c" + s, (s if len(s) <= CODE_MAX else "")
 
 
-# ── headers ───────────────────────────────────────────────────────────
 
-Header = Callable[[str], "str | None"]  # a lower-cased name to its value (duplicates joined with ", "), or None
+Header = Callable[[str], "str | None"]
 
 
 def visitor_location(hdr: Header) -> dict:
-    """visitor-location.js:5-10 (an empty value falls through, as JS `||`)."""
     return {"country": hdr("x-country") or hdr("cf-ipcountry") or "US",
             "region": hdr("x-nf-subdivision-code") or hdr("x-region") or hdr("cf-region-code") or ""}
 
@@ -71,7 +60,6 @@ _IN_APP = ((re.compile(r"Threads", re.I | re.A), "threads"), (re.compile(r"Insta
 
 
 def event_country(hdr: Header) -> str:
-    """event-recorder.js:13-16: CF-IPCountry only, upper-cased, two letters, else XX (never the US fallback)."""
     c = (hdr("cf-ipcountry") or "").upper()
     return c if _COUNTRY.fullmatch(c) else "XX"
 
@@ -86,8 +74,6 @@ _FORBIDDEN_HOST = frozenset(' #%/:<>?@[\\]^|') | frozenset(map(chr, range(0x20))
 
 
 def _origin(s: str) -> tuple | None:
-    """`new URL(s).origin` for http/https as a comparable tuple; None where URL throws or the scheme is another one
-    (it then can never equal the http(s) origin it is compared with)."""
     s = s.strip(_C0_SPACE).replace("\t", "").replace("\n", "").replace("\r", "")
     m = re.match(r"([A-Za-z][A-Za-z0-9+.\-]*):", s)
     if not m or m.group(1).lower() not in ("http", "https"):
@@ -132,9 +118,8 @@ def _origin(s: str) -> tuple | None:
     return scheme, host, p
 
 
+# forwarded: Next's rewrite sets Host to the bio container, so Origin is held against X-Forwarded-Host.
 def same_origin(hdr: Header, forwarded: bool = False) -> bool:
-    """click-guard.js:60-79. `forwarded` (path mode via a trusted proxy): Next's rewrite sets Host to the bio
-    container and X-Forwarded-Host to the browser's host, so the Origin is held against the latter."""
     site = hdr("sec-fetch-site")
     if site in ("cross-site", "same-site"):
         return False
@@ -147,10 +132,8 @@ def same_origin(hdr: Header, forwarded: bool = False) -> bool:
     return a is not None and a == _origin(f"{proto}://{'null' if host is None else host}")
 
 
-# ── hosts (host-resolver.js) ─────────────────────────────────────────
 
 def normalize_host(host: str | None) -> str:
-    """`Host: Creator.Test:4173` and `creator.test.` both name creator.test (host-resolver.js:10)."""
     s = (host or "").lower()
     s = re.sub(r":[0-9]*\Z", "", s, count=1)
     return re.sub(r"\.\Z", "", s, count=1)
@@ -164,7 +147,6 @@ HostKind = Literal["primary", "lookup", "unknown", "spare", "custom"]
 
 
 def host_kind(host: str | None, primary: frozenset[str]) -> tuple[HostKind, str]:
-    """(kind, name) before any DB read: 'primary', 'unknown' (not a hostname) or 'lookup' (spare/custom/unknown)."""
     name = normalize_host(host)
     if name in primary:
         return "primary", name
@@ -174,15 +156,11 @@ def host_kind(host: str | None, primary: frozenset[str]) -> tuple[HostKind, str]
 
 
 def is_askable(domain: str, primary: frozenset[str]) -> bool:
-    """/internal/tls-ask's input check (v2's): a primary host or a valid hostname. That endpoint is kept only for
-    the v2 contract; nothing here asks it."""
     name = normalize_host(domain)
     return name in primary or bool(HOSTNAME.fullmatch(name))
 
 
 def resolve_profile_request(kind: HostKind, custom_username: str | None, upath: str, prefix: str = "") -> dict | None:
-    """host-resolver.js resolveProfileRequest: segments still percent-encoded, empties dropped. `prefix` (path mode,
-    BIO_PATH_PREFIX, already cut from `upath`) leads the path grammar's profilePath; a Custom Domain never has one."""
     segs = [s for s in upath.split("/") if s]
     if kind == "custom":
         if len(segs) > 1:
@@ -193,14 +171,12 @@ def resolve_profile_request(kind: HostKind, custom_username: str | None, upath: 
             "profilePath": prefix + "/" + username}
 
 
-# ── path mode (BIO_PATH_PREFIX: `<app host>/p/<username>` through the Next app's rewrite) ──
 
 PATH_PREFIX = re.compile(r"(?:/[a-z0-9_-]+)+")
 
 
+# Prefix is written into attributes and script URLs: only these characters may reach them.
 def parse_path_prefix(raw: str | None) -> str:
-    """BIO_PATH_PREFIX as `/seg[/seg]` (no trailing slash), or "" (host mode only). Anything else raises: the prefix
-    is written into the page's attributes and script URLs, so only these characters may reach them."""
     s = (raw or "").strip().rstrip("/")
     if s and not PATH_PREFIX.fullmatch(s):
         raise ValueError("invalid BIO_PATH_PREFIX")
@@ -208,19 +184,17 @@ def parse_path_prefix(raw: str | None) -> str:
 
 
 def cut_prefix(prefix: str, upath: str) -> str | None:
-    """`upath` without `prefix` when it starts with it as whole segments (`/p` and `/p/...`, never `/px`), else None."""
     if not prefix or not (upath == prefix or upath.startswith(prefix + "/")):
         return None
     return upath[len(prefix):] or "/"
 
 
 def to_json(value: Any) -> bytes:
-    """JSON.stringify: compact, non-ASCII as is."""
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+# `<`, `>`, `&` escaped so nothing ends the script block.
 def as_script_json(value: Any) -> str:
-    """server.js asScriptJson: JSON with `<`, `>`, `&` as \\u003c, \\u003e, \\u0026, so nothing ends the block."""
     s = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     return s.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
@@ -231,15 +205,12 @@ NO_BOOTSTRAP = object()
 
 
 def bootstrap_page(index_html: str, req: dict | None, prefix: str = "") -> str:
-    """index.html with the Profile bootstrap block before the first `<script src="/script.js">` (server.js:286-299);
-    a page rendered with a path prefix has that prefix on the script's src."""
     before = f'<script src="{prefix}/script.js"></script>'
     block = f'{BOOTSTRAP_OPEN}{as_script_json(req)}</script>\n    '
     return index_html.replace(before, block + before, 1)
 
 
 def parse_bootstrap(page: bytes):
-    """Read the block emitted by bootstrap_page; distinguish absent from JSON null."""
     text = page.decode("utf-8")
     start = text.find(BOOTSTRAP_OPEN)
     if start < 0:
@@ -259,8 +230,6 @@ TITLE_DEFAULT = "<title>Bio</title>"
 
 
 def page_meta(profile: Mapping | None, origin: str, prefix: str = "") -> str:
-    """<title> + Open Graph tags for a Profile's page (link previews in chats/socials); no Profile → the plain title.
-    `origin` is scheme://host the visitor used; the avatar is the preview image when set."""
     if not profile:
         return TITLE_DEFAULT
     name = profile.get("display_name") or profile.get("username") or "Bio"
@@ -280,13 +249,10 @@ def page_meta(profile: Mapping | None, origin: str, prefix: str = "") -> str:
 
 
 def with_meta(page_html: str, meta: str) -> str:
-    """Swap the rendered default <title> for page_meta's block."""
     return page_html.replace(TITLE_DEFAULT, meta, 1)
 
 
 def render_index(index_html: str, escape_tap: bool, prefix: str = "") -> str:
-    """Render the process-wide flag on the Escape Overlay card; with a path prefix (parse_path_prefix), lead every
-    root-relative href/src with it and name it on <body data-base> for script.js's own URLs."""
     needle = '<a id="igCard" class="ig-card">'
     if index_html.count(needle) != 1:
         raise ValueError("igCard anchor missing or duplicated")
@@ -300,10 +266,8 @@ def render_index(index_html: str, escape_tap: bool, prefix: str = "") -> str:
     return out.replace("<body>", f'<body data-base="{prefix}">', 1)
 
 
-# ── Profile JSON (public-profile.js) ──────────────────────────────────
 
 def lookup_username(raw: str) -> str | None:
-    """The Username a request names, lower-cased, or None (no query) when it is not one (gateway.js:93-98)."""
     name = raw.lower()
     return name if USERNAME.fullmatch(name) else None
 
@@ -313,13 +277,11 @@ def _file_url(collection: str, row: Mapping, field: str, prefix: str = "") -> st
 
 
 def gated(link: Mapping | None, site_key: str | None) -> bool:
-    """Reveal needs a Turnstile token: the Link's bot_check while the keys are set (`site_key` None = unset)."""
     return bool(site_key and link and link.get("bot_check"))
 
 
+# Never sent: destination, geo, owner/account, slot, v1_key.
 def public_profile(profile: Mapping, links: Sequence[Mapping], site_key: str | None = None, prefix: str = "") -> dict:
-    """The Profile JSON. Never sent: destination, geo, owner/account, slot, v1_key. A gated Link (gated()) carries
-    `botCheck: true` and the JSON the Turnstile site key; with the keys unset the shape is v2's."""
     pmode = profile["mode"] if profile["mode"] in MODES else "escape_ig"
     out_links = []
     for link in links:
@@ -343,7 +305,6 @@ def public_profile(profile: Mapping, links: Sequence[Mapping], site_key: str | N
     return out
 
 
-# ── owner admin validation (PR2a; pure, table-tested; the editor mirrors these) ──
 
 @dataclass(frozen=True)
 class Invalid:
@@ -353,7 +314,7 @@ class Invalid:
 
 STOCK_ICONS = ("onlyicon", "linkicon", "twitchicon", "igicon")
 LINK_MODES = ("", *MODES)
-# PB 0002's destination pattern with Go RE2's `\s` ([\t\n\f\r ]); Python's `\s` is wider (\v, NBSP).
+# Go RE2 `\s` ([\t\n\f\r ]); Python's `\s` is wider (\v, NBSP).
 DESTINATION = re.compile(r"(?:https?://[^\t\n\f\r \\/]|/[^\t\n\f\r \\/])[^\t\n\f\r \\]*")
 TRACKING_CODE = re.compile(r"[0-9]{0,12}")
 MAX_DISPLAY_NAME, MAX_BIO, MAX_TITLE, MAX_DESTINATION, MAX_GEO = 100, 500, 200, 2000, 8192
@@ -397,8 +358,6 @@ def _account(v: Any) -> str | None | Invalid:
 
 
 def check_profile(body: Mapping, create: bool) -> dict | Invalid:
-    """A profile body, normalized; or the first refusal. PATCH checks only the keys sent (legacy values elsewhere
-    never block an edit)."""
     if bad := _unknown(body, _PROFILE_CREATE if create else _PROFILE_PATCH):
         return bad
     out: dict[str, Any] = {}
@@ -426,7 +385,7 @@ def check_profile(body: Mapping, create: bool) -> dict | Invalid:
             r = v if v in MODES else Invalid(k, "mode must be direct or escape_ig")
         elif k == "verified":
             r = _flag(v, k)
-        else:  # account_id
+        else:
             r = _account(v)
         if isinstance(r, Invalid):
             return r
@@ -435,8 +394,6 @@ def check_profile(body: Mapping, create: bool) -> dict | Invalid:
 
 
 def check_link(body: Mapping, create: bool) -> dict | Invalid:
-    """A link body, normalized (geo as compact JSON text or None; icon a stock stem or None = remove); or the first
-    refusal. Create needs a title and a destination; PATCH checks only the keys sent."""
     if bad := _unknown(body, _LINK_KEYS):
         return bad
     if create:
@@ -475,7 +432,7 @@ def check_link(body: Mapping, create: bool) -> dict | Invalid:
             r = v if v in LINK_MODES else Invalid(k, "mode must be '', direct or escape_ig")
         elif k in ("is_adult", "tracking"):
             r = _flag(v, k)
-        else:  # icon
+        else:
             r = v if v is None or v in STOCK_ICONS else Invalid(k, "Icon: none, onlyicon, linkicon, twitchicon or igicon")
         if isinstance(r, Invalid):
             return r
@@ -484,5 +441,4 @@ def check_link(body: Mapping, create: bool) -> dict | Invalid:
 
 
 def icon_stock(icon: str) -> str | None:
-    """The stock stem a stored icon was copied from (`<stem>_<r10>.webp`), else None (links.js:71-73)."""
     return next((s for s in STOCK_ICONS if icon.startswith(s + "_")), None)

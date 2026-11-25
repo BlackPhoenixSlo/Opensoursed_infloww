@@ -1,33 +1,6 @@
-"""service/vault_dupes.py — duplicate / re-upload detection over the vault mirror.
-
-Re-uploads pile up in a creator's vault: on Ava 706 of 2,309 items (30.6%) are
-copies of something already there. Every copy costs a describe call, clutters the
-picker, and splits a folder's ordering. This module finds them; hiding them is a
-separate, operator-confirmed step (`vault_ai_api` → `of_client.hide_vault_media`).
-
-Signals, all computed from the ALREADY-CACHED 300px thumbs on disk
-(`vault_stills.thumb_path`) — no OF traffic, no LLM, ~2s for a 2.3k-item vault:
-
-  md5    byte-identical thumb. Never a false positive.
-  dHash  64-bit gradient hash — survives the re-encode OF applies to a re-upload.
-  aHash  64-bit mean hash. Required to agree as well: dHash alone matches on
-         layout, so two frames of one burst can collide; the second independent
-         hash is what keeps them apart.
-
-Clustering is SEED-BASED, never transitive. Items are walked oldest-first; each
-unclaimed item becomes a seed (the ORIGINAL — earliest OF `createdAt`) and later
-items join only if they are within threshold of THAT SEED. Union-find chaining
-(a~b, b~c ⇒ a~c) would let a cluster drift away from its original, which is the
-one failure that could hide a photo the operator meant to keep.
-
-Threshold: default 2, and that is not a compromise. Measured on Ava, the match
-curve is flat past 2 — ≤0 finds 644 copies, ≤2 finds 706, ≤8 finds only 737 — so
-loosening buys ~4% more at the cost of dragging in every "same shoot, different
-frame" near-miss. All 199 sets at ≤2 were operator-confirmed correct (2026-07-21).
-
-Videos additionally require a duration match (±1s) before their thumbs are
-compared at all: two clips can share a poster frame and be different edits.
-"""
+# aHash must agree too: dHash alone matches on layout, so two frames of one burst can collide.
+# Threshold 2 is not a compromise: measured on one vault the match curve is flat past 2 (<=0: 644, <=2: 706, <=8: 737), so loosening drags in "same shoot, different frame" near-misses.
+# Videos also need a duration match (±1 s) first: two clips can share a poster frame and be different edits.
 from __future__ import annotations
 
 import asyncio
@@ -46,9 +19,6 @@ from db.models import VaultItem
 
 log = logging.getLogger("of-relay.vault_dupes")
 
-# Bands the review UI colour-codes. Distance 0 on BOTH hashes is visually
-# indistinguishable at thumb resolution; the higher bands are where an operator
-# actually has to look, which is why the confirm screen shows them separately.
 BANDS: tuple[tuple[int, int, str], ...] = (
     (0, 0, "identical"),
     (1, 2, "near"),
@@ -59,7 +29,6 @@ BANDS: tuple[tuple[int, int, str], ...] = (
 DEFAULT_THRESHOLD = 2
 MAX_THRESHOLD = 8
 HASH_KIND = "thumb/md5+dhash8+ahash8"
-# Videos whose durations differ by more than this are never compared.
 _VIDEO_DUR_TOLERANCE_S = 1
 
 
@@ -70,19 +39,10 @@ def band_of(distance: int) -> str:
     return "far"
 
 
-# ── Hashing ─────────────────────────────────────────────────────────
-#
-# Pillow is imported lazily, INSIDE the functions that need it. It is a
-# capture-host dep that requirements.txt deliberately keeps out of the relay
-# image, and a module-level `from PIL import Image` here crash-looped the whole
-# relay on deploy — every send down because a duplicate-finder could not load an
-# image library. A vault helper must never be able to do that: if Pillow is
-# absent, `fingerprint_file` returns None and only dupe detection goes quiet.
 
 
+# Pillow is imported lazily inside functions: it is kept out of the relay image, and a module-level import crash-looped the whole relay on deploy. Absent Pillow only silences dupe detection.
 def dhash(img: "Image.Image") -> int:
-    """64-bit gradient hash: each bit = "is this pixel darker than its right
-    neighbour". Insensitive to the brightness/contrast shift a re-encode adds."""
     from PIL import Image
     g = img.convert("L").resize((9, 8), Image.LANCZOS)
     px = list(g.getdata())
@@ -95,7 +55,6 @@ def dhash(img: "Image.Image") -> int:
 
 
 def ahash(img: "Image.Image") -> int:
-    """64-bit mean hash: each bit = "is this pixel above the image mean"."""
     from PIL import Image
     g = img.convert("L").resize((8, 8), Image.LANCZOS)
     px = list(g.getdata())
@@ -111,8 +70,6 @@ def hamming(a: int, b: int) -> int:
 
 
 def pack_hash(md5: str, dh: int, ah: int) -> str:
-    """The single `content_hash` string persisted on the row. Self-describing so
-    a future hash version can be told apart (`content_hash_kind`)."""
     return f"{md5}:{dh:016x}:{ah:016x}"
 
 
@@ -129,8 +86,6 @@ def unpack_hash(packed: str | None) -> tuple[str, int, int] | None:
 
 
 def fingerprint_file(path: Path) -> tuple[str, int, int] | None:
-    """(md5, dhash, ahash) for a cached thumb. None if missing/unreadable — a
-    truncated cache file must not take down a whole scan."""
     try:
         from PIL import Image
         raw = path.read_bytes()
@@ -141,18 +96,10 @@ def fingerprint_file(path: Path) -> tuple[str, int, int] | None:
         return None
 
 
-# ── Persistence ─────────────────────────────────────────────────────
 
 async def ensure_hashes(account_id: str, *, force: bool = False,
                         allowed: frozenset[int] | None = None) -> dict[str, int]:
-    """Fill `content_hash` for every mirrored item whose thumb is cached.
-
-    Incremental: rows that already carry a current-kind hash are skipped unless
-    `force`, so a re-scan after a collect only hashes the NEW media. Runs the
-    (CPU-bound, ~1ms/item) Pillow work in a thread so it can't stall the relay's
-    event loop.
-    """
-    from vault_stills import thumb_path  # the permanent, signature-free store
+    from vault_stills import thumb_path
 
     async with get_session() as s:
         q = (
@@ -191,12 +138,8 @@ async def ensure_hashes(account_id: str, *, force: bool = False,
             "missing_thumb": len(todo) - len(computed)}
 
 
-# ── Clustering ──────────────────────────────────────────────────────
 
 def _pair(a: dict, b: dict, threshold: int) -> tuple[int, int, bool] | None:
-    """(dhash distance, ahash distance, exact) when `a` and `b` are dupes at
-    `threshold`, else None: same kind (clips: duration within ±1 s), and an equal
-    md5 or both hashes within `threshold`."""
     if a["kind"] != b["kind"]:
         return None
     if a["kind"] == "video" and abs((a.get("duration") or 0) - (b.get("duration") or 0)) > \
@@ -214,22 +157,13 @@ def _pair(a: dict, b: dict, threshold: int) -> tuple[int, int, bool] | None:
 
 
 def near(a: dict | None, b: dict | None, threshold: int) -> bool:
-    """Whether two fingerprints are dupes at `threshold`, as `cluster` compares
-    (a missing one never is)."""
     return bool(a and b) and _pair(a, b, threshold) is not None
 
 
+# Seed-based, never transitive: union-find chaining would let a cluster drift away from its original.
 def cluster(items: list[dict], threshold: int) -> list[dict]:
-    """Seed-based grouping, oldest-first. Returns sets of >= 2 where `original`
-    is the earliest-uploaded item and `dupes` are the removable copies.
-
-    A seed tests only the later items that share a bucket with it, not every
-    later item: a pair within `threshold` on the 64-bit dhash agrees exactly on
-    at least one of threshold+1 disjoint dhash bands (pigeonhole), and an exact
-    copy shares its md5. Buckets are per kind and candidates are walked in
-    sorted order, so the sets are the all-pairs walk's (test_vault_dupes)."""
     items = sorted(items, key=lambda r: (r["created_at"], r["media_id"]))
-    n_bands = max(1, threshold + 1)   # threshold < 0: one band, still a superset
+    n_bands = max(1, threshold + 1)
     edges = [64 * j // n_bands for j in range(n_bands + 1)]
     bands = [(j, edges[j], (1 << (edges[j + 1] - edges[j])) - 1)
              for j in range(n_bands)]
@@ -278,8 +212,6 @@ def cluster(items: list[dict], threshold: int) -> list[dict]:
 
 
 async def load_fingerprints(account_id: str, allowed: frozenset[int] | None = None) -> tuple[list[dict], int]:
-    """Every mirrored item that carries a usable hash, + the count that doesn't
-    (no cached thumb yet — those are simply not candidates)."""
     async with get_session() as s:
         q = (
             select(VaultItem.media_id, VaultItem.kind, VaultItem.created_at,
@@ -307,8 +239,6 @@ async def load_fingerprints(account_id: str, allowed: frozenset[int] | None = No
 async def find_duplicates(account_id: str, threshold: int = DEFAULT_THRESHOLD,
                           *, rehash: bool = True,
                           allowed: frozenset[int] | None = None) -> dict[str, Any]:
-    """Full scan: (re)hash new media, then cluster. The result feeds the review
-    UI — nothing is hidden here."""
     threshold = max(0, min(MAX_THRESHOLD, int(threshold)))
     hashed = await ensure_hashes(account_id, allowed=allowed) if rehash else {}
     items, unhashed = await load_fingerprints(account_id, allowed=allowed)
@@ -324,26 +254,16 @@ async def find_duplicates(account_id: str, threshold: int = DEFAULT_THRESHOLD,
     }
 
 
-# ── Thumb backfill (scan the WHOLE vault, not just what was rendered) ──
-#
-# The hashes come from cached thumbs, and a thumb is only cached when something
-# renders or describes it (collect keeps just the newest 100 hot). So a scan saw
-# whatever the operator had scrolled past: 446 of 1,159 on AE 562666533
-# (2026-11-13). Opening Duplicates now fetches every missing thumb in the
-# background through `vault_stills.bytes_for` (disk → stored url → one re-sign),
-# behind its process-wide OF slot; the review UI polls and the scan grows.
+# Hashes come from cached thumbs, cached only when something renders or describes them, so a scan saw only what the operator had scrolled past; Duplicates now backfills every missing thumb in the background.
 _BACKFILL_CONCURRENCY = 2
-_backfill: dict[str, dict[str, int]] = {}      # account → {total, done, failed}
+_backfill: dict[str, dict[str, int]] = {}
 _backfill_running: set[str] = set()
-_backfill_finished: dict[tuple[str, frozenset[int] | None], float] = {}  # (account, scope) → monotonic finish
-# After a pass, what is still missing is media OF would not give us (deleted,
-# transient fail): don't re-ask on every poll of the open modal. Per scope: a
-# folder-restricted chatter's pass covered only its folders, not the owner's vault.
+_backfill_finished: dict[tuple[str, frozenset[int] | None], float] = {}
+# After a pass, what is still missing is media OF would not give us: don't re-ask on every poll. Per scope: a folder-restricted chatter's pass covered only its folders.
 _BACKFILL_COOLDOWN_S = 600.0
 
 
 async def missing_thumb_ids(account_id: str, allowed: frozenset[int] | None = None) -> list[int]:
-    """Live, picture-capable mirror items with no current hash and no thumb on disk."""
     from vault_stills import thumb_path
     async with get_session() as s:
         rows = (await s.execute(
@@ -389,8 +309,6 @@ async def _run_backfill(account_id: str, ids: list[int], allowed: frozenset[int]
 
 
 def start_thumb_backfill(account_id: str, ids: list[int], allowed: frozenset[int] | None = None) -> bool:
-    """Fire-and-forget backfill of `ids` (the missing list for scope `allowed`, None = whole vault);
-    False when one is already running for the account or this scope's last pass is in cooldown."""
     if account_id in _backfill_running or not ids:
         return False
     last = _backfill_finished.get((account_id, allowed))
@@ -411,22 +329,11 @@ def backfill_status(account_id: str) -> dict[str, Any] | None:
     return None if st is None else {**st, "running": account_id in _backfill_running}
 
 
-# ── Answer reuse (the vision sweeps) ────────────────────────────────
-#
-# One describe + flags answer is shared across every set the Duplicates screen
-# shows at "2 · recommended": exactly `find_duplicates` at DEFAULT_THRESHOLD,
-# photos and clips alike (clips already need a duration match). Never looser
-# than 2, no extra full-frame check (owner decision 2026-11-11). Sets are
-# seed-based, so two members may be up to 2 x threshold apart from each other.
-# Accepted risk: a set can hold different frames of one shoot burst (e.g. a
-# d1/d2 set of three poses) — they share one answer.
 
 
+# One describe + flags answer is shared across every set shown at "2 · recommended" (find_duplicates at DEFAULT_THRESHOLD): never looser, no extra full-frame check (owner decision). Accepted risk: a set can hold different frames of one shoot burst.
 async def reuse_groups(account_id: str, want: frozenset[int] | set[int]) -> list[list[int]]:
-    """The account's duplicate sets that touch `want` (the sweep's set), each
-    as media ids oldest first (original, then dupes). Any failure — no Pillow,
-    a broken store, a DB hiccup — logs and returns [] (= every item is unique):
-    a sweep must never fail because duplicate detection did."""
+    # A sweep must never fail because duplicate detection did: any failure logs and returns [] (every item unique).
     try:
         res = await find_duplicates(account_id)
         groups = [[int(m["media_id"]) for m in (c["original"], *c["dupes"])]

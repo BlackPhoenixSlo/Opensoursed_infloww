@@ -1,46 +1,3 @@
-"""Owner admin API for bio pages, mounted on the relay (never on the bio app: bio_pages/app.py does not import this).
-
-Every handler starts with `owner_context` (no session 401, chatter 403, owner → its Agency); every query carries
-`owner_user_id`, links go through their owned profile. A foreign or unknown id is 404 (employee_groups precedent);
-a malformed path id is 404 before any query. Bodies: JSON objects checked by the pure `decide.check_profile` /
-`decide.check_link` (422 `{"detail": {"field", "msg"}}`). Every write under `/{pid}` answers the whole page `P`
-(`_page`; link create adds the new link as `link`) and bumps the profile's `updated_at`; that bump is each write
-transaction's first statement, so the SQLite write lock is taken before any read (no read-then-write upgrade) and it
-doubles as the ownership check.
-
-Uploads: multipart `file`, 20 MB cap, decoded and re-encoded to WebP off the event loop (bio_pages/images.py, at most
-two at a time); a new random file name per upload (the bio app serves files immutable). Files are written before the
-row points at them and the old file is unlinked after commit; a crash in between leaves an orphan file, never a row
-without its file. Logs: fixed `bio admin: ` lines with ids only, never a destination or geo value.
-
-Create with a Creator: an empty display name takes the Creator's OnlyFans name, and the page starts with one
-"OnlyFans" link straight to https://onlyfans.com/<username> (never through /t/: that would break /c<code> tracking).
-Both read the Creator's cached `users_me` (the app's own `of-me` read fills it), so at most one OnlyFans call.
-Vault avatar: `POST /{pid}/avatar/vault {media_id}` takes a photo of the page's Creator through vault_stills (disk,
-mirror url, then a by-id re-sign; the account's own egress, never a client url) and encodes it like an upload;
-`POST /{pid}/links/{lid}/background/vault` the same for a link's background, `/{pid}/background(/vault)` for the
-page's backdrop (BACKGROUND_SIDE). Setting a Creator later (PATCH) adds the
-"OnlyFans" link first when the page has no onlyfans.com link yet.
-Audit: link create, the vault picks (the Toolbox write tools' routes) and the page background upload name the
-page's stored Creator for the audit row (`_audit_as`), whatever X-Account-Id / ?account_id= the caller sent.
-
-Env: BIO_PUBLIC_URL (the public base, e.g. https://ofl.ink; unset → `<request origin>/p`, the origin read from
-X-Forwarded-Host/Proto when a proxy set them), BIO_SHORT_URL (optional short base whose `/<username>` redirects to
-the page, e.g. https://ofl.ink/s; the editor's `short_url`, unset → null), BIO_HEALTH_URL (the bio service's /internal/healthz, probed for
-`serving`; unset → false), BIO_SERVER_IP (the box's public IPv4 a custom domain's A record must name; unset → custom
-domains can't be set or checked, only removed) and BIO_SERVER_IPV6 (optional: the one AAAA a custom domain may have).
-
-Custom domain (`PUT /{pid}/domain {domain}`, `DELETE /{pid}/domain`, `POST /{pid}/domain/check`): one per page (a
-new one replaces it, the same one keeps its row and token), at most domains.MAX_PER_OWNER per account, never this
-service's own hosts. Several pages may hold the same `pending` domain, even one another page serves (nobody can squat
-one); only one row per domain may be `pending_cert` / `live` (checked under the write lock, and the live index). Current
-DNS wins: a page whose check proves a domain another page serves (a fresh lookup, its token the TXT's only
-`oflink-verify=` value; domains.check `sole`) takes it in one write that re-reads both rows (changed → 409), the
-other page back to `pending` with a fresh token. The check reads DNS and probes HTTPS outside any transaction
-(bio_pages/domains.py), at most once per page every CHECK_GAP_S; its write lands only on the row, token and status it
-checked (a stale check → 409). Sentences, records and the check's `{status, problems}` are ofl.ink v2's
-(~/oflinkv2/app/server.js, the domain-check route), plus `pending_cert`.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -68,6 +25,7 @@ from db.engine import get_session
 from db.models import BioCustomDomain, BioDaily, BioLink, BioProfile, BioSpareDomain, VaultItem
 from employees import json_object, owner_context
 
+# Log ids only, never a destination or geo value.
 log = logging.getLogger("of-relay.bio-admin")
 _REQUEST_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar("bio_request_base", default=None)
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?")
@@ -75,7 +33,6 @@ OF_IDENTITY_TIMEOUT_S = 8.0
 
 
 def request_base(request: Request) -> str | None:
-    """`<origin>/p` of this request: X-Forwarded-Host/Proto (first hop) when a proxy set them, else the Host."""
     h = request.headers
     host = ((h.get("x-forwarded-host") or "").split(",")[0].strip() or h.get("host") or "").lower()
     proto = ((h.get("x-forwarded-proto") or "").split(",")[0].strip() or request.url.scheme).lower()
@@ -100,7 +57,6 @@ _serving_cache: tuple[float, bool] = (0.0, False)
 _serving_lock = asyncio.Lock()
 
 
-# ── helpers ──────────────────────────────────────────────────────────
 
 async def _owner() -> str:
     return (await owner_context(None, _OWNER_ONLY)).agency_user_id
@@ -132,7 +88,6 @@ def _iso(v: datetime | None) -> str | None:
 
 
 def public_base() -> str | None:
-    """BIO_PUBLIC_URL, else this request's `<origin>/p` (the app host serves bio pages under /p)."""
     return (os.environ.get("BIO_PUBLIC_URL") or "").rstrip("/") or _REQUEST_BASE.get()
 
 
@@ -153,7 +108,6 @@ def _file_url(collection: str, rid: str, name: str) -> str:
 
 
 async def serving() -> bool:
-    """Whether the bio service answers its health check (BIO_HEALTH_URL), cached 30 s."""
     global _serving_cache
     url = os.environ.get("BIO_HEALTH_URL")
     if not url:
@@ -202,8 +156,8 @@ def _safe_write(fn):
     return wrapped
 
 
+# Bump updated_at as the write's first statement: takes the SQLite write lock before any read (no read-then-write upgrade) and doubles as the ownership check.
 async def _lock_own(s, owner: str, pid: str) -> None:
-    """Bump the profile's updated_at as the write's first statement (takes the write lock); 404 unless owned."""
     r = await s.execute(update(BioProfile).where(*_own_profile(owner, pid))
                         .values(updated_at=_now()))
     if r.rowcount == 0:
@@ -225,7 +179,6 @@ def _link_out(lk: BioLink) -> dict[str, Any]:
 
 
 async def _page(s, owner: str, pid: str) -> dict[str, Any]:
-    """`P`: the profile and its links in the public order `(sort_order, id)`; 404 unless owned."""
     p = (await s.execute(select(BioProfile).where(*_own_profile(owner, pid)))
          ).scalar_one_or_none()
     if p is None:
@@ -254,8 +207,8 @@ async def _answer(owner: str, pid: str) -> dict[str, Any]:
         return await _page(s, owner, pid)
 
 
+# Audit row names the page's stored Creator, never the caller's X-Account-Id.
 def _audit_as(request: Request, page: dict[str, Any]) -> dict[str, Any]:
-    """The audit row names the page's stored Creator, never the caller's X-Account-Id (audit_log.AUDIT_ACCOUNT)."""
     setattr(request.state, AUDIT_ACCOUNT, page["profile"]["account_id"])
     return page
 
@@ -268,7 +221,6 @@ def _stock_data(stem: str) -> bytes:
         raise HTTPException(503, "try again") from None
 
 
-# ── list / create / static ───────────────────────────────────────────
 
 @router.get("")
 async def list_pages() -> dict[str, Any]:
@@ -302,8 +254,6 @@ async def list_pages() -> dict[str, Any]:
 
 
 async def _of_me(account_id: str) -> dict[str, Any] | None:
-    """The Creator's OnlyFans `/users/me` through the `GET /api/of/v2/users/me` route's own cache entry (namespace,
-    key and TTL as server.py's `users_me`, s4s_api's precedent); None when it cannot be read."""
     import automation_executor as ax
     import relay_cache
     try:
@@ -321,8 +271,8 @@ def _of_username(me: dict | None) -> str:
     return u if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", u) else ""
 
 
+# Links straight to onlyfans.com, never via /t/: that would break /c<code> tracking.
 def _of_link(lid: str, pid: str, of_user: str, icon: str, sort_order: int, now: datetime) -> BioLink:
-    """The Creator's "OnlyFans" link; tracking on: Reveal appends the visitor's /c<code>."""
     return BioLink(id=lid, profile_id=pid, link_id=files.new_id(12), title="OnlyFans",
                    destination=f"https://onlyfans.com/{of_user}", icon=icon, tracking=True,
                    sort_order=sort_order, created_at=now, updated_at=now)
@@ -338,7 +288,6 @@ async def create_page(request: Request) -> dict[str, Any]:
     owner = await _owner()
     raw = await json_object(request, 422)
     fill = _blank(raw.get("display_name"))
-    # every other field is refused before the Creator's profile is read
     body = _check(decide.check_profile({**raw, "display_name": "-"} if fill else raw, create=True))
     await _check_account(body)
     me = await _of_me(body["account_id"]) if body.get("account_id") else None
@@ -354,7 +303,7 @@ async def create_page(request: Request) -> dict[str, Any]:
             async with get_session() as s:
                 now = _now()
                 s.add(BioProfile(id=pid, owner_user_id=owner, created_at=now, updated_at=now, **body))
-                if of_user:  # flushed after the profile (its FK)
+                if of_user:
                     await s.flush()
                     s.add(_of_link(lid, pid, of_user, icon, 0, now))
                 await s.flush()
@@ -395,7 +344,6 @@ async def owner_file(collection: str, rid: str, filename: str) -> Response:
     return FileResponse(path, media_type="image/webp", headers={"cache-control": _PRIVATE_IMM})
 
 
-# ── one page ─────────────────────────────────────────────────────────
 
 @router.get("/{pid}")
 async def get_page(pid: str) -> dict[str, Any]:
@@ -410,7 +358,6 @@ async def patch_page(pid: str, request: Request) -> dict[str, Any]:
     _id_or_404(pid)
     body = _check(decide.check_profile(await json_object(request, 422), create=False))
     await _check_account(body)
-    # A Creator set after create gets the same first "OnlyFans" link, unless the page already links to OnlyFans.
     of_user = _of_username(await _of_me(body["account_id"])) if body.get("account_id") else ""
     lid = files.new_id(15)
     icon = _file_name("onlyicon") if of_user else ""
@@ -433,7 +380,7 @@ async def patch_page(pid: str, request: Request) -> dict[str, Any]:
                     added = True
                     log.info("bio admin: OnlyFans link added: page=%s account=%s", pid, body["account_id"])
             page = await _page(s, owner, pid)
-    if data is not None and not added:  # staged for nothing: no link points at it
+    if data is not None and not added:
         await files.discard("links", lid)
     return page
 
@@ -453,15 +400,13 @@ async def delete_page(pid: str) -> Response:
     return Response(status_code=204)
 
 
-# ── custom domain ────────────────────────────────────────────────────
 
 CHECK_GAP_S = 10
 _DOMAINS_OFF = domains.OFF_MSG
 
 
+# Own hosts can never be a custom domain, nor anything under one.
 async def _own_hosts(s) -> set[str]:
-    """This box's own hosts (public/short bases, the request's host, BIO_PRIMARY_HOSTS, the spare domains): never a
-    custom domain, nor anything under one."""
     hosts = {domains.host_of(os.environ.get(k)) for k in ("BIO_PUBLIC_URL", "BIO_SHORT_URL")}
     hosts.add(domains.host_of(_REQUEST_BASE.get()))
     hosts |= set(decide.parse_primary_hosts(os.environ.get("BIO_PRIMARY_HOSTS")))
@@ -478,12 +423,10 @@ def _in_use(domain: str) -> str:
 
 
 def _example(username: str) -> str:
-    """v2's exampleOf: the username as a .com (underscores are not allowed in a hostname)."""
     return f"{username.replace('_', '') or 'yourname'}.com"
 
 
 async def _holder(s, domain: str, pid: str):
-    """Another page's row that holds `domain` past `pending` (id, token, status), or None."""
     return (await s.execute(select(BioCustomDomain.id, BioCustomDomain.token, BioCustomDomain.status).where(
         BioCustomDomain.domain == domain, BioCustomDomain.profile_id != pid,
         BioCustomDomain.status.in_(decide.VERIFIED)))).first()
@@ -510,7 +453,7 @@ async def set_domain(pid: str, request: Request) -> dict[str, Any]:
             raise HTTPException(422, {"field": "domain", "msg": _own_msg(domain)})
         cur = (await s.execute(select(BioCustomDomain).where(BioCustomDomain.profile_id == pid))).scalar_one_or_none()
         if cur is not None and cur.domain == domain:
-            return await _page(s, owner, pid)  # same domain: its row, token and status stay
+            return await _page(s, owner, pid)
         n = (await s.execute(select(func.count()).select_from(BioCustomDomain).join(
             BioProfile, BioProfile.id == BioCustomDomain.profile_id).where(
             BioProfile.owner_user_id == owner, BioCustomDomain.profile_id != pid))).scalar_one()
@@ -519,7 +462,7 @@ async def set_domain(pid: str, request: Request) -> dict[str, Any]:
         if cur is not None:
             await s.execute(delete(BioCustomDomain).where(BioCustomDomain.id == cur.id))
         s.add(BioCustomDomain(id=files.new_id(15), profile_id=pid, domain=domain, status="pending",
-                              token=files.new_id(32)))  # v2's token form: 32 lowercase letters or digits
+                              token=files.new_id(32)))
         await s.flush()
         log.info("bio admin: custom domain set: page=%s", pid)
         return await _page(s, owner, pid)
@@ -560,7 +503,7 @@ async def check_domain(pid: str) -> dict[str, Any]:
         raise HTTPException(409, _DOMAINS_OFF)
     if cur.status != "live" and cur.checked and (_now() - cur.checked).total_seconds() < CHECK_GAP_S:
         raise HTTPException(429, "Too many checks. Wait a few seconds, then try again.")
-    if own:  # a spare domain added since it was saved
+    if own:
         status, problems = "pending", [_own_msg(cur.domain)]
     else:
         status, problems = await domains.check(cur.domain, cur.token, cur.status, ip or "", domains.server_ipv6(),
@@ -573,11 +516,11 @@ async def check_domain(pid: str) -> dict[str, Any]:
             raise HTTPException(409, "The custom domain changed: reload.")
         holder = await _holder(s, cur.domain, pid)
         if status in decide.VERIFIED:
-            if incumbent is None and holder is not None:  # uncontested at the lookup, claimed since: v2's clash problem
+            if incumbent is None and holder is not None:
                 status, problems = "pending", [_in_use(cur.domain)]
-            elif holder != incumbent:  # the serving row changed since the lookup proved this one over it
+            elif holder != incumbent:
                 raise HTTPException(409, "The custom domain changed: reload.")
-            elif incumbent is not None:  # sole proof of a served domain: it moves here
+            elif incumbent is not None:
                 await s.execute(update(BioCustomDomain).where(BioCustomDomain.id == incumbent.id)
                                 .values(status="pending", token=files.new_id(32)))
                 log.info("bio admin: custom domain moved here by DNS: page=%s", pid)
@@ -592,10 +535,8 @@ async def check_domain(pid: str) -> dict[str, Any]:
         return {**await _page(s, owner, pid), "check": {"status": status, "problems": problems}}
 
 
-# ── uploads ──────────────────────────────────────────────────────────
 
 async def _read_upload(request: Request) -> bytes:
-    """The form's `file` part: 411 without a size, 413 past 20 MB."""
     try:
         declared = int(request.headers.get("content-length") or 0)
     except ValueError:
@@ -639,11 +580,10 @@ def _file_name(stem: str | None) -> str:
     return f"{stem}_{files.new_id(10)}.webp" if stem else ""
 
 
+# File written before the row points at it, old file unlinked after commit: a crash leaves an orphan file, never a row without its file.
 async def _set_file(owner: str, pid: str, model, col, collection: str, rid: str, stem: str,
                     data: bytes | None, values: dict[str, Any] | None = None, *, account: str | None = None
                     ) -> dict[str, Any]:
-    """Point a row at a new file, then drop the old file after commit. `account`: the Creator a vault photo
-    was fetched for; the page's Creator under the write lock must still be it (else 409, nothing written)."""
     name = _file_name(stem) if data is not None else ""
     async with files.staged(collection, rid, name, data):
         async with get_session() as s:
@@ -665,7 +605,6 @@ async def _set_file(owner: str, pid: str, model, col, collection: str, rid: str,
 
 
 async def _require(owner: str, pid: str, lid: str | None = None) -> None:
-    """Ownership before an upload body is read (the write re-checks it)."""
     async with get_session() as s:
         if lid is None:
             if (await s.execute(select(BioProfile.id).where(*_own_profile(owner, pid)))).first() is None:
@@ -685,9 +624,6 @@ async def upload_avatar(pid: str, request: Request) -> dict[str, Any]:
 
 
 async def _vault_still(account_id: str, media_id: int) -> bytes:
-    """A vault photo's bytes via vault_stills (disk, mirror url, by-id re-sign; the account's egress). Photos only:
-    a mirror row of another kind is refused, a removed one (soft-deleted) is gone, and a re-signed media that is not
-    a photo yields no url."""
     import vault_frames
     import vault_stills
     async with get_session() as s:
@@ -709,7 +645,6 @@ async def _vault_still(account_id: str, media_id: int) -> bytes:
 
 
 async def _vault_image(owner: str, pid: str, request: Request, side: int) -> tuple[str, int, bytes]:
-    """A photo of the page's Creator's vault, encoded at `side`: (account, media id, WebP bytes)."""
     async with get_session() as s:
         aid = (await s.execute(select(BioProfile.account_id).where(*_own_profile(owner, pid)))).first()
     if aid is None:
@@ -778,7 +713,6 @@ async def remove_page_background(pid: str) -> dict[str, Any]:
                            "background", None)
 
 
-# ── links ────────────────────────────────────────────────────────────
 
 @router.post("/{pid}/links", status_code=201)
 @_safe_write
@@ -841,7 +775,7 @@ async def patch_link(pid: str, lid: str, request: Request) -> dict[str, Any]:
     _id_or_404(lid)
     body = _check(decide.check_link(await json_object(request, 422), create=False))
     if "icon" in body:
-        await _require(owner, pid, lid)  # before a file lands in the link's dir
+        await _require(owner, pid, lid)
         stem = body.pop("icon")
         data = await asyncio.to_thread(_stock_data, stem) if stem else None
         return await _set_file(owner, pid, BioLink, BioLink.icon, "links", lid, stem, data, body)

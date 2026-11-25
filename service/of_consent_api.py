@@ -1,13 +1,3 @@
-"""service/of_consent_api.py — read/flip a Creator's "Auto-accept OnlyFans consent"
-switch (of_consent, `of_consent_accepts`) for Settings › OnlyFans consent.
-
-  GET /admin/of-consent/{account_id}  → {account_id, auto_accept, required, changed}
-       `required`: OF wants the Creator's consent form (consent_notices' pinned row);
-       `changed`: the newest change (who, when), null = never set (off).
-  PUT /admin/of-consent/{account_id}  body {"auto_accept": bool} → the same view.
-       One history row per change, none when it already is so. Owner only: a
-       chatter-only session is 403 (GET stays readable, the account gate applies).
-"""
 from __future__ import annotations
 
 from datetime import datetime

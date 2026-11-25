@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Bio migration matches create_all on temp SQLite and drops its five tables."""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness
 
 import os  # noqa: E402
 import sqlite3  # noqa: E402
@@ -16,7 +15,7 @@ from db.models import Base  # noqa: E402
 
 BIO = {"bio_profiles", "bio_links", "bio_custom_domains", "bio_spare_domains", "bio_daily"}
 MIGRATIONS = Path(__file__).resolve().parents[1] / "db/migrations"
-LATER = {"background_image"}  # bio_profiles column of 0122 (test_bio_background_migration.py)
+LATER = {"background_image"}
 
 
 def _shape(path):

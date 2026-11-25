@@ -1,4 +1,3 @@
-"""Scoped cookie intent, no network or account access."""
 import _harness
 _harness.bootstrap()
 from curl_cffi.requests import Headers

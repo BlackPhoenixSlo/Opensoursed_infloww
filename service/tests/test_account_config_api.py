@@ -1,24 +1,11 @@
 #!/usr/bin/env python3
-"""
-account_config_api — read/write the per-account "Brain" (account_ai_config).
-
-Drives the route coroutines directly against the temp DB (auth is a no-op for
-unauthed test calls). Covers: defaults for an unset account, a full round-trip,
-that the upsert never clobbers the separately-owned nudge_config_json or
-split_inbox_json, value validation (model / utc_offset / cap), slot filtering +
-id coercion, and that blanks clear the columns.
-
-Run: ./venv/bin/python service/tests/test_account_config_api.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 import os
 
-# This suite drives the route coroutines directly, with no signed-in principal.
-# assert_account_owned fails closed on anonymous since 2026-08-10; this env flag
-# is its documented escape hatch.
+# assert_account_owned fails closed on anonymous; this env flag is its escape hatch.
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 _harness.bootstrap()
@@ -48,10 +35,8 @@ async def case_get_defaults_for_unset():
     assert cfg["persona"] is None and cfg["model"] is None, cfg
     assert cfg["utc_offset"] == 0 and cfg["daily_cost_cap_cents"] == 100, cfg
     assert cfg["time_activities"] == {} and cfg["time_images"] == {}, cfg
-    # Metadata drives the editor's dropdowns + image slots.
     assert len(resp["slots"]) == 6 and resp["slots"][0] == "morning_1", resp
     assert resp["model_options"], "model options should be non-empty"
-    # `model: null` runs the house model; served so the editor labels "Default (…)".
     from automations._common import DEFAULT_MODEL
     assert resp["default_model"] == DEFAULT_MODEL and DEFAULT_MODEL in resp["model_options"], resp
     assert set(resp["purposes"]) == set(MODEL_PURPOSES), resp
@@ -63,16 +48,16 @@ async def case_save_then_get_roundtrip():
     model = (await get_account_config(account_id=aid))["model_options"][0]
 
     body = {
-        "persona": "  Ava, playful island girl  ",  # trimmed on save
+        "persona": "  Ava, playful island girl  ",
         "location": "Vancouver Island",
         "timezone": "America/Vancouver",
         "utc_offset": -6,
         "daily_cost_cap_cents": 250,
         "model": model,
-        "model_by_purpose": {"gen_info": model, "welcome_chatter_for_info": ""},  # blank dropped
+        "model_by_purpose": {"gen_info": model, "welcome_chatter_for_info": ""},
         "time_activities": {"morning_1": "sipping coffee", "night": "in bed",
                             "not_a_slot": "ignored"},
-        "time_images": {"morning_1": "3666527793", "night": 42, "evening": 0},  # str→int, 0 dropped
+        "time_images": {"morning_1": "3666527793", "night": 42, "evening": 0},
     }
     out = await put_account_config(_ConfigBody(account_id=aid, config=body))
     c = out["config"]
@@ -80,16 +65,15 @@ async def case_save_then_get_roundtrip():
     assert c["timezone"] == "America/Vancouver", c
     assert c["utc_offset"] == -6 and c["daily_cost_cap_cents"] == 250, c
     assert c["model"] == model, c
-    assert c["model_by_purpose"] == {"gen_info": model}, c          # blank purpose dropped
+    assert c["model_by_purpose"] == {"gen_info": model}, c
     assert c["time_activities"] == {"morning_1": "sipping coffee", "night": "in bed"}, c
-    assert c["time_images"] == {"morning_1": 3666527793, "night": 42}, c  # coerced, 0 dropped
+    assert c["time_images"] == {"morning_1": 3666527793, "night": 42}, c
 
     again = (await get_account_config(account_id=aid))["config"]
     assert again == c, (again, c)
 
 
 async def case_upsert_preserves_nudge_config():
-    """The brain upsert must NOT touch nudge_config_json (owned by nudge_config_api)."""
     aid = "acc_bc_nudge"
     await _seed_account(aid)
     async with get_session() as s:
@@ -105,7 +89,6 @@ async def case_upsert_preserves_nudge_config():
 
 
 async def case_upsert_preserves_split_inbox():
-    """The brain upsert must NOT touch split_inbox_json (owned by split_inbox_api)."""
     aid = "acc_bc_split"
     await _seed_account(aid)
     split = {"group_count": 2, "assignments": {"80001": 2}}
@@ -125,12 +108,12 @@ async def case_validation():
     aid = "acc_bc_valid"
     await _seed_account(aid)
     bad_configs = [
-        {"model": "not-a-real-model"},          # unknown model
-        {"timezone": "Vancouver"},               # not an IANA zone
-        {"utc_offset": 99},                      # out of range
-        {"daily_cost_cap_cents": -5},            # negative
-        {"model_by_purpose": {"gen_info": "nope"}},  # unknown per-purpose model
-        {"time_images": {"morning_1": "abc"}},   # non-numeric media id
+        {"model": "not-a-real-model"},
+        {"timezone": "Vancouver"},
+        {"utc_offset": 99},
+        {"daily_cost_cap_cents": -5},
+        {"model_by_purpose": {"gen_info": "nope"}},
+        {"time_images": {"morning_1": "abc"}},
     ]
     for bad in bad_configs:
         try:
@@ -144,13 +127,11 @@ async def case_blanks_clear_columns():
     aid = "acc_bc_clear"
     await _seed_account(aid)
     model = (await get_account_config(account_id=aid))["model_options"][0]
-    # First set everything.
     await put_account_config(_ConfigBody(account_id=aid, config={
         "persona": "x", "model": model, "location": "Y",
         "timezone": "America/Vancouver",
         "time_activities": {"morning_1": "a"}, "time_images": {"morning_1": 7},
     }))
-    # Then save blanks → cleared.
     out = await put_account_config(_ConfigBody(account_id=aid, config={
         "persona": "", "model": "", "location": "  ", "timezone": "",
         "time_activities": {}, "time_images": {},
@@ -159,33 +140,21 @@ async def case_blanks_clear_columns():
     assert c["persona"] is None and c["model"] is None and c["location"] is None, c
     assert c["timezone"] is None, c
     assert c["time_activities"] == {} and c["time_images"] == {}, c
-    # Empty maps store as NULL so the senders fall back to their legacy pickers.
     async with get_session() as s:
         row = await s.get(AccountAiConfig, aid)
     assert row.time_activities_json is None and row.time_images_json is None, row
 
 
 async def case_both_lanes_ride_along_for_the_dropdown():
-    """The Brain panel's Creator dropdown is LOCAL FORM STATE until Save, so a payload
-    that only carries the STORED lane relabels one Save too late — the operator fills
-    "Why she started OF" on an account they have already switched to Male, and Reset
-    refills it with Ava. Both lanes therefore ride along, and the panel picks by the
-    SELECTED voice.
-
-    This is the branch's headline behavioural fix and it had no test on either side of
-    the wire: reverting the endpoint AND the panel left every suite green."""
     aid = "acc_bc_lanes"
     await _seed_account(aid)
     resp = await get_account_config(account_id=aid)
 
-    # Stored lane is the shipped one, and the singular fields still answer for it —
-    # a blank account has no unsaved dropdown, so seeding from `defaults` is right.
     assert resp["config"]["voice"] == "her"
     assert resp["defaults"]["persona"] == resp["defaults_by_voice"]["her"]["persona"]
     assert {m["key"]: m["label"] for m in resp["persona_fact_fields"]}["kinks"] \
         == {m["key"]: m["label"] for m in resp["persona_fact_fields_by_voice"]["her"]}["kinks"]
 
-    # …and BOTH lanes are present, genuinely different where identity lives.
     by_voice = resp["defaults_by_voice"]
     assert set(by_voice) == {"her", "him"}, sorted(by_voice)
     assert by_voice["him"]["persona"] != by_voice["her"]["persona"]
@@ -197,28 +166,16 @@ async def case_both_lanes_ride_along_for_the_dropdown():
     assert labels["him"]["kinks"] == "What he's into"
     assert labels["her"].keys() == labels["him"].keys(), "the canon slate must not vary"
 
-    # The PLACEHOLDER is the same column of the same concept as the label — laning one
-    # and not the other put "to pay off her studies" under "Why he started OF".
-    #
-    # Asserted as "the endpoint SERVES `_voice`'s male table", not as "no female word
-    # survived a scan". The first fix here WAS a scan — regex hers, blank the matches —
-    # and it passed this test while leaving 21 of 26 male placeholders as her copy,
-    # because a word list only catches what it knows ("content creator, waitressed
-    # before" is not in it). `test_voice_lane.case_every_canon_slot_has_a_male_placeholder`
-    # owns whether that table is any good; this owns whether the wire carries it.
+    # Asserts the endpoint serves _voice's male table, not a word scan: a scan passed while most male placeholders were still her copy.
     from automations._voice import fact_placeholders
     for lane in ("her", "him"):
         served = {m["key"]: m["placeholder"]
                   for m in resp["persona_fact_fields_by_voice"][lane]}
         assert served == fact_placeholders(lane), lane
-    # …and hers is the table that shipped before the lane existed, byte-for-byte.
-    # A branch that "fixed" the male lane by emptying the column for everyone would
-    # pass every assert above.
     hers = {m["key"]: m["placeholder"] for m in resp["persona_fact_fields_by_voice"]["her"]}
     assert hers["job"] == "content creator, waitressed before"
     assert hers["tattoos"] == "script on her ribs, small rose on left wrist"
 
-    # A male account's SINGULAR fields follow the stored column once it is saved.
     await put_account_config(_ConfigBody(account_id=aid, config={"voice": "him"}))
     him = await get_account_config(account_id=aid)
     assert him["config"]["voice"] == "him"
@@ -228,9 +185,6 @@ async def case_both_lanes_ride_along_for_the_dropdown():
 
 
 async def case_cotag_settings_roundtrip():
-    """The Brain's co-performer tag knobs: video rule NULL ≡ OFF (a collab
-    opt-in), username blank ≡ "No co-creator tag" (ticket 85), absent keys =
-    unchanged, junk handles 422, and the account's own handle saves as none."""
     import account_config_api
 
     aid = "acc_bc_cotag"
@@ -240,22 +194,19 @@ async def case_cotag_settings_roundtrip():
     assert resp["config"]["cotag_username"] is None, resp["config"]
     assert "cotag_default_username" not in resp, resp.keys()
 
-    # Who the account is, as /users/me would say — a test must not reach OF.
     real_own = account_config_api._own_handle
     account_config_api._own_handle = lambda _aid: "thecreator"
     try:
         out = await put_account_config(_ConfigBody(account_id=aid, config={
             "cotag_tag_videos": True, "cotag_username": " @SomeOne.Else "}))
         c = out["config"]
-        assert c["cotag_tag_videos"] is True, c           # opt-in stored
-        assert c["cotag_username"] == "someone.else", c   # trimmed, un-@'d, folded
+        assert c["cotag_tag_videos"] is True, c
+        assert c["cotag_username"] == "someone.else", c
 
-        # Absent keys = unchanged — an older client saving a persona can't clear them.
         c = (await put_account_config(
             _ConfigBody(account_id=aid, config={"persona": "hi"})))["config"]
         assert c["cotag_tag_videos"] is True and c["cotag_username"] == "someone.else", c
 
-        # Unchecking the box and picking "No co-creator tag" both store NULL.
         await put_account_config(_ConfigBody(account_id=aid, config={
             "cotag_tag_videos": False, "cotag_username": ""}))
         async with get_session() as s:
@@ -263,7 +214,6 @@ async def case_cotag_settings_roundtrip():
         assert row.cotag_tag_videos is None and row.cotag_username is None, (
             row.cotag_tag_videos, row.cotag_username)
 
-        # An account cannot tag itself: its own handle is stored as no tag.
         c = (await put_account_config(_ConfigBody(account_id=aid, config={
             "cotag_username": "@TheCreator"})))["config"]
         assert c["cotag_username"] is None, c
@@ -283,32 +233,21 @@ async def case_cotag_settings_roundtrip():
 
 
 async def case_effort_dropdown_is_served_validated_and_stored():
-    """The Brain\'s thinking-effort picker, end to end.
-
-    The options are served PER MODEL because the legal values differ by
-    provider — "medium" is good DeepSeek and a hard 400 on z.ai — so a shared
-    list would offer at least one account a value that black-holes its replies.
-    """
     aid = "acc_bc_effort"
     await _seed_account(aid)
     resp = await get_account_config(account_id=aid)
     opts = resp["effort_options"]
 
-    # Served for every offerable model, empty where there is no control.
     assert set(opts) == set(resp["model_options"]), opts
     assert opts["glm-5.3-flash"] == ["low", "high", "max"], opts["glm-5.3-flash"]
     assert opts["deepseek-v4-pro"] == ["low", "medium", "high"], opts["deepseek-v4-pro"]
     assert opts["deepseek-v4-flash"] == [], opts["deepseek-v4-flash"]
 
-    # Round-trip a real pick.
     await put_account_config(_ConfigBody(account_id=aid, config={
         "model": "glm-5.3-flash", "reasoning_effort": "max"}))
     cfg = (await get_account_config(account_id=aid))["config"]
     assert cfg["reasoning_effort"] == "max", cfg["reasoning_effort"]
 
-    # A value that is legal on ANOTHER provider is still refused for this model.
-    # The union of every provider\'s values is exactly what the dropdown exists
-    # to stop being saved.
     for bad in ("medium", "none", "LOW"):
         try:
             await put_account_config(_ConfigBody(account_id=aid, config={
@@ -318,8 +257,6 @@ async def case_effort_dropdown_is_served_validated_and_stored():
         else:
             raise AssertionError(f"{bad!r} must 422 for glm-5.3-flash")
 
-    # And an effort on a model that has no control is refused rather than stored
-    # somewhere it can never be read.
     try:
         await put_account_config(_ConfigBody(account_id=aid, config={
             "model": "deepseek-v4-flash", "reasoning_effort": "low"}))
@@ -330,10 +267,6 @@ async def case_effort_dropdown_is_served_validated_and_stored():
 
 
 async def case_the_effort_box_shows_what_the_account_actually_runs():
-    """Blank would be a lie with consequences. An account on a model pinned to
-    "high" that renders an empty box invites an operator to save a downgrade
-    they never chose — Save cannot tell "left alone" from "set to the first
-    entry". So an unset effort reports the model\'s own pin."""
     aid = "acc_bc_effort_show"
     await _seed_account(aid)
     await put_account_config(_ConfigBody(account_id=aid, config={
@@ -341,7 +274,6 @@ async def case_the_effort_box_shows_what_the_account_actually_runs():
     cfg = (await get_account_config(account_id=aid))["config"]
     assert cfg["reasoning_effort"] == "high", cfg["reasoning_effort"]
 
-    # A model with no control reports nothing to show.
     await put_account_config(_ConfigBody(account_id=aid, config={
         "model": "deepseek-v4-flash"}))
     cfg = (await get_account_config(account_id=aid))["config"]
@@ -349,19 +281,11 @@ async def case_the_effort_box_shows_what_the_account_actually_runs():
 
 
 async def case_a_round_trip_save_does_not_materialize_the_default():
-    """Every client of this endpoint re-sends the WHOLE config blob (it replaces
-    the columns it reads, so they must), and GET reports the model's pin for an
-    account that has not chosen one. Without normalisation, saving the AI-chatter
-    tab — or anything else — would write that pin into the column as an explicit
-    value, freezing the account at whatever the default was that afternoon and
-    quietly cutting it off from any later change to the pin.
-
-    The invariant: GET → PUT → GET is idempotent AND leaves the column NULL."""
     aid = "acc_bc_effort_rt"
     await _seed_account(aid)
     await put_account_config(_ConfigBody(account_id=aid, config={"model": "deepseek-v4-pro"}))
 
-    for _ in range(2):  # twice — a second unrelated save must not drift either
+    for _ in range(2):
         cfg = (await get_account_config(account_id=aid))["config"]
         assert cfg["reasoning_effort"] == "high", cfg["reasoning_effort"]
         await put_account_config(_ConfigBody(account_id=aid, config=cfg))
@@ -371,7 +295,6 @@ async def case_a_round_trip_save_does_not_materialize_the_default():
             f"the pin was materialized into the column as {row.reasoning_effort!r} — "
             f"this account no longer follows the model default")
 
-    # A DELIBERATE non-default pick is still stored, and still round-trips.
     await put_account_config(_ConfigBody(account_id=aid, config={
         "model": "deepseek-v4-pro", "reasoning_effort": "low"}))
     async with get_session() as s:
@@ -383,9 +306,6 @@ async def case_a_round_trip_save_does_not_materialize_the_default():
 
 
 class _no_anthropic_key:
-    """Blank every Anthropic credential for the block. `llm_providers._api_key`
-    falls back to reading service/.env, so a developer's real key there would
-    otherwise flip help_assistant to Opus under the test."""
 
     def __init__(self, house: str = "", fallback: str = ""):
         self.vals = {"ANTHROPIC_API_KEY": house,
@@ -405,18 +325,14 @@ class _no_anthropic_key:
 
 
 async def case_help_assistant_default_is_opus_only_where_anthropic_is_keyed():
-    """Keyed → the editor is told Opus (what resolve_model will run); unkeyed
-    → DeepSeek, exactly as before. Both halves, because "served the new model"
-    alone cannot tell an upgrade from a hard-coded swap."""
     from automations._common import resolve_model
 
     aid = "acc_help_opus"
-    await _seed_account(aid)   # no owner → the house key decides
+    await _seed_account(aid)
     with _no_anthropic_key():
         served = (await get_account_config(aid))["purpose_defaults"]
         assert served["help_assistant"] == "deepseek-v4-flash", served
         assert await resolve_model(aid, "help_assistant") == "deepseek-v4-flash"
-        # No-account ask with no fallback: DeepSeek too.
         assert await resolve_model("", "help_assistant") == "deepseek-v4-flash"
     with _no_anthropic_key(house="sk-ant-house"):
         served = (await get_account_config(aid))["purpose_defaults"]
@@ -427,7 +343,6 @@ async def case_help_assistant_default_is_opus_only_where_anthropic_is_keyed():
         assert await resolve_model("", "help_assistant") == "deepseek-v4-flash"
     with _no_anthropic_key(fallback="sk-ant-fallback"):
         assert await resolve_model("", "help_assistant") == "claude-opus-5-5"
-        # An operator pin still outranks the keyed default.
         async with get_session() as s:
             s.add(AccountAiConfig(account_id=aid, model_by_purpose=json.dumps(
                 {"help_assistant": "deepseek-v4-pro"})))
@@ -435,9 +350,6 @@ async def case_help_assistant_default_is_opus_only_where_anthropic_is_keyed():
 
 
 async def case_a_json_purpose_refuses_a_model_that_cannot_return_json():
-    """Claude via Anthropic's compat layer 400s on response_format=json_object,
-    so pinning it on a JSON lane is a 422 at save — and the same model is a
-    fine pin for a text purpose (help_assistant), so the rule is per purpose."""
     from automations._common import JSON_OBJECT_PURPOSES
 
     aid = "acc_json_pin"
@@ -458,11 +370,6 @@ async def case_a_json_purpose_refuses_a_model_that_cannot_return_json():
 
 
 async def case_the_editor_is_told_which_purposes_do_not_inherit():
-    """A purpose in `PURPOSE_DEFAULT_MODELS` does NOT inherit the account brain,
-    and the panel that exists to show model choice was rendering "inherit
-    default" over it. The contract carries the answer now — RESOLVED, because
-    `resolve_model` falls to the house model when a pinned id has been retired,
-    and serving the dead id would lie a second, quieter way."""
     from automations._common import DEFAULT_MODEL, PURPOSE_DEFAULT_MODELS
     from llm_client import MODELS
 
@@ -488,9 +395,6 @@ async def case_the_editor_is_told_which_purposes_do_not_inherit():
 
 
 async def case_model_notes_roundtrip_and_sparse():
-    """Get to know fans' Model info: served with its template, round-trips through
-    the whole-object PUT the page sends, is left alone by a PUT that omits it (the
-    Brain panel, an older client), clears on blank, and is capped short."""
     from automations._persona import MODEL_NOTES_MAX, MODEL_NOTES_TEMPLATE
 
     aid = "acc_bc_model_notes"
@@ -500,7 +404,6 @@ async def case_model_notes_roundtrip_and_sparse():
     assert resp["model_notes_template"] == MODEL_NOTES_TEMPLATE
     assert "Name:" in MODEL_NOTES_TEMPLATE and "Won't do" in MODEL_NOTES_TEMPLATE
 
-    # The page's save: the stored brain back, only model_notes changed.
     notes = MODEL_NOTES_TEMPLATE.replace("Name: ", "Name: Mia")
     out = await put_account_config(_ConfigBody(
         account_id=aid, config={**resp["config"], "persona": "Ella.", "model_notes": notes}))
@@ -508,12 +411,10 @@ async def case_model_notes_roundtrip_and_sparse():
     again = (await get_account_config(account_id=aid))["config"]
     assert again["model_notes"] == notes.strip() and again["persona"] == "Ella.", again
 
-    # Absent key == unchanged.
     await put_account_config(_ConfigBody(account_id=aid, config={"persona": "Ella."}))
     async with get_session() as s:
         assert (await s.get(AccountAiConfig, aid)).model_notes == notes.strip()
 
-    # Too long is refused before anything is written.
     try:
         await put_account_config(_ConfigBody(
             account_id=aid, config={"persona": "Ella.", "model_notes": "x" * (MODEL_NOTES_MAX + 1)}))
@@ -523,16 +424,11 @@ async def case_model_notes_roundtrip_and_sparse():
     async with get_session() as s:
         assert (await s.get(AccountAiConfig, aid)).model_notes == notes.strip()
 
-    # Blank clears the column (the page then prefills the template again).
     out = await put_account_config(_ConfigBody(account_id=aid, config={"persona": "Ella.", "model_notes": "  "}))
     assert out["config"]["model_notes"] is None, out["config"]
 
 
 async def case_daily_cost_cap_put_roundtrip_bound_and_owner_only():
-    """The daily AI spend cap (Settings › AI keys): a PUT lands in the column
-    and the GET serves it back with today's per-provider spend; over $100/day
-    is a 422 that writes nothing; a save that omits the key keeps a raised cap;
-    a Chatter's save never moves it."""
     import auth
     import chatters
     from datetime import datetime
@@ -551,11 +447,9 @@ async def case_daily_cost_cap_put_roundtrip_bound_and_owner_only():
     except HTTPException as e:
         assert (e.status_code, e.detail) == (
             422, "daily_cost_cap_cents must be at most 10000 ($100/day)"), e.detail
-    # Absent = unchanged (an older client saving a persona can't reset it to $1).
     c = (await put_account_config(_ConfigBody(account_id=aid, config={"persona": "hi"})))["config"]
     assert c["daily_cost_cap_cents"] == 1234, c
 
-    # A Chatter linked to the account saves the brain; the cap stays the owner's.
     tok_u = auth._request_user.set(None)
     tok_c = chatters._request_chatter.set(chatters.ChatterIdentity(
         "c-cap", "cap_chatter", None, None, frozenset({"u-cap"}), frozenset({aid})))
@@ -567,13 +461,11 @@ async def case_daily_cost_cap_put_roundtrip_bound_and_owner_only():
         chatters._request_chatter.reset(tok_c)
     assert c["persona"] == "by chatter" and c["daily_cost_cap_cents"] == 1234, c
 
-    # A fresh row with no cap sent takes the column default ($1/day).
     aid2 = "acc_bc_cap_fresh"
     await _seed_account(aid2)
     c = (await put_account_config(_ConfigBody(account_id=aid2, config={"persona": "x"})))["config"]
     assert c["daily_cost_cap_cents"] == 100, c
 
-    # Today's spend per provider rides the GET (millicents, held reservations included).
     day = datetime.utcnow().strftime("%Y-%m-%d")
     async with get_session() as s:
         s.add(GrokDailyCost(day=day, account_id=aid, provider="deepseek", cost_cents=4200,

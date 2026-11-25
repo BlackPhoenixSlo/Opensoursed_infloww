@@ -1,12 +1,3 @@
-"""service/tests/test_of_client_deny_list.py — OFClient refuses, before
-sending, every call that ends or reports on the Creator's own OF account:
-`users/logout`, `users/delete/request`, a non-GET `sessions`, OF's
-`/api2/v2/log` telemetry and the `bug*.onlyfans.com` reporter. Everything else
-(a GET of `sessions` included) still goes out.
-
-A bare OFClient via __new__ with a recording fake self.http, so nothing ever
-reaches the network; the harness only for the Relay's answer to a refusal.
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -109,8 +100,6 @@ def case_neighbouring_calls_still_go_out():
 
 
 def case_the_relay_answers_a_refusal_as_its_own_403_not_an_upstream_error():
-    """OFDeniedError is an OFAPIError (every `except OFAPIError` still catches it), but server._proxy
-    answers it as the Relay's refusal, never as OF's 502."""
     assert issubclass(OFDeniedError, of_client.OFAPIError)
     c, sent = _client()
 

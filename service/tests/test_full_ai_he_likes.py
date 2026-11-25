@@ -1,34 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_he_likes — He likes (config `he_likes`, owner 2026-11-14): what he likes is stored and
-is always in the Pick's `asks_subject`, test Mode only.
-
-The API cases post `/admin/full-ai/test/turn` with the owner's cookies, the Router faked at
-`_router_jev._client` (`FakeJev`), the info Jev at `_info_jev._client` (`FakeInfoJev`), the extract
-and the Writers at their wire (`FakeWriterHTTP`); every request inside `_full_ai_sell_helpers._guarded`.
-
-  case_flag_table              `he_likes` a bool, default true, labelled "He likes"; a pre-flag store
-                               reads the default
-  case_likes_of_and_flag       `full_ai_test.likes_of` (stripped, 200 chars, else "nothing stored yet");
-                               `likes_flag` only in test Mode
-  case_questions               `_questions("test", .., likes=True)`: only `asks_subject`'s instructions
-                               change (criteria, order, every other question unchanged); Shadow's
-                               request and `QUESTION_VERSION` (pinned) never move; the test digest
-                               moves with `TEST_LIKES` / `LIKES_STATE_KEYS`
-  case_info_versions           the likes digests differ; flag-off / Shadow digests unmoved
-  case_wording_in_catalog      both wordings sit verbatim in docs/prompts (NEW-118 variant, NEW-144)
-  case_extract_to_next_turn    flag on: the extract carries `LIKES_EXTRACT` right after wcfi's system
-                               message, its `fetishes` lands in `reply_json.fan_info` and in the next
-                               Turn's `he_likes` (Router state + saved `jev_json.state`), the request
-                               carries `TEST_LIKES`' wording; fetishes not fired: wcfi's messages
-  case_switch_off              flag off: wcfi's two extract messages, no `he_likes` key, today's
-                               `asks_subject` wording, the lead digest
-  case_generic_ask_sells_butt  a generic ask with the Router's `asks_subject` = butt sells a butt Pick
-
-Run: ./venv/bin/python service/tests/test_full_ai_he_likes.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, IDS, NANO, OWNER_A, TURN, _body, _db, _guarded, _picks, _put_draft, _reply, _rows, _vault,
@@ -50,7 +23,7 @@ from automations.welcome_chatter_for_info import _EXTRACT_FIELDS, _EXTRACT_SYSTE
 DEEPSEEK = "api.deepseek.com"
 NO = "nothing stored yet"
 SHADOW_VERSION = "14f5d4f6222f"
-MAIN_INFO_VERSION = "66b043f3a87e"      # test_full_ai_lead_in.py's pin (flag-off / Shadow digest)
+MAIN_INFO_VERSION = "66b043f3a87e"
 LIKES_WORDING = (
     "What should she show him? First what he asks to see in `fan_new_messages`. If he names nothing "
     "specific there, go by what he is into: `he_likes`, and what he praised, asked to see or described "
@@ -63,7 +36,6 @@ EXTRACT_WORDING = (
     "nothing he is into. Never take an item from the YOU: lines.")
 
 
-# ── Pure ──────────────────────────────────────────────────────────────
 
 def case_flag_table():
     assert DEFAULTS["he_likes"] is True, DEFAULTS
@@ -85,7 +57,7 @@ def case_likes_of_and_flag():
                            ({"fetishes": "x" * 250}, "x" * 200)):
         assert t.likes_of(fan_info) == want, (fan_info, t.likes_of(fan_info))
     for mode, on, want in (("test", True, True), ("test", False, False), ("shadow", True, False),
-                           ("live", True, True)):   # live = test (04a Mode gate)
+                           ("live", True, True)):
         assert likes_flag(SimpleNamespace(mode=mode, config={"he_likes": on})) is want, (mode, on)
 
 
@@ -144,11 +116,9 @@ def case_wording_in_catalog():
     assert "### NEW-144 " in doc and ij.LIKES_EXTRACT in doc and LIKES_WORDING in doc
 
 
-# ── Through the Test chat API ─────────────────────────────────────────
 
 @contextlib.contextmanager
 def _deepseek_key():
-    """Creator A's Agency DeepSeek key for the block (a fake value: the wire is faked), then restored."""
     owner = IDS["agency_a_owner"]
     before = _db(lambda: tenant_keys.get_key(owner, "deepseek"))
     _db(lambda: tenant_keys.set_keys(owner, {"deepseek": "test-deepseek-agency-key"}))
@@ -168,15 +138,12 @@ def _draft(**cfg):
 
 
 def _extract_says(**vals) -> str:
-    """The faked DeepSeek extract's reply: wcfi's JSON with `vals` filled."""
     return "ok:" + json.dumps({**dict.fromkeys(_EXTRACT_FIELDS, ""), "likes_boobs": False,
                                "likes_ass": False, "recent_events": [], "her_claims": [], **vals})
 
 
 def _turn(pair: str, n: int, text: str, info: FakeInfoJev, extract: str | None = None,
           jev=(QUIET, 1.0)):
-    """One Turn under the invariants: (response json, the Router's one call, the extract request or
-    None, the row)."""
     fj = FakeJev(jev)
     fw = FakeWriterHTTP({NANO: "ok:mm babe", DEEPSEEK: extract or "ok:{}"})
     with _deepseek_key(), _guarded(), fw.on(), _fake_jev(fj, info):
@@ -208,8 +175,7 @@ def case_extract_to_next_turn():
     with _draft():
         _, call, _, row = _turn(pair, 2, "send me pics", FakeInfoJev())
     assert call["state"]["he_likes"] == "ass, feet" == _saved(row)["state"]["he_likes"], call["state"]
-    assert list(call["state"])[-1] == "he_likes", list(call["state"])     # after the Spacing keys
-    # Flag on, only his age fired: wcfi's two messages (only the fired fields are kept).
+    assert list(call["state"])[-1] == "he_likes", list(call["state"])
     with _draft():
         _, _, ex, row = _turn(pair, 3, "im 31", FakeInfoJev(({"his_age": .9}, "none")), _extract_says(his_age="31"))
     assert [m["role"] for m in ex["body"]["messages"]] == ["system", "user"], ex["body"]["messages"]
@@ -236,8 +202,6 @@ BUTT = {"butt_focus": "y"}
 
 
 def case_generic_ask_sells_butt():
-    """He likes ass (the fold); a generic ask; the faked Router's `asks_subject` = butt: the Pick is
-    a butt Pick, never the plain photo."""
     pair = "hl-butt"
     with _draft(sell_on=True, sext_scene=False), _vault({101: "$10"}), _vault({201: "$10", 202: "$10"}, tags=BUTT):
         _turn(pair, 1, "mm i love ur ass", FakeInfoJev(({"fetishes": .9}, "none")), _extract_says(fetishes="ass"))

@@ -1,21 +1,3 @@
-"""service/saved_replies_api.py — server.py's saved-replies block, moved
-wholesale: local-DB saved replies (Growth > Scripts) CRUD plus tag/sequence relabel.
-
-  GET/POST    /admin/saved-replies
-  PUT/DELETE  /admin/saved-replies/{reply_id}
-  POST        /admin/saved-replies/relabel
-  GET         /admin/saved-replies/sequences   each sequence's own fields (position, Created by, dates)
-  POST        /admin/saved-replies/delete      {ids}: a selection in one request
-  POST        /admin/saved-replies/sent        {id}: one successful chat send rode this script
-
-A sequence is its scripts' shared `script_id` (the join by name); `saved_reply_sequences` holds its own
-fields when it has them (the bulk import, `scripts_import_api.py`). A whole-sequence rename / delete through
-relabel moves or drops that row, and a row no script names any more is pruned (`prune_sequences`).
-
-Import/copy (`/admin/saved-replies/import*`, `/copy`) live in scripts_import_api.py.
-Included mid-file in server.py for route order (pinned by
-service/tests/test_route_order.py).
-"""
 from __future__ import annotations
 
 import json
@@ -31,61 +13,34 @@ from of_rich_text import MARKUP_MAX, PLAIN_MAX, drops_all_text, of_text, plain_l
 
 router = APIRouter()
 
-# A script's notes and a Condition step option's text: the editor's limits, the bulk import's too.
 NOTES_MAX, CONDITIONAL_MAX = 256, 150
 
 
-# ── Saved replies (local-only "templates" minus welcome) ──────────────
-# OF's /messages/templates rejects creates for everything except the
-# welcome slot. We keep regular saved replies in the local DB and let
-# the UI merge them with OF's welcome at render time.
 
+# OF's /messages/templates rejects creates except the welcome slot: saved replies stay local and the UI merges them with OF's welcome.
 class _SavedReplyBody(BaseModel):
     title: str | None = None
-    # 422 past MARKUP_MAX before it is read at all; _clean_text's 400s count the text a fan reads.
     text: str = Field(..., max_length=MARKUP_MAX)
     price: float = Field(0, ge=0)
     locked_text: bool = False
-    # Vault-media references, persisted as JSON so the editor can
-    # re-render thumbs without a second fetch.
     media: list[dict] = Field(default_factory=list)
-    # OF user ids of creators to @-tag when this template is applied.
-    # Persisted so the picker can re-hydrate tagging without re-querying
-    # OF's tagged-friend-users endpoint on every pick.
     tagged_users: list[int] = Field(default_factory=list)
-    # Subset of `media`'s vault ids that ride along UNLOCKED when `price > 0`.
-    # Order does not matter; OF treats this as a set.
     previews: list[int] = Field(default_factory=list)
-    # Optional Giphy id stored on the template. NULL/None = no GIF. When set,
-    # the picker seeds the composer's picked-GIF state on pick so the GIF
-    # rides along on send.
     gif_id: str | None = None
-    # Cached animated preview URL so the picker chip can render without a
-    # fresh Giphy roundtrip.
     gif_url: str | None = None
-    # Optional script grouping: when both `script_id` (free-text name) and
-    # `script_step` (1-based order) are set, sending this template advances
-    # a per-chat cursor; the composer then surfaces the next step in the
-    # same script as a one-tap suggestion bubble. NULL on either field opts
-    # the template out of the script flow.
     script_id: str | None = None
     script_step: int | None = None
-    # Growth > Scripts' tags (names, at most 32 characters each) and internal
-    # notes (at most 256). None leaves a stored value as it is on PUT, so a
-    # client that predates them never wipes them.
     tags: list[str] | None = None
     notes: str | None = Field(None, max_length=NOTES_MAX)
-    # A Condition step option's text (Infloww's `conditional`); None leaves it on PUT.
     conditional: str | None = Field(None, max_length=CONDITIONAL_MAX)
 
 
-TAG_MAX = 32  # a script tag name (the editor, relabel, the Excel and bulk imports)
-IN_CHUNK = 500  # ids per `IN (...)`: under SQLite's bound-variable cap
-IDS_MAX = 20_000  # ids in one selection request
+TAG_MAX = 32
+IN_CHUNK = 500
+IDS_MAX = 20_000
 
 
 async def prune_sequences(s: Any, account_id: str) -> None:
-    """Drop the account's sequence rows no script names any more (deleted, ungrouped or moved out)."""
     from db.models import SavedReply, SavedReplySequence
     from sqlalchemy import delete, select
     named = select(SavedReply.script_id).where(SavedReply.account_id == account_id,
@@ -95,7 +50,6 @@ async def prune_sequences(s: Any, account_id: str) -> None:
 
 
 async def touch_sequences(s: Any, account_id: str, names: Iterable[str | None]) -> None:
-    """A step of these sequences changed: their Last modified on is now."""
     from datetime import datetime as _dt
 
     from db.models import SavedReplySequence
@@ -108,14 +62,12 @@ async def touch_sequences(s: Any, account_id: str, names: Iterable[str | None]) 
 
 
 async def sync_sequences(s: Any, account_id: str, touched: Iterable[str | None] = ()) -> None:
-    """After a script write: flush, mark the `touched` sequences modified now, drop the metas no script names."""
     await s.flush()
     await touch_sequences(s, account_id, touched)
     await prune_sequences(s, account_id)
 
 
 def _clean_tags(tags: list[str]) -> list[str]:
-    """Trimmed, de-duplicated (first spelling wins), empty names dropped; 400 over 32 characters."""
     out: list[str] = []
     for t in tags:
         name = str(t).strip()
@@ -128,10 +80,6 @@ def _clean_tags(tags: list[str]) -> list[str]:
 
 
 def text_reason(raw: str, text: str) -> str | None:
-    """Why a script's text is refused, or None. `text` is `of_text(raw)`, what is stored: refused when the
-    allow-list keeps nothing a fan would read of markup that held text (`drops_all_text`; OF's own empty markup,
-    a media-only script's, is not that), or past OF's limit counted on the text a fan reads (the editor's counter,
-    app/lib/ofRichTextEditor.ts). The editor's routes and the bulk import share it."""
     if drops_all_text(raw, text):
         return "text is only markup that is not kept (nothing a fan would read)"
     if plain_length(text) > PLAIN_MAX:
@@ -140,8 +88,6 @@ def text_reason(raw: str, text: str) -> str | None:
 
 
 def _clean_text(raw: str) -> str:
-    """The text a script stores: markup reduced to OF's allow-list (of_rich_text), so no client stores other
-    HTML; 400 for a `text_reason`."""
     text = of_text(raw)
     if (why := text_reason(raw, text)) is not None:
         raise HTTPException(status_code=400, detail=why)
@@ -192,7 +138,6 @@ async def admin_saved_replies_list(account_id: str = Query(...)) -> Response:
 
 
 async def _list_body(account_id: str) -> bytes:
-    """The list's encoded JSON body; the session closes before the rows are encoded."""
     from db.engine import get_session
     from db.models import SavedReply, VaultItem
     from sqlalchemy import select
@@ -208,7 +153,6 @@ async def _list_body(account_id: str) -> bytes:
                        if isinstance(m, dict) and str(m.get("id", "")).isdigit()] for r in out]
         media_ids = sorted({i for ids in ids_by_row for i in ids})
         removed: set[int] = set()
-        # In chunks: a 10k-script library can name more media than SQLite's bound-variable cap.
         for at in range(0, len(media_ids), IN_CHUNK):
             removed.update((await s.execute(
                 select(VaultItem.media_id).where(
@@ -219,7 +163,6 @@ async def _list_body(account_id: str) -> bytes:
             )).scalars().all())
     for r, ids in zip(out, ids_by_row):
         r["removed_media_ids"] = [i for i in ids if i in removed]
-    # JSONResponse's own encoding.
     return json.dumps({"list": out}, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
 
 
@@ -272,10 +215,7 @@ async def admin_saved_replies_update(
         row = await s.get(SavedReply, reply_id)
         if not row:
             raise HTTPException(status_code=404, detail="saved reply not found")
-        # Defense-in-depth: the row's account_id must be in the active
-        # principal's allowed set. Without this, a chatter linked to
-        # @alice could PUT a reply that belongs to @bob just by guessing
-        # the reply_id.
+        # Defense in depth: the row's account_id must be in the principal's allowed set, else a linked chatter could PUT another account's reply by guessing the id.
         assert_account_owned(row.account_id)
         was_in = row.script_id
         row.title = body.title
@@ -309,7 +249,6 @@ async def admin_saved_replies_delete(reply_id: int) -> dict[str, Any]:
     async with get_session() as s:
         row = await s.get(SavedReply, reply_id)
         if row is not None:
-            # Same row-based ownership check as PUT.
             assert_account_owned(row.account_id)
         if not row:
             raise HTTPException(status_code=404, detail="saved reply not found")
@@ -463,9 +402,6 @@ async def admin_saved_replies_relabel(
 
 
 async def _relabel_sequence_row(s: Any, account_id: str, src: str, dst: str | None, *, whole: bool) -> None:
-    """The sequence's own row after a relabel: a whole rename moves it to `dst` (first dropping a stale row of
-    that name: no script carries `dst`, or the clash check would have refused), a whole delete drops it; moving
-    some scripts touches both. Then rows no script names go."""
     from datetime import datetime as _dt
 
     from db.models import SavedReplySequence

@@ -1,20 +1,3 @@
-"""
-fans.py — server-side endpoints for the per-fan drawer / profile view.
-
-Two endpoints, both keyed on (account_id, fan_id):
-
-  GET    /admin/fans/{account_id}/{fan_id}   → full row (creates a stub if
-                                               we haven't seen this fan yet)
-  PATCH  /admin/fans/{account_id}/{fan_id}   → write custom_nickname, notes,
-                                               tags (string list as JSON)
-
-The OF user details (display name, avatar) are intentionally NOT mirrored
-here — those go stale, and the inbox already batch-fetches /users/list to
-get fresh ones. Our DB stores the human-curated overlay: nickname our team
-picked, notes, tags, plus the auto-computed lifetime_spend_cents the event
-transcoder will fill once Phase B.3 starts persisting transactions.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -38,24 +21,11 @@ from geo_timezones import resolve_timezone_for_place
 import relay_hooks
 from of_coerce import json_list
 
-# Statuses that mean "this money is gone / never landed" — chargebacks,
-# refunds, hard failures. Everything else (cleared AND still-pending payout
-# holds) counts as revenue the fan actually paid. Mirrors
-# transaction_ingest._NON_REVENUE_STATUSES, kept local so the router doesn't
-# import the ingest module. The drawer reads gross-paid, NOT settled-only:
-# OF holds new PPV payments pending for ~7 days, so a settled-only filter
-# leaves a fresh purchase invisible in the chart for days (see
-# transaction_ingest._link_ppv_message / payoutPendingDays).
+# Gross-paid, not settled-only: OF holds new PPV pending ~7 days, so settled-only hides a fresh purchase
 _NON_REVENUE_STATUSES = ("chargedback", "refunded", "failed")
 
 
 async def _ensure_account_row(s: AsyncSession, account_id: str) -> None:
-    """Insert a minimal accounts row if missing. The FS-based account
-    registry (sessions/accounts/<id>/) is the source of truth for who's
-    logged in, but the DB `accounts` table only gets populated by
-    `import_legacy` or explicit calls. Without a row here, any FK→accounts
-    insert (fans, transactions, etc.) raises IntegrityError. Idempotent —
-    safe to call on every write path that touches account-scoped tables."""
     stmt = (
         sqlite_insert(Account)
         .values(id=account_id, is_active_default=False)
@@ -68,8 +38,7 @@ log = logging.getLogger("of-relay.fans")
 router = APIRouter()
 
 
-# Cached: the fans LIST serializes through `_row_to_dict` too, and a lookup scans
-# the zone tables. A fan's place is one of a few hundred distinct strings.
+# Cached: the fans LIST serializes through _row_to_dict and a lookup scans the zone tables
 _zone_for_place = functools.lru_cache(maxsize=2048)(resolve_timezone_for_place)
 
 
@@ -90,16 +59,12 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "last_pay_date": f.last_pay_date,
         "home_country": f.home_country,
         "home_city": f.home_city,
-        # Fan insights › Profile › Local time: the IANA zone for Location, None
-        # when it is missing or ambiguous (a multi-zone country alone).
         "local_timezone": _zone_for_place(f.home_city, f.home_country),
         "hobbies": f.hobbies,
         "fetishes": f.fetishes,
         "self_description": f.self_description,
         "description": f.description,
         "notes": f.notes,
-        # Written by automation A03 apply_profiles (our DB only — never pushed to
-        # OF; no native OF endpoint exists for fan notes). Surfaced for the drawer.
         "applied_notes": f.applied_notes,
         "applied_notes_at": (
             f.applied_notes_at.isoformat() if f.applied_notes_at else None
@@ -115,7 +80,6 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "is_followed": f.is_followed,
         "language": f.language,
         "language_source": f.language_source,
-        # ── §2.4 extended Grok facts ─
         "occupation": f.occupation,
         "employer": f.employer,
         "relationship_status": f.relationship_status,
@@ -131,9 +95,6 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "automation_paused_until": (
             f.automation_paused_until.isoformat() if f.automation_paused_until else None
         ),
-        # Persona continuity (Tier B) — the three scalars are the RESOLVED answer
-        # per topic and are operator-writable. The ledger and the merged view are
-        # NOT here: see _with_persona_claims for why they are per-fan only.
         "persona_age_claimed": f.persona_age_claimed,
         "persona_location_claimed": f.persona_location_claimed,
         "persona_job_claimed": f.persona_job_claimed,
@@ -162,23 +123,7 @@ def _safe_load_obj(raw: str | None) -> dict[str, Any]:
 
 
 def _with_persona_claims(row: dict[str, Any], f: Fan) -> dict[str, Any]:
-    """Add the Tier B ledger + merged view to a SINGLE-fan response.
-
-    Deliberately not in `_row_to_dict`: that serializer also backs the fans LIST
-    (`{"fans": [...]}`), and only the drawer reads these. Building them there put
-    a JSON parse and a merge on every row of a list that can run to thousands,
-    for two keys nobody in that response uses.
-
-    Both halves go through `parse_persona_claims`, NOT `_safe_load_array`. That
-    parser clips each claim to _CLAIM_TEXT_CLIP, and the merged view is built
-    from it — so reading the raw column here instead would hand the client two
-    different texts for the same claim, and the drawer (which pairs them by text
-    to find superseded versions) would show a long claim as BOTH current and
-    struck-through. One parser, one normalisation.
-
-    Lazy import: `automations._persona` pulls the llm stack, which nothing else
-    in this module needs — verified, not assumed.
-    """
+    # Both halves use parse_persona_claims (clips each claim), else the drawer shows a long claim as current and struck-through
     from automations._persona import parse_persona_claims, resolved_claims
     return {
         **row,
@@ -217,7 +162,6 @@ class FanUpdateBody(BaseModel):
     his_age: str | None = None
     hobbies: str | None = None
     fetishes: str | None = None
-    # ── §2.4 extended Grok facts (T-A4 schema) ─
     occupation: str | None = None
     employer: str | None = None
     relationship_status: str | None = None
@@ -230,20 +174,13 @@ class FanUpdateBody(BaseModel):
     relationship_stage: str | None = None
     communication_style: dict[str, Any] | None = None
     automation_paused_until: datetime | None = None
-    # Persona continuity — humans may correct what gen_info claimed.
     persona_age_claimed: str | None = None
     persona_location_claimed: str | None = None
     persona_job_claimed: str | None = None
     profile_last_synced_at: datetime | None = None
     grok_facts_updated_at: datetime | None = None
-    # Per-fan language override (ISO 639-1). Setting it marks language_source='manual'
-    # so gen_info's detection can never overwrite it. "" / null clears the override.
     language: str | None = None
-    # Fan insights › Profile › "Birthday", "MM-DD" (the Birthday Trigger reads
-    # it). "" / null clears it.
     birthday: str | None = None
-    # Fan insights › Profile › Salary (free text), Salary frequency, Last pay
-    # date ("YYYY-MM-DD"). "" / null clears each.
     salary: str | None = None
     salary_frequency: str | None = None
     last_pay_date: str | None = None
@@ -281,7 +218,7 @@ class FanUpdateBody(BaseModel):
         if not v:
             return None
         try:
-            datetime.strptime(f"2000-{v}", "%Y-%m-%d")    # a leap year: 02-29 is a day
+            datetime.strptime(f"2000-{v}", "%Y-%m-%d")
         except ValueError:
             raise ValueError("birthday must be MM-DD")
         if len(v) != 5:
@@ -309,15 +246,9 @@ class FanUpdateBody(BaseModel):
         return code
 
 
-# NOTE: route order matters. FastAPI matches paths in declaration order
-# and falls through on path-param TYPE failure — so the literal-third-
-# segment routes (`by-ids`, `spend-batch`) MUST be declared BEFORE the
-# int-parameter route `/{fan_id}`, otherwise "by-ids" gets matched as
-# fan_id, fails int parsing, and returns 422 ("Input should be a valid
-# integer"). The single-segment `/admin/fans/{account_id}` route can
-# live anywhere — its shape doesn't collide.
 
 
+# Route order: literal-third-segment routes before /{fan_id}, else "by-ids" fails int parsing and returns 422
 @router.get("/admin/fans/{account_id}/by-ids")
 async def fans_by_ids(
     account_id: str,
@@ -413,7 +344,6 @@ async def fans_spend_batch(
                 "expired_at": sub_expires.isoformat() if sub_expires else None,
             }
 
-        # Last purchase timestamp — single grouped MAX query.
         tx_rows = (await s.execute(
             select(Transaction.fan_id, func.max(Transaction.occurred_at))
             .where(
@@ -437,8 +367,6 @@ async def fans_spend_batch(
     return {"spend": out}
 
 
-# ── /{fan_id} routes — MUST be declared after every literal-third-segment
-#    route above (see ordering note near FanUpdateBody). ────────────────
 
 @router.get("/admin/fans/{account_id}/{fan_id}")
 async def get_fan(account_id: str, fan_id: int) -> dict[str, Any]:
@@ -449,8 +377,7 @@ async def get_fan(account_id: str, fan_id: int) -> dict[str, Any]:
     async with get_session() as s:
         f = await s.get(Fan, (account_id, fan_id))
         if f is None:
-            # Two drawer opens race here: ON CONFLICT lets the loser no-op
-            # instead of a duplicate-key 500, then both read the one row.
+            # Two drawer opens race: ON CONFLICT lets the loser no-op instead of a duplicate-key 500
             await _ensure_account_row(s, account_id)
             await s.execute(
                 sqlite_insert(Fan)
@@ -460,15 +387,12 @@ async def get_fan(account_id: str, fan_id: int) -> dict[str, Any]:
             await s.commit()
             f = await s.get(Fan, (account_id, fan_id))
         row = _with_persona_claims(_row_to_dict(f), f)
-        # Join the gen_info profile so the drawer can show the rich note + openers.
         prof = await s.get(FanProfile, (account_id, fan_id))
     row["profile"] = _profile_block(prof, f.lifetime_spend_cents or 0)
     return row
 
 
 def _profile_block(prof: "FanProfile | None", lifetime_spend_cents: int) -> dict[str, Any]:
-    """The gen_info profile for the drawer's AI-Profile card. `rich_note` is the app-only
-    spend-tiered projection of the STORED bullet_points (not the 200-char OF note)."""
     from automations._common import build_rich_note
     if prof is None:
         return {"rich_note": "", "short_bio": None, "nickname": None,
@@ -508,11 +432,6 @@ async def fan_ppv_history(
     chronological (oldest → newest) — the chart reads left to right."""
     assert_account_owned(account_id)
     async with get_session() as s:
-        # Outer-join on messages so we get sent_by_employee_id + the
-        # original sent_at for rows where the transaction carries a
-        # message_id (i.e. WS-pump-originated tx). Phase-F-ingested
-        # ledger rows (message_id NULL) just yield NULLs here — the
-        # frontend enriches those via /chats/{fan_id}/media opened=1.
         rows = (await s.execute(
             select(
                 Transaction.id,
@@ -566,14 +485,6 @@ async def fan_ppv_history(
         }
         for r in reversed(rows)
     ]
-    # Per-kind lifetime totals for the drawer's stats grid. OF's
-    # subscribedOnData.{tips,messages,posts}Summ is the primary source,
-    # but it's frequently missing on long-tenure / banned / hidden
-    # accounts — fall back to our ledger so the grid never shows "—" for
-    # a fan who clearly has activity. Sum over ALL transactions (not just
-    # the limited PPV list above); counts gross-paid (`amount > 0`,
-    # status NOT chargeback/refund/failed) so pending payouts are included
-    # — consistent with the chart above.
     async with get_session() as s2:
         breakdown_rows = (await s2.execute(
             select(Transaction.kind, func.sum(Transaction.amount_cents))
@@ -596,9 +507,6 @@ async def fan_ppv_history(
             messages_cents += cents
         elif kind == "ppv_post":
             posts_cents += cents
-        # other kinds (subscription, rebill, ppv_stream, unknown) aren't
-        # surfaced in the drawer's grid right now — they're aggregated in
-        # the `Lifetime spend` figure via subscribedOnData.totalSumm.
 
     if items:
         prices = [it["price_cents"] for it in items]
@@ -643,9 +551,8 @@ async def update_fan(
                 f.communication_style = json.dumps(v or {})
             elif k == "pets":
                 f.pets = json.dumps(v or [])
+            # Operator-set language is authoritative: mark manual so gen_info never overwrites it
             elif k == "language":
-                # An operator-set language is authoritative: mark it 'manual' so
-                # gen_info detection never overwrites it (or clear the override).
                 f.language = v or None
                 f.language_source = "manual" if v else None
             else:
@@ -653,7 +560,4 @@ async def update_fan(
         f.updated_at = datetime.utcnow()
         await s.commit()
         await s.refresh(f)
-        # The drawer writes this straight into its query cache, so the PATCH
-        # response has to carry the claims too — without them, correcting one
-        # would blank the panel until the next refetch.
         return _with_persona_claims(_row_to_dict(f), f)

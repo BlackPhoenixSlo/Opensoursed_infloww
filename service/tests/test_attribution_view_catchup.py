@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""init_db builds the attribution view a fresh box never got from alembic.
-
-create_all builds no views and nothing on boot runs alembic, so Stats and Sales
-records 500'd with "no such table: per_employee_revenue_with_attribution" on
-any box that was not upgraded by hand. `ensure_attribution_view` creates the
-view when it is missing, rebuilds an older revision, and leaves the current
-one alone.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 _harness.bootstrap()
 
 import importlib  # noqa: E402
@@ -18,7 +10,7 @@ from pathlib import Path  # noqa: E402
 
 from sqlalchemy import create_engine, inspect, text  # noqa: E402
 
-db_engine = importlib.import_module("db.engine")  # `from db import engine` is the AsyncEngine
+db_engine = importlib.import_module("db.engine")
 
 _VIEW = "per_employee_revenue_with_attribution"
 _VERSIONS = Path(__file__).resolve().parent.parent / "db" / "migrations" / "versions"
@@ -41,7 +33,6 @@ def case_fresh_init_db_has_the_current_view() -> None:
     try:
         cols = _cols(eng)
         assert {"tx_id", "rule"} <= cols, cols
-        # And it is queryable, which is what the 500 was about.
         with eng.connect() as c:
             c.execute(text(f"SELECT COUNT(*) FROM {_VIEW}")).scalar()
         assert db_engine.ensure_attribution_view(eng) == "present"

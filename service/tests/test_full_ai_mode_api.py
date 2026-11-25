@@ -1,52 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_mode_api — the Full AI page's Mode control (ticket 74, spec 04a: the flip gate).
-
-`GET / PUT /admin/full-ai/mode` through `_harness.make_client()` sessions on the temp DB (Agency A's
-owner and chatter, Agency B's Creator); the live job body through `run_once` with OF faked at
-`ax._make_client` (`_of_fixtures.FakeOF`), Jev and the Writers' wire faked
-(`_full_ai_live_helpers.world`). No network, no paid call, no live OF send.
-
-  case_put_live_creates_one_rule      no rule → one enabled rule {"every_seconds": 300, "mode": "live"};
-                                      live_rule = its id; GET live
-  case_legacy_shadow_rule_in_place    enabled rule without mode reads shadow; PUT live updates that row
-                                      (still one); PUT off → disabled, mode gone, GET off
-  case_off_drops_the_queued_job       his DM queues a job (run_at ahead); PUT off; at claim the job drops:
-                                      no OF call, no ai_decisions row, job not pending
-  case_off_switch_wins_over_mode      Live + FULL_AI_CHAT_OFF: his DM gets no OF call and no row (the same
-                                      setup without the switch replies: the control, its live row listed
-                                      in GET /admin/full-ai/today, tagged live)
-  case_rollback_on_creator_with_no_rule  Off on a Creator with no rule: 200, nothing enabled; FULL_AI_CHAT_OFF
-                                      set then cleared reads back both ways (flip.md rollback 1-2)
-  case_off_then_live_drops_the_old_job  Off then Live inside the reply wait: the job queued before Off is
-                                      cancelled, never runs
-  case_shared_off_then_live_drops_the_old_job  the same Off through the rules routes (PATCH is_enabled
-                                      false, switch enable false, DELETE): cancelled, never runs
-  case_mode_off_drops_rule_less_one_shot  a rule-less full_ai_chat one-shot (/admin/automation/enqueue,
-                                      run_at ahead): Mode Off cancels it (W30 #17)
-  case_cancel_queued_reads_payload_rule  `_cancel_queued`: payload `_rule_id` 7 / "7" / 7.9 and the row's
-                                      rule_id cancelled; another rule, none, bad JSON, "7abc", running stay;
-                                      another account's job (tagged 7 or "7abc") stays (W30 #18)
-  case_two_rules_of_the_kind          Live leaves one enabled; Off parks both, trigger {"every_seconds": 300}
-  case_live_with_no_fans_list         no Fans list = every Fan (owner 2026-11-15): Live goes on with none,
-                                      the audience PUT to none while Live is 200; checkpoint PUT / rollback
-                                      never move fans
-  case_blocker_read_fails_closed      the blocker read raising: GET 200 with one blocker, PUT live 409, Off 200
-  case_refusals                       shadow / anything else 422; Agency B's Creator 403; chatter 403
-                                      (the opt-in guard); nothing written
-  case_live_blockers                  a Writer without a key / no TypeSafe key → 409 naming it,
-                                      no rule written, GET lists them; all set → []
-  case_shared_routes_never_turn_live  the rule editor's trigger edit, switch-on and re-enable of a parked Live
-                                      rule: 409; switch-off stays open (reads off); `_validate_trigger` drops
-                                      `mode` (fail closed: Shadow)
-  case_interval_job_every_300s        `dispatch_plan.parse_trigger` reads the live trigger as a 300 s interval
-  case_live_starts_catchup_off_stops  PUT live starts the waiting-chats catch-up (a pass now); a refused
-                                      live does not; PUT off stops it
-
-Run: ./venv/bin/python service/tests/test_full_ai_mode_api.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -88,8 +43,6 @@ def _run(coro):
 
 
 async def _reset(*, fans: dict | None = None, keys: dict | None = None) -> None:
-    """Creator A with no Full AI rule, no jobs / rows / messages; its checkpoint = DEFAULTS + `fans`
-    (default: an exclude list set); the owner's keys = `keys` (default: every Writer + TypeSafe)."""
     async with get_session() as s:
         for m in (AutomationRule, ScheduledJob, AiDecision, Message, AccountAiConfig):
             q = delete(m).where(m.account_id == AID)
@@ -125,8 +78,6 @@ def _put(mode, client=OWNER, aid=AID):
 
 
 async def _dm_and_claim(fan: int, mid: int, *, before_claim=None):
-    """His DM lands (the hook queues the job), `before_claim()` runs, the job is made due and one
-    run_once claims it. Returns (FakeOF, run result, the job row after)."""
     await _msg(AID, fan, mid, "in", "hey you, how was your day", datetime.utcnow() - timedelta(seconds=5))
     with world() as (fake, _jevs, _info, _fw):
         await wd.on_inbound_message(AID, fan, mid)
@@ -191,8 +142,6 @@ def case_off_drops_the_queued_job():
 
 
 def case_off_switch_wins_over_mode():
-    # Control: the same setup without the switch replies (fans list emptied in the stored checkpoint after
-    # the PUT, so the run reads no OF list: every Fan listed).
     async def go(switch: bool, fan: int, mid: int):
         await _reset()
         assert _put("live").status_code == 200
@@ -208,7 +157,7 @@ def case_off_switch_wins_over_mode():
             await runtime_switches.set_override("FULL_AI_CHAT_OFF", None, by="test")
     sent, rows = _run(go(False, 5201, 82001))
     assert sent and len(rows) == 1, (sent, rows)
-    today = OWNER.get(f"/admin/full-ai/today?account_id={AID}").json()["rows"]   # the owner reads live Turns there
+    today = OWNER.get(f"/admin/full-ai/today?account_id={AID}").json()["rows"]
     assert [(r["fan_id"], r["test"], r["live"]) for r in today] == [("5201", False, True)], today
     assert _get().json()["off_switch"] is False
     sent, rows = _run(go(True, 5202, 82002))
@@ -216,8 +165,6 @@ def case_off_switch_wins_over_mode():
 
 
 def case_rollback_on_creator_with_no_rule():
-    # flip.md's rollback, steps 1-2 (step 3, redeploy the previous image, is AE only):
-    # Mode Off on a Creator with no rule, then FULL_AI_CHAT_OFF set and cleared; each reads back.
     _run(_reset())
     r = _put("off")
     assert r.status_code == 200 and r.json()["mode"] == "off", r.text
@@ -233,7 +180,7 @@ def case_rollback_on_creator_with_no_rule():
 
 
 def case_off_then_live_drops_the_old_job():
-    # Off then Live again inside the reply wait: the job queued before Off never runs.
+    # A job queued before Off must never run after Live again.
     _run(_reset())
     assert _put("live").status_code == 200
 
@@ -245,8 +192,7 @@ def case_off_then_live_drops_the_old_job():
 
 
 def case_shared_off_then_live_drops_the_old_job():
-    # W30 #3: Off through the shared rules routes (PATCH, switch, DELETE) then Live inside the reply
-    # wait: the hook job (its rule only in the payload) queued before Off is cancelled, never runs.
+    # A job queued before Off must never run after Live again.
     def patch_off(rid):
         return OWNER.patch(f"/admin/automation-rules/{rid}", json={"is_enabled": False})
 
@@ -262,14 +208,12 @@ def case_shared_off_then_live_drops_the_old_job():
 
         async def off_then_live():
             assert off(rid).status_code == 200 and _put("live").status_code == 200
-        fake, _res, job = _run(_dm_and_claim(5102, 81002, before_claim=off_then_live))   # its hold: well ahead
+        fake, _res, job = _run(_dm_and_claim(5102, 81002, before_claim=off_then_live))
         assert fake.sent == [] and _run(_decisions()) == [], (off.__name__, fake.sent, _run(_decisions()))
         assert (job.status, job.last_error) == ("cancelled", "rule switched off"), (off.__name__, job.status)
 
 
 def case_mode_off_drops_rule_less_one_shot():
-    # W30 #17: a rule-less, untagged full_ai_chat one-shot (POST /admin/automation/enqueue, run_at ahead)
-    # is Full AI work too: Mode Off cancels it, so Off then Live never runs it (live run = a send).
     _run(_reset())
     assert _put("live").status_code == 200
     r = OWNER.post("/admin/automation/enqueue", json={
@@ -287,9 +231,6 @@ def case_mode_off_drops_rule_less_one_shot():
 
 
 def case_cancel_queued_reads_payload_rule():
-    # W30 #14/#18: `_cancel_queued` reads payload `_rule_id` exactly as run_decide.payload_rule_id does
-    # (7, "7", 7.9 -> 7; "7abc" -> None), only on the rule's own account; another rule's, none,
-    # malformed JSON, a running job or another account's job stay.
     from automation_rules_api import _cancel_queued
     _run(_reset())
     rid = _run(_add_rule(LIVE, True))
@@ -333,8 +274,6 @@ def case_two_rules_of_the_kind():
 
 
 def case_live_with_no_fans_list():
-    # Owner 2026-11-15: both lists empty = every Fan, never a Live blocker; the audience write while Live takes it.
-    # The config writes never move `fans` (owner 2026-11-15), so a checkpoint PUT / rollback naming another passes.
     none = {"include": [], "exclude": []}
 
     def put_fans(fans):
@@ -352,12 +291,12 @@ def case_live_with_no_fans_list():
     _run(_reset(fans=none))
     assert _get().json()["blockers"] == [], _get().json()
     assert _put("live").status_code == 200 and _get().json()["mode"] == "live"
-    ok = put_fans({"include": [9], "exclude": []})                          # a list while Live
+    ok = put_fans({"include": [9], "exclude": []})
     assert ok.status_code == 200 and ok.json()["checkpoint"]["fans"] == ok.json()["draft"]["fans"] == {
         "include": [9], "exclude": []}, ok.text
-    ck = put_ck(none)                                                       # the body's fans are ignored
+    ck = put_ck(none)
     assert ck.status_code == 200 and ck.json()["checkpoint"]["fans"] == {"include": [9], "exclude": []}, ck.text
-    r = put_fans(none)                                                      # back to every Fan, still Live: every side
+    r = put_fans(none)
     assert r.status_code == 200, r.text
     assert r.json()["checkpoint"]["fans"] == r.json()["draft"]["fans"] == r.json()["previous"]["fans"] == none, r.json()
     assert rollback().status_code == 200
@@ -376,7 +315,6 @@ def case_blocker_read_fails_closed():
     try:
         g = _get()
         assert g.status_code == 200 and g.json()["mode"] == "off", g.text
-        # W30 #10: the gate is the AI keys only; no Fans list gate since #786.
         assert g.json()["blockers"] == ["Couldn't check the AI keys. Reload to try again"], g.text
         r = _put("live")
         assert r.status_code == 409 and "Couldn't check" in r.json()["detail"], r.text
@@ -412,7 +350,7 @@ def case_live_blockers():
         assert r.status_code == 409 and r.json()["detail"] == "Can't go Live: " + "; ".join(want), (kw, r.status_code, r.text)
         assert _run(_rules()) == [], kw
         assert _get().json()["blockers"] == want, _get().json()
-    _run(_reset(fans={"include": [], "exclude": []}))                     # no Fans list = every Fan: no blocker
+    _run(_reset(fans={"include": [], "exclude": []}))
     assert _get().json()["blockers"] == [] and _put("live").status_code == 200
 
 
@@ -437,8 +375,6 @@ def case_shared_routes_never_turn_live():
     assert r.status_code == 409 and "/admin/full-ai/mode" in r.text, r.text
     r = OWNER.post("/admin/automation-rules/switch", json={"account_id": AID, "kind": KIND, "enable": True})
     assert r.status_code == 409, r.text
-    # Off through the shared routes stays open; the parked rule keeps its mode but reads off and
-    # cannot be woken there.
     r = OWNER.patch(f"/admin/automation-rules/{rid}", json={"is_enabled": False})
     assert r.status_code == 200, r.text
     assert _get().json()["mode"] == "off" and _run(full_ai_live.live_rule(AID)) is None
@@ -473,7 +409,7 @@ def case_live_starts_catchup_off_stops():
     full_ai_catchup.stop = lambda aid: calls.append(("stop", aid))
     try:
         _run(_reset(keys={**KEYS, "openrouter": None}))
-        assert _put("live").status_code == 409 and calls == []          # refused: no catch-up
+        assert _put("live").status_code == 409 and calls == []
         _run(_reset())
         assert _put("live").status_code == 200 and calls == [("start", AID)], calls
         assert _put("off").status_code == 200 and calls == [("start", AID), ("stop", AID)], calls

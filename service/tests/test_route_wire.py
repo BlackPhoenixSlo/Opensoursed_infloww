@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
-"""
-route_wire — table tests over the shared wire-time and path-id helpers:
-
-  case_parse_utc_table:     Z and +02:00 → naive UTC; naive, garbage, empty, None,
-                            non-str → 422 with the field-named detail texts.
-  case_parse_utc_status:    status=400 refuses with 400, same texts.
-  case_wire_table:          naive UTC → "...Z"; None passes through.
-  case_own_row_or_404:      a Shift in the temp DB: own id (str) found; non-int,
-                            missing and another owner's → 404 "<what> not found".
-
-Run: ./venv/bin/python service/tests/test_route_wire.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB)
+import _harness
 
 _harness.bootstrap()
 
@@ -85,9 +73,9 @@ async def case_own_row_or_404():
         got = await own_row_or_404(s, Shift, str(sid), "shift", "agency_user_id", owner)
         assert got.id == sid
         cases = [
-            ("abc", owner),                            # not an id
-            (str(sid + 1000), owner),                  # missing
-            (str(sid), IDS["agency_b_owner"]),         # another owner's
+            ("abc", owner),
+            (str(sid + 1000), owner),
+            (str(sid), IDS["agency_b_owner"]),
         ]
         for raw, who in cases:
             try:

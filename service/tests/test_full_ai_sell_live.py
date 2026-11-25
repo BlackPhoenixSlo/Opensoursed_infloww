@@ -31,7 +31,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_sell_live.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, OWNER_A, PICS, FakePriceJev, _body, _db, _vault,
@@ -58,7 +58,6 @@ R = asyncio.run
 
 
 class LiveOF(VaultOF):
-    """VaultOF that records unsends."""
 
     def __init__(self, fail=None):
         super().__init__(fail)
@@ -70,7 +69,6 @@ class LiveOF(VaultOF):
 
 
 class MediaRejectOF(LiveOF):
-    """Refuses any send carrying media (OF's `mediaFiles` 400); text alone lands."""
 
     def send_message(self, chat_id, text, **kw):
         if kw.get("media_files"):
@@ -87,7 +85,6 @@ class MediaRejectOF(LiveOF):
         return super().send_message(chat_id, text, **kw)
 
 
-# ── The purchases feed (test_full_ai_settle_live's twin of test_purchase_notifications) ──
 
 class _Feed:
     def __init__(self, items): self.items = items
@@ -108,11 +105,9 @@ def _buy(fan: int, mid: int, cents: int, at: datetime | None = None) -> dict:
                          "{MESSAGE_LINK}": f"/chats/chat/{fan}?firstId={mid}"}}])))
 
 
-# ── One live Turn ─────────────────────────────────────────────────────
 
 def _turn(fan: int, mid: int, text: str, answers: dict, *, intensity=2.0, choices=None, writer=SELL_TEXT,
           fake=None, price=None):
-    """(job result, fake OF, FakeJev, FakeWriterHTTP, newest row)."""
     res, of, jev, _info, fw = R(dm_turn(A, fan, mid, text, jev=({**QUIET, **answers}, intensity, choices or {}),
                                         writers={NANO: writer}, fake=fake or LiveOF(),
                                         price=price or FakePriceJev(None)))
@@ -138,7 +133,6 @@ async def _vault_sends(fan: int) -> list[VaultSend]:
 
 
 async def _age_fan(fan: int, minutes: float) -> None:
-    """Move every live row and chat line of the Fan `minutes` back."""
     async with get_session() as s:
         for r in (await s.execute(select(AiDecision).where(AiDecision.account_id == A, AiDecision.fan_id == fan))).scalars():
             r.created_at -= timedelta(minutes=minutes)
@@ -155,13 +149,11 @@ def _live_on():
 
 
 def _sell1(fan: int, mid: int, **kw):
-    """Turn 1: "send me pics" (wants_content .9) -> sell_now with one PPV."""
     res, of, jev, fw, row = _turn(fan, mid, PICS, {"wants_content": .9}, **kw)
     assert res["row_status"] == "sent" and row.route == "sell_now", (res, row.route, reply(row))
     return res, of, jev, fw, row
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 def case_buy_then_next_turn_knows():
     _live_on()
@@ -176,7 +168,6 @@ def case_buy_then_next_turn_knows():
         vs = R(_vault_sends(fan))
         assert sorted(v.media_id for v in vs) == sorted(locked) and {v.message_id for v in vs} == {r1.offer_message_id}
         _buy(fan, r1.offer_message_id, r1.offer_price_cents)
-        # Turn 2 chats: the spend line rides only beside no Pick (full_ai_writers `bare`, rwl fa3 S3).
         _res, _of2, _j2, fw2, r2 = _turn(fan, 95102, "omg ur so hot", {}, writer="ok:mm u like that")
         _res, of3, _j3, _fw3, r3 = _turn(fan, 95103, "more?", {"wants_content": .9})
     r1 = R(live_rows(A, fan))[0]
@@ -199,8 +190,6 @@ def case_no_buy_pending_then_yes():
                                           {"says_yes_to_offer": .9, "wants_content": .9})
     st = jev2.calls[0]["state"]
     assert st["pending_offer"].startswith(f"locked ${r1.offer_price_cents // 100} message"), st["pending_offer"]
-    # a yes naming nothing else points at the open card: no new piece, the open Offer untouched
-    # (M2 2026-11-16; wants_content no longer matters, review item 2)
     assert r2.route == "sell_now" and _ppv_sends(of2) == [], (r2.route, of2.sent)
     rj = reply(r2)
     assert rj["refusal"] == "offer_open" and rj["offer_open"] == r1.id, rj
@@ -213,8 +202,6 @@ def case_no_buy_pending_then_yes():
 
 
 def case_yes_and_wants_content_sells_another():
-    """A yes that names another subject (asks_subject feet over the open "anything" card) still sells
-    another piece, as before (review item 2)."""
     _live_on()
     fan = 9521
     with _vault({101: "$10", 202: "$50"}):
@@ -224,7 +211,7 @@ def case_yes_and_wants_content_sells_another():
         _res, of2, _jev2, _fw2, r2 = _turn(fan, 952102, "yes and send me ur feet too",
                                            {"says_yes_to_offer": .9, "wants_content": .9},
                                            choices={"asks_subject": {"feet": .9}})
-    (ppv2,) = _ppv_sends(of2)                                  # a yes + an ask sells: another piece
+    (ppv2,) = _ppv_sends(of2)
     assert r2.route == "sell_now" and not locked & set(ppv2["media_files"]), (r2.route, of2.sent, locked)
     assert "offer_open" not in reply(r2), reply(r2)
 
@@ -238,7 +225,7 @@ def case_pending_expires_late_buy_settles():
         _res, _of2, jev2, _fw2, _r2 = _turn(fan, 95302, "hey again", {})
     assert jev2.calls[0]["state"]["pending_offer"] == "none", jev2.calls[0]["state"]
     _buy(fan, r1.offer_message_id, r1.offer_price_cents)
-    R(full_ai_live.run(A, {}, run_id=0))                       # the rule's tick: the sweep settles
+    R(full_ai_live.run(A, {}, run_id=0))
     r1 = R(live_rows(A, fan))[0]
     assert r1.outcome == "bought", r1.outcome
 
@@ -278,7 +265,6 @@ def case_tease_follow_through():
 
 
 async def _peek(fan: int, mid: int, text: str):
-    """`load` for his next line without running the Turn (the line is removed after)."""
     from _full_ai_fixtures import _msg
     await _msg(A, fan, mid, "in", text, datetime.utcnow())
     try:
@@ -339,9 +325,6 @@ def case_media_refused():
 
 
 def case_raise_after_send_keeps_offer():
-    """send_priced raises after OF took the PPV (its attribution write): never a drop — the Offer
-    columns stay, the row is linked, the bubble keeps OF's id (W30 F15: `MaybeSent` carries it, so
-    the Turn is not cut), the next Turn reads it as the Pending offer."""
     _live_on()
     fan = 962
     from automations import full_ai_ppv
@@ -400,10 +383,10 @@ def case_row_diff_vs_test_chat():
 def case_fast_poll_live_only():
     async def go():
         await seed_live("fa_poll_live", {})
-        async with get_session() as s:        # its live full_ai_chat rule only (no selling kind)
+        async with get_session() as s:
             await s.execute(delete(AutomationRule).where(AutomationRule.account_id == "fa_poll_live",
                                                          AutomationRule.kind != "full_ai_chat"))
-        async with get_session() as s:        # only a full_ai_chat rule, no `mode`: Shadow
+        async with get_session() as s:
             s.add_all([Account(id="fa_poll_shadow"), Account(id="fa_poll_none")])
             await s.flush()
             s.add(AutomationRule(account_id="fa_poll_shadow", name="Full AI Chat", kind="full_ai_chat",
@@ -412,7 +395,6 @@ def case_fast_poll_live_only():
     got = R(go())
     assert "fa_poll_live" in got and not {"fa_poll_shadow", "fa_poll_none"} & got, got
     assert R(full_ai_live.live_accounts()) >= {"fa_poll_live"}
-    # A Shadow rule: no OF call, no priced row.
     import automation_executor as ax
     import webhook_dispatch as wd
     from _full_ai_fixtures import FakeJev, _fake_jev, _msg, _rows
@@ -440,7 +422,7 @@ def case_saved_folder_price_reaches_send_message():
     import vault_folder_prices
     import vault_settings
     _live_on()
-    R(vault_settings.put(A, folder_price_final=True, standard_folders=True))   # A1: off ignores standard folders
+    R(vault_settings.put(A, folder_price_final=True, standard_folders=True))
     fan = 981
     with _vault({98101: "$10"}):
         async def seed():

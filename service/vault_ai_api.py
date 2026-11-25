@@ -42,6 +42,7 @@ import vault_frames
 import vault_mirror
 import vault_of_folders  # duplicates list/hide, folder plan + publish, OF folder CRUD; routes included at their old spots below
 import relay_coalesce
+import relay_host
 import vault_ingest  # has_live_mirror: the grid's own "is the mirror on" question
 import vault_jev_flags
 import vault_jev_manual  # the operator's Jev picks (`fields.jev`)
@@ -1876,6 +1877,7 @@ async def hide_item(media_id: int, payload: dict = Body(...)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail={"error": "account_id_required"})
     await vault_of_folders._reject_foreign_media(account_id, [int(media_id)])
 
+    relay_host.refuse_if_platform_lacks(account_id, "hide_vault_media", "remove from vault")
     client = await asyncio.to_thread(ax._make_client, account_id)
     try:
         await asyncio.to_thread(client.hide_vault_media, [int(media_id)])

@@ -1,22 +1,3 @@
-"""
-Fansly backend for the relay — the per-account bridge to the shim.
-
-`_load_client(account_id)` returns an `OFClient` for OnlyFans accounts. For
-accounts whose meta says `platform == "fansly"`, it returns a `FanslyShimClient`
-instead (see fansly/fansly_shim.py) — same read surface, OF-shaped output, so the
-inbox route works unchanged.
-
-This module is the seam that keeps the two worlds apart:
-  • the Fansly code lives in the sibling `fansly/` package (kept separate so it
-    can be reviewed / open-sourced independently); we add it to the path here,
-    in one place, rather than scattering sys.path edits.
-  • each Fansly account's captured session lives beside its OF cousins, at
-    service/sessions/accounts/<id>/fansly_session.json — written by the
-    login-capture extension's Fansly path.
-
-Nothing here runs for OnlyFans accounts; importing it has no effect until a
-Fansly account is actually loaded.
-"""
 from __future__ import annotations
 
 import json
@@ -50,17 +31,10 @@ _pool: dict[str, FanslyShimClient] = {}
 
 
 def session_path(account_id: str) -> Path:
-    """Where this Fansly account's captured session lives — next to its OF
-    cousins under the account dir."""
     return account_registry.account_dir(account_id) / SESSION_FILENAME
 
 
 def get_client(account_id: str) -> FanslyShimClient:
-    """Return (and cache) the shim client for a Fansly account.
-
-    Raises FileNotFoundError when the account has no captured Fansly session —
-    the same signal `_load_client` already translates into a structured 503, so
-    the "capture a session" remedy path is shared with OnlyFans."""
     with _lock:
         cached = _pool.get(account_id)
         if cached is not None:
@@ -76,7 +50,6 @@ def get_client(account_id: str) -> FanslyShimClient:
         data = json.loads(path.read_text())
         session = FanslySession(data, path)
         client = FanslyShimClient(session)
-        # Reuse the captured device id; only hit /device/id if we truly lack one.
         if not session.device_id:
             client.ensure_device_id()
         _pool[account_id] = client
@@ -110,6 +83,7 @@ def ws(client: FanslyShimClient) -> FanslyWebSocket:
 
 
 async def revenue_tick(account_id: str) -> TickResult:
-    import fansly_revenue  # imports this module at load
+    # Circular: fansly_revenue imports this module at load.
+    import fansly_revenue
 
     return await fansly_revenue.run_one_tick(account_id)

@@ -61,28 +61,12 @@ from vault_mirror import compact_list_states
 
 log = logging.getLogger("of-relay.vault_cache")
 
-# Account id → utcnow() of its latest `invalidate` / `mark_stale`. Read twice:
-#
-#   `get` serves no row fetched before it. Swallowing a failed invalidate is
-#   only safe if the rows it meant to kill stop being served — otherwise a
-#   creator uploads media, the DELETE fails on a locked DB, and the picker keeps
-#   serving the pre-upload listing for a full TTL. That is a worse failure than
-#   the 500 we are removing, because it is silent. So the cache degrades to
-#   "always miss for this account" until a fresh `put` re-warms it, which is
-#   exactly what a successful invalidate would have produced (after one, the
-#   rows are gone and the mark filters nothing).
-#
-#   `put` drops a payload whose fetch started at or before it: it predates the
-#   mutation (or the proxy) the invalidate was for.
-#
-# Deliberately RAM-only: it is a repair for a write we could not perform, so
-# persisting it would need the very write that just failed; a restart has no
-# fetch in flight. A restart drops it, and a surviving row falls back to
-# ordinary TTL expiry.
+# RAM-only repair for a failed invalidate: get serves no row fetched before the mark and put drops a payload fetched before it, so a failed DELETE degrades to always-miss, never a stale picker.
 _invalidated_at: dict[str, datetime] = {}
 
 
-TTL_CAP_S = 72000   # 20 h — OF's signed urls (in every payload here) are never served older than this
+# 20 h: OF's signed urls in every payload are never served older than this.
+TTL_CAP_S = 72000
 
 
 def vault_media_cache_key(*, type: str = "all", list_id: int | None = None,
@@ -93,7 +77,6 @@ def vault_media_cache_key(*, type: str = "all", list_id: int | None = None,
     lives. The route (server.py) and the background collector (vault_collect)
     both build keys here, so a page the collector warms is the page the picker
     reads."""
-    # `before` (Go to date) only when set, so every existing key stays as it was.
     return (f"media:type={type}|list={list_id}|offset={offset}|limit={limit}"
             f"|sort={sort}|field={field}|query={q_norm}"
             + (f"|before={before}" if before else ""))
@@ -145,8 +128,6 @@ async def get(account_id: str, query_key: str, *, max_age_s: float | None = None
     cutoff = now - timedelta(seconds=ttl)
     if max_age_s is not None:
         cutoff = max(cutoff, now - timedelta(seconds=max(max_age_s, 0)))
-    # An invalidate whose DELETE failed (or a `mark_stale`) raises the bar past
-    # the TTL, so rows the mutation should have deleted are not served.
     mark = _invalidated_at.get(account_id)
     if mark is not None and mark > cutoff:
         cutoff = mark
@@ -163,9 +144,6 @@ async def get(account_id: str, query_key: str, *, max_age_s: float | None = None
                 )
             ).scalar_one_or_none()
     except SQLAlchemyError as e:
-        # `database is locked`, EMFILE ("unable to open database file"), a
-        # closed pool during shutdown — all mean the same thing to a caller:
-        # we have nothing for you, go upstream.
         log.warning("vault_cache: read failed for account=%s key=%s (%s) — treating as miss",
                     account_id, query_key, e.__class__.__name__)
         return None
@@ -174,7 +152,6 @@ async def get(account_id: str, query_key: str, *, max_age_s: float | None = None
     try:
         return json.loads(row.response_json)
     except (ValueError, TypeError):
-        # Corrupt blob — treat as miss and let put() overwrite it.
         log.warning("vault_cache: corrupt blob for account=%s key=%s", account_id, query_key)
         return None
 
@@ -256,7 +233,6 @@ async def put(account_id: str, query_key: str, payload: Any, *,
     try:
         blob = json.dumps(_compact(payload), ensure_ascii=False, default=str)
     except (TypeError, ValueError) as e:
-        # Don't break the upstream response just because we couldn't cache it.
         log.warning("vault_cache: payload not serializable (%s) — skipping write", e)
         return
     now = datetime.utcnow()
@@ -274,9 +250,6 @@ async def put(account_id: str, query_key: str, payload: Any, *,
         async with get_session() as s:
             await s.execute(stmt)
     except SQLAlchemyError as e:
-        # The cache write is the LAST thing between a successful OF fetch and
-        # the response. Losing it costs the next reader one round-trip;
-        # raising here would cost this reader the data they already have.
         log.warning("vault_cache: write failed for account=%s key=%s (%s) — response unaffected",
                     account_id, query_key, e.__class__.__name__)
 

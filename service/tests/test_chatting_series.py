@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""Employee reports' charts (roadmap W5 5.10): `GET /admin/stats/chatting-stats?bucket=` — the Overview's "Employee
-sales" and comparison lines and the Employee performance tab's Sales and Message statistics, in one answer.
-
-  edges     buckets begin at the report zone's midnight (whatever its offset that day), weeks on the Agency's week
-            start, months on the 1st; hours are an hour apart in UTC.
-  series    one point per bucket: Sales by the Sales Settings rules (pending too), and the Employees' own sends,
-            summed in `series` and per Employee in `by_employee`; the Automation sentinel and Unattributed sales in
-            none; fans distinct within a point. A Creator whose Rules change in the window is read sale by sale, and
-            the points add up to Chatting statistics' totals.
-  windows   a granularity the range's calendar days (its length rounded to whole days, from any zone's midnights)
-            do not allow is refused (Infloww's: hour up to 2 days, day under 14 or to 31, week 14 to 365, month over
-            62); October in Europe is 31 days.
-  scope     a "self" Data scope charts only its own Employee.
-  plans     the bucketed sends read still seeks ix_messages_chatter_sends.
-  fold      `fold_series`, the pure fold, table-driven: a sale on an edge, an empty bucket, Unattributed only, own scope.
-
-Seeded straight into the temp DB; no network.
-
-Run: ./venv/bin/python service/tests/test_chatting_series.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds a throwaway temp DB (unset env falls back to PROD)
 
 _harness.bootstrap()
 
@@ -109,8 +89,6 @@ E1, E2 = _employee("series_emp_1"), _employee("series_emp_2")
 AUTO = _sentinel()
 D = datetime(2026, 3, 2)  # a Monday
 
-# Day 1: E1 sends a PPV fan 1 buys (pending) and a text to fan 1 again; E2 one send. Day 2: E1 on two Creators,
-# the same fan id; a mass message and the sentinel's send count for no one. Day 3: an orphan tip (Unattributed).
 P1 = _msg(C1, 1, E1, D.replace(hour=9), price=1000, paid=True)
 _msg(C1, 1, E1, D.replace(hour=10, minute=45))
 P2 = _msg(C1, 2, E2, D.replace(hour=11), price=500)
@@ -127,8 +105,8 @@ RANGE = {"from": "2026-03-02", "to": "2026-03-04"}
 
 def case_edges_follow_the_report_zone_week_start_and_months():
     la = ZoneInfo("America/Los_Angeles")
-    # 8 March 2026 is the US spring-forward: midnight is 08:00 UTC before it, 07:00 after.
     days = stats._bucket_edges("day", datetime(2026, 3, 7, 8), datetime(2026, 3, 9, 7, 30), la)
+    # 8 March 2026 is the US spring-forward: midnight is 08:00 UTC before it, 07:00 after
     assert days == [datetime(2026, 3, 7, 8), datetime(2026, 3, 8, 8), datetime(2026, 3, 9, 7)], days
     wed = datetime(2026, 3, 4, 15)
     assert stats._bucket_edges("week", wed, wed + timedelta(days=8), None) == [
@@ -150,7 +128,6 @@ def case_the_overview_sums_every_employee_per_day_and_lists_each_leaving_out_aut
     assert _col(series, "direct_messages_sent") == [3, 2, 0], body
     assert _col(series, "direct_ppvs_sent") == [2, 0, 0], body
     assert _col(series, "ppvs_unlocked") == [1, 0, 0], body
-    # Fans distinct per Creator and Employee within a day: E1's fan 1 once, E2's fan 2; fan 3 on two Creators.
     assert _col(series, "fans_chatted") == [2, 2, 0], body
     assert _col(by_emp[str(E1)], "sales_cents") == [1000, 0, 0] and _col(by_emp[str(E2)], "sales_cents") == [500, 0, 0]
     assert _col(by_emp[str(E1)], "fans_chatted") == [1, 2, 0], by_emp
@@ -169,7 +146,7 @@ def case_a_granularity_the_ranges_calendar_days_do_not_allow_is_refused():
     _get(status=400, bucket="hour", **{"from": "2026-03-01", "to": "2026-03-03"})
     _get(status=400, bucket="month", **RANGE)
     _get(status=400, bucket="week", **RANGE)
-    _get(status=400, bucket="day", **{"from": "2026-03-01", "to": "2026-04-01"})  # 32 days: week only
+    _get(status=400, bucket="day", **{"from": "2026-03-01", "to": "2026-04-01"})
     _get(status=422, bucket="year", **RANGE)
     assert len(_get(bucket="week", **{"from": "2026-03-02", "to": "2026-03-15"})["series"]) == 2
     assert [d for d in range(1, 400) if stats._bucket_allowed("month", d)][0] == 63
@@ -177,13 +154,13 @@ def case_a_granularity_the_ranges_calendar_days_do_not_allow_is_refused():
 
 
 def case_a_browsers_month_from_its_own_midnights_is_its_days_with_no_report_zone_saved():
-    # No report zone (UTC): the app sends the browser's midnights. Berlin's October touches 32 UTC days, still 31 days.
+    # Berlin's October touches 32 UTC days, still 31 calendar days
     october = {"from": "2026-10-01T00:00:00.000+02:00", "to": "2026-10-31T23:59:59.999+01:00"}
     assert len(_get(bucket="day", **october)["series"]) == 32
     january = {"from": "2026-01-01T00:00:00.000-05:00", "to": "2026-01-31T23:59:59.999-05:00"}
     assert len(_get(bucket="day", **january)["series"]) == 32
     _get(status=400, bucket="day", **{"from": "2026-01-01T00:00:00.000-05:00", "to": "2026-02-01T23:59:59.999-05:00"})
-    assert stats._range_days(datetime(2026, 3, 8, 8), datetime(2026, 3, 9, 6, 59, 59, 999000)) == 1  # LA's 23 hours
+    assert stats._range_days(datetime(2026, 3, 8, 8), datetime(2026, 3, 9, 6, 59, 59, 999000)) == 1
 
 
 def _roles(scope: str, emp: int) -> None:
@@ -230,13 +207,12 @@ def _prefs(blob: dict) -> None:
 
 
 def case_october_in_berlin_is_31_days_and_its_weeks_begin_on_sunday():
-    # 25 October 2026 01:00 UTC Berlin falls back to CET: 23:30 UTC that day is 00:30 on Monday the 26th.
     p = _msg(C3, 1, E2, datetime(2026, 10, 25, 23, 0), price=700)
     _sale(C3, 700, datetime(2026, 10, 25, 23, 30), fan=1, message_id=p)
     october = {"from": "2026-10-01", "to": "2026-10-31"}
     try:
         _prefs({"report_tz": "Europe/Berlin", "week_start": "sunday"})
-        days = _get(bucket="day", **october)["series"]  # 745 hours, 31 calendar days: by day is allowed
+        days = _get(bucket="day", **october)["series"]
         assert len(days) == 31 and days[25]["start"] == "2026-10-26T00:00", days[25]
         assert days[25]["sales_cents"] == 700 and days[25]["direct_messages_sent"] == 1, days[24:27]
         weeks = _get(bucket="week", **october)["series"]
@@ -248,7 +224,6 @@ def case_october_in_berlin_is_31_days_and_its_weeks_begin_on_sunday():
 
 
 def case_the_points_add_up_to_the_tables_totals_when_the_rules_change_in_the_window():
-    # Last: the fee setting stays on for Agency A after it. C2's Rules change mid-window, so it is read sale by sale.
     r = OWNER_A.put("/admin/settings/sales", json={"exclude_of_fee": True},
                     params={"effective_from": "2026-03-03T00:00:00Z"})
     assert r.status_code == 200, r.text
@@ -274,7 +249,6 @@ def _credit(eid: int | None, at: datetime | None, cents: int) -> SimpleNamespace
 
 FOLD_EDGES = [D, D.replace(day=3), D.replace(day=4)]
 FOLD_AUTO = 99
-# (what, sends, credited sales, own, series' sales and messages, each Employee's sales and messages)
 FOLD_CASES = [
     ("a sale exactly on an edge opens that bucket; a microsecond before, or before every edge, an earlier one",
      [], [_credit(10, FOLD_EDGES[1], 100), _credit(10, FOLD_EDGES[1] - timedelta(microseconds=1), 20),

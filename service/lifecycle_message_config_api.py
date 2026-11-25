@@ -1,39 +1,3 @@
-"""service/lifecycle_message_config_api.py — read/write a lifecycle Trigger's rule.
-
-Smart Messages' Nearing expiry, Expired, Resubscribe and Birthday Triggers
-(automations/lifecycle_messages) keep their whole config in the account's rule
-of that kind, as purchase_followup does: the rule's on/off is the switch, its
-steps are the config the sweep reads.
-
-  GET /admin/lifecycle-message-config?account_id=&kind=  → {account_id, kind, config, defaults}
-  PUT /admin/lifecycle-message-config  {account_id, kind, config}  → {account_id, kind, config}
-  GET /admin/lifecycle-message-config/buyers?account_id=&kind=  → {account_id, kind, window_days, buyers}
-
-`config` is {enabled, text, hours, messages, frequency, media_ids,
-price_cents, starts_at, ends_at, unsend_minutes} (`hours` only for
-expiry_message 1..120 and expired_message 12..120; null for the others; the
-last six: smart_message_extras). `messages` is the Trigger's messages, one
-picked per event: [{variants: [text, ...], follow_ups: [{text,
-delay_minutes}], discount: {percent, months} | null}]. A save keeps exactly
-what lifecycle_messages' `messages_of` reads back (its bounds are the only
-ones) and is refused (422) when that would drop or change anything; a
-discount is Nearing expiry only, and no more percent off than OnlyFans grants
-on the page's current price (`discount_cap`). `text` is the first message's
-first variant; a save that sends `text` without `messages` makes that text
-the Trigger's one message. Default (no rule) → DISABLED, "once" (Infloww's start);
-a rule saved before `frequency` existed reads "every", what it runs on.
-A save that leaves it ON is owner-only and needs a text sent in the same
-request when it turns on; every off→on restamps `enabled_at`. Nearing expiry,
-Expired and Resubscribe cannot be switched on for a page OnlyFans reports as
-free (`account_page`, cached; an unknown tier is not refused), as Infloww
-refuses them.
-
-Buyers: the fans a landed message of this Trigger reached who then spent
-money (any sale on the ledger, pending ones included, refunds and chargebacks
-left out) within `BUYERS_WINDOW_DAYS` of it, newest message first. A sale is
-not tied to one message by id; the window is the tie, the same 7 days the
-attribution view's tip lookback uses.
-"""
 from __future__ import annotations
 
 import json
@@ -63,7 +27,9 @@ log = logging.getLogger("of-relay.lifecycle_message_config_api")
 
 router = APIRouter()
 
-_EVERY_S = 30 * 60      # the roster crawl is shared and cached for 25 minutes
+# The roster crawl is shared and cached for 25 minutes.
+_EVERY_S = 30 * 60
+# A sale isn't tied to a message by id; this window is the tie (same 7 days as the attribution view's tip lookback). Pending sales count, refunds/chargebacks don't.
 BUYERS_WINDOW_DAYS = 7
 _BUYERS_LIMIT = 200
 _MESSAGES_SHAPE = (
@@ -88,8 +54,6 @@ def _stripped(v: Any) -> Any:
 
 
 def _as_sent(m: Any) -> dict[str, Any]:
-    """A message as sent, in the read helper's shape: strings stripped, nothing
-    else checked but the containers (a wrong one raises TypeError)."""
     if not isinstance(m, dict) or not isinstance(m.get("variants"), list) \
             or not isinstance(m.get("follow_ups") or [], list):
         raise TypeError
@@ -102,7 +66,6 @@ def _as_sent(m: Any) -> dict[str, Any]:
 
 
 def _messages(kind: str, raw: Any) -> list[dict[str, Any]]:
-    """`raw` through `messages_of`, refused when that drops or changes anything."""
     try:
         sent = [_as_sent(m) for m in raw] if isinstance(raw, list) else None
     except TypeError:
@@ -115,7 +78,6 @@ def _messages(kind: str, raw: Any) -> list[dict[str, Any]]:
 
 
 def _validate(kind: str, cfg: Any) -> dict[str, Any]:
-    """Exact types, unknown keys dropped, omitted keys keep their stored value."""
     if not isinstance(cfg, dict):
         raise HTTPException(422, "config must be an object")
     out: dict[str, Any] = {}
@@ -157,9 +119,8 @@ def _public(kind: str, rules: list[AutomationRule]) -> dict[str, Any]:
             **extras.public(steps, frequency=STORED_FREQUENCY)}
 
 
+# A refused discount would burn the event (no discount, no message).
 async def _check_discounts(account_id: str, messages: list[dict]) -> None:
-    """No discount above what OnlyFans grants on the page's price: a refused
-    discount would burn the event (no discount, no message)."""
     top = max((m["discount"]["percent"] for m in messages if m["discount"]), default=None)
     if top is None:
         return
@@ -196,7 +157,6 @@ async def put_lifecycle_message_config(body: _ConfigBody = Body(...)) -> dict[st
     assert_account_owned(body.account_id)
     kind = _kind(body.kind)
     clean = _validate(kind, body.config)
-    # Asked before the session opens: they may cost one OF read on a cold cache.
     await _check_discounts(body.account_id, clean.get("messages") or [])
     if (kind in PAID_ONLY and clean.get("enabled") is True
             and await subscribe_price_cents(body.account_id) == 0):

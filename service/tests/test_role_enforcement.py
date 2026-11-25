@@ -1,26 +1,10 @@
 #!/usr/bin/env python3
-"""Role enforcement on the Relay (docs/spec/phase-04-apply-stored-settings.md › Role enforcement).
-
-With an Agency's "Enforce role permissions" switch on, a chatter session is
-refused, before the handler runs, every route whose pages its Permission role
-grants none of: `403 {"detail": "Your role does not allow <page label>"}`.
-Owner sessions and the Master are never checked, unmapped routes always pass,
-and with the switch off nothing changes. The page map in `permissions.py` ties
-each Permission-editor page to the Relay prefixes it calls; this suite checks
-that every route in the app is classified and that the map follows the nav.
-
-The seam is the Relay over HTTP with real session cookies from the shared
-two-Agency fixture; the OnlyFans client is a recording fake, never live.
-
-Run: ./venv/bin/python service/tests/test_role_enforcement.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
 import os  # noqa: E402
 
-# The ofm-not-yet write routes under test answer 404 until OFM_NEW_WRITES_ENABLED is on (test_ofm_new_writes.py pins that).
 os.environ["OFM_NEW_WRITES_ENABLED"] = "1"
 
 import asyncio  # noqa: E402
@@ -49,8 +33,6 @@ _PLUGIN_LINK = re.compile(r'\{\s*group:\s*"([^"]+)",(?:\s*first:\s*true,)?\s*lin
 
 
 def _nav_text() -> str:
-    """nav.ts with each app plugin's `navLinks` (app/plugins/*/register.ts) written into its group,
-    as nav.ts `withSlotLinks` adds them at runtime (no plugins: nav.ts as is)."""
     nav_ts = NAV.read_text()
     for reg in sorted(NAV.parents[1].glob("plugins/*/register.ts")):
         for group, link in _PLUGIN_LINK.findall(reg.read_text()):
@@ -76,9 +58,7 @@ MASTER = fx.login_owner("agency_master")
 CHATTER_A = fx.login_chatter("chatter_a")
 CHATTER_AB = fx.login_chatter("chatter_ab")
 
-# The Dashboard and Creator reports serve this route; a denial names the Dashboard, the first in map order.
 REVENUE = "/admin/stats/revenue?from=2026-06-10&to=2026-06-11&group_by=day"
-# Its referral earnings are OF reads (roadmap 1.12), mapped to the same two pages.
 REFERRALS = "/admin/stats/referrals?from=2026-06-10&to=2026-06-11"
 DENIED_DASHBOARD = {"detail": "Your role does not allow Dashboard"}
 
@@ -107,13 +87,11 @@ def _all_but(*hrefs: str) -> dict[str, bool]:
 
 
 def _reset() -> None:
-    """Both Agencies back to enforcement off (a never-stored switch reads on)."""
     _put(OWNER_A, "roles", {"enforce": False})
     _put(OWNER_B, "roles", {"enforce": False})
 
 
 class _FakeOF:
-    """Records every OnlyFans client call; answers each with {"ok": True}."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -142,7 +120,6 @@ def _db(query):
     return asyncio.run(_run())
 
 
-# ── Same chatter, same route ────────────────────────────────────────────────
 
 def case_same_route_is_allowed_with_enforcement_off_and_refused_when_on():
     pro = _role("role-pro", _only("/messages-pro"))
@@ -152,7 +129,6 @@ def case_same_route_is_allowed_with_enforcement_off_and_refused_when_on():
         _roles(OWNER_A, True, {EMP_A: "role-pro"}, pro)
         r = CHATTER_A.get(REVENUE)
         assert r.status_code == 403 and r.json() == DENIED_DASHBOARD, f"{r.status_code} {r.text}"
-        # Switching enforcement off restores the chatter's access at once.
         _roles(OWNER_A, False, {EMP_A: "role-pro"}, pro)
         assert CHATTER_A.get(REVENUE).status_code == 200
     finally:
@@ -190,7 +166,6 @@ def case_a_denied_put_writes_nothing_and_calls_no_onlyfans_fake():
     finally:
         _reset()
 
-    # The same PUT reaches the fake once enforcement is off: the fake is the one the route calls.
     def _allowed(fake):
         r = CHATTER_A.put("/api/of/v2/subscriptions/42/note", json={"note": "after"})
         assert r.status_code == 200, r.text
@@ -199,7 +174,6 @@ def case_a_denied_put_writes_nothing_and_calls_no_onlyfans_fake():
 
 
 def case_a_route_shared_by_two_pages_is_allowed_when_either_is_granted():
-    # The OnlyFans subscriber count, and the revenue read Creator reports' Overview makes (ticket 20).
     shared_routes = ("/api/of/v2/subscriptions/count/all", REVENUE)
     for shared in shared_routes:
         assert permissions.route_pages(shared.split("?")[0], "GET") == ("/", "/analytics/creator-reports"), shared
@@ -221,7 +195,6 @@ def case_a_route_shared_by_two_pages_is_allowed_when_either_is_granted():
 
 
 def case_an_auto_post_only_route_is_refused_a_smart_messages_only_chatter_and_served_one_granted_auto_post():
-    # The automation-kind catalogue is mapped under Auto Post alone, so Smart Messages widens no chatter's reach.
     path = "/admin/automation-kinds"
     assert permissions.route_pages(path, "GET") == ("/growth/auto-post",)
 
@@ -232,7 +205,6 @@ def case_an_auto_post_only_route_is_refused_a_smart_messages_only_chatter_and_se
         _roles(OWNER_A, True, {EMP_A: "role-ap"}, _role("role-ap", _only("/growth/auto-post")))
         r = CHATTER_A.get(path)
         assert r.status_code == 200, f"{r.status_code} {r.text}"
-        # The catalogue is static; it calls no OnlyFans route.
         assert fake.calls == [], fake.calls
     try:
         _with_fake_of(_check)
@@ -241,8 +213,6 @@ def case_an_auto_post_only_route_is_refused_a_smart_messages_only_chatter_and_se
 
 
 def case_my_automations_is_opt_in_for_a_chatter_refused_with_enforcement_off_served_when_granted():
-    # My Automations (OPT_IN_PAGES): off for chatters by default. A route only its pages serve is refused
-    # with enforcement off, where every other page opens, and served once an enforcing role ticks it.
     path = "/admin/automation-kinds"
     config = f"/admin/autoreply-config?account_id={IDS['creator_a']}"
     style = f"/admin/style-config?account_id={IDS['creator_a']}"
@@ -252,24 +222,19 @@ def case_my_automations_is_opt_in_for_a_chatter_refused_with_enforcement_off_ser
     assert not set(permissions.route_pages("/admin/automation-rules", "GET")) <= permissions.OPT_IN_PAGES
 
     def _check(fake):
-        _reset()  # enforcement off, nothing stored
+        _reset()
         r = CHATTER_A.get(path)
         assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow Auto Post"}, r.text
-        # The 403 names every page the route serves.
         r = CHATTER_A.get(config)
         assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow Auto Post or Auto-reply"}, r.text
-        # A route another page serves too opens as before; the owner is never checked.
         assert CHATTER_A.get(rules).status_code == 200
         assert OWNER_A.get(path).status_code == 200
-        # The same off switch with a role that would grant it: still refused.
         _roles(OWNER_A, False, {EMP_A: "role-ap"}, _role("role-ap", _only("/growth/auto-post")))
         assert CHATTER_A.get(path).status_code == 403
-        # Enforced: a role ticking Auto-reply opens its config and Human style, not Auto Post's own routes.
         _roles(OWNER_A, True, {EMP_A: "role-ar"}, _role("role-ar", _only("/growth/auto-reply")))
         assert CHATTER_A.get(config).status_code == 200
         assert CHATTER_A.get(style).status_code == 200
         assert CHATTER_A.get(path).status_code == 403
-        # The built-in Admin, unstored, grants every page but these; stored with Auto Post ticked, it grants it.
         _roles(OWNER_A, True, {EMP_A: "admin"})
         assert CHATTER_A.get(REVENUE).status_code == 200
         assert CHATTER_A.get(path).status_code == 403
@@ -283,8 +248,6 @@ def case_my_automations_is_opt_in_for_a_chatter_refused_with_enforcement_off_ser
 
 
 def case_a_my_automations_rule_kind_needs_its_page_on_the_shared_rules_route():
-    # /admin/automation-rules is Smart Messages' too, so the route stays open; the write of a kind only a
-    # My Automations page makes (OPT_IN_KINDS) needs that page.
     new = {"account_id": IDS["creator_a"], "kind": "mass_premade", "name": "Fixture auto mass",
            "every_seconds": 86400, "payload": {"messages": [{"text": "hi"}]}, "is_enabled": False}
     denied = {"detail": "Your role does not allow Auto Mass"}
@@ -292,15 +255,12 @@ def case_a_my_automations_rule_kind_needs_its_page_on_the_shared_rules_route():
         _reset()
         r = CHATTER_A.post("/admin/automation-rules", json=new)
         assert r.status_code == 403 and r.json() == denied, r.text
-        # A Smart Messages kind is written as before.
         r = CHATTER_A.post("/admin/automation-rules", json={**new, "kind": "unsend_messages", "payload": None})
         assert r.status_code == 200, r.text
         assert CHATTER_A.delete(f"/admin/automation-rules/{r.json()['id']}").status_code == 200
-        # A role granting Smart Messages only: still refused.
         _roles(OWNER_A, True, {EMP_A: "role-sm"}, _role("role-sm", _only("/growth/smart-messages")))
         r = CHATTER_A.post("/admin/automation-rules", json=new)
         assert r.status_code == 403 and r.json() == denied, r.text
-        # An enforcing role ticking Auto Mass: created, then edited, run-gated and deleted only with it.
         _roles(OWNER_A, True, {EMP_A: "role-am"}, _role("role-am", _only("/growth/auto-mass")))
         r = CHATTER_A.post("/admin/automation-rules", json=new)
         assert r.status_code == 200, r.text
@@ -316,14 +276,12 @@ def case_a_my_automations_rule_kind_needs_its_page_on_the_shared_rules_route():
                   CHATTER_A.post("/admin/automation-rules/switch",
                                  json={"account_id": IDS["creator_a"], "kind": "auto_posts", "enable": False})):
             assert r.status_code == 403, f"{r.status_code} {r.text}"
-        # The owner is never checked.
         assert OWNER_A.delete(f"/admin/automation-rules/{rule_id}").status_code == 200
     finally:
         _reset()
 
 
 def case_the_gen_info_switch_needs_the_gen_info_page():
-    # gen_info is Gen-Info's kind (OPT_IN_KINDS): its switch on the shared rules route needs that page.
     body = {"account_id": IDS["creator_a"], "kind": "gen_info", "enable": False}
     denied = {"detail": "Your role does not allow Gen-Info"}
     try:
@@ -336,14 +294,12 @@ def case_the_gen_info_switch_needs_the_gen_info_page():
         _roles(OWNER_A, True, {EMP_A: "role-gi"}, _role("role-gi", _only("/growth/gen-info")))
         r = CHATTER_A.post("/admin/automation-rules/switch", json=body)
         assert r.status_code == 200, r.text
-        # The owner is never checked.
         assert OWNER_A.post("/admin/automation-rules/switch", json=body).status_code == 200
     finally:
         _reset()
 
 
 def case_the_full_ai_chat_switch_is_owner_only_and_the_today_read_follows_the_page():
-    # full_ai_chat maps to /full-ai-chatter (OPT_IN_KINDS), a page outside OPT_IN_PAGES: no role grants its switch.
     body = {"account_id": IDS["creator_a"], "kind": "full_ai_chat", "enable": False}
     denied = {"detail": "Your role does not allow Full AI Chat"}
     today = f"/admin/full-ai/today?account_id={IDS['creator_a']}"
@@ -354,7 +310,6 @@ def case_the_full_ai_chat_switch_is_owner_only_and_the_today_read_follows_the_pa
         _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
         r = CHATTER_A.post("/admin/automation-rules/switch", json=body)
         assert r.status_code == 403 and r.json() == denied, r.text
-        # The page's own read opens with the page ticked.
         r = CHATTER_A.get(today)
         assert r.status_code == 200, r.text
         _roles(OWNER_A, True, {EMP_A: "role-gi"}, _role("role-gi", _only("/growth/gen-info")))
@@ -362,7 +317,6 @@ def case_the_full_ai_chat_switch_is_owner_only_and_the_today_read_follows_the_pa
         assert r.status_code == 403 and r.json() == denied, r.text
         r = CHATTER_A.get(today)
         assert r.status_code == 403 and r.json() == denied, r.text
-        # The owner is never checked.
         assert OWNER_A.post("/admin/automation-rules/switch", json=body).status_code == 200
         assert OWNER_A.get(today).status_code == 200
     finally:
@@ -370,7 +324,6 @@ def case_the_full_ai_chat_switch_is_owner_only_and_the_today_read_follows_the_pa
 
 
 def case_full_ai_prepare_content_is_owner_only_and_account_checked():
-    # Paid describe is the owner's press only (03b story 18): a chatter is refused even with the page ticked.
     start, status = "/admin/full-ai/prepare-content", f"/admin/full-ai/prepare-content/status?account_id={IDS['creator_a']}"
     body = {"account_id": IDS["creator_a"]}
     try:
@@ -380,7 +333,6 @@ def case_full_ai_prepare_content_is_owner_only_and_account_checked():
         _reset()
         for r in (CHATTER_A.post(start, json=body), CHATTER_A.get(status)):
             assert r.status_code == 403 and "owner-only endpoint" in r.text, (r.status_code, r.text)
-        # Another owner's Creator: 403 before anything starts (no POST as the owner here: it would run the chain).
         for r in (OWNER_B.post(start, json=body), OWNER_B.get(status)):
             assert r.status_code == 403, (r.status_code, r.text)
         r = OWNER_A.get(status)
@@ -390,8 +342,6 @@ def case_full_ai_prepare_content_is_owner_only_and_account_checked():
 
 
 def case_the_full_ai_test_turn_is_owner_only_and_the_session_read_follows_the_page():
-    # The Test chat Turn spends the Creator's Writer budget: Full AI Chatter's opt-in kind, so no role
-    # grants it (phase 03a, ticket 32). The session read is the page's own read.
     aid = IDS["creator_a"]
     turn = {"account_id": aid, "pair": "role-pair", "side": "checkpoint", "n": 2, "text": "hey"}
     session = f"/admin/full-ai/test/session?account_id={aid}&pair=role-pair"
@@ -408,7 +358,6 @@ def case_the_full_ai_test_turn_is_owner_only_and_the_session_read_follows_the_pa
         _roles(OWNER_A, True, {EMP_A: "role-gi"}, _role("role-gi", _only("/growth/gen-info")))
         r = CHATTER_A.get(session)
         assert r.status_code == 403 and r.json() == denied, r.text
-        # The owner is never checked: n=2 on an empty session is past the gate (409, before any call).
         r = OWNER_A.post("/admin/full-ai/test/turn", json=turn)
         assert r.status_code == 409 and r.json() == {"row_id": None}, r.text
         assert OWNER_A.get(session).status_code == 200
@@ -418,8 +367,6 @@ def case_the_full_ai_test_turn_is_owner_only_and_the_session_read_follows_the_pa
 
 
 def case_the_full_ai_test_settle_is_owner_only():
-    # 03b story 18: a fake Buy / Decline is the owner's (ticket 44); a chatter is refused even with the
-    # page ticked. The owner passes the gate (an unknown row: 404, nothing written).
     body = {"account_id": IDS["creator_a"], "pair": "role-pair", "side": "draft", "row_id": 424242,
             "outcome": "bought"}
     denied = {"detail": "Your role does not allow Full AI Chat"}
@@ -438,8 +385,6 @@ def case_the_full_ai_test_settle_is_owner_only():
 
 
 def case_a_full_ai_config_put_carrying_sell_on_is_owner_only():
-    # 03b story 18: selling is the owner's switch; a chatter is refused a draft PUT carrying `sell_on`,
-    # even with the page ticked. The owner passes the gate (a stale rev: 409, nothing stored).
     put = "/admin/full-ai/config/draft"
     body = {"account_id": IDS["creator_a"], "draft": {"sell_on": True}, "rev": 99}
     denied = {"detail": "Your role does not allow Full AI Chat"}
@@ -457,7 +402,6 @@ def case_a_full_ai_config_put_carrying_sell_on_is_owner_only():
 
 
 def case_the_full_ai_persona_draft_is_owner_only_even_with_the_page_granted():
-    # Spec 03c story 17: setup spends the owner's key, so the draft route refuses every chatter.
     draft = "/admin/full-ai/persona/draft"
     body = {"account_id": IDS["creator_a"], "current_text": ""}
     denied = {"detail": "Your role does not allow Full AI Chat"}
@@ -468,7 +412,6 @@ def case_the_full_ai_persona_draft_is_owner_only_even_with_the_page_granted():
         _roles(OWNER_A, True, {EMP_A: "role-fa"}, _role("role-fa", _only("/full-ai-chatter")))
         r = CHATTER_A.post(draft, json=body)
         assert r.status_code == 403 and r.json() == denied, r.text
-        # The owner passes the gate; no described images here, so no LLM call.
         r = OWNER_A.post(draft, json=body)
         assert r.status_code == 200 and r.json()["need_describe"] is True, r.text
     finally:
@@ -494,14 +437,12 @@ def case_funnel_writes_are_auto_funnels_and_the_list_stays_open():
 
 
 def case_unconfirmed_send_dismiss_is_auto_funnels_like_retry_and_agency_scoped():
-    # "It went through" (POST /admin/unconfirmed-sends/dismiss) has Retry's guard: the Creator's
-    # owner, or a chatter whose role ticks Auto Funnel; never another Agency's Creator.
     import json
     from datetime import timedelta
     from db.models import FollowupState
     denied = {"detail": "Your role does not allow Auto Funnel"}
     q = f"?account_id={IDS['creator_a']}"
-    marked_at = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)   # past the lease
+    marked_at = datetime.utcnow().replace(microsecond=0) - timedelta(hours=1)
     body = {"kind": "followup", "fan_id": 424242, "since": marked_at.isoformat() + "Z"}
 
     async def _seed():
@@ -533,8 +474,6 @@ def case_unconfirmed_send_dismiss_is_auto_funnels_like_retry_and_agency_scoped()
 
 
 def case_a_two_agency_chatter_is_granted_an_opt_in_page_by_the_enforcing_agency_beside_one_that_is_off():
-    # Agency A enforces and ticks Auto Mass and Auto Post for chatter_ab; Agency B does not enforce. With no
-    # Creator named the chatter is checked in both, and the enforcing grant suffices.
     new = {"name": "Fixture two-agency funnel", "opening_message": "hey"}
     path = "/admin/automation-kinds"
     try:
@@ -550,7 +489,6 @@ def case_a_two_agency_chatter_is_granted_an_opt_in_page_by_the_enforcing_agency_
         r = CHATTER_AB.post("/admin/funnels", json=new)
         assert r.status_code == 200, r.text
         assert OWNER_A.delete(f"/admin/funnels/{r.json()['id']}").status_code == 200
-        # Naming Agency B's Creator checks Agency B alone, which grants none of them.
         r = CHATTER_AB.post("/admin/automation-rules",
                             json={"account_id": IDS["creator_b"], "kind": "mass_premade", "is_enabled": False,
                                   "payload": {"messages": [{"text": "hi"}]}})
@@ -569,7 +507,6 @@ def case_the_opt_in_pages_are_the_navs_opt_in_groups():
     groups = [nav_ts.split(f'label: "{g}"', 1)[1].split("],", 1)[0] for g in ("My Automations", "My AI Chatter")]
     assert all("chatterOptIn: true" in g for g in groups)
     assert nav_ts.count("chatterOptIn: true") == 2
-    # A `notOptIn` link (Get to know fans) sits in a group but is granted like any other page.
     opt_in = {href for g in groups for href, rest in re.findall(r'href: "([^"]+)"([^}]*)\}', g)
               if "notOptIn: true" not in rest}
     assert opt_in == permissions.OPT_IN_PAGES
@@ -577,8 +514,6 @@ def case_the_opt_in_pages_are_the_navs_opt_in_groups():
 
 
 def case_a_creator_reports_only_chatter_reads_revenue_and_a_role_granting_neither_page_does_not():
-    # Creator reports' Overview reads revenue (ticket 20), so its grant alone answers 200 on every money read;
-    # a role granting neither it nor the Dashboard is still refused.
     try:
         _roles(OWNER_A, True, {EMP_A: "role-cr"}, _role("role-cr", _only("/analytics/creator-reports")))
         for path in (REVENUE, "/admin/stats/revenue?group_by=kind",
@@ -595,8 +530,6 @@ def case_a_creator_reports_only_chatter_reads_revenue_and_a_role_granting_neithe
 
 
 def case_creator_reports_multi_select_checks_each_named_creators_agency():
-    # Creator reports' multi-select reads revenue once for "a,b": each Creator's Agency is checked on its own,
-    # so a grant in both answers 200 and a denial in either is 403 (was 403 always: "a,b" named no Creator).
     both = f"{REVENUE}&account_id={IDS['creator_a']},{IDS['creator_b']}"
     cr = _role("role-cr", _only("/analytics/creator-reports"))
     try:
@@ -612,8 +545,6 @@ def case_creator_reports_multi_select_checks_each_named_creators_agency():
 
 
 def case_a_creator_named_in_the_header_and_another_in_the_query_are_both_checked():
-    # Agency A grants Creator reports, Agency B nothing: naming A's Creator in one place cannot hide B's in the
-    # other (was: the header alone was read when sent).
     a, b = IDS["creator_a"], IDS["creator_b"]
     cr = _role("role-cr", _only("/analytics/creator-reports"))
     try:
@@ -628,8 +559,6 @@ def case_a_creator_named_in_the_header_and_another_in_the_query_are_both_checked
 
 
 def case_a_repeated_account_id_param_checks_every_creator_it_names():
-    # sales-records reads `account_id` as a list Query; the middleware read only the last value, so
-    # ?account_id=<B>&account_id=<A> served denied Creator B's sales.
     a, b = IDS["creator_a"], IDS["creator_b"]
     path = "/admin/stats/sales-records?from=2026-06-10&to=2026-06-11"
     sr = _role("role-sr", _only("/analytics/sales-records"))
@@ -653,11 +582,9 @@ def case_empty_items_in_a_comma_list_name_no_creator():
     try:
         _roles(OWNER_A, True, {EMP_AB_A: "role-cr"}, cr)
         _roles(OWNER_B, True, {EMP_AB_B: "role-none"}, _role("role-none", {}))
-        # Only A's Creator is named: Agency A alone is checked, and the report is A's alone.
         r = CHATTER_AB.get(f"{REVENUE}&account_id=,{a},")
         assert r.status_code == 200, f"{r.status_code} {r.text}"
         assert r.json() == CHATTER_AB.get(f"{REVENUE}&account_id={a}").json()
-        # Nothing named but commas: checked in every linked Agency, as naming none is, and B denies.
         r = CHATTER_AB.get(f"{REVENUE}&account_id=,", headers={"X-Account-Id": " "})
         assert r.status_code == 403 and r.json() == DENIED_DASHBOARD, r.text
     finally:
@@ -672,7 +599,6 @@ def case_an_opt_in_route_naming_several_creators_needs_each_ones_grant():
         _reset()
         _roles(OWNER_A, True, {EMP_AB_A: "role-ar"}, _role("role-ar", _only("/growth/auto-reply")))
         assert CHATTER_AB.get(f"{config}{a}").status_code == 200
-        # Agency B (off) grants no opt-in page: a list naming B's Creator too is refused for B.
         for named in (f"{a},{b}", f"{b},{a}", f" {a} , {b} ,"):
             r = CHATTER_AB.get(f"{config}{named}")
             assert r.status_code == 403 and r.json() == denied, f"{named}: {r.text}"
@@ -696,11 +622,9 @@ def case_unmapped_routes_pass_for_a_chatter_granted_nothing():
 def case_an_unassigned_employee_and_a_stale_role_are_refused_every_mapped_route():
     pro = _role("role-pro", _only(*permissions.PAGE_MAP))
     try:
-        # A PUT gives an unassigned login Chatter, so store one as stored before every login held a role.
         fx.store_blob(IDS["agency_a_owner"], "roles", {"enforce": True, "roles": [pro], "assignments": {}})
         r = CHATTER_A.get(REVENUE)
         assert r.status_code == 403 and r.json() == DENIED_DASHBOARD, r.text
-        # A PUT refuses an assignment to a role the blob does not hold, so store it as stored before.
         fx.store_blob(IDS["agency_a_owner"], "roles",
                       {"enforce": True, "roles": [pro], "assignments": {str(EMP_A): "role-gone"}})
         r = CHATTER_A.get(REVENUE)
@@ -722,7 +646,6 @@ def case_owner_and_master_are_never_refused():
         fx.store_blob(IDS["agency_master"], "roles", {})
 
 
-# ── A chatter linked to two Agencies ────────────────────────────────────────
 
 def case_two_agency_chatter_is_checked_in_the_agency_of_the_named_creator():
     _roles(OWNER_A, True, {EMP_AB_A: "role-none"}, _role("role-none", {}))
@@ -731,7 +654,6 @@ def case_two_agency_chatter_is_checked_in_the_agency_of_the_named_creator():
         assert r.status_code == 403 and r.json() == DENIED_DASHBOARD, r.text
         r = CHATTER_AB.get(REVENUE, headers={"X-Account-Id": IDS["creator_a"]})
         assert r.status_code == 403 and r.json() == DENIED_DASHBOARD, r.text
-        # Agency B does not enforce.
         assert CHATTER_AB.get(REVENUE + f"&account_id={IDS['creator_b']}").status_code == 200
     finally:
         _reset()
@@ -752,7 +674,6 @@ def case_two_agency_chatter_naming_no_creator_is_refused_if_any_enforcing_agency
         _reset()
 
 
-# ── The page map ────────────────────────────────────────────────────────────
 
 def _blocked(path: str) -> bool:
     return any(path.startswith(p) for p in _CHATTER_BLOCKED_ADMIN_PREFIXES)
@@ -769,23 +690,11 @@ def case_every_route_is_mapped_owner_only_or_unmapped():
     mapped = {p for _, (_, prefixes) in permissions.PAGE_MAP.items() for p in prefixes}
     both = mapped & set(permissions.UNMAPPED)
     assert both == set(), f"prefixes both mapped and unmapped: {both}"
-    # A misspelt prefix starts no route in the app.
     dead = sorted(p for p in mapped | set(permissions.UNMAPPED)
                   if not any(path.startswith(p) for path in paths))
     assert dead == [], f"prefixes starting no route: {dead}"
 
 
-# Pages whose every route is also served by another page: a chatter lacking
-# only one of them may still call its routes through the other, so the 403
-# check below denies the whole set of pages sharing the route instead.
-#
-# ASSUMPTION: for these pages the ticket's "a chatter whose role lacks only
-# that page gets 403" is met by a role lacking that page and the pages sharing
-# its route, since the shared-route rule (spec story 32) refuses nothing when
-# only one of them is denied (the exact-set assertion below observes which).
-# Rung 5: no route split or new surface just to make one refusable. For the
-# run's Needs-the-human list. Overturned if the owner wants denying one of these
-# pages alone to refuse something on the Relay (each then needs a route of its own).
 SHARED_ONLY = {
     "/of-manager/messages": "its chats are Messages Pro's",
     "/of-manager/vault": "its vault routes are Vault Pro's and the vault picker's",
@@ -807,7 +716,6 @@ def _concrete(path: str) -> str:
 
 
 def _routes_by_pages() -> dict[str, list[tuple[str, str, tuple[str, ...]]]]:
-    """Per page, the (method, concrete path, pages) of each route it serves."""
     out: dict[str, list[tuple[str, str, tuple[str, ...]]]] = {h: [] for h in permissions.PAGE_MAP}
     for route in server.app.routes:
         methods = sorted(getattr(route, "methods", None) or [])
@@ -833,7 +741,6 @@ def case_a_chatter_lacking_only_a_page_gets_403_on_one_of_its_routes():
             fewest = min(len(p) for *_, p in rows)
             denied = next(p for *_, p in rows if len(p) == fewest)
             _roles(OWNER_A, True, {EMP_A: "role-most"}, _role("role-most", _all_but(*denied)))
-            # A My Automations route names every page it serves; any other names the first one lacking.
             want = {"detail": permissions.denied_detail(denied) if set(denied) <= permissions.OPT_IN_PAGES
                     else f"Your role does not allow {permissions.PAGE_MAP[denied[0]][0]}"}
             for method, path, pages in rows:
@@ -852,11 +759,7 @@ def case_a_chatter_lacking_only_a_page_gets_403_on_one_of_its_routes():
     assert failures == [], f"no 403 for: {failures}"
 
 
-# ticket 17: Notifications' Search users (users/search) and its aside's Search users or posts (both searches).
 def case_notifications_runs_both_searches_and_a_role_with_none_of_their_pages_is_refused():
-    """Granted Notifications alone, a chatter runs the users and posts searches; holding none of the pages that read
-    them (Home, New post, Notifications, Go live's schedule form: ticket 84), it is refused each, naming the first of
-    them in map order."""
     searches = ("/api/of/v2/users/search?q=synth&limit=5", "/api/of/v2/posts/search?query=synth&limit=5")
     for path in searches:
         assert "/of-manager/notifications" in permissions.route_pages(path.split("?")[0], "GET"), path
@@ -885,8 +788,6 @@ def case_notifications_runs_both_searches_and_a_role_with_none_of_their_pages_is
 
 
 def case_the_strips_streams_are_homes_and_a_highlights_stories_my_profiles():
-    """Home's story strip reads streams/feed, My profile's highlight tiles stories/highlights/{id}: each is its
-    page's alone, not Go live's `/streams` nor Home's `/stories` (the longest prefix wins)."""
     feed, highlight = "/api/of/v2/streams/feed", "/api/of/v2/stories/highlights/1195022"
     assert permissions.route_pages(feed, "GET") == ("/of-manager/home",)
     assert permissions.route_pages(highlight, "GET") == ("/of-manager/profile",)
@@ -914,8 +815,6 @@ def case_the_strips_streams_are_homes_and_a_highlights_stories_my_profiles():
 
 
 def case_a_growth_link_page_alone_reads_the_fan_lists_its_list_select_offers():
-    """Free trial links, Tracking links and Profile promotion each draw a List
-    select from /api/of/v2/lists: granted only that page, the chatter reads it."""
     try:
         for page in ("/growth/free-trial-links", "/growth/tracking-links", "/growth/profile-promotion"):
             _roles(OWNER_A, True, {EMP_A: "role-page"}, _role("role-page", _only(page)))
@@ -943,9 +842,6 @@ def case_a_page_added_after_a_role_was_saved_is_denied_for_that_role():
 
 
 def case_a_smart_messages_only_chatter_loads_and_saves_the_nudge_config_and_a_role_without_it_is_refused():
-    # Smart Messages' Automated Messages tab lists the Nudge message and opens its editor, which reads and
-    # saves /admin/nudge-config (docs/spec/infloww-parity-round-2/phase-02-growth-pages.md, Seam 2; ticket 41).
-    # Auto Post serves the route too, so the denied role lacks both; the 403 names Smart Messages, first in map order.
     read = f"/admin/nudge-config?account_id={IDS['creator_a']}"
     save = {"account_id": IDS["creator_a"], "config": {"enabled": False}}
     denied = {"detail": "Your role does not allow Smart Messages"}
@@ -968,9 +864,6 @@ def case_a_smart_messages_only_chatter_loads_and_saves_the_nudge_config_and_a_ro
 
 
 def case_nudge_config_bulk_checks_the_page_for_every_named_creator():
-    # W30-SM F4: the role middleware reads only ?account_id= / X-Account-Id; the share's body names more
-    # Creators. A chatter granted Smart Messages in Agency A, refused it in Agency B, cannot switch Agency B's
-    # Creator's nudge on by naming Agency A's in the query: 403 before any write.
     q = f"?account_id={IDS['creator_a']}"
     body = {"account_ids": [IDS["creator_a"], IDS["creator_b"]], "config": {"enabled": False}}
     read_b = f"/admin/nudge-config?account_id={IDS['creator_b']}"
@@ -985,7 +878,7 @@ def case_nudge_config_bulk_checks_the_page_for_every_named_creator():
         assert OWNER_B.get(read_b).json()["config"] == before, "refused: Agency B's Creator untouched"
         r = CHATTER_AB.put(f"/admin/nudge-config/bulk{q}", json={**body, "account_ids": [IDS["creator_a"]]})
         assert r.status_code == 200, f"{r.status_code} {r.text}"
-        _reset()   # Agency B's page check off: the same two-Creator share goes through (ownership is not the 403)
+        _reset()
         _roles(OWNER_A, True, {EMP_AB_A: "role-sm"}, _role("role-sm", _only("/growth/smart-messages")))
         r = CHATTER_AB.put(f"/admin/nudge-config/bulk{q}", json=body)
         assert r.status_code == 200, f"{r.status_code} {r.text}"
@@ -997,8 +890,6 @@ def case_nudge_config_bulk_checks_the_page_for_every_named_creator():
 
 
 def case_a_smart_messages_only_chatter_loads_and_saves_the_purchase_followup_and_a_role_without_it_is_refused():
-    # The "Purchased" Trigger's editor reads and saves /admin/purchase-followup-config (ticket 44, owner ruling N2
-    # position B). Smart Messages alone serves the route, so a role lacking only that page is refused.
     read = f"/admin/purchase-followup-config?account_id={IDS['creator_a']}"
     save = {"account_id": IDS["creator_a"], "config": {"enabled": False, "text": "thanks"}}
     denied = {"detail": "Your role does not allow Smart Messages"}
@@ -1012,7 +903,6 @@ def case_a_smart_messages_only_chatter_loads_and_saves_the_purchase_followup_and
             "enabled": False, "text": "thanks", "media_ids": [], "price_cents": 0,
             "frequency": "every", "starts_at": None, "ends_at": None,
             "unsend_minutes": 0, "delay_range": [1, 3]}, f"PUT: {r.status_code} {r.text}"
-        # Switching it ON is the owner's call; the chatter may switch it back off.
         on = {**save, "config": {"enabled": True, "text": "thanks"}}
         r = CHATTER_A.put("/admin/purchase-followup-config", json=on)
         assert r.status_code == 403, f"a chatter switched it on: {r.status_code} {r.text}"
@@ -1031,13 +921,9 @@ def case_a_smart_messages_only_chatter_loads_and_saves_the_purchase_followup_and
 
 
 def case_a_smart_messages_only_chatter_loads_and_saves_the_welcome_slot_of_its_own_creator_only():
-    # Smart Messages' Delayed welcome row is the OnlyFans welcome slot: its status reads the switch, its editor
-    # flips the switch (docs/spec/infloww-parity-round-2/phase-02-growth-pages.md, Seam 2;
-    # ticket 43). Scripts keeps the same routes (additive), so no saved role loses them.
     own = {"X-Account-Id": IDS["creator_a"]}
     routes = (
         ("GET", "/api/of/v2/messages/templates", None),
-        # `refresh` skips the Relay's settings cache, so the read reaches the fake.
         ("GET", "/api/of/v2/users/me/settings?refresh=true", None),
         ("PATCH", "/api/of/v2/users/me/reply-on-subscribe", {"enabled": False}),
     )
@@ -1051,14 +937,10 @@ def case_a_smart_messages_only_chatter_loads_and_saves_the_welcome_slot_of_its_o
             r = CHATTER_A.request(method, path, headers=own, json=body)
             assert r.status_code == 200, f"{method} {path}: {r.status_code} {r.text}"
         assert fake.calls == ["message_templates", "my_settings", "set_reply_on_subscribe"], fake.calls
-        # Another Agency's Creator: refused before the handler, so its welcome slot is never read or written.
         for method, path, body in routes:
             r = CHATTER_A.request(method, path, headers={"X-Account-Id": IDS["creator_b"]}, json=body)
             assert r.status_code == 403, f"{method} {path}: {r.status_code} {r.text}"
         assert len(fake.calls) == 3, fake.calls
-    # The settings read and the switch resolve the Creator in the handler, which needs its registry entry; the
-    # fixture seeds only its directory, so the registry knows the two fixture Creators for this case alone (as
-    # test_chatter_access.py does). The isolation gate and the ownership check are untouched.
     original = server.account_registry.get_account
     fixture_creators = {IDS["creator_a"], IDS["creator_b"]}
     server.account_registry.get_account = lambda aid: {"id": aid} if aid in fixture_creators else original(aid)
@@ -1069,7 +951,6 @@ def case_a_smart_messages_only_chatter_loads_and_saves_the_welcome_slot_of_its_o
         _reset()
 
 
-# ── Function permissions (`<page>#<action>`) ────────────────────────────────
 
 ACTIONS_TS = NAV.parent / "permissionActions.ts"
 UNSEND = "/api/of/v2/messages/5"
@@ -1084,14 +965,10 @@ def case_a_denied_action_is_refused_by_name_and_the_pages_other_routes_stay_open
         r = CHATTER_A.delete(UNSEND)
         assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow Unsend messages"}, r.text
         assert fake.calls == []
-        # Another action on the page, not stored, falls back to the page grant. The delete is a
-        # paced write, which resolves its Creator in the handler, so it names one as the UI does.
         r = CHATTER_A.delete("/api/of/v2/chats/7", headers={"X-Account-Id": IDS["creator_a"]})
         assert r.status_code == 200, f"{r.status_code} {r.text}"
         assert fake.calls == ["delete_chat"]
-        # The action's own path under another method is no action: only DELETE unsends.
         assert CHATTER_A.get("/api/of/v2/chats").status_code != 403
-    # The registry knows the fixture Creator for this case alone (as the welcome case above does).
     original = server.account_registry.get_account
     server.account_registry.get_account = lambda aid: {"id": aid} if aid == IDS["creator_a"] else original(aid)
     try:
@@ -1109,7 +986,6 @@ def case_a_missing_or_true_action_key_keeps_the_page_grant_and_a_page_not_grante
             r = CHATTER_A.delete(UNSEND)
             assert r.status_code == 200, f"{stored}: {r.status_code} {r.text}"
         assert fake.calls == ["unsend_message"] * 2
-        # An action ticked on a page the role does not grant opens nothing.
         _roles(OWNER_A, True, {EMP_A: "role-x"}, _role("role-x", {
             "/": True, "/of-manager/messages": False, "/of-manager/messages#unsend": True}))
         r = CHATTER_A.delete(UNSEND)
@@ -1121,7 +997,6 @@ def case_a_missing_or_true_action_key_keeps_the_page_grant_and_a_page_not_grante
 
 
 def case_an_action_denied_under_any_page_is_refused_on_every_page_serving_its_route():
-    # The relay can't tell which page sent a request, so one false key closes the action (fail-closed).
     assert permissions.route_pages(UNSEND, "DELETE") == ("/of-manager/messages", "/messages-pro")
     both = _only("/of-manager/messages", "/messages-pro")
     refused = {"detail": "Your role does not allow Unsend messages"}
@@ -1129,7 +1004,6 @@ def case_an_action_denied_under_any_page_is_refused_on_every_page_serving_its_ro
     def _check(fake):
         for stored in ({**both, "/of-manager/messages#unsend": False, "/messages-pro#unsend": True},
                        {**both, "/messages-pro#unsend": False},
-                       # Stored under a page the role does not grant, it still closes the action.
                        {**_only("/messages-pro"), "/of-manager/messages#unsend": False}):
             _roles(OWNER_A, True, {EMP_A: "role-two"}, _role("role-two", stored))
             r = CHATTER_A.delete(UNSEND)
@@ -1151,7 +1025,6 @@ def case_a_denied_mass_message_refuses_starting_or_resuming_a_priority_mass_run(
         for path in ("/admin/priority-mass/runs", "/admin/priority-mass/runs/9/resume"):
             r = CHATTER_A.post(path, json={})
             assert r.status_code == 403 and r.json() == refused, f"{path}: {r.status_code} {r.text}"
-        # Cancelling only stops a run, and the run list stays readable.
         assert CHATTER_A.post("/admin/priority-mass/runs/9/cancel").status_code != 403
         assert CHATTER_A.get(f"/admin/priority-mass/runs?account_id={IDS['creator_a']}").status_code != 403
     finally:
@@ -1166,14 +1039,12 @@ def case_an_export_action_refuses_the_csv_form_only():
         assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow Export CSV"}, r.text
         assert CHATTER_A.get(SALES).status_code == 200
         assert CHATTER_A.get(f"{SALES}&format=json").status_code == 200
-        # The pattern matches `csv` exactly, and the route's own Query pattern refuses any other spelling.
         assert CHATTER_A.get(f"{SALES}&format=CSV").status_code == 422
     finally:
         _reset()
 
 
 def case_the_reports_excel_export_is_the_export_action_of_creator_and_employee_reports():
-    # W5 5.9: the app sends the rows a report shows; the Relay only writes them as .xlsx.
     xlsx, body = "/admin/stats/xlsx", {"rows": [["a"]]}
     assert permissions.route_pages(xlsx, "POST") == ("/analytics/creator-reports", "/analytics/employee-reports")
     try:
@@ -1190,7 +1061,6 @@ def case_the_reports_excel_export_is_the_export_action_of_creator_and_employee_r
 
 
 def case_every_route_that_can_answer_csv_is_the_export_action():
-    # A `format` query param whose pattern accepts "csv" streams a CSV; one with no pattern is listed with why.
     no_pattern = {"/api/of/v2/users/{user_id}/posts": "OF's own feed format (`infinite`), passed through"}
     csv_routes = []
     for r in server.app.routes:
@@ -1217,8 +1087,6 @@ def case_a_method_aware_action_refuses_shift_writes_and_keeps_the_schedule_reada
         for method, path in (("POST", "/admin/shifts"), ("PATCH", "/admin/shifts/1"), ("POST", "/admin/shifts/1/cancel")):
             r = CHATTER_A.request(method, path, json={})
             assert r.status_code == 403 and r.json() == denied, f"{method} {path}: {r.status_code} {r.text}"
-        # Past the role check (the handlers answer for themselves): the read, and Edit clock records, its
-        # own action, which, not stored, keeps the page grant.
         for method, path in (("GET", "/admin/shifts?from=2026-06-08T00:00:00Z&to=2026-06-15T00:00:00Z"),
                              ("PATCH", "/admin/shifts/clock-events/1")):
             r = CHATTER_A.request(method, path, json={} if method == "PATCH" else None)
@@ -1234,7 +1102,6 @@ def case_owners_and_enforcement_off_ignore_a_denied_action():
         assert CHATTER_A.get(f"{SALES}&format=csv").status_code == 200
         _roles(OWNER_A, True, {EMP_A: "role-sr"}, role)
         assert OWNER_A.get(f"{SALES}&format=csv").status_code == 200
-        # A role saved before Function permissions (no `#` key) keeps every action of its pages.
         _roles(OWNER_A, True, {EMP_A: "admin"})
         assert CHATTER_A.get(f"{SALES}&format=csv").status_code == 200
     finally:
@@ -1263,16 +1130,13 @@ def case_every_action_matches_a_route_a_chatter_reaches_and_no_opt_in_only_route
             assert permissions.route_action(method, path, {"format": "csv"}) == action, pattern
             pages = permissions.route_pages(path, method)
             assert pages and not set(pages) <= permissions.OPT_IN_PAGES, f"{pattern}: {pages}"
-    assert len(permissions.ACTION_KEYS) == 43  # send-tip went with POST /tips (cleanup R6); account-lockout (Phase 3); settings#block-fan (73)
+    assert len(permissions.ACTION_KEYS) == 43
 
 
 def case_each_actions_alternate_routes_map_to_it():
-    # The second door to an action: "Message now" beside the queue, OF's own campaign,
-    # trial and promotion deletes beside the relay's mirrors.
     for method, path, action in (
             ("PUT", "/api/of/v2/schedules/9/publish", "mass-message"),
             ("POST", "/api/of/v2/messages/queue", "mass-message"),
-            # Smart Messages' Priority mass: starting or resuming a run sends it; cancelling stops one.
             ("POST", "/admin/priority-mass/runs", "mass-message"),
             ("POST", "/admin/priority-mass/runs/9/resume", "mass-message"),
             ("POST", "/admin/priority-mass/runs/9/cancel", None),
@@ -1283,8 +1147,6 @@ def case_each_actions_alternate_routes_map_to_it():
             ("POST", "/api/of/v2/promotions/9/finish", "delete-link"),
             ("DELETE", "/api/of/v2/messages/9", "unsend"),
             ("GET", "/admin/stats/fan-report", None),
-            # One fan each, or no send at all: a 1:1 send, its deferred forms, the mass list's cache refresh,
-            # and vault-send history rows.
             ("POST", "/api/of/v2/chats/9/messages", None),
             ("POST", "/api/of/v2/chats/9/messages/scheduled", None),
             ("POST", "/api/of/v2/scheduled-sends", None),
@@ -1294,8 +1156,6 @@ def case_each_actions_alternate_routes_map_to_it():
     assert permissions.route_action("GET", "/admin/stats/fan-report", {"format": "csv"}) == "export"
 
 
-# Chatter-reachable DELETE routes that are no Function permission, and why. A new DELETE route fails
-# case_every_delete_a_chatter_reaches_is_an_action_or_listed_as_none until it is an action or listed here.
 _NOT_ACTION_DELETES: dict[str, str] = {
     "/admin/do-not-mass": "takes a fan off the do-not-mass list",
     "/admin/automation-rules/{rule_id}": "an automation's own rule, governed by its page",
@@ -1320,9 +1180,7 @@ _NOT_ACTION_DELETES: dict[str, str] = {
     "/api/of/v2/posts/{post_id}/like": "undoes a like",
     "/api/of/v2/posts/{post_id}/pin": "unpins a post",
 }
-# ticket 69
 _NOT_ACTION_DELETES["/api/of/v2/users/social/buttons/{button_id}"] = "a profile's social media button, the OF settings page's"
-# ticket 70
 _NOT_ACTION_DELETES["/api/of/v2/users/links/{link_id}"] = "a profile's Things I Like link, the OF settings page's"
 
 
@@ -1342,29 +1200,20 @@ def case_the_editors_action_list_is_the_relays():
     assert list(ts) == list(permissions.ACTION_KEYS)
 
 
-# ── account-lockout (docs/spec/ofm-not-yet/phase-03-settings-privacy-links.md, story 42) ───────────────
 
 SETTINGS = "/of-manager/settings"
 LOCKOUT_KEY = f"{SETTINGS}#account-lockout"
 LOCKOUT_REFUSED = {"detail": "Your role does not allow Block countries or IPs, close sessions, reset the stream key"}
-# Phase 3's lockout routes as (method, path, JSON body): block by country, block by IP, Close all sessions, Reset
-# stream key. Empty until tickets 63, 66 and 76 add each route; every row is held to the house rule below.
 LOCKOUT_ROUTES: list[tuple[str, str, dict | None]] = []
-# ticket 63
 LOCKOUT_ROUTES += [("DELETE", "/api/of/v2/sessions", None)]
-# ticket 66
 LOCKOUT_ROUTES += [
     ("PUT", "/api/of/v2/users/me/settings/security/blocked-countries", {"blockedCountries": ["AQ"], "blockedStates": []}),
     ("PUT", "/api/of/v2/users/me/settings/security/blocked-ips", {"blockedIps": ["192.0.2.1"]}),
 ]
-# ticket 76
 LOCKOUT_ROUTES += [("DELETE", "/api/of/v2/streams/obs/key?type=obs_agora", None)]
 
 
 def _lockout_route_follows_the_house_rule(method: str, path: str, body: dict | None) -> None:
-    """With enforcement on, a role granting OF settings that stores `account-lockout` false is refused by the
-    action's name, and one not granting OF settings (key unset) by the page's; OnlyFans is never called. With
-    enforcement off, or the key unset or true on a role granting OF settings, the request passes."""
     def call():
         return CHATTER_A.request(method, path, json=body, headers={"X-Account-Id": IDS["creator_a"]})
 
@@ -1403,8 +1252,6 @@ def case_every_lockout_route_follows_the_house_rule():
 
 
 def case_a_planted_lockout_route_is_refused_only_for_a_role_storing_the_key_false_under_enforcement():
-    # Plant a lockout route (an OF settings write path, a pattern for the action, a handler that answers ok) to
-    # show the rule holds for any route a body-less pattern names, not only ticket 63's.
     method, path = "PUT", "/api/of/v2/users/me/settings/oi-lockout-plant"
 
     async def _plant():
@@ -1414,7 +1261,7 @@ def case_a_planted_lockout_route_is_refused_only_for_a_role_storing_the_key_fals
     permissions._ACTION_PATTERNS = [("account-lockout", permissions._pattern(f"{method} {path}")), *patterns]
     server.app.router.add_api_route(path, _plant, methods=[method])
     planted = server.app.router.routes.pop()
-    server.app.router.routes.insert(0, planted)  # ahead of any catch-all
+    server.app.router.routes.insert(0, planted)
     try:
         assert permissions.route_pages(path, method) == (SETTINGS,)
         assert permissions.route_action(method, path) == "account-lockout"
@@ -1425,14 +1272,10 @@ def case_a_planted_lockout_route_is_refused_only_for_a_role_storing_the_key_fals
     assert permissions.route_action(method, path) is None
 
 
-# ticket 73
 BLOCK_FAN_KEY = f"{SETTINGS}#block-fan"
 
 
 def case_stream_block_routes_are_block_fan_under_of_settings():
-    """Streaming > Blocked users' Block a username and a row's remove: OF settings' routes, refused by `block-fan`
-    stored false (under any page) with enforcement on, and by the page with OF settings not granted; OnlyFans is
-    never called. Key unset, or enforcement off, passes."""
     assert BLOCK_FAN_KEY in permissions.ACTION_KEYS
     refused = {"detail": "Your role does not allow Block or restrict fans"}
     rows = [("POST", "/api/of/v2/streams/users/oi_synthetic_fan/block"), ("DELETE", "/api/of/v2/streams/users/7/block")]
@@ -1459,7 +1302,6 @@ def case_stream_block_routes_are_block_fan_under_of_settings():
             _roles(OWNER_A, True, {EMP_A: "role-set"}, _role("role-set", _only(SETTINGS)))
             assert call().status_code == 200, f"{method} {path} key unset"
         assert fake.calls == ["block_stream_viewer"] * 2 + ["unblock_stream_viewer"] * 2, fake.calls
-        # A body, a username OF's form could not hold, or a non-numeric row id: 422, nothing sent.
         head = {"X-Account-Id": IDS["creator_a"]}
         for method, path, body in (("POST", "/api/of/v2/streams/users/fan/block", {"x": 1}),
                                    ("POST", "/api/of/v2/streams/users/" + "a" * 25 + "/block", None),
@@ -1477,10 +1319,7 @@ def case_stream_block_routes_are_block_fan_under_of_settings():
         _reset()
 
 
-# ticket 76
 def case_reset_stream_key_is_account_lockout_and_takes_only_ofs_two_servers():
-    """Reset stream key (its house-rule row is in LOCKOUT_ROUTES): `account-lockout`; no type, a type other than OF's
-    obs_agora / mux_direct, or a body: 422, OnlyFans never called."""
     path = "/api/of/v2/streams/obs/key"
     assert permissions.route_action("DELETE", path) == "account-lockout"
 
@@ -1502,7 +1341,6 @@ def case_reset_stream_key_is_account_lockout_and_takes_only_ofs_two_servers():
         _reset()
 
 
-# ── Role status ─────────────────────────────────────────────────────────────
 
 def case_a_disabled_role_grants_nothing_and_its_employees_keep_it():
     role = _role("role-dash", _only("/"))
@@ -1511,28 +1349,22 @@ def case_a_disabled_role_grants_nothing_and_its_employees_keep_it():
         r = CHATTER_A.get(REVENUE)
         assert r.status_code == 403 and r.json() == DENIED_DASHBOARD, r.text
         assert CHATTER_A.get("/admin/settings/applied").json()["permissions"]["pages"] == []
-        # The Employee still holds it: the join-time Chatter grant does not reassign a disabled role.
         import settings_api
         blob = {"roles": [{**role, "disabled": True}], "assignments": {str(EMP_A): "role-dash"}}
         assert settings_api._with_roles_for(blob, [EMP_A], "chatter") == (blob, 0)
         _roles(OWNER_A, True, {EMP_A: "role-dash"}, {**role, "disabled": False})
         assert CHATTER_A.get(REVENUE).status_code == 200
-        # A built-in role is always on: a stored `disabled` on it is ignored, as Role Settings locks its switch.
         _roles(OWNER_A, True, {EMP_A: "chatter"}, {**_role("chatter", _only("/")), "disabled": True})
         assert CHATTER_A.get(REVENUE).status_code == 200
     finally:
         _reset()
 
 
-# ── The nav drift check ─────────────────────────────────────────────────────
 
 _LINK = re.compile(r'\{\s*label:\s*"([^"]+)",\s*href:\s*"([^"]+)"([^}]*)\}')
 
 
 def _nav_pages(nav_ts: str) -> dict[str, str]:
-    """Each Permission-editor page in nav.ts: SIDEBAR links, `legacy` ones and ones that answer to
-    another page (`permission:`, e.g. Focus → /messages-pro) skipped, as nav.ts PERMISSION_PAGES.
-    SIDEBAR spreads ONLYFANS_NAV and COMMON_NAV, which nav.ts declares together ahead of FANSLY_NAV."""
     sidebar = nav_ts.split("export const ONLYFANS_NAV:", 1)[1].split("export const FANSLY_NAV", 1)[0]
     return {href: label for label, href, rest in _LINK.findall(sidebar)
             if not re.search(r"\blegacy:\s*true\b|\bpermission:", rest)}
@@ -1578,7 +1410,6 @@ def case_the_drift_check_skips_a_link_that_answers_to_another_page():
     assert _drift(nav_ts) == []
 
 
-# ── The switch on the Relay ─────────────────────────────────────────────────
 
 def case_flipping_enforce_leaves_one_actions_row_for_the_put():
     rows = select(func.count()).select_from(Action).where(Action.action == "PUT /admin/settings/roles")
@@ -1599,24 +1430,18 @@ def case_the_applied_read_reports_enforced_and_the_granted_pages():
         assert r.json()["permissions"] == {"enforced": True, "pages": ["/", "/messages-pro"],
                                            "scope": "self", "opt_in": [], "denied_actions": [],
                                            "denied_cards": []}
-        # A My Automations page the role ticks is reported in `opt_in` too.
         _roles(OWNER_A, True, {EMP_A: "role-pro"}, _role("role-pro", _only("/messages-pro", "/growth/auto-mass")))
         assert CHATTER_A.get("/admin/settings/applied").json()["permissions"]["opt_in"] == ["/growth/auto-mass"]
     finally:
         _reset()
 
 
-# ── Data scope ──────────────────────────────────────────────────────────────
 
 PER_EMPLOYEE = "/admin/stats/per-employee?from=2026-06-10&to=2026-06-11"
 
 
 def _seed_employee_report() -> None:
-    """On Creator A: two messages by chatter_a, one by chatter_ab, and an
-    orphan tip that lands in the Unattributed bucket."""
     when = datetime(2026, 6, 10, 12, 0)
-    # init_db (create_all) builds no views: apply the shipped attribution view,
-    # as test_timesheet_api.py does.
     path = Path(__file__).resolve().parents[1] / "db" / "migrations" / "versions" / \
         "20261027_0100_converters_window.py"
     spec = importlib.util.spec_from_file_location("mig_attr_view", path)
@@ -1654,7 +1479,6 @@ def case_per_employee_stats_show_a_self_scope_only_its_own_row():
         _roles(OWNER_A, True, {EMP_A: "role-rep"},
                _role("role-rep", _only("/analytics/employee-reports"), "self"))
         assert _report_rows(CHATTER_A) == {EMP_A: 2}
-        # The owner, never checked, still sees every row.
         assert _report_rows(OWNER_A) == EVERY_ROW
     finally:
         _reset()
@@ -1666,8 +1490,6 @@ def _members(group_id: int | None, employee_ids: list[int]) -> None:
 
 
 def case_per_employee_stats_under_self_and_subordinates_add_the_groups_below_never_peers():
-    """Phase 5 ticket 36: EMP_A leads "Fixture RE Lead"; EMP_AB_A first sits in the sub-group below it, then
-    beside EMP_A in the same group, where a peer is not a subordinate."""
     def group(name: str, parent_id: int | None) -> int:
         r = OWNER_A.post("/admin/employee-groups", json={"name": name, "parent_id": parent_id})
         assert r.status_code == 200, r.text
@@ -1682,7 +1504,6 @@ def case_per_employee_stats_under_self_and_subordinates_add_the_groups_below_nev
                _role("role-rep", _only("/analytics/employee-reports"), "subordinates"))
         assert _report_rows(CHATTER_A) == {EMP_A: 2, EMP_AB_A: 1}
         assert _report_rows(OWNER_A) == EVERY_ROW
-        # The owner and the Master still see the whole Agency.
         assert _report_rows(MASTER) == EVERY_ROW
         _members(lead, [EMP_AB_A])
         assert _report_rows(CHATTER_A) == {EMP_A: 2}
@@ -1716,18 +1537,11 @@ def case_an_all_scope_chatter_under_enforcement_still_gets_403_from_timesheet_an
         _reset()
 
 
-# ── Statistics' read-only OF routes (omf-statistics-relay) ─────────────────
-# One case per route family: a Statistics-only chatter reads each route (the
-# OnlyFans fake answers), and a chatter granted every page but Statistics is
-# refused it — so none of them lands on Queue, Dashboard, Go live, Home, OF
-# settings or the `users/me` prefix nearly every page grants.
 
 _D = "start=2026-10-01+00%3A00%3A00&end=2026-10-16+23%3A59%3A59"
 
 
 def _statistics_family(paths: list[str], also: tuple[str, ...] = ()) -> None:
-    """Statistics alone serves every path (200); a role without Statistics (and
-    without `also`, the pages that share the route) is refused each one (403)."""
     stats = _role("role-stats", _only("/of-manager/statistics"))
     other = _role("role-other", _all_but("/of-manager/statistics", *also))
     try:
@@ -1745,7 +1559,6 @@ def _statistics_family(paths: list[str], also: tuple[str, ...] = ()) -> None:
             for path in paths:
                 pages = permissions.route_pages(path.split("?")[0], "GET")
                 assert "/of-manager/statistics" in pages, (path, pages)
-                # A shared route's denial names its first page in map order.
                 want = {"detail": f"Your role does not allow {permissions.PAGE_MAP[pages[0]][0]}"}
                 r = CHATTER_A.get(path)
                 assert r.status_code == 403 and r.json() == want, f"{path}: {r.status_code} {r.text}"
@@ -1758,14 +1571,12 @@ def _statistics_family(paths: list[str], also: tuple[str, ...] = ()) -> None:
 def case_statistics_earnings_posts_and_subscriber_charts_are_statistics_reads():
     _statistics_family([f"/api/of/v2/earnings/chart?{_D}&filter=tips_count,tips_amount",
                         f"/api/of/v2/posts/chart?{_D}&by=views"])
-    # The new-subscriber chart is the Dashboard's and Creator reports' too.
     _statistics_family([f"/api/of/v2/subscriptions/subscribers/chart?{_D}&by=renew"],
                        also=("/", "/analytics/creator-reports"))
 
 
 def case_statistics_chargebacks_list_is_statistics_and_statements():
     _statistics_family([f"/api/of/v2/payouts/chargebacks?{_D}"], also=("/of-manager/statements",))
-    # Statements › Stats › Disputes shows the same list.
     statements = _role("role-statements", _only("/of-manager/statements"))
     _roles(OWNER_A, True, {EMP_A: "role-statements"}, statements)
     try:
@@ -1811,8 +1622,6 @@ def case_statistics_referred_creators_and_users():
 
 
 def case_statistics_earnings_list_profile_stats_and_posts_top():
-    # Statements › Earnings' list is the Statements page's and Messages Pro's too;
-    # Posts' top list is the Message dashboard's too.
     _statistics_family([f"/api/of/v2/payouts/transactions?startDate=2026-10-01+00%3A00%3A00"
                         f"&marker=1792195199&type=tips&tipsSource=chat"],
                        also=("/of-manager/statements", "/messages-pro"))
@@ -1861,18 +1670,15 @@ def case_statistics_payout_invoice_download():
 
 
 
-# ── omf-statistics-relay-2: the remaining Statistics reads ──
 
 def case_statistics_item_stats_and_user_lists():
     _statistics_family(["/api/of/v2/posts/stats?post_id=59001",
                         "/api/of/v2/posts/buyers?post_id=59001&offset=10", "/api/of/v2/posts/tips?post_id=59001",
                         "/api/of/v2/promotions/claims?promo_id=61001", "/api/of/v2/trials/claims?trial_id=62001",
                         "/api/of/v2/campaigns/claimers?campaign_id=60001&offset=10"])
-    # An own post's "N Likes" on Home and My profile reads its likers too.
     _statistics_family(["/api/of/v2/posts/likes?post_id=59001&offset=10"], also=("/of-manager/home", "/of-manager/profile"))
 
 
-# ── users/me writes (S3) ────────────────────────────────────────────────────
 
 ME = "/api/of/v2/users/me"
 ME_WRITES = (("PATCH", ME, {"about": "bio"}),
@@ -1883,9 +1689,8 @@ ME_WRITES = (("PATCH", ME, {"about": "bio"}),
 def case_users_me_writes_need_of_settings_where_reads_follow_the_map():
     for method, path, _ in ME_WRITES:
         assert permissions.route_pages(path, method) == ("/of-manager/settings",), (method, path)
-    assert len(permissions.route_pages(ME, "GET")) > 1  # the profile read many pages make
+    assert len(permissions.route_pages(ME, "GET")) > 1
     try:
-        # Every page but OF settings: it reads the profile, and writes none of it.
         _roles(OWNER_A, True, {EMP_A: "role-most"}, _role("role-most", _all_but("/of-manager/settings")))
 
         def _refused(fake):
@@ -1895,7 +1700,7 @@ def case_users_me_writes_need_of_settings_where_reads_follow_the_map():
                     f"{method} {path}: {r.status_code} {r.text}"
             assert fake.calls == []
             r = CHATTER_A.get(ME)
-            assert r.status_code != 403, f"GET {ME}: {r.status_code} {r.text}"  # past the role check
+            assert r.status_code != 403, f"GET {ME}: {r.status_code} {r.text}"
         _with_fake_of(_refused)
 
         _roles(OWNER_A, True, {EMP_A: "role-settings"}, _role("role-settings", _only("/of-manager/settings")))
@@ -1905,7 +1710,6 @@ def case_users_me_writes_need_of_settings_where_reads_follow_the_map():
                 r = CHATTER_A.request(method, path, json=body)
                 assert r.status_code == 200, f"{method} {path}: {r.status_code} {r.text}"
             assert fake.calls == ["update_profile", "patch_security_settings", "put_security_settings"], fake.calls
-        # The fixture's Creators have no captured session: the write names creator_a's account.
         resolve, server._resolve_account_id = server._resolve_account_id, lambda _ctx: IDS["creator_a"]
         try:
             _with_fake_of(_allowed)
@@ -1915,14 +1719,11 @@ def case_users_me_writes_need_of_settings_where_reads_follow_the_map():
         _reset()
 
 
-# ticket 67
 PNG_1PX = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
                         "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")
 
 
 def case_the_profile_image_upload_needs_of_settings():
-    """Edit profile's cover and avatar upload (POST users/me/profile-image) is OF settings' alone, as the other users/me
-    writes: refused for a role without OF settings before anything reaches OF, allowed with OF settings alone."""
     path = f"{ME}/profile-image"
     assert permissions.route_pages(path, "POST") == ("/of-manager/settings",)
     files = {"file": ("cover.png", PNG_1PX, "image/png")}
@@ -1952,11 +1753,7 @@ def case_the_profile_image_upload_needs_of_settings():
         _reset()
 
 
-# ticket 69
 def case_social_media_buttons_need_of_settings():
-    """Settings > Social media's buttons (GET/PUT /users/social/buttons, DELETE /users/social/buttons/{id}, and the Add
-    button's providers GET /init) are OF settings' alone: refused for a role without OF settings before anything reaches
-    OF, allowed with OF settings alone."""
     path = "/api/of/v2/users/social/buttons"
     body = {"socialMedia": "instagram", "label": "IG", "link": "", "username": "alpha"}
     for method, p in (("GET", path), ("PUT", path), ("DELETE", f"{path}/7"), ("GET", "/api/of/v2/init")):
@@ -1990,11 +1787,7 @@ def case_social_media_buttons_need_of_settings():
         _reset()
 
 
-# ticket 70
 def case_things_i_like_links_need_of_settings():
-    """Settings > Things I Like's links (GET/PUT /users/links, DELETE /users/links/{id}) are OF settings' alone: refused
-    for a role without OF settings before anything reaches OF, allowed with OF settings alone; the GET is never the
-    /users/{user_id_or_username} lookup."""
     path = "/api/of/v2/users/links"
     body = {"link": "https://www.youtube.com/watch?v=alpha"}
     for method, p in (("GET", path), ("PUT", path), ("DELETE", f"{path}/7")):
@@ -2027,7 +1820,6 @@ def case_things_i_like_links_need_of_settings():
         _reset()
 
 
-# ── On by default (S11) ─────────────────────────────────────────────────────
 
 def case_a_never_stored_or_invalid_switch_reads_on_and_only_false_turns_it_off():
     assert permissions.enforced({}) and permissions.enforced({"enforce": True})
@@ -2035,7 +1827,7 @@ def case_a_never_stored_or_invalid_switch_reads_on_and_only_false_turns_it_off()
     try:
         for blob in ({}, {"enforce": "yes"}, {"assignments": {}}):
             fx.store_blob(IDS["agency_a_owner"], "roles", blob)
-            r = CHATTER_A.get(REVENUE)  # EMP_A holds no role
+            r = CHATTER_A.get(REVENUE)
             assert r.status_code == 403 and r.json() == DENIED_DASHBOARD, f"{blob}: {r.status_code} {r.text}"
             assert OWNER_A.get(REVENUE).status_code == 200, blob
     finally:
@@ -2044,7 +1836,6 @@ def case_a_never_stored_or_invalid_switch_reads_on_and_only_false_turns_it_off()
 
 
 def case_owner_only_settings_tabs_refuse_a_chatter_by_url_even_one_holding_admin():
-    # Role Settings, Time tracking and the Security (organization) Employee list are owner routes.
     _roles(OWNER_A, True, {EMP_A: "admin"})
     try:
         for tab in ("roles", "time-tracking", "preferences"):
@@ -2058,7 +1849,6 @@ def case_owner_only_settings_tabs_refuse_a_chatter_by_url_even_one_holding_admin
 
 
 def case_role_and_agency_reads_share_one_fresh_checkout():
-    """A named Creator still checks roles and Agency mapping on this request."""
     _roles(OWNER_A, True, {EMP_A: "admin"})
     counts = {"roles": 0, "agency": 0, "mirror": 0}
     agency_queries = []
@@ -2092,8 +1882,6 @@ def case_role_and_agency_reads_share_one_fresh_checkout():
             assert r.status_code == 200, (r.status_code, r.text)
         _with_fake_of(check)
         assert counts == {"roles": 1, "agency": 0, "mirror": 0}, counts
-        # Holders, allowlist, Mirror: the canonical rule (_chatter_agency_for_creator),
-        # all three on the role hook's own checkout.
         assert len(agency_queries) == 3, agency_queries
     finally:
         server._resolve_account_id = resolve
@@ -2103,13 +1891,11 @@ def case_role_and_agency_reads_share_one_fresh_checkout():
 
 
 def case_single_agency_role_guard_reads_current_allowlist():
-    """A stale session identity cannot preserve access revoked in the DB."""
     _roles(OWNER_A, True, {EMP_A: "admin"})
     account_id = IDS["creator_a"]
     other_account = IDS["creator_b"]
     resolve = server._resolve_account_id
     server._resolve_account_id = lambda _req: account_id
-    # Warm the chatter identity while Creator A is still available.
     def warm(_fake):
         r = CHATTER_A.get(f"{ME}?account_id={account_id}",
                           headers={"X-Account-Id": account_id})
@@ -2141,7 +1927,6 @@ def case_single_agency_role_guard_reads_current_allowlist():
 
 
 def case_send_and_audit_resolve_one_chatter_employee_per_request():
-    """The message and its action row use one freshly resolved Employee."""
     _roles(OWNER_A, True, {EMP_A: "admin"})
     original = employees.resolve_chatter_employee_id
     resolve = server._resolve_account_id
@@ -2162,8 +1947,8 @@ def case_send_and_audit_resolve_one_chatter_employee_per_request():
             )
             assert response.status_code == 200, (response.status_code, response.text)
         _with_fake_of(check)
-        assert calls == [], calls  # the same-request role context already resolved it
-        _reset()  # with enforcement off there is no role context to reuse
+        assert calls == [], calls
+        _reset()
         _with_fake_of(check)
         assert calls == [(IDS["creator_a"], EMP_A)], calls
     finally:
@@ -2173,8 +1958,6 @@ def case_send_and_audit_resolve_one_chatter_employee_per_request():
 
 
 def case_full_ai_config_writes_are_owner_only_and_the_read_follows_the_page():
-    # Phase 03a ticket 37: a config write changes Full AI Chat on the Creator, so no role grants it
-    # (the `full_ai_chat` opt-in gate, as the test turn); the config read is the page's own read.
     aid = IDS["creator_a"]
     get = f"/admin/full-ai/config?account_id={aid}"
     writes = (("put", "/admin/full-ai/config/draft", {"account_id": aid, "draft": {}, "rev": 0}),
@@ -2200,12 +1983,10 @@ def case_full_ai_config_writes_are_owner_only_and_the_read_follows_the_page():
         _roles(OWNER_A, True, {EMP_A: "role-gi"}, _role("role-gi", _only("/growth/gen-info")))
         r = CHATTER_A.get(get)
         assert r.status_code == 403 and r.json() == denied, r.text
-        # Another owner's Creator: 403 on every config route.
         assert OWNER_B.get(get).status_code == 403
         for w in writes:
             r = write(OWNER_B, *w)
             assert r.status_code == 403, (w[1], r.status_code, r.text)
-        # Nothing above stored a thing; the owner is never checked (stale rev 0 after the PUT: 409).
         assert OWNER_A.get(get).json()["rev"] == 0
         put, ckpt, save, rollback = (write(OWNER_A, *w) for w in writes)
         assert put.status_code == 200 and put.json()["rev"] == 1, put.text
@@ -2214,15 +1995,11 @@ def case_full_ai_config_writes_are_owner_only_and_the_read_follows_the_page():
     finally:
         _reset()
 
-# ticket 18: Collections' Posts tab (a list's posts, OF's "fans" list's on Fans), Fans' Expired tab and Search users.
 COLLECTIONS_READS = ["/api/of/v2/lists/31/posts?limit=10", "/api/of/v2/lists/fans/posts?limit=10",
                      "/api/of/v2/subscribers?type=expired&limit=50", "/api/of/v2/lists/31/users?limit=50&query=bravo"]
 
 
 def case_collections_alone_reads_list_posts_expired_fans_and_list_search_others_are_refused():
-    """Granted only Collections, a chatter reads each (200, one OnlyFans call apiece); a role without Collections and
-    without every page sharing these routes (Messages, the growth pages' list selects, ...) is refused each (403,
-    naming the route's first page in map order) and OnlyFans is never called."""
     shared = sorted({p for path in COLLECTIONS_READS for p in permissions.route_pages(path.split("?")[0], "GET")})
     assert "/of-manager/collections" in shared, shared
     try:
@@ -2248,11 +2025,7 @@ def case_collections_alone_reads_list_posts_expired_fans_and_list_search_others_
         _reset()
 
 
-# ticket 19: Home's Pin to home dialog (the feed tabs' pencil, home/state-feed-tabs-edit) lists the Creator's lists from
-# the Relay's /lists read (the same read and cache as Collections).
 def case_home_alone_reads_the_pin_to_home_lists_and_a_role_with_no_lists_page_is_refused():
-    """Granted only Home, a chatter reads /lists (200, one OnlyFans call); a role holding none of the pages that read
-    /lists is refused (403, naming the first of them in map order) and OnlyFans is never called."""
     path = "/api/of/v2/lists?limit=50"
     pages = permissions.route_pages(path.split("?")[0], "GET")
     assert "/of-manager/home" in pages, pages
@@ -2275,11 +2048,7 @@ def case_home_alone_reads_the_pin_to_home_lists_and_a_role_with_no_lists_page_is
         _reset()
 
 
-# #915 deferred: Home only reads /lists (its Pin to home dialog), so its grant is GET-only (permissions.READ_ONLY_GRANTS);
-# Collections, which creates and fills lists, keeps the write.
 def case_home_grants_the_lists_read_only_and_collections_keeps_the_write():
-    """Home serves GET /lists but no write under it; a Home-only chatter's create list is refused (403, OnlyFans never
-    called), a Collections-only chatter's is served."""
     home, coll = "/of-manager/home", "/of-manager/collections"
     assert home in permissions.route_pages("/api/of/v2/lists", "GET")
     for method, path in (("POST", "/api/of/v2/lists"), ("POST", "/api/of/v2/lists/7/users/9"),
@@ -2305,11 +2074,7 @@ def case_home_grants_the_lists_read_only_and_collections_keeps_the_write():
         _reset()
 
 
-# W30 W9: Tracking links only reads /lists (its List select; the claimers' add-to-list runs inside /admin/link-meta),
-# so its grant is GET-only too; before, a Tracking-links-only chatter could delete a fan list.
 def case_tracking_links_grants_the_lists_read_only():
-    """Tracking links serves GET /lists but no write under it: a Tracking-links-only chatter's list delete is refused
-    (403, OnlyFans never called); its read is still served (case_a_growth_link_page_alone_reads_…)."""
     page = "/growth/tracking-links"
     assert page in permissions.route_pages("/api/of/v2/lists", "GET")
     for method, path in (("POST", "/api/of/v2/lists"), ("DELETE", "/api/of/v2/lists/7"),
@@ -2328,8 +2093,6 @@ def case_tracking_links_grants_the_lists_read_only():
 
 
 def case_a_read_only_grant_on_every_page_of_a_prefix_fails_the_import():
-    """Follow-up #12: no `or pages` fallback; permissions.py refuses to import when READ_ONLY_GRANTS would leave a
-    mapped prefix with no page serving its writes (route_pages would answer (), which passes it)."""
     import types
     src = Path(permissions.__file__).read_text()
     line = '    "/of-manager/home": frozenset({"/api/of/v2/lists"}),\n'
@@ -2344,11 +2107,7 @@ def case_a_read_only_grant_on_every_page_of_a_prefix_fails_the_import():
     exec(compile(src, permissions.__file__, "exec"), types.ModuleType("permissions_as_is").__dict__)
 
 
-# ticket 20: Statements' Earning statistics bounds its From … To picker by the Creator's start (the same read Statistics
-# makes, /users/me/start-date-model).
 def case_statements_alone_reads_the_creator_start_and_a_role_with_neither_page_is_refused():
-    """Granted only Statements, a chatter reads /users/me/start-date-model (200, one OnlyFans call); a role holding
-    neither Statements nor Statistics is refused (403, naming the first in map order) and OnlyFans is never called."""
     path = "/api/of/v2/users/me/start-date-model"
     pages = permissions.route_pages(path, "GET")
     assert "/of-manager/statements" in pages and "/of-manager/statistics" in pages, pages
@@ -2371,13 +2130,7 @@ def case_statements_alone_reads_the_creator_start_and_a_role_with_neither_page_i
         _reset()
 
 
-# ticket 24: Statements' Earning statistics reads /payouts/stats (its all-time totals, and its From … To range on Apply),
-# so the Statements page's entry names it beside Statistics' (permissions.py; it was Statistics only, a 403 for a
-# Statements-only role).
 def case_statements_alone_reads_the_payout_stats_and_a_role_with_neither_page_is_refused():
-    """Granted only Statements, a chatter reads /payouts/stats bare and for a range (200, one OnlyFans call each); a range
-    not a day (or a day and time) is a 422 before OnlyFans; a role holding neither Statements nor Statistics is refused
-    (403, naming the first in map order) and OnlyFans is never called."""
     path = "/api/of/v2/payouts/stats"
     pages = permissions.route_pages(path, "GET")
     assert "/of-manager/statements" in pages and "/of-manager/statistics" in pages, pages
@@ -2393,7 +2146,6 @@ def case_statements_alone_reads_the_payout_stats_and_a_role_with_neither_page_is
             assert r.status_code == 422, f"ISO start: {r.status_code} {r.text}"
             assert fake.calls == ["earning_stats"] * 3, fake.calls
         _with_fake_of(_granted)
-        # OF's own names go through as they are; start/end are not the route's (OF ignores them too): no range.
         seen = []
 
         class _Stats:
@@ -2421,9 +2173,6 @@ def case_statements_alone_reads_the_payout_stats_and_a_role_with_neither_page_is
 
 
 def case_chats_readable_fails_closed_when_no_page_serves_the_chat_history():
-    """W30-mu #34: if the page map ever stops mapping a chat's history read (unmapped `()` or unknown None),
-    `/events` grants a chatter's stream no reply text, even with enforcement off (`route_refusal` passes an
-    unmapped route)."""
     a = IDS["creator_a"]
     real = permissions.route_pages
     try:
@@ -2438,9 +2187,6 @@ def case_chats_readable_fails_closed_when_no_page_serves_the_chat_history():
 
 
 def case_events_strip_reply_text_for_creators_whose_chats_the_role_does_not_grant():
-    """W30-mu #25: `GET /events` for a chatter carries `chat_responded`'s `message` (reply text, price) only for
-    Creators whose chat history its role grants (Messages Basic or Pro); the rest get the bell's announcement
-    without it. Enforcement off: every Creator whole. Per Creator: chatter_ab denied in Agency A, granted in B."""
     import json as _json
     import chatters
     import events
@@ -2458,14 +2204,13 @@ def case_events_strip_reply_text_for_creators_whose_chats_the_role_does_not_gran
                                         owner_user_ids=frozenset(IDS[o] for o in owners), account_ids=accounts)
 
     def texts(who: chatters.ChatterIdentity) -> dict[str, bool]:
-        """Creator -> whether its `chat_responded` reached this chatter's stream with `message`."""
         async def run():
             tok = chatters._request_chatter.set(who)
             try:
                 gen = (await server.sse_events(_Req(), scope="all", last_event_id=None)).body_iterator
             finally:
                 chatters._request_chatter.reset(tok)
-            await gen.__anext__(), await gen.__anext__()        # connected, head
+            await gen.__anext__(), await gen.__anext__()
             for aid in sorted(who.account_ids):
                 events.publish({"chat_responded": {"fan_id": 1, "by": "", "at": 1,
                                                    "message": {"id": 2, "text": "t", "price": 9.0}},

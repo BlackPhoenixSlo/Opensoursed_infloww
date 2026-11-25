@@ -31,7 +31,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_sell_chat.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     NANO, OPENROUTER, PRICED, _body, _db, _hot, _no_offer, _picks, _post, _ppvs,
@@ -45,7 +45,6 @@ import vault_scripts  # noqa: E402
 from automations import full_ai_sell, full_ai_test, full_ai_writers  # noqa: E402
 
 
-# ── The sale ──────────────────────────────────────────────────────────
 
 def case_sell_turn_via_api():
     pair = "p-sell"
@@ -55,7 +54,6 @@ def case_sell_turn_via_api():
     assert (got["status"], got["route"], got["route_row"]) == ("sent", "sell_now", "sell"), got
     (pick,) = picks
     assert isinstance(pick, full_ai_sell.Pick) and pick.ref in PRICED, pick
-    # The PPV on the last part only.
     assert len(got["parts"]) >= 1 and _ppvs(got["parts"]) == [len(got["parts"]) - 1], got["parts"]
     ppv = got["parts"][-1]["ppv"]
     assert ppv == {"ref": pick.ref, "price_cents": pick.price_cents, "media": list(pick.media),
@@ -71,12 +69,9 @@ def case_sell_turn_via_api():
                                                           for m in (*pick.media, *pick.previews)]}
     assert json.loads(row.offer_item_ref) == {"ref": pick.ref, "subject": pick.subject, "format": pick.format,
                                               "lane": pick.lane, "kind": "offer"}, row.offer_item_ref
-    # The response's `offer` is the row's; the session read carries the same.
     assert got["offer"] == full_ai_test.offer_of(row) and got["offer"]["price_cents"] == want_list, got["offer"]
     assert got["offer"]["refusal"] is None and got["offer"]["kind"] == "offer", got["offer"]
     assert _reply(row)["parts"] == got["parts"] and "refusal" not in _reply(row), _reply(row)
-    # The Writer got the content-ask sell prompt: the beat, the item line and price block, the
-    # contract with the >>OFFER exception.
     system = _system(fw)
     w = full_ai_writers
     assert w.CONTENT_ASK.format(close=w.CLOSE_BY_ID) in system and w.INTRO_BY_ID in system, system
@@ -91,11 +86,9 @@ def case_left_sell_off_right_ppv():
         left, lw, lp = _post(_body(pair, side="checkpoint"), "ok:its all on my page babe")
         right, rw, rp = _post(_body(pair, side="draft"), "ok:mm ok i have something for u")
     lg, rg = left.json(), right.json()
-    # Left: 03a's R10 unchanged — chat, sell_off, the sell-off line, no Pick, no PPV.
     assert (lg["route"], lg["route_row"], lg["dropped"]) == ("chat", "sell_off", ["sell"]), lg
     assert full_ai_writers.SELL_OFF_LINE in _system(lw) and lp == [], lp
     assert _ppvs(lg["parts"]) == [] and lg["offer"] is None, lg
-    # Right: the PPV.
     assert (rg["route"], rg["route_row"]) == ("sell_now", "sell"), rg
     assert len(rp) == 1 and _ppvs(rg["parts"]) == [len(rg["parts"]) - 1] and rg["offer"], rg
     left_row, right_row = _rows(pair)
@@ -104,9 +97,6 @@ def case_left_sell_off_right_ppv():
 
 
 def case_one_pick_per_turn():
-    """Every Route reachable through the Test chat: a Pick only on sell_now and tease (make_right
-    here has no Buy, so no Free item), never more than one per Turn, never more than one PPV part,
-    none on a tease (its Pick on the row, priceless)."""
     cases = [
         ("chat", QUIET, "draft"),
         ("sext", _hot(sexual_now=0.9), "draft"),
@@ -135,7 +125,7 @@ def case_one_pick_per_turn():
                 assert (got["offer"]["kind"], got["offer"]["price_cents"]) == ("tease", None), (tag, got)
             elif got["route"] != "sell_now":
                 _no_offer(row)
-                assert got["offer"] is None, (tag, got)    # null off sell_now / tease
+                assert got["offer"] is None, (tag, got)
     assert {"chat", "sext", "ai_dare", "make_right", "no_send", "sell_now", "tease"} <= seen, seen
 
 
@@ -240,8 +230,6 @@ def case_offer_marker():
 
 
 def case_shadow_row_has_no_offer():
-    """A Shadow Turn (the executor run, not the Test chat) on a wants-content line: its row carries
-    no Offer column and no Pick is made."""
     aid = "creator-shadow-42"
     with _picks() as picks:
         _res, row = _db(lambda: ffx._one_turn(aid, 9100, (_hot(wants_content=0.9), 1.0)))

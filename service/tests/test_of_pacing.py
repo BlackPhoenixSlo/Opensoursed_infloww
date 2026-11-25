@@ -1,57 +1,7 @@
 #!/usr/bin/env python3
-"""
-of_pacing — background OF walks: 429 parse, the shared per-Creator pacer, the
-one retry, no claim; a request's absorbed 429s; link_prewarm.prewarm_all's
-busy-Creator deferral. No DB, no OF: fake calls, tiny constants.
-
-  case_parse_allow_table:   "Please allow N seconds" -> N; none -> default; cap.
-  case_upstream_and_allow_s_table: (status, body, Retry-After) from an OFAPIError-like
-                            response or a _proxy 502 detail (no header); "allow N" uncapped.
-  case_asked_wait_table:    Retry-After header (seconds) first, else the body's "allow N"
-                            (allow_s), uncapped; neither: None.
-  case_retry_after_table:   OFAPIError-like 429 response; _proxy 502 detail with
-                            upstream_status 429; anything else -> None.
-  case_outside_walk_plain:  no walk -> call() as is: no pause, a 429 raises at once.
-  case_bare_client_unpaced: inside a walk, a page with no account (bare client) goes out at
-                            once, never under a shared "None" pacer key.
-  case_pacer_shared:        two walks (different kinds) on one Creator: every GET
-                            >= PAGE_GAP_S after the previous; other Creator unpaced.
-  case_retry_once:          a 429 retries the SAME call once; a second 429 raises.
-  case_walk_no_claim:       two walks with one key both run (each its own result);
-                            a nested same-key walk runs; the caller never sees the walk.
-  case_absorb_429_table:    a request through the Creator's 429 gate (fake clock): open, never
-                            paced; each 429 in a row waits the next Fibonacci cooldown (capped),
-                            a success resets the ladder; a read gives up past READ_BUDGET_S, a
-                            send keeps waiting to SEND_BUDGET_S; any other error at once.
-  case_gate_one_probe:      10 concurrent reads on one Creator (threads, tiny cooldowns): after
-                            the first close exactly one call per cooldown, then the queue drains
-                            PAGE_GAP_S apart; another Creator never waits on it.
-  case_walk_waits_cooling:  a walk's page waits out its Creator's cooling gate.
-  case_prewarm_busy_table:  prewarm_all walks idle Creators in order and skips one with a
-                            person's read in the last USER_WINDOW_S (no waiting); the next
-                            pass walks it once idle.
-  case_egress_identity_table: proxies.egress_identity, the pace key: a client's proxy URL against
-                            a registry (Ok or Torn's last good): the IP verified for its host:port,
-                            else host:port; no proxy "direct"; never a credential.
-  case_proxy_slot_shared:   ledger pages of two Creators on one exit: every departure on it
-                            >= PAGE_GAP_S apart; a third Creator on another exit unpaced by them.
-  case_proxy_retry_shares_slot: a 429's retry takes the exit slot too (spaced from the other
-                            Creator's pages), still exactly one retry; its log names the exit
-                            hashed (`p-<8 hex>`), never its IP or a credential.
-  case_only_the_ledger_walk_is_proxy_paced: through OFClient.get_json, two Creators on one proxy:
-                            a link-refresh walk's pages leave together (per Creator only), a
-                            transactions walk's are spaced; outside a walk never paced.
-  case_failover_old_new_client: ADR-0030 move through real OFClient.from_session_file + get_json:
-                            the old client keeps the old exit's slot, the new one shares the
-                            new exit's slot with the Creator already there; two endpoints verified
-                            on one exit IP share one slot; two clients built either side of a probe
-                            verifying the endpoint's IP key that IP (resolved per page), one slot.
-
-Run: ./venv/bin/python service/tests/test_of_pacing.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness
 
 import asyncio  # noqa: E402
 import threading  # noqa: E402
@@ -114,14 +64,14 @@ def case_upstream_and_allow_s_table():
     e = Exception()
     e.response = SimpleNamespace(status_code=429, text="Please allow 45 seconds", headers={"Retry-After": "120"})
     assert of_pacing.upstream(e) == (429, "Please allow 45 seconds", "120"), of_pacing.upstream(e)
-    assert of_pacing.upstream(_E429("x")) == (429, "x", None)   # a response with no headers
+    assert of_pacing.upstream(_E429("x")) == (429, "x", None)
     p = Exception()
     p.detail = {"upstream_status": 429, "upstream_body": "Please allow 4 seconds"}
     assert of_pacing.upstream(p) == (429, "Please allow 4 seconds", None)
     assert of_pacing.upstream(ValueError("x")) == (None, "", None)
     for text, want in [
         ('{"error":{"code":429,"message":"Too many requests. Please allow 45 seconds"}}', 45.0),
-        ("Please allow 600 seconds", 600.0),   # uncapped, unlike parse_allow
+        ("Please allow 600 seconds", 600.0),
         ("please ALLOW 2.5 sec", 2.5),
         ("Too many requests", None),
         (None, None),
@@ -131,13 +81,13 @@ def case_upstream_and_allow_s_table():
 
 def case_asked_wait_table():
     for args, want in [
-        (("120", None), 120.0),          # the header
-        (("5", 1.0), 5.0),               # the header wins over the body
-        ((None, 45.0), 45.0),            # the body
-        ((None, 600.0), 600.0),          # uncapped
-        (("soon", 3.0), 3.0),            # a malformed header: the body
-        (("-1", 3.0), 3.0),              # a negative header: the body
-        ((None, None), None),            # nothing
+        (("120", None), 120.0),
+        (("5", 1.0), 5.0),
+        ((None, 45.0), 45.0),
+        ((None, 600.0), 600.0),
+        (("soon", 3.0), 3.0),
+        (("-1", 3.0), 3.0),
+        ((None, None), None),
     ]:
         assert of_pacing.asked_wait(*args) == want, (args, want)
 
@@ -297,7 +247,6 @@ def case_absorb_429_table():
     _knobs(PAGE_GAP_S=5.0, JITTER_S=0.0)
     E = _E429
     fib = [3.0, 5.0, 8.0, 13.0, 21.0, 34.0]
-    # (answers, send, send budget, want calls, want result or the error type raised, want sleeps)
     for answers, send, budget, calls, want, sleeps in [
         (["ok"], False, 90.0, 1, "ok", []),
         ([E(), "ok"], False, 90.0, 2, "ok", [3.0]),
@@ -610,7 +559,6 @@ def case_prewarm_busy_table():
     link_prewarm.account_registry.list_accounts = lambda: [
         {"id": a, "has_session": True, "platform": "onlyfans"} for a in ("a", "b", "c")]
     try:
-        # busy: Creators with a person's read now; pass 1 / pass 2 (busy idle by then) walk order
         for busy, first, second in [
             ((), ["a", "b", "c"], ["a", "b", "c"]),
             (("b",), ["a", "c"], ["a", "b", "c"]),
@@ -624,7 +572,7 @@ def case_prewarm_busy_table():
             asyncio.run(link_prewarm.prewarm_all())
             assert [a for a, _ in walked] == first, (busy, walked)
             assert time.monotonic() - t0 < 0.1, "a pass never waits for a busy Creator"
-            time.sleep(0.25)   # the person's read leaves the window
+            time.sleep(0.25)
             walked.clear()
             asyncio.run(link_prewarm.prewarm_all())
             assert [a for a, _ in walked] == second, (busy, walked)
@@ -636,7 +584,7 @@ def case_prewarm_busy_table():
 
 E1 = ("socks5://u:pw@10.0.0.1:1080", "pool-a")
 E2 = ("socks5://u:pw@10.0.0.2:1080", "pool-b")
-K1, K2 = "10.0.0.1:1080", "10.0.0.2:1080"   # their pace keys (proxies.egress_identity)
+K1, K2 = "10.0.0.1:1080", "10.0.0.2:1080"
 
 
 def _spaced(ts: list[float], gap: float) -> bool:
@@ -654,18 +602,18 @@ def case_egress_identity_table():
     for u, r, key in [
         (None, reg, "direct"),
         ("", reg, "direct"),
-        (url(b), reg, "5.6.7.8"),                          # its host:port verified on another entry
-        (url(b), bare, "gw.example.com:8001"),             # nothing verified known: host:port
-        (url(b), proxy_registry.Torn(reg.data), "5.6.7.8"),  # torn read: the last good one
+        (url(b), reg, "5.6.7.8"),
+        (url(b), bare, "gw.example.com:8001"),
+        (url(b), proxy_registry.Torn(reg.data), "5.6.7.8"),
         (url(b), proxy_registry.Torn(None), "gw.example.com:8001"),
         (url(c), reg, "gw.example.com:8002"),
-        ("http://user:p@ss@gw.example.com:8001", reg, "5.6.7.8"),   # an "@" in the password
-        ("http://user:secret@proxy.example.com:8080", reg, "proxy.example.com:8080"),  # no entry
+        ("http://user:p@ss@gw.example.com:8001", reg, "5.6.7.8"),
+        ("http://user:secret@proxy.example.com:8080", reg, "proxy.example.com:8080"),
         ("socks5://127.0.0.1:9050", reg, "127.0.0.1:9050"),
         ("1.2.3.4:3128", reg, "1.2.3.4:3128"),
-        ("http://first.last:12345@squid:3128", reg, "squid:3128"),  # paste parser read this as the login
-        ("socks5h://user:secret@gw.example.com:8001", reg, "5.6.7.8"),  # scheme outside SCHEMES
-        ("http://user:sec ret@[2001:db8::1]:8080", reg, "[2001:db8::1]:8080"),  # IPv6, space in password
+        ("http://first.last:12345@squid:3128", reg, "squid:3128"),
+        ("socks5h://user:secret@gw.example.com:8001", reg, "5.6.7.8"),
+        ("http://user:sec ret@[2001:db8::1]:8080", reg, "[2001:db8::1]:8080"),
     ]:
         got = proxy_registry.egress_identity(u, r)
         assert got == key, (u, got, key)
@@ -673,8 +621,6 @@ def case_egress_identity_table():
 
 
 def _ledger_walks(plan, pages, fail=None):
-    """plan: {account: egress}; each walks `pages` ledger pages at once. `fail`: account whose
-    first page OF answers 429 once. Every departure: (account, t)."""
     sent: list[tuple[str, float]] = []
     failed = set()
 
@@ -754,7 +700,6 @@ def _record(c, sent, tag):
 
 
 def _walk_gets(jobs, pages, kind="transactions"):
-    """jobs: [(account, client, url)] each its own `kind` walk, `pages` GETs at once."""
     async def job(c, url):
         for _ in range(pages):
             await asyncio.to_thread(c.get_json, url)
@@ -783,7 +728,7 @@ def case_only_the_ledger_walk_is_proxy_paced():
     assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "ledger pages share the endpoint"
     sent.clear()
     t0 = time.monotonic()
-    for _ in range(3):   # outside a walk (a person's read): never paced
+    for _ in range(3):
         a1.get_json(ledger)
     assert time.monotonic() - t0 < gap and len(sent) == 3
 
@@ -821,7 +766,7 @@ def case_failover_old_new_client():
         reg(["x"], ["y"])
         sent: list = []
         old = _record(OFClient.from_account("x"), sent, "old")
-        reg([], ["x", "y"])   # the move: one registry write; the old client is still out
+        reg([], ["x", "y"])
         new = _record(OFClient.from_account("x"), sent, "new")
         y = _record(OFClient.from_account("y"), sent, "y")
         assert old.proxy_label == "pool-a" and new.proxy_label == "pool-b", (old.proxy_label, new.proxy_label)
@@ -835,7 +780,6 @@ def case_failover_old_new_client():
         _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
         _walk_gets([("y", y, ledger), ("x", new, ledger)], 3)
         assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "the new client shares pool-b's slot"
-        # Two endpoints a probe verified on one exit IP: one exit, one slot (proxies._egress_key's rule).
         proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": [
             {"label": "gw-1", "scheme": "http", "host": "gw.example.com", "port": 8001, "username": "u",
              "password": "pw", "verified_ip": "9.9.9.9", "assigned_account_ids": ["x"]},
@@ -847,8 +791,6 @@ def case_failover_old_new_client():
         _knobs(PAGE_GAP_S=gap, JITTER_S=0.0)
         _walk_gets([("x", gx, ledger), ("y", gy, ledger)], 3)
         assert len(sent) == 6 and _spaced([t for *_, t in sent], gap), "one exit IP, two ports: one slot"
-        # A probe verifies the endpoint's IP between two clients on it: both key that IP (resolved
-        # per page against the registry read then), one slot, never a credential.
         def gw(ip=None):
             proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": [
                 {"label": "gw-1", "scheme": "http", "host": "gw.example.com", "port": 8001, "username": "u",

@@ -1,11 +1,3 @@
-"""Idempotent standard-folder placement using saved analysis, scoped per account.
-
-Only memberships owned by this mapper are reconciled. Stable folder IDs keep
-prices and ordering intact; custom folders and the original AI data are untouched.
-
-Per-Creator switch `vault_settings.standard_folders`, off by default: off, `sync` creates and
-places nothing and `listing` is empty.
-"""
 from __future__ import annotations
 
 import json
@@ -25,7 +17,6 @@ BATCH = 250
 
 
 class CategoryMediaType(ValueError):
-    """Filing media of the other kind into a standard category (a photo into Videos / …)."""
 
     def __init__(self, kind: str) -> None:
         super().__init__("category_media_type")
@@ -71,17 +62,11 @@ async def _place(s, account_id: str, folders: dict, items: list) -> None:
 
 
 async def sync(account_id: str, media_ids: list[int] | None = None) -> int:
-    """Create empty defaults even before describing. Backfill in bounded commits.
-
-Re-read items under the write lock so an older sweep cannot overwrite a newer
-manual correction. Refreshes never call vision, OF, or any selling endpoint.
-"""
     if not await vault_settings.on(account_id, "standard_folders"):
         return 0
     after, count = -1, 0
+    # No unique name constraint on legacy folders: BEGIN IMMEDIATE before the first read serializes creation across workers.
     while True:
-        # No unique name constraint exists on legacy folders: BEGIN IMMEDIATE before the first read serializes
-        # creation across workers, not just within one process.
         async with immediate_session() as s:
             if await s.scalar(select(Account.id).where(Account.id == account_id)) is None:
                 raise ValueError("account_not_found")
@@ -97,9 +82,8 @@ manual correction. Refreshes never call vision, OF, or any selling endpoint.
         after = items[-1].media_id
 
 
+# A placement failure must not fail a successful paid description into inviting a second payment; refresh retries placement.
 async def after_analysis(account_id: str, media_id: int) -> None:
-    # A placement failure must not turn a successful paid description into a
-    # failure that invites paying for it twice. Refresh safely retries placement.
     try:
         await sync(account_id, [media_id])
     except Exception:
@@ -134,8 +118,6 @@ async def listing(account_id: str) -> dict:
 
 
 async def remember(s, account_id: str, folder: VaultFolder, ids: list[int], included: bool) -> None:
-    """Persist explicit operator filing decisions through later descriptions. Raises `CategoryMediaType` (nothing
-    written) when an included item is not of the category's kind."""
     parsed = parse_key(folder.created_by)
     if parsed is None:
         return

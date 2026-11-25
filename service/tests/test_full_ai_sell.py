@@ -63,7 +63,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_sell.py  (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import inspect  # noqa: E402
 from _jev_fixtures import mapped  # noqa: E402
@@ -89,7 +89,6 @@ _harness.bootstrap()
 
 def case_in_folders_table():
     rows = [
-        # (refs, include, exclude, expected, why)
         ({"vf:1"}, [], [], True, "empty include = all"),
         (set(), [], [], True, "unfiled item, empty include"),
         (set(), [], ["vf:1"], True, "unfiled, exclude names another folder"),
@@ -105,11 +104,9 @@ def case_in_folders_table():
         assert fs.in_folders(refs, inc, exc) is want, why
 
 
-# ── Fixtures: describe fields + a current Jev blob ───────────────────
 
 def _flags(vulva="not_in_frame", breasts="not_in_frame", anus="not_in_frame", *, underwear=True,
            over_vulva="", over_breasts=""):
-    """A complete flags answer (`vault_ai_brief.flags_known`)."""
     out = {"underwear_visible": underwear, "vulva_vis": vulva, "breasts_vis": breasts, "anus_vis": anus}
     if over_vulva:
         out["over_vulva"] = over_vulva
@@ -119,8 +116,6 @@ def _flags(vulva="not_in_frame", breasts="not_in_frame", anus="not_in_frame", *,
 
 
 def _jev(lane5, *, kind="photo", read_lane5=None, breasts="n", crotch="n", pen="n", review=False, **tags):
-    """A current `_jev` blob (`vault_jev_rules.current`): this VERSION, status ok, `lane5`, `state`;
-    a clip also `vv` jv1 and `frames`. `tags` are Noul answers (`vault_topic_folders.jev_tag`)."""
     j = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane5, "state": {}, "kind": kind,
          "breasts_bare": breasts, "crotch_bare": crotch, "penetration": pen, "tags": dict(tags)}
     if kind == "video":
@@ -133,9 +128,6 @@ def _jev(lane5, *, kind="photo", read_lane5=None, breasts="n", crotch="n", pen="
 
 
 SOLO = {"people_count": 1, "partner_visible": False}
-# Shelf fixtures (no Jev blob), the `shelf_price` tiers: a flagged nude still with her pussy on show
-# is the $50 reveal; breasts out with her pussy covered and something on is the $10; a dressed sfw
-# still is neither.
 SHELF_50 = {"clothing_state": "fully_nude", "acts": ["posing"], "penetration": "none",
             "explicitness": "explicit", **_flags(vulva="bare", breasts="bare", underwear=False), **SOLO}
 SHELF_10 = {"clothing_state": "partially_off", "acts": ["posing"], "penetration": "none",
@@ -146,7 +138,6 @@ SHELF_0 = {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none
 
 
 def _with_jev(fields, jev):
-    """`fields` + `jev`, the flags as the mapper writes them (a paid lane is never stored sfw — W30 D1)."""
     return mapped({**fields, vault_jev_rules.JEV_KEY: jev})
 
 
@@ -157,7 +148,6 @@ def _price(fields, kind="photo"):
 def case_list_price_table():
     explicit = {"acts": ["fingering"]}
     rows = [
-        # (fields, kind, expected cents, why) — ticket 10 r3 › List price
         (_with_jev({}, _jev("$10")), "photo", 1000, "Jev lane $10"),
         (_with_jev({}, _jev("$50")), "photo", 5000, "Jev lane $50"),
         (_with_jev({}, _jev("$100")), "photo", 10000, "Jev lane $100"),
@@ -189,15 +179,12 @@ def case_clamp_table():
         assert fs.clamp_cents(cents) == want, (cents, fs.clamp_cents(cents))
 
 
-# ── Pool ─────────────────────────────────────────────────────────────
 
 T0 = datetime(2026, 7, 1)
-DRESSED = SHELF_0   # sfw, every region covered by clothing, solo: priced by its Jev lane alone
+DRESSED = SHELF_0
 
 
 def _row(mid, fields, kind="photo", *, refs=(), packs=(), minutes=0):
-    """A row shaped as `full_ai_sell.load_rows` returns it: `vault_scripts._load_rows`' keys + the
-    item's folder `refs` and Pack categories."""
     fields = vault_ai_brief.settled_reading(fields)
     return {"media_id": mid, "kind": kind, "created_at": T0 + timedelta(minutes=minutes),
             "duration_seconds": 12 if kind == "video" else None, "fields": fields,
@@ -217,15 +204,15 @@ def _ids(rows):
 
 def _pool_rows():
     return [
-        _row(1, _with_jev(DRESSED, _jev("$10"))),                       # kept unless owned
-        _row(2, _with_jev(DRESSED, _jev("$10")), minutes=1),            # dupe copy of 1
-        _row(3, _with_jev(DRESSED, _jev("review"))),                    # review lane: no price
-        _row(4, _with_jev(DRESSED, _jev("$10", review=True))),          # disputed (jev_review), sfw tier
-        _row(5, SHELF_0),                                               # no blob, shelf 0: no price
-        _row(6, _with_jev({**DRESSED, "people_count": 2}, _jev("$50"))),  # partner in shot
-        _row(7, _with_jev({k: v for k, v in DRESSED.items() if k not in SOLO}, _jev("$50"))),  # solo unknown
-        _row(8, _with_jev(DRESSED, _jev("$50"))),                       # kept
-        _row(9, _with_jev(DRESSED, _jev("free"))),                      # free lane: preview / gift only
+        _row(1, _with_jev(DRESSED, _jev("$10"))),
+        _row(2, _with_jev(DRESSED, _jev("$10")), minutes=1),
+        _row(3, _with_jev(DRESSED, _jev("review"))),
+        _row(4, _with_jev(DRESSED, _jev("$10", review=True))),
+        _row(5, SHELF_0),
+        _row(6, _with_jev({**DRESSED, "people_count": 2}, _jev("$50"))),
+        _row(7, _with_jev({k: v for k, v in DRESSED.items() if k not in SOLO}, _jev("$50"))),
+        _row(8, _with_jev(DRESSED, _jev("$50"))),
+        _row(9, _with_jev(DRESSED, _jev("free"))),
     ]
 
 
@@ -257,7 +244,6 @@ def case_pool_table():
 
 
 def case_pool_has_no_offer_cap():
-    # The same unbought item stays however often it was offered: the pool reads no offer history.
     assert list(inspect.signature(fs.pool).parameters) == ["rows", "dupe_groups", "owned", "folders", "ask"]
 
 
@@ -268,9 +254,7 @@ def case_pool_folder_filter():
     assert _ids(fs.pool(rows, [], set(), ALL, TITS)) == {1, 2, 3}, "empty include = all, unfiled too"
     assert _ids(fs.pool(rows, [], set(), {"include": ["of:7"], "exclude": []}, TITS)) == {2}
     assert _ids(fs.pool(rows, [], set(), {"include": [], "exclude": ["vf:1"]}, TITS)) == {2, 3}
-    # Filter before collapse: a set's original outside the choice never stands in for its copy inside.
     assert _ids(fs.pool(rows, [[1, 2]], set(), {"include": ["of:7"], "exclude": []}, TITS)) == {2}
-    # A row missing `refs` must not read as unfiled (it would slip past every exclude).
     bare = {k: v for k, v in rows[0].items() if k != "refs"}
     try:
         fs.pool([bare], [], set(), {"include": [], "exclude": ["vf:1"]}, TITS)
@@ -298,24 +282,21 @@ def case_pool_refusal_by_cause():
         assert got == fs.Refusal(want), (why, got)
 
 
-# ── Shoots ───────────────────────────────────────────────────────────
 
-WHITE = {**DRESSED, "clothing_items": ["white bra"]}   # outfit_key "white …"
+WHITE = {**DRESSED, "clothing_items": ["white bra"]}
 RED = {**DRESSED, "clothing_items": ["red dress"]}
 
 
 async def case_shoots_on_photo_only_pool():
     rows = [_row(m, _with_jev(WHITE, _jev("$10")), minutes=m) for m in (1, 2, 3)]
     pooled = fs.pool(rows, [], set(), ALL, TITS)
-    # An account with no DB rows at all: rows and prints passed, so nothing is read.
     shoots = await fs.shoots_for("no-such-account", pooled, {})
     assert len(shoots) >= 1, shoots
     assert {r["media_id"] for r in shoots[0]["items"]} == {1, 2, 3}
 
 
-# ── Pick ─────────────────────────────────────────────────────────────
 
-TOPLESS_J = {"breasts": "y", "topless": "y"}     # Jev reads the `tits` topic
+TOPLESS_J = {"breasts": "y", "topless": "y"}
 
 
 def _tits(mid, lane, kind="photo", fields=DRESSED, minutes=0):
@@ -346,7 +327,6 @@ def case_pick_lowest_lane_at_or_above_target():
     upper = [_tits(2, "$50"), _tits(3, "$100")]
     cheap = [_tits(1, "$10")]
     rows = [
-        # (rows, intensity, expected list cents, why) — 1-2 -> $10, 3 -> $50, 4 -> $100
         (every, 1, 1000, "intensity 1 -> $10"),
         (every, 2, 1000, "intensity 2 -> $10"),
         (every, 3, 5000, "intensity 3 -> $50"),
@@ -433,11 +413,10 @@ def case_pick_free():
     ask = fs.Ask("tits", "photo", 4)
     pooled = fs.pool(rows, [], set(), ALL, ask)
 
-    def unsent(sent):   # the sell step's half: pool minus every media already sent to him
+    def unsent(sent):
         return [r for r in pooled if r["media_id"] not in sent]
 
     rows_ = [
-        # (sent, expected media, expected subject, why)
         ((), (1,), "tits", "lowest matching lane first, heat ignored"),
         ({1}, (2,), "tits", "sent media excluded"),
         ({1, 2}, (3,), "anything", "no unseen match: the lowest-lane unseen item, subject not claimed"),
@@ -450,8 +429,6 @@ def case_pick_free():
     assert fs.pick(unsent({1, 2, 3}), [], ask, seed="s", free=True) == fs.Refusal("all_owned"), \
         "everything sent"
     assert "sent" not in inspect.signature(fs.pick).parameters, "the caller subtracts sent media"
-    # make_right after a Buy: he owns every match of the asked subject. `pool` keeps the rest and
-    # `pick`'s own fallback gives the lowest-lane unseen item, never claiming the subject.
     owned_all = [_tits(10, "$10"), _tits(11, "$50"),
                  _row(12, _with_jev(DRESSED, _jev("$50"))), _row(13, _with_jev(DRESSED, _jev("$10")))]
     left = fs.pool(owned_all, [], {10, 11}, ALL, ask)
@@ -462,7 +439,6 @@ def case_pick_free():
 
 
 def case_same_piece_table():
-    """Ticket 46: a Pending tease's piece re-validated against today's pool."""
     ask = fs.Ask("tits", "photo", 2)
     photos = [_tits(1, "$10", fields=WHITE, minutes=1), _tits(2, "$50", fields=WHITE, minutes=2)]
     preview = _row(7, _with_jev(WHITE, _jev("free")), minutes=7)                  # free-safe
@@ -478,7 +454,6 @@ def case_same_piece_table():
                        [], set(), ALL, ask)
     assert fs.same_piece(repriced, (1,), (), ask).price_cents == 5000, "a teased $10 sells at today's $50"
     rows = [
-        # (pool, locked, previews, why)
         (pooled, (), (), "nothing locked"),
         ([r for r in pooled if r["media_id"] != 2], (1, 2), (7,), "a companion gone: re-pick, never the rest"),
         (pooled, (1, 7), (), "a locked id now free lane"),
@@ -499,11 +474,8 @@ def case_pick_refusals():
         "only a free-lane match: nothing to sell"
 
 
-# ── Loader (seeded temp DB) ──────────────────────────────────────────
 
 async def _seed_vault(aid: str, items: list[tuple], folders: list[tuple]) -> dict[str, int]:
-    """items = [(media_id, of_folder_ids raw, removed?)]; folders = [(name, deleted?, [media ids])].
-    Returns {folder name: id}."""
     async with get_session() as s:
         s.add(Account(id=aid))
         await s.commit()
@@ -568,17 +540,14 @@ async def case_load_rows_fails_closed():
         assert await fs.load_rows(aid) == fs.Refusal("inventory_unknown"), "rows unreadable"
 
 
-# ── Folder prices (an agency's price per folder, `vault_folder_prices`) ──
 
 def _priced(row, cents):
-    """`row` as `load_rows` gives it when its folders carry a price (`folder_cents`)."""
     return {**row, "folder_cents": cents}
 
 
 def case_folder_price_list_table():
     explicit = {"acts": ["fingering"]}
     rows = [
-        # (fields, kind, folder cents, expected, why)
         (_with_jev({}, _jev("$10")), "photo", 2500, 2500, "folder price replaces the $10 lane"),
         (_with_jev({}, _jev("$100")), "photo", 2500, 2500, "a folder price under the lane wins too"),
         (_with_jev(explicit, _jev("$10")), "photo", 2500, 2500, "no explicit bump on a folder price"),
@@ -599,7 +568,7 @@ def case_folder_price_pool():
     rows = [_priced(_row(1, _with_jev(DRESSED, _jev("$10")), refs={"vf:1"}), 2500),
             _priced(_row(2, _with_jev(DRESSED, _jev("review")), refs={"vf:1"}), 2500),
             _priced(_row(3, _with_jev(DRESSED, _jev("$50"))), None),
-            _row(4, _with_jev(DRESSED, _jev("$100")))]          # no folder_cents key at all
+            _row(4, _with_jev(DRESSED, _jev("$100")))]
     got = fs.pool(rows, [], set(), ALL, TITS)
     assert {r["media_id"]: r["list_cents"] for r in got} == {1: 2500, 3: 5000, 4: 10000}, \
         "override; review out; unpriced and key-less rows unchanged"
@@ -610,8 +579,6 @@ def case_folder_price_pool():
 
 
 def case_folder_price_parse_cents_refuses_non_finite():
-    """`parse_cents` (POST /admin/vault-ai/folder-prices): NaN / ±Infinity (`json.loads` accepts
-    them) are refused (a 400 bad_price), never an exception (a 500)."""
     for raw, want in ((json.loads("NaN"), None), (float("inf"), None), (float("-inf"), None),
                       (True, None), ("12", None), (1000.0, 1000), (999, None), (20001, None),
                       (2499, 2499)):
@@ -629,7 +596,6 @@ def case_folder_price_pick_heat_targets():
     low = [_priced(_tits(1, "$10"), 2500), _priced(_tits(2, "$10"), 7000)]
     above = [_priced(_tits(2, "$10"), 7000), _priced(_tits(3, "$10"), 12000)]
     rows = [
-        # (rows, intensity, expected list cents, why) — targets $10 / $50 / $100, lowest at or above, else lowest
         (every, 1, 2500, "heat 1: $25 is the lowest at or above $10"),
         (every, 3, 7000, "heat 3: $70 is the lowest at or above $50"),
         (every, 4, 12000, "heat 4: $120 is the lowest at or above $100"),
@@ -646,8 +612,6 @@ def case_folder_price_pick_heat_targets():
 
 
 def case_folder_price_rides_on_the_pick():
-    """A Pick from a priced folder carries the folder price (`facts["folder_cents"]`) for the
-    steps that reprice it later; an unpriced Pick's facts have no such key."""
     got = _pick([_priced(_tits(1, "$10"), 2499)], fs.Ask("tits", "photo", 1))
     assert got.facts["folder_cents"] == 2499, got.facts
     plain = _pick([_tits(1, "$10"), _priced(_tits(2, "$50"), None)], fs.Ask("tits", "photo", 1))
@@ -688,8 +652,6 @@ async def case_load_rows_folder_cents():
 
 
 async def case_load_rows_standard_off_ignored():
-    """rwl3 A1: with `standard_folders` off a leftover standard folder gives no ref, pack or price,
-    so its saved price never becomes a (final) Pick price; on, it reads as any folder."""
     aid = "sell-load-standard"
     ids = await _seed_vault(aid, [(601, None, False), (602, None, False)], [("plain", False, [602])])
     async with get_session() as s:
@@ -721,7 +683,6 @@ async def case_load_rows_standard_off_ignored():
     assert on["refs"] == {f"vf:{sid}"} and on["folder_cents"] == 7000, on
 
 
-# ── Claim audit + fallback caption (ticket 45) ───────────────────────
 
 CLIP, SET4, MIX = {"video": 1}, {"photo": 4}, {"photo": 2, "video": 1}
 
@@ -740,7 +701,6 @@ def _cpick(kinds, price=2500, subject="anything", description="", descriptions=N
 LEAD = "The woman sits on a bed in lace lingerie, legs apart, toy beside her."
 NUDE = "The woman is nude on the bed, a bodysuit with cutouts exposing her nipples."
 PUSSY2 = _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD, descriptions=[LEAD, NUDE])
-# the owner's 2026-11-14 bubble: 2 locked photos + 1 free preview = 3 thumbnails
 VULVA_CLIP = _cpick({"video": 1}, price=11000, subject="anything",
                     description="A woman lies on a bed, fully nude. She strokes her exposed vulva")
 SHOWN3 = _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD, descriptions=[LEAD, NUDE],
@@ -750,7 +710,6 @@ CLIP_PREVIEW = _cpick(CLIP, previews={"photo": 1})
 
 def case_claim_ok_table():
     rows = [
-        # (text, pick, expected, why)
         ("5 videos just for u", _cpick(CLIP), False, "count and plural over one clip"),
         ("my new video just for u 😏", _cpick(CLIP), True, "one clip, one video"),
         ("a hot vid babe", _cpick(CLIP), True, "a = 1"),
@@ -775,7 +734,6 @@ def case_claim_ok_table():
         ("my ass in this one", _cpick(CLIP, description="bent over showing her butt"), True,
          "a subject its describe text names"),
         ("my tits babe", _cpick(SET4, subject="anything"), False, "anything names no subject"),
-        # measured 2026-11-14 false-fails: 2-photo $100 pussy Pick, the nude photo not the lead
         ("mm i got a pic just for u, $100 to unlock", PUSSY2, True, "he asked for a pic; 2 is over-delivery"),
         ("me naked on my bed with my toy, $100 to unlock", PUSSY2, True, "the second locked item is nude"),
         ("my pussy and tits out for u, $100", PUSSY2, True, "the second locked item shows nipples"),
@@ -792,7 +750,6 @@ def case_claim_ok_table():
         ("my feet for u", PUSSY2, False, "no describe text names feet"),
         ("me naked for u", _cpick({"photo": 2}, price=10000, subject="pussy", description=LEAD), False,
          "no locked item is nude"),
-        # F3a (M3 2026-11-16): a clip word needs a clip like a video noun
         ("i just filmed it for u", _cpick(SET4), False, "filmed over photos"),
         ("i just filmed it for u", _cpick(CLIP), True, "filmed over a clip"),
         ("recorded this for u", _cpick({"photo": 1}), False, "recorded over one photo"),
@@ -819,7 +776,6 @@ FEET_ASKED_TOY = _tagged(SET4, "photo", asked_subject="toy", subject="anything")
 
 
 def case_claim_ok_tagged_table():
-    """F1d: a tagged Pick excuses the ASKED format's noun / subject word after a negation cue."""
     rows = [
         ("no vid of that babe but ive got 3 pics", PICS3_ASKED_VID, True, "negated asked noun"),
         ("heres the video", PICS3_ASKED_VID, False, "a plain video claim"),
@@ -834,17 +790,14 @@ def case_claim_ok_tagged_table():
         ("no toy one rn, 4 pics of me", FEET_ASKED_TOY, True, "negated asked subject word"),
         ("my toy in all 4 pics", FEET_ASKED_TOY, False, "the asked subject claimed"),
         ("no ass pics rn", FEET_ASKED_TOY, False, "only the ASKED subject is excused"),
-        # item 6 (2026-11-16): on an asked video, a clip word is excused after a cue like its nouns
         ("no filming rn, 3 pics", PICS3_ASKED_VID, True, "negated clip word, asked video"),
         ("i havent filmed that one yet but these 3 pics", PICS3_ASKED_VID, True, "havent filmed"),
         ("i just filmed it for u", PICS3_ASKED_VID, False, "filmed over photos, no cue"),
         ("no filming rn, this vid tho", VID_ASKED_PICS, True, "a clip is a clip"),
         ("never recorded one, 4 pics", FEET_ASKED_TOY, False, "asked photo: clip words never excused"),
-        # rwl3 A6: "not just" / "not only" affirms the noun, it denies nothing
         ("not just a video babe, 3 pics, $34 to unlock", PICS3_ASKED_VID, False, "not just affirms"),
         ("not only a vid, 3 pics", PICS3_ASKED_VID, False, "not only affirms"),
         ("its not a vid, just 3 pics", PICS3_ASKED_VID, True, "a real denial still excused"),
-        # 2026-11-17 replay: the cue negates the whole asked phrase, past of / my / ur / your only
         ("i don't have a feet video babe, but here's 3 pics", FEET_VID_ASKED, True, "feet video, cue 4 back"),
         ("3 pics instead of the feet video", FEET_VID_ASKED, True, "instead of the feet video"),
         ("no video of my feet babe, 3 pics tho", FEET_VID_ASKED, True, "video of my feet"),
@@ -852,12 +805,10 @@ def case_claim_ok_tagged_table():
         ("not now, heres a video of my feet", FEET_VID_ASKED, False, "the phrase starts past the cue"),
         ("not just a feet video, 3 pics", FEET_VID_ASKED, False, "not just: the phrase is affirmed"),
         ("no feet rn babe, heres the video", FEET_VID_ASKED, False, "a later video is no continuation"),
-        # W30 #4b: a cue reaches only its own clause (split at . ! ? ; : , and line breaks)
         ("No video of my feet. Videos right here, plus 3 pics for $25", FEET_VID_ASKED, False,
          "the next sentence's video is claimed"),
         ("no vid! this video tho", PICS3_ASKED_VID, False, "a cue before the sentence end"),
         ("no video of my feet. 3 pics tho", FEET_VID_ASKED, True, "the denial in its own sentence"),
-        # W30 #19: but / though / tho / although / however start a clause too
         ("No video but videos here", PICS3_ASKED_VID, False, "the video after but is claimed"),
         ("no vid tho videos for u", PICS3_ASKED_VID, False, "the video after tho is claimed"),
         ("no vid however these videos", PICS3_ASKED_VID, False, "the video after however is claimed"),
@@ -865,7 +816,6 @@ def case_claim_ok_tagged_table():
     ]
     for text, pick, want, why in rows:
         assert fs.claim_ok(text, pick) is want, (why, text)
-    # an untagged Pick reads exactly as before: the negation never excuses
     for text in ("no vid of that babe but ive got 3 pics", "dont have a vid, 3 pics"):
         assert fs.claim_ok(text, _cpick({"photo": 3}, price=3400)) is False, text
 
@@ -888,7 +838,6 @@ def case_caption_fails_names_each_check():
 
 
 def case_discloses_table():
-    """F1e: a tagged Pick's text needs a negation cue and, format differing, a real-format noun."""
     rows = [
         ("heres ur video babe", _cpick(CLIP), True, "untagged: always"),
         ("", _cpick(SET4), True, "untagged: empty too"),
@@ -899,7 +848,6 @@ def case_discloses_table():
         ("dont have that one babe", VID_ASKED_PICS, False, "a clip asked photo needs a video noun"),
         ("not the toy one babe but u'll love it", FEET_ASKED_TOY, True, "same format: the cue alone"),
         ("u'll love it", FEET_ASKED_TOY, False, "same format, no cue"),
-        # item 7 (2026-11-16): a cue within 4 words before an asked word, or a disclosure phrase
         ("can't wait for u to see these 3 pics 😈", PICS3_ASKED_VID, False, "a cue near nothing asked"),
         ("can't wait for u to see these 😈", FEET_ASKED_TOY, False, "same, same format"),
         ("no panties in these", FEET_VID_ASKED, False, "the cue negates no asked word"),
@@ -974,17 +922,15 @@ def case_count_readers_table():
 
 
 def case_real_formats_table():
-    """Item 4 (2026-11-16): `real_formats` reads the Pick's per-item kinds, not its first kind;
-    `discloses` wants a noun of any real kind; audio is neither photo nor video."""
     for kinds, want in [({"photo": 3}, {"photo"}), ({"video": 1}, {"video"}), ({"gif": 1}, {"video"}),
                         ({"photo": 2, "video": 1}, {"photo", "video"}), ({"audio": 1}, set()),
                         ({"audio": 1, "photo": 1}, {"photo"})]:
         assert fs.real_formats(_cpick(kinds)) == want, (kinds, fs.real_formats(_cpick(kinds)))
     mixed = _tagged({"photo": 2, "video": 1}, "photo")
-    assert fs.discloses("no pics like that babe, this one has a vid", mixed)        # a real kind noun
+    assert fs.discloses("no pics like that babe, this one has a vid", mixed)
     assert fs.discloses("no pics like that babe, 2 pics and a vid", mixed)
     audio = _tagged({"audio": 1}, "video")
-    assert fs.discloses("no vid of that babe, but u can hear me", audio)            # no noun demanded
+    assert fs.discloses("no vid of that babe, but u can hear me", audio)
     assert not fs.discloses("u can hear me babe", audio)
     cap = fs.fallback_caption(audio, "offer")
     assert "voice note" in cap and fs.discloses(cap, audio) and fs.claim_ok(cap, audio), cap
@@ -992,7 +938,6 @@ def case_real_formats_table():
 
 def case_price_ok_table():
     rows = [
-        # (text, price_cents, expected, why)
         ("its $25 to unlock", 2500, True, "the price"),
         ("25$ babe", 2500, True, "symbol after"),
         ("$25.00", 2500, True, "cents spelled"),
@@ -1056,11 +1001,9 @@ def case_fallback_caption_table():
 
 
 
-# ── Haggle quote (ticket 47; spec › Interfaces `clamp_quote`, `quoted_cents`) ──
 
 def case_clamp_quote_table():
     rows = [
-        # (list, asked, expected, why) — worked by hand from the spec's formula
         (5000, 2000, 3400, "spec example: $50 list, $20 asked -> 67 % = $33.50 -> $34"),
         (5000, None, 3400, "no amount -> the floor"),
         (5000, 4000, 4000, "inside the range: his amount"),
@@ -1082,11 +1025,10 @@ def case_clamp_quote_table():
 
 
 def case_clamp_quote_sweep():
-    """The property sweep: every list $10..$200 at $1 steps, eight asked amounts each."""
     n = 0
     for dollars in range(10, 201):
         lst = dollars * 100
-        least = -(-67 * lst // 100)          # ceil(0.67 * list) in exact integers
+        least = -(-67 * lst // 100)
         floor = max(1000, -(-least // 100) * 100)
         for asked in (None, 0, 1, floor - 1, floor, lst, lst + 1, 10 ** 6):
             got = fs.clamp_quote(lst, asked)
@@ -1098,7 +1040,6 @@ def case_clamp_quote_sweep():
 
 def case_quoted_cents_table():
     rows = [
-        # (his text, expected cents, why)
         ("would you do $20?", 2000, "$ before"),
         ("would you do 20$", 2000, "$ after"),
         ("$ 25 ok?", 2500, "$ then a space"),

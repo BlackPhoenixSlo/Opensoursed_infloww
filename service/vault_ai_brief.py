@@ -1,22 +1,3 @@
-"""service/vault_ai_brief.py — the describe taxonomy, read as selling facts.
-
-The V2 describe pass stores ~21 structured fields per item (`ai_fields_json`):
-`beats`, `acts`, `clothing_state`, `penetration`, `position`, `setting`,
-`camera`, `toys`, `people_count`, `partner_visible`, `face_visible`,
-`explicitness`, `primary_folder`, `sellable`, `confidence`, …
-
-This module owns the readers of those fields: the visibility flags (`vis`,
-`is_bare`, `garment_over`, `flags_known`), the `contradictions` between the two
-passes and the `settled_reading` every consumer reads instead, and
-`sellability()`, which the folder pipeline in `vault_scripts` reads instead of
-re-deriving the selling taxonomy.
-
-Everything here is derived from fields the describe pass actually writes — no
-invented schema. `sellability()` is deliberately conservative: it reports what
-the data supports and says `unknown` rather than guessing, because a confident
-wrong call about what's in a clip is how a fan gets sold something that isn't
-there and asks for a refund.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -25,15 +6,10 @@ import json
 import re
 from typing import Any, Iterator
 
-import vault_jev_rules  # pure, no imports: no cycle
+import vault_jev_rules
 
-# Ordered low → high. This IS the escalation ladder: a night's sends walk it
-# upward, a re-sell to someone who already owns the top walks it back down.
 EXPLICITNESS_LADDER = ("sfw", "suggestive", "explicit", "hardcore")
 
-# Clothing states ranked by how much REVEAL is still unspent. The "almost"
-# states outsell full nudity on a first ask because there is still something
-# left to promise.
 _REVEAL_TENSION = {
     "dressed": "everything still to come",
     "lingerie_on": "everything still to come",
@@ -43,8 +19,6 @@ _REVEAL_TENSION = {
     "fully_nude": "nothing left to reveal — sell the ACT, not the strip",
 }
 
-# Acts that constitute a payoff rather than a build-up. An item with one of
-# these can close on its own; an item without one is a rung, not a finish.
 _PAYOFF_ACTS = {
     "fingering", "toy_insertion", "toy_on_clit", "riding_toy", "rubbing_clit",
     "masturbation_orgasm", "squirt", "blowjob", "handjob", "cumshot",
@@ -52,117 +26,35 @@ _PAYOFF_ACTS = {
 }
 
 
-# ── The flags pass contract ─────────────────────────────────────────
-#
-# Canonical HERE because three modules depend on it and must not drift:
-# `vault_ai_vision` writes it, `vault_scripts` gates lanes on it, and
-# `vault_ai_fix` grades it.
-#
-# WHY AN ENUM AND NOT BOOLEANS. The v1 shape asked `pussy_covered` /
-# `breasts_covered`, and measurement killed it:
-#
-#   * The two asked OPPOSITE questions. `pussy_covered` was about FABRIC ("out
-#     of frame → false"); `breasts_covered` was about VISIBILITY ("not visible
-#     → true"). So `false` meant "no fabric on it" in one and "actually on
-#     show" in the other, and no caller could treat them uniformly.
-#   * Because "not in frame" and "not covered" both collapsed to `false`, an
-#     item could qualify for the mass-safe lane by having NO EVIDENCE rather
-#     than by being safe. That is vacuous truth, and it put an anal-penetration
-#     clip and a dildo clip in the folder whose entire job is to be safe. It
-#     was patched twice; both patches were crutches on `body_focus`, a field
-#     that is frequently absent and was never an exposure signal.
-#   * `breasts_covered` came back `false` on 94 of 103 the graded vault items,
-#     including 14 tagged `dressed` or `sfw`. A flag that is ~91% constant and
-#     contradicts the describe pass on clothed stills carries no information.
-#     The double-negative phrasing ("are her bare breasts KEPT FROM VIEW")
-#     fought the model's natural polarity.
-#
-# The enum fixes the class of bug rather than the instances: `not_in_frame` is
-# a STATED answer, so absence of evidence stops being expressible as safety,
-# and every region answers the same question in the same direction.
-#
-# WHY THE TOP STATE IS "bare" AND NOT "visible". It was `visible` for one
-# measured round and the model answered it 74 times out of 81 stills, including
-# on a white tank top and a black halter top — it read the LABEL ("is her chest
-# visible in this photo") and skipped the definition underneath it ("and bare").
-# The old boolean failed the mirror-image way for the same reason: `covered` as
-# a label pulled toward "not covered" on anything racy. A one-word label is what
-# the model actually classifies against, so the label has to be the question.
-# `bare` cannot be satisfied by cleavage.
+# Enum, not booleans: not_in_frame is a stated answer so absence of evidence cannot read as safe; top state is bare (a "visible" label pulled the model to answer yes on tank tops).
 VIS_STATES: tuple[str, ...] = ("not_in_frame", "covered", "bare")
 
-# Ordered by how much is on show. Folding several frames of a clip takes the
-# MAX — one exposed frame exposes the clip.
 _VIS_RANK = {s: i for i, s in enumerate(VIS_STATES)}
 
-# The regions asked about. `anus` is separate from the rest of her rear
-# deliberately: a bare backside is fine in a mass send (that is the whole point
-# of the "turned away" lane) while an exposed anus is not, and the clip that
-# proved it listed `body_focus: ['ass','anus','fingers']`.
+# anus is separate from the rest of the rear: a bare backside is fine in a mass send, an exposed anus is not.
 VIS_REGIONS: tuple[str, ...] = ("vulva_vis", "breasts_vis", "anus_vis")
 
-# `underwear_visible` survives the rewrite untouched. It already asks a
-# positive, single-direction question ("is ANY garment visible"), it measured a
-# healthy 58/24 split rather than pinning to one answer, and it is what
-# rescued the $50 tier from the `fully_nude` mislabels.
 FLAG_KEYS: tuple[str, ...] = ("underwear_visible", *VIS_REGIONS)
 
-# The flags VERSION stamped onto every answer (`_flags_v`; `vault_ai_vision`'s qwen
-# prompt and `vault_jev_flags`' mapping both stamp it, consumers require it).
-#
-# Bumped whenever the wording changes in a way that could move an answer. It
-# exists because three separate times in one session a score was taken against
-# a half-finished re-run and read as a result: v2 rows and v3 rows are
-# indistinguishable once stored, so a partial sweep looks exactly like a
-# finished one. With a stamp, `flags_all` can re-run only what is stale, and a
-# scorer can refuse to report on a mixed vault.
-#
-#   1  two booleans, `pussy_covered` / `breasts_covered`
-#   2  three-state enum per region, garment named first
-#   3  in-frame/skin decision tree + sheer-fabric rule + insertion reconcile
 FLAGS_VERSION = 3
 
-# What the model NAMED over each region ("white tank top", "her right hand"),
-# absent when there was nothing to name. The flags pass asks for these before
-# it asks for a state, because naming a garment is a far easier question than
-# judging exposure — and it is answered correctly on photos where the state
-# question is not. It then overrules the state: name something, and the region
-# is covered. Optional by nature, so NOT part of `flags_known`.
 OVER_KEYS: dict[str, str] = {"breasts_vis": "over_breasts",
                              "vulva_vis": "over_vulva",
                              "anus_vis": "over_anus"}
 
 
-# Garments that cannot cover a given region. The model sometimes fills every
-# `over_` slot with the one garment it can see — "pink thong" over her breasts
-# on a still whose own description reads "fully nude except for pink underwear",
-# i.e. topless. A bodysuit legitimately covers both; a thong does not, and that
-# copy put a topless still in the mass-safe folder. Checked per region rather
-# than by trying to detect duplication, because duplication is correct for
-# one-piece garments.
 _IMPOSSIBLE_OVER: dict[str, frozenset[str]] = {
     "breasts_vis": frozenset({"thong", "panties", "panty", "knickers", "briefs",
                               "g-string", "gstring", "shorts", "skirt",
                               "stockings", "socks", "boots", "heels"}),
     "vulva_vis": frozenset({"bra", "bralette", "top", "tank", "t-shirt",
                             "tshirt", "blouse", "shirt", "necklace", "choker"}),
-    # Same top-garment list as the vulva. Omitting it let "pink string bra"
-    # stand as the thing covering her anus on six real rows — the model fills
-    # every slot with the one garment it can see, and a region with no
-    # impossible-list is the one where that always survives.
     "anus_vis": frozenset({"bra", "bralette", "top", "tank", "t-shirt",
                            "tshirt", "blouse", "shirt", "necklace", "choker"}),
 }
 
 
 def garment_over(fields: dict[str, Any] | None, region: str) -> str:
-    """What is over this region, in the model's words, or "".
-
-    Returns "" when the named garment could not physically be there, so the
-    caller falls back to "covered by something unnamed" — which every lane
-    already treats as not knowing. A wrong name is worse than no name: it is
-    what marks an exposed region decently covered.
-    """
     if not isinstance(fields, dict):
         return ""
     v = fields.get(OVER_KEYS.get(region, ""))
@@ -174,12 +66,6 @@ def garment_over(fields: dict[str, Any] | None, region: str) -> str:
     return "" if words & impossible else name
 
 
-# Things that cover without being clothing. She is still NUDE behind her own
-# hand, and a hand-bra nude is a nude at full price — but she is not nude behind
-# a thong. `covered` treats the two alike, because for "what is on show" they
-# are alike; nudity must not, because for "what is she wearing" they are
-# opposites. This is the whole reason the named string is kept rather than
-# collapsed into a boolean at write time.
 _NOT_CLOTHING = frozenset({
     "hand", "hands", "finger", "fingers", "palm", "fist", "arm", "arms",
     "forearm", "elbow", "wrist", "thigh", "thighs", "leg", "legs", "knee",
@@ -193,13 +79,6 @@ _FILLER = frozenset({"her", "his", "the", "a", "an", "own", "of", "and", "is",
 
 
 def is_clothing(name: str) -> bool:
-    """Is the named thing a GARMENT, as opposed to a body part or the bedding?
-
-    Decided on the content words: "her right hand" and "the bedsheet" reduce to
-    nothing but body/bedding words, while "black lace thong" keeps `thong`. An
-    unrecognised word counts AS clothing, so an unusual garment is not silently
-    treated as a hand.
-    """
     words = [w for w in re.split(r"[\s,./-]+", (name or "").lower()) if w]
     content = [w for w in words if w not in _FILLER]
     if not content:
@@ -209,24 +88,10 @@ def is_clothing(name: str) -> bool:
 
 
 def wearing_something(fields: dict[str, Any] | None) -> bool:
-    """A GARMENT was named over her chest or her crotch.
-
-    Distinct from `underwear_visible`, which asks only about UNDERWEAR and so
-    answers False for a woman in a tank top and a skirt — technically right,
-    and the reason a fully-dressed street selfie read as nude.
-    """
     return any(is_clothing(garment_over(fields, r)) for r in OVER_KEYS)
 
 
 def flags_known(fields: dict[str, Any] | None) -> bool:
-    """Has this item actually been looked at by the flags pass?
-
-    The difference between "we checked and nothing is on show" and "we never
-    checked" is the whole safety of any lane that claims something is safe to
-    mass-send. Absence of evidence is not evidence of absence — so a row that
-    is missing a region, or carries a value outside `VIS_STATES`, is unknown
-    and must be excluded rather than assumed safe.
-    """
     if not isinstance(fields, dict):
         return False
     if not isinstance(fields.get("underwear_visible"), bool):
@@ -235,11 +100,6 @@ def flags_known(fields: dict[str, Any] | None) -> bool:
 
 
 def vis(fields: dict[str, Any] | None, region: str) -> str:
-    """The stored state for one region, or `""` if it was never answered.
-
-    Never guesses a default: an unanswered region reads as unknown at every
-    call site, which is the only reading that cannot manufacture safety.
-    """
     if not isinstance(fields, dict):
         return ""
     v = fields.get(region)
@@ -247,10 +107,6 @@ def vis(fields: dict[str, Any] | None, region: str) -> str:
 
 
 def is_bare(fields: dict[str, Any] | None, region: str) -> bool:
-    """That part of her is in frame AND has nothing over it. Unknown reads as
-    False, so this is only ever safe where NOT-bare is the permissive answer —
-    pair it with `flags_known` anywhere a lane grants access on its strength.
-    """
     return vis(fields, region) == "bare"
 
 
@@ -260,74 +116,32 @@ def any_bare(fields: dict[str, Any] | None,
 
 
 def fold_vis(states: list[str]) -> str:
-    """Several frames of one clip → one verdict, by MAX exposure.
-
-    `bare` in any frame exposes the clip; `not_in_frame` everywhere means it
-    was never in shot. Taking the max is the conservative direction for a
-    safety gate, and — unlike the old `all()` over booleans — a frame that
-    simply could not see the region no longer reads as an exposed one. That
-    conflation is why 20 of 21 the graded vault clips folded to "uncovered".
-    """
     ranked = [_VIS_RANK[s] for s in states if s in _VIS_RANK]
     return VIS_STATES[max(ranked)] if ranked else ""
 
 
-# ── Free quality measurement ────────────────────────────────────────
-#
-# There is no labelled ground truth for this vault and hand-labelling it is the
-# one cost we cannot make trivial. But the row self-checks: the describe pass
-# and the flags pass look at the same image and answer overlapping questions,
-# so where they disagree, one of them is provably wrong — no human needed.
-#
-# That turns "does the new prompt work better" from a matter of taste into a
-# number that can be run before and after any change. The v1 flags scored 14
-# contradictions on 103 the graded vault items (13.6%); anything that replaces them has
-# to beat that.
 CONTRADICTIONS: dict[str, str] = {
     "dressed_but_bare": "clothing_state=dressed, yet a bare region is visible",
     "sfw_but_bare": "explicitness=sfw, yet a bare region is visible",
     "nude_but_clothed": "clothing_state=fully_nude, yet a garment is visible",
     "lingerie_but_nothing_on": "clothing_state=lingerie_on, yet no garment is visible",
     "penetration_offscreen": "genital act recorded, yet neither vulva nor anus is in frame",
-    # Not two passes disagreeing: Jev read a clip off frames that can miss what the 720p ones show (no 720p
-    # rendition, over the download cap, or OF's posters only; `_jev.review`, D54), so its lane may be too low.
     "jev_review": "Jev read this clip off low-res, partial or poster frames, so its lane may be too low",
-    # A current Jev reading against the stored flags / tier (what the flags mapper stamps, `vault_jev_flags.apply`):
-    # flags or a tier stamped before that reading (a stale `covered`, pre-F1a; a pre-Jev describe's sfw /
-    # suggestive beside a paid lane) until the sweep re-stamps them, or a clip whose stored frames do not decode
-    # (`vault_jev_rules.UNDECODED`) until Jev re-reads it.
     "jev_bare_unflagged": "Jev reads a region bare or a paid lane (or its stored frames do not decode), yet the "
                           "stored flags / tier do not say so",
 }
 
-# The `acts` values that assert something is inside her, and the `penetration`
-# values that assert nothing is. `penetration_claimed` reads them; the copy
-# hedge (`claimed_acts`, for penetration_offscreen) drops the wider
-# GENITAL_ACTS below, the set the detector disputes.
 PENETRATING_ACTS: frozenset[str] = frozenset({
     "fingering", "toy_insertion", "riding_toy", "sex_missionary",
     "sex_doggy", "sex_riding",
 })
-# The wider set that all NEED the vulva or anus in the frame to be depicted at
-# all: insertion, clitoral contact, and squirting. So a genital act recorded
-# beside `vulva_vis: not_in_frame` AND `anus_vis: not_in_frame` cannot both be
-# true — one pass hallucinated. Kept distinct from PENETRATING_ACTS, which means
-# specifically "physically inside her" and is used elsewhere to overrule a
-# `covered` region (clit-rubbing over fabric is legitimate, so it must NOT be in
-# that set). `rubbing_clit`/`toy_on_clit` touch the clitoris (part of the vulva);
-# `squirt` issues from the vulva. Deliberately NOT here: `spreading` and
-# `masturbation_orgasm`, which can be framed without the genitals in shot.
 GENITAL_ACTS: frozenset[str] = PENETRATING_ACTS | frozenset({
     "rubbing_clit", "toy_on_clit", "squirt",
 })
-# "none" and "unclear" are ANSWERS, not findings. Truthiness alone read them as
-# penetration, so an item the model had explicitly cleared still disputed — and
-# writing "none" to settle it changed nothing.
 _NO_PENETRATION: frozenset[str] = frozenset({"", "none", "unclear"})
 
 
 def penetration_claimed(fields: dict[str, Any] | None) -> bool:
-    """Do these fields assert penetration, from either source?"""
     if not isinstance(fields, dict):
         return False
     if _scalar(fields, "penetration").lower().strip() not in _NO_PENETRATION:
@@ -336,11 +150,6 @@ def penetration_claimed(fields: dict[str, Any] | None) -> bool:
 
 
 def genital_act_claimed(fields: dict[str, Any] | None) -> bool:
-    """Do these fields assert any act that NEEDS the genitals in frame — from
-    either source? Penetration, clit contact, or squirt (`GENITAL_ACTS`). A
-    superset of `penetration_claimed`: it also catches `rubbing_clit` on a still
-    where the vulva is `not_in_frame`, the describe pass inventing an act it
-    could not have seen."""
     if penetration_claimed(fields):
         return True
     if not isinstance(fields, dict):
@@ -353,11 +162,6 @@ _MEMO: contextvars.ContextVar[dict | None] = contextvars.ContextVar("vault_ai_br
 
 @contextlib.contextmanager
 def reading_memo() -> Iterator[None]:
-    """Inside the block `contradictions` and `sellability` derive each (fields object, duration) once and
-    hand out copies. Opt-in, scoped to the current context (no other thread / task sees it), reentrant.
-    The caller promises no fields dict is edited inside the block (Fill's plan,
-    `script_fill_decide.plan_over_vault`). Values handed out: `payoff_acts` and the code list are copied;
-    every other `sellability` value is a scalar or `fields["sellable"]` itself (no memo-made object)."""
     if _MEMO.get() is not None:
         yield
         return
@@ -374,39 +178,22 @@ def _memo(name: str, fields: Any, extra: Any, derive: Any) -> Any:
         return derive()
     key = (name, id(fields), extra)
     hit = memo.get(key)
-    if hit is None or hit[0] is not fields:     # holding `fields` keeps its id from being reused
+    if hit is None or hit[0] is not fields:
         hit = memo[key] = (fields, derive())
     return hit[1]
 
 
 def contradictions(fields: dict[str, Any] | None) -> list[str]:
-    """`_contradictions`, memoised inside `reading_memo`."""
     return list(_memo("codes", fields, None, lambda: _contradictions(fields)))
 
 
 def _contradictions(fields: dict[str, Any] | None) -> list[str]:
-    """Which stored facts about this item cannot all be true at once.
-
-    Only fires where BOTH sides of the check were actually answered, so an
-    unflagged or half-described row scores clean rather than noisy — this
-    measures disagreement, not coverage. Exceptions, disputes with or without
-    flags: a Jev reading held for review (`_jev.review`, e.g. a clip whose
-    frames failed), so a legacy row with no current flags still never rides a
-    free / mass lane (F21); and `jev_bare_unflagged` (W30 C1 / D1), a current
-    Jev reading the stored fields do not match the way the flags mapper
-    (`vault_jev_flags.apply`) would stamp them: a region it reads bare
-    (`vault_jev_rules.bare_regions`: by the lane, or a firm body "y" unless
-    the operator picked the lane) that the flags do not say bare (none
-    stamped yet included), a paid lane beside an sfw / suggestive
-    `explicitness`, or a clip whose stored frames do not decode
-    (`vault_jev_rules.UNDECODED`).
-    """
     if not isinstance(fields, dict):
         return []
     jev = fields.get(vault_jev_rules.JEV_KEY)
     review = ["jev_review"] if isinstance(jev, dict) and jev.get("review") else []
     if vault_jev_rules.current(fields):
-        body = vault_jev_rules.body(jev)   # once: a stored clip's re-derives its frames (W30 D4)
+        body = vault_jev_rules.body(jev)
         jev_bare = vault_jev_rules.bare_regions(jev, body)
         if jev_bare is not None and (
                 vault_jev_rules.UNDECODED in body.values()
@@ -438,83 +225,34 @@ def _contradictions(fields: dict[str, Any] | None) -> list[str]:
     return out + review
 
 
-# ── Settling a dispute without a human ──────────────────────────────
-#
-# A "Fix disagreements" queue asked the operator to pick a side on every
-# contradiction. Nobody worked it, so disputed items sat in the free lanes with
-# copy that claimed whatever the describe pass said. The owner's rule replaces
-# it: when the two passes disagree, read the item the LEAST HARMFUL way.
-#
-# Harm runs two ways and they are not equal. Giving away a reveal in a story or
-# a mass send cannot be taken back; claiming in copy something the picture does
-# not show is a refund. So, per contradiction:
-#
-#   nude_but_clothed / lingerie_but_nothing_on — the flags pass LOOKED at each
-#       region and named what covers it; it wins for price and for copy. The
-#       copy brief never says "fully nude" off a disputed item.
-#   dressed_but_bare / sfw_but_bare — something reads bare, so price it as the
-#       paid material it may be (the more explicit side), but the copy claims no
-#       nudity: only the describe pass vouches for what is covered.
-#   penetration_offscreen — the acts stay (they are what keeps the item out of
-#       the mass-safe lane), but the copy claims no genital act.
-#   jev_bare_unflagged — a current Jev reading the stored flags / tier do not
-#       match (a region it reads bare not flagged bare, a paid lane beside an
-#       sfw / suggestive tier, or frames that do not decode): no free lane.
-#
-# And for every code: a disputed item is never in a free lane.
-#
-# Read-time only. Nothing here writes a field, so a later re-run of either pass
-# can still settle the item for real, and `locked_fields_json` keeps meaning "a
-# human decided".
 
-# Marks a settled dict, holding the codes it was settled from. Read-time only,
-# never written back; leading underscore like `_graded`.
 SETTLED_KEY = "_settled"
 
 _PAID_TIERS = ("explicit", "hardcore")
-_FREE_TIERS = ("sfw", "suggestive")   # a tier no paid Jev lane may sit beside (`jev_bare_unflagged`)
+_FREE_TIERS = ("sfw", "suggestive")
 
-# The clothing state that matches what is on show: (breasts bare?, vulva bare?).
-# Never `fully_nude`, so a disputed item's copy never claims full nudity.
 _CLOTHING_FOR = {
     (False, False): "lingerie_on",
-    (True, False): "pulled_down",     # topless, still covered below
-    (False, True): "pulled_aside",    # covered above, exposed below
-    (True, True): "partially_off",    # both out, something still on
+    (True, False): "pulled_down",
+    (False, True): "pulled_aside",
+    (True, True): "partially_off",
 }
 
-# The same keyed on whether a real GARMENT is worn over each region. A hand or
-# her hair over her chest is not a garment, so a hand-bra with a thong on is
-# `pulled_down`, not `lingerie_on`. `underwear_visible` is true wherever this is
-# used, so nothing worn maps to `partially_off` (an accessory on), never nude.
 _CLOTHING_WORN = {
     (True, True): "lingerie_on",
-    (False, True): "pulled_down",     # chest bare, bottom on: topless
-    (True, False): "pulled_aside",    # top on, bottom exposed
+    (False, True): "pulled_down",
+    (True, False): "pulled_aside",
     (False, False): "partially_off",
 }
 
-# The codes whose copy must not claim nudity (the describe pass says covered).
 _HEDGE_NUDITY = frozenset({"dressed_but_bare", "sfw_but_bare"})
 
 
 def _worn(fields: dict[str, Any], region: str) -> bool:
-    """A real garment is named over this region (a hand or her hair is not)."""
     return is_clothing(garment_over(fields, region))
 
 
 def settled_reading(fields: dict[str, Any] | None) -> dict[str, Any] | None:
-    """`fields` read the least harmful way wherever the two passes disagree.
-
-    Returns `fields` itself when nothing contradicts (or it is already settled),
-    else a copy carrying `SETTLED_KEY` with:
-      * `clothing_state` taken from the flags for nude_but_clothed and
-        lingerie_but_nothing_on (never `fully_nude`);
-      * `explicitness` raised to `explicit` for dressed_but_bare / sfw_but_bare
-        below the paid tiers, so the lanes price what the flags see bare.
-    Acts and penetration are left alone; `sellability` hedges the copy off the
-    marker instead. Idempotent.
-    """
     if not isinstance(fields, dict) or SETTLED_KEY in fields:
         return fields
     codes = contradictions(fields)
@@ -537,9 +275,6 @@ def settled_reading(fields: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def settled_codes(fields: dict[str, Any] | None) -> list[str]:
-    """The contradiction codes behind this item: from the marker on a settled
-    dict, else detected. Settling clears some codes (a fixed clothing state no
-    longer contradicts), so the marker is what remembers it was disputed."""
     if not isinstance(fields, dict):
         return []
     marked = fields.get(SETTLED_KEY)
@@ -547,22 +282,14 @@ def settled_codes(fields: dict[str, Any] | None) -> list[str]:
 
 
 def is_disputed(fields: dict[str, Any] | None) -> bool:
-    """The two passes disagree about this item, settled or not. Such an item is
-    never put in a free lane."""
     return bool(settled_codes(fields))
 
 
 def free_vetoed(fields: dict[str, Any] | None) -> bool:
-    """No free topic split or free pack rung may hold this item, whatever Jev's
-    lane says: the passes disagree (`is_disputed`) or a region reads bare
-    (`any_bare`, an operator-locked flag included)."""
     return is_disputed(fields) or any_bare(fields)
 
 
 def claimed_acts(fields: dict[str, Any] | None) -> list[str]:
-    """The acts the copy may claim: all of them, unless the genitals are out of
-    frame on both passes' combined reading (penetration_offscreen), when no
-    genital act is claimed."""
     if not isinstance(fields, dict):
         return []
     acts = _clean(fields.get("acts"))
@@ -572,17 +299,12 @@ def claimed_acts(fields: dict[str, Any] | None) -> list[str]:
 
 
 def _copy_clothing(fields: dict[str, Any]) -> str:
-    """The clothing state the copy may claim. `dressed` where the describe pass
-    says covered and the flags say bare: claim no nudity."""
     if _HEDGE_NUDITY & set(settled_codes(fields)):
         return "dressed"
     return _scalar(fields, "clothing_state").lower()
 
 
 def settled_notes(fields: dict[str, Any] | None) -> list[str]:
-    """One line per code — what disagreed (`CONTRADICTIONS`) and how it was
-    auto-settled — then the lane rule. For the grading queue, so a sampled
-    check can see the reading the lanes and copy used."""
     if not isinstance(fields, dict):
         return []
     codes = settled_codes(fields)
@@ -604,7 +326,6 @@ def settled_notes(fields: dict[str, Any] | None) -> list[str]:
 
 
 def load_fields(raw: str | dict | None) -> dict[str, Any]:
-    """`ai_fields_json` → dict. Tolerates the column being empty or malformed."""
     if isinstance(raw, dict):
         return raw
     if not raw:
@@ -617,8 +338,6 @@ def load_fields(raw: str | dict | None) -> dict[str, Any]:
 
 
 def _clean(v: Any) -> list[str]:
-    """Drop the model's null-ish placeholders so they never reach the brief as
-    if they were findings."""
     if isinstance(v, str):
         v = [v]
     if not isinstance(v, list):
@@ -635,28 +354,12 @@ def _scalar(fields: dict, key: str) -> str:
 
 def sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
                 ) -> dict[str, Any]:
-    """`_sellability`, memoised inside `reading_memo`."""
     got = _memo("sell", fields, duration_seconds, lambda: _sellability(fields, duration_seconds=duration_seconds))
     return {**got, "payoff_acts": list(got["payoff_acts"])}
 
 
 def _sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
                  ) -> dict[str, Any]:
-    """What the stored facts support, as a decision aid for the seller.
-
-    `stands_alone` — has a payoff act, so it can close a sale by itself rather
-    than only teeing up the next rung.
-    `rung` — its index on EXPLICITNESS_LADDER, i.e. where it sits in a night's
-    escalation (and where it lands on the way back down for a re-sell).
-    `solo` — one person, no partner visible. A solo piece can be sold as
-    "just me, thinking about you"; partner content CANNOT, and mis-framing it
-    is a refund.
-
-    Reads the `settled_reading`: a disputed item's tier is the price side, its
-    reveal and acts only what both passes agree on (`claimed_acts`,
-    `_copy_clothing`), so `stands_alone`/`payoff_acts`/`penetration` never
-    claim a genital act the frame does not show.
-    """
     fields = settled_reading(fields) or {}
     acts = {a.lower() for a in claimed_acts(fields)}
     offscreen = "penetration_offscreen" in settled_codes(fields)
@@ -687,17 +390,9 @@ def _sellability(fields: dict[str, Any], *, duration_seconds: int | None = None
 
 
 
-# ── Ported verbatim from old fastt vault_ai_brief.py:425-561 (OLD-OTH-29) for Full AI Chat's caption
-# call (`automations/full_ai_caption`): the fact block and the selling brief its user message carries.
 
 def item_facts(fields: dict[str, Any], *, description: str = "",
                duration_seconds: int | None = None, kind: str = "") -> str:
-    """The compact fact block handed to the copy/seller LLM.
-
-    Ordered by selling value, not by schema order: what happens (in sequence)
-    first, then the reveal state, then the concrete props that make copy sound
-    like a memory instead of a template.
-    """
     s = sellability(fields, duration_seconds=duration_seconds)
     lines: list[str] = []
 
@@ -756,11 +451,6 @@ def item_facts(fields: dict[str, Any], *, description: str = "",
     return "\n".join(lines)
 
 
-# ── The instruction block ───────────────────────────────────────────
-#
-# This is the "what is all this FOR" briefing. It is deliberately about HOW TO
-# USE the facts, not about tone — the caller's own voice/style rules still own
-# tone. Every field named here is one the describe pass really writes.
 SELLING_BRIEF = """\
 HOW TO USE THE FACTS ABOVE
 
@@ -823,7 +513,6 @@ SOLO PIECES
 
 def copy_brief(fields: dict[str, Any], *, description: str = "",
                duration_seconds: int | None = None, kind: str = "") -> str:
-    """Facts + instructions — the full user-message body for a copy call."""
     facts = item_facts(fields, description=description,
                        duration_seconds=duration_seconds, kind=kind)
     return f"{facts}\n\n{SELLING_BRIEF}"

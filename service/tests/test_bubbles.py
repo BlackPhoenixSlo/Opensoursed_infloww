@@ -1,23 +1,7 @@
 #!/usr/bin/env python3
-"""
-automations/_bubbles.py — the reply → texting-bubbles splitter + history-line
-helpers (moved out of welcome_chatter_for_info, shared with autoreply) as tables.
-
-  case_module_is_pure                  stdlib imports only (no DB), and the two lanes /
-                                       _reply_shape import the very same objects
-  case_split_for_bubbles_table         max_bubbles cap, one '?', emoji split, orphan
-                                       emoji merged, dash never survives, force_single
-  case_seeded_rng_is_deterministic     the same seed → the same split, every call
-  case_dedupe_lead_reaction_table      a repeated lead reaction vs recent_out
-  case_looks_like_echo_table           verbatim / near / short / unrelated
-  case_strip_html_and_history_text     None → "", tags dropped, "[he sent: …]" inbound only,
-                                       clip == _inbound.MSG_CLIP
-
-Run: ./venv/bin/python service/tests/test_bubbles.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 import ast  # noqa: E402
 import random  # noqa: E402
@@ -43,19 +27,18 @@ def case_module_is_pure() -> None:
 
 def case_split_for_bubbles_table() -> None:
     rows = [
-        # (text, max_bubbles, seed, force_single, expected)
-        ("a\nb\nc", 2, 1, False, ["a", "b"]),                       # non-style: cap 2
-        ("a, b, c, d, e, f, g, h", 3, 5, False,                     # style: overflow merges
+        ("a\nb\nc", 2, 1, False, ["a", "b"]),
+        ("a, b, c, d, e, f, g, h", 3, 5, False,
          ["a, b", "c, d, e", "f, g, h"]),
-        ("whats ur job? u gonna spill?", 6, 1, False,               # ONE '?', last kept
+        ("whats ur job? u gonna spill?", 6, 1, False,
          ["whats ur job", "u gonna spill?"]),
         ("bet ur kitchen is as hot as you are 😏 where ya located", 6, 1, False,
-         ["bet ur kitchen is as hot as you are 😏", "where ya located"]),  # emoji split
-        ("what's up? 😏", 6, 1, False, ["what's up? 😏"]),          # no lone-emoji bubble
-        ("oof — restaurant life is brutal", 2, 1, False,            # dash: split, never shown
+         ["bet ur kitchen is as hot as you are 😏", "where ya located"]),
+        ("what's up? 😏", 6, 1, False, ["what's up? 😏"]),
+        ("oof — restaurant life is brutal", 2, 1, False,
          ["oof", "restaurant life is brutal"]),
         ("oof, restaurant life is brutal. how old are ya", 6, 1, True,
-         ["oof, restaurant life is brutal, how old are ya"]),        # one bubble, nothing lost
+         ["oof, restaurant life is brutal, how old are ya"]),
     ]
     for text, cap, seed, single, want in rows:
         got = b.split_for_bubbles(text, cap, rng=random.Random(seed), force_single=single)
@@ -76,14 +59,13 @@ def case_seeded_rng_is_deterministic() -> None:
 
 def case_dedupe_lead_reaction_table() -> None:
     rows = [
-        # (parts, recent_out, expected)
-        (["oof", "where u from"], ["oof"], ["where u from"]),        # standalone repeat dropped
-        (["oof babe that's wild"], ["oof"], ["babe that's wild"]),   # fused opener stripped
-        (["ooof", "haha"], ["lol", "oof"], ["haha"]),                 # stretched repeat
-        (["lol", "nice"], ["oof"], ["lol", "nice"]),                  # different reaction kept
-        (["oof", "hi"], ["how was work"], ["oof", "hi"]),             # no recent reaction
-        (["oof"], ["oof"], ["oof"]),                                  # never emptied
-        (["oof", "hi"], ["oof", "a", "b", "c"], ["oof", "hi"]),       # only the last 3 count
+        (["oof", "where u from"], ["oof"], ["where u from"]),
+        (["oof babe that's wild"], ["oof"], ["babe that's wild"]),
+        (["ooof", "haha"], ["lol", "oof"], ["haha"]),
+        (["lol", "nice"], ["oof"], ["lol", "nice"]),
+        (["oof", "hi"], ["how was work"], ["oof", "hi"]),
+        (["oof"], ["oof"], ["oof"]),
+        (["oof", "hi"], ["oof", "a", "b", "c"], ["oof", "hi"]),
         ([], ["oof"], []),
     ]
     for parts, recent, want in rows:
@@ -94,11 +76,11 @@ def case_dedupe_lead_reaction_table() -> None:
 def case_looks_like_echo_table() -> None:
     last_in = "long shift too? at least the coffee here is solid"
     rows = [
-        (last_in, last_in, True),                                            # verbatim
-        ("Long shift too at least the coffee here is solid!!", last_in, True),  # normalized
-        ("long shift too? at least the coffee here is solid lol", last_in, True),  # near
-        ("lol", "lol", False),                                               # under the floor
-        ("where are you from babe", last_in, False),                         # a real reply
+        (last_in, last_in, True),
+        ("Long shift too at least the coffee here is solid!!", last_in, True),
+        ("long shift too? at least the coffee here is solid lol", last_in, True),
+        ("lol", "lol", False),
+        ("where are you from babe", last_in, False),
         ("", last_in, False),
     ]
     for part, his, want in rows:
@@ -113,12 +95,11 @@ def case_strip_html_and_history_text() -> None:
     assert b._strip_html("  plain  ") == "plain"
     assert b._strip_html("<p>hi <b>u</b></p>") == "hi u"
     rows = [
-        # (direction, body, image_desc, expected)
         ("in", "<p>hi</p>", "a cat", "hi [he sent: a cat]"),
-        ("in", None, "a cat", "[he sent: a cat]"),        # media-only DM is not a blank turn
+        ("in", None, "a cat", "[he sent: a cat]"),
         ("in", "hi", None, "hi"),
-        ("out", "yo", "a cat", "yo"),                     # only HIS media is described
-        ("in", "x" * 1000, None, "x" * MSG_CLIP),        # clipped
+        ("out", "yo", "a cat", "yo"),
+        ("in", "x" * 1000, None, "x" * MSG_CLIP),
     ]
     for d, body, desc, want in rows:
         assert b._history_text(d, body, desc) == want, (d, body, desc)

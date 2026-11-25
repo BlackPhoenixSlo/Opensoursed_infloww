@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""OF restrict with a clean inbox exit + durable count exclusion.
-
-Restricting a user on OF from our UI (chat ⋯ menu) must:
-  1. send one "." first + mark the chat read (best-effort), so the thread
-     stops counting as unread/owe-reply instead of sitting flagged forever;
-  2. restrict on OF (the only step allowed to fail the request);
-  3. write skip_list(reason='of_restricted') — the durable registry that
-     (a) hard-skips them in every automation (HARD_SKIP_REASONS) and
-     (b) excludes them from the roster-badge fold + annotated /chats rows;
-  4. hide the chat on OF LAST (best-effort) — hidden threads leave the inbox
-     until the fan's next inbound, and the "." send would re-surface a chat
-     hidden any earlier.
-
-These cases pin the dot → mark-read → restrict → hide ordering + ack dedupe,
-the registry lifecycle (including that the muted-creator scrape cannot demote
-an 'of_restricted' row), the fold
-exclusion, and the serve-time `withUser.isRestricted` annotation (copy, never
-the shared cached window).
-
-Run:  ./venv/bin/python service/tests/test_of_restrict.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -81,9 +60,6 @@ async def _reason(fan_id: int) -> str | None:
 
 
 class _Ctx:
-    """Patch the restrict endpoint's collaborators; record the ack calls.
-    `events` interleaves ack/mark-read with the OF-client calls so cases can
-    pin the full dot → mark-read → restrict → hide ordering."""
 
     def __init__(self, *, ack_send_fails=False, hide_fails=False):
         self.events: list[tuple] = []
@@ -133,21 +109,16 @@ async def case_restrict_acks_then_restricts_then_hides():
     assert out["ok"] and out["restricted"] and out["acked"] and out["hidden"], out
     assert ctx.acks == [(FAN, ".")], ctx.acks
     assert ctx.mark_reads == [FAN], ctx.mark_reads
-    # Full ordering: the dot must land BEFORE the hide (a send re-surfaces a
-    # hidden chat), and the hide is the last step of the clean exit.
+    # hide last: the "." send would re-surface a chat hidden earlier
     assert ctx.events == [
         ("ack", FAN), ("mark_read", FAN), ("restrict", FAN), ("hide", FAN),
     ], ctx.events
     assert await _reason(FAN) == OF_RESTRICTED_REASON
-    # HARD skip: every load_hard_skip_ids consumer now excludes this fan.
     assert OF_RESTRICTED_REASON in HARD_SKIP_REASONS
     assert FAN in await load_hard_skip_ids(AID)
 
 
 async def case_second_restrict_does_not_resend_ack():
-    """The '.' is a one-time courtesy — a re-click (or a stale menu) must not
-    message the creator again. The hide re-fires though (idempotent, and the
-    chat may have re-surfaced since)."""
     with _Ctx() as ctx:
         out = await server.of_restrict_user(FAN, request=None)
     assert out["ok"] and out["acked"] is False and out["hidden"], out
@@ -156,22 +127,16 @@ async def case_second_restrict_does_not_resend_ack():
 
 
 async def case_ack_failure_still_restricts():
-    """A creator we can no longer message (or any OF blip on the send) must not
-    block the restrict — the ack is best-effort by design."""
     await set_of_restricted_skip(AID, FAN, False)
     with _Ctx(ack_send_fails=True) as ctx:
         out = await server.of_restrict_user(FAN, request=None)
     assert out["ok"] and out["restricted"] and out["acked"] is False, out
-    # mark-read still attempted independently of the failed send.
     assert ctx.mark_reads == [FAN], ctx.mark_reads
     assert ctx.client.calls == [("restrict", FAN), ("hide", FAN)], ctx.client.calls
     assert await _reason(FAN) == OF_RESTRICTED_REASON
 
 
 async def case_hide_failure_still_restricts_and_hide_is_optional():
-    """The hide is best-effort like the ack — an OF blip on /chats/{id}/hide
-    must not fail an already-applied restrict (the response just reports
-    hidden=False). And ?hide=false skips the call entirely."""
     await set_of_restricted_skip(AID, FAN, False)
     with _Ctx(hide_fails=True) as ctx:
         out = await server.of_restrict_user(FAN, request=None)
@@ -187,12 +152,8 @@ async def case_hide_failure_still_restricts_and_hide_is_optional():
 
 
 async def case_registry_survives_muted_scrape():
-    """The muted-creator scrape reconcile may not demote 'of_restricted' —
-    skip_list is one row per fan, and losing the reason silently drops the fan
-    back into the unread counts."""
     await mark_muted_creator_skip(AID, FAN)
     assert await _reason(FAN) == OF_RESTRICTED_REASON, "muted scrape demoted the row"
-    # ...but a plain fan without the OF row still gets muted_creator as before.
     await mark_muted_creator_skip(AID, FAN + 1)
     assert await _reason(FAN + 1) == "muted_creator"
 
@@ -201,34 +162,23 @@ async def case_unrestrict_clears_only_own_row():
     with _Ctx() as ctx:
         out = await server.of_unrestrict_user(FAN, request=None)
     assert out["ok"] and out["restricted"] is False, out
-    # Symmetric un-hide so the thread is visible again immediately.
     assert ctx.client.calls == [("unrestrict", FAN), ("unhide", FAN)], ctx.client.calls
     assert await _reason(FAN) is None
     assert await load_of_restricted_ids(AID) == set()
-    # set_of_restricted_skip(False) must not touch other reasons.
     assert await _reason(FAN + 1) == "muted_creator"
 
 
 async def case_roster_fold_excludes_restricted():
-    """Restricted creators count as NEITHER blue nor orange — but still occupy
-    a window slot (their row is visible in the list), preserving badge≡page
-    parity. Exclusion is `excluded_from_badges`: the registry set, not OF's own
-    `withUser.isRestricted` (owner amendment #3)."""
     me = "999"
     rows = [
-        # registry-excluded: unread → would have been blue
         {"withUser": {"id": 1}, "unreadMessagesCount": 3,
          "lastMessage": {"fromUser": {"id": 1}}},
-        # registry-excluded: read + fan-last → would have been orange
         {"withUser": {"id": 2}, "unreadMessagesCount": 0, "isMutedNotifications": False,
          "lastMessage": {"fromUser": {"id": 2}}},
-        # OF's own isRestricted, not in the registry → still counts (blue)
         {"withUser": {"id": 3, "isRestricted": True}, "unreadMessagesCount": 1,
          "lastMessage": {"fromUser": {"id": 3}}},
-        # normal unread → blue
         {"withUser": {"id": 4}, "unreadMessagesCount": 1,
          "lastMessage": {"fromUser": {"id": 4}}},
-        # normal owe-reply → orange
         {"withUser": {"id": 5}, "unreadMessagesCount": 0, "isMutedNotifications": False,
          "lastMessage": {"fromUser": {"id": 5}}},
     ]
@@ -241,9 +191,6 @@ async def case_roster_fold_excludes_restricted():
 
 
 async def case_chats_rows_annotated_from_registry():
-    """/chats serve-time stamp: registry fans get withUser.isRestricted=true on
-    a COPY — the shared cached window object must stay untouched (a stale stamp
-    baked into the cache would outlive an unrestrict)."""
     await set_of_restricted_skip(AID, 7, True)
     try:
         cached = {"list": [
@@ -255,7 +202,6 @@ async def case_chats_rows_annotated_from_registry():
         assert "isRestricted" not in out["list"][1]["withUser"], out
         assert "isRestricted" not in cached["list"][0]["withUser"], \
             "annotation mutated the shared cached window"
-        # Empty registry → the exact same object back, zero copying.
         await set_of_restricted_skip(AID, 7, False)
         assert await server._annotate_chat_rows(AID, cached) is cached
     finally:

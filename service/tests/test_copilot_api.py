@@ -1,22 +1,7 @@
 #!/usr/bin/env python3
-"""
-copilot_api — POST /admin/copilot/{account_id}/{fan_id}/suggest, Messages Pro's
-AI Copilot.
-
-Drives the route coroutine directly against the temp DB with `llm_client.chat`
-patched — this suite must NEVER buy a real completion. Covers: one call per
-click returning three options, the prompt grounded in persona + fan facts + the
-newest thread row + the picked mode, Tip request as the only mode allowed to
-ask for money, Regenerate's `avoid` reaching the prompt, the unknown-mode
-refusal, the provider failures (cap 429, provider 502, key error left to the
-app-wide 424), the outbound floor (off-platform guard, banned words), the
-account gate, and the route sitting under Messages Pro for Role enforcement.
-
-Run: ./venv/bin/python service/tests/test_copilot_api.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 
@@ -24,7 +9,7 @@ import json  # noqa: E402
 import os  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
-os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # read per call; a case flips it back
+os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 from fastapi import HTTPException  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
@@ -45,7 +30,6 @@ PERSONA = "You are Ava, 23, a playful gym girl from Miami."
 
 
 class _Spy:
-    """Stands in for llm_client.chat: records the kwargs, returns/raises."""
 
     def __init__(self, suggestions=("one", "two", "three"), raises=None):
         self.parsed = {"suggestions": list(suggestions)}
@@ -65,7 +49,7 @@ class _Spy:
 
 
 def _patch(spy: _Spy) -> _Spy:
-    llm_client.chat = spy  # copilot_api calls through the MODULE, so this lands
+    llm_client.chat = spy
     return spy
 
 
@@ -84,7 +68,7 @@ async def _seed(aid: str = AID, fid: int = FID, banned: list[str] = ()) -> None:
             return
         s.add(Account(id=aid))
         s.add(AccountAiConfig(account_id=aid, persona=PERSONA))
-        if banned:  # the owning Agency's Growth > Sensitive words
+        if banned:
             agency = f"u_{aid}"
             s.add(User(id=agency, username=agency, password="x"))
             await s.flush()
@@ -104,7 +88,6 @@ async def _suggest(mode: str = "casual", avoid=(), aid: str = AID, fid: int = FI
     return await suggest(aid, fid, SuggestBody(mode=mode, avoid=list(avoid)))
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 async def case_one_click_is_one_call_returning_three_suggestions():
     await _seed()
@@ -170,8 +153,6 @@ async def case_the_daily_cap_is_a_429_and_the_provider_a_502():
 
 
 async def case_a_key_error_reaches_the_app_wide_424_handler_untouched():
-    """LLMKeyError subclasses LLMHTTPError: catching the parent first would
-    turn the owner's "add your key" notice into a 502."""
     await _seed()
     _patch(_Spy(raises=LLMKeyError("missing", "deepseek", "copilot")))
     try:
@@ -187,8 +168,8 @@ async def case_the_outbound_floor_guards_each_option():
     await _seed(aid, fid, banned=["venmo"])
     _patch(_Spy(("text me on snapchat at ava99", "send it to my venmo", "hiii u")))
     out = await _suggest(aid=aid, fid=fid)
-    assert "snapchat" not in json.dumps(out).lower(), out   # off-platform guard
-    assert not any("venmo" in s for s in out["suggestions"]), out  # banned → dropped
+    assert "snapchat" not in json.dumps(out).lower(), out
+    assert not any("venmo" in s for s in out["suggestions"]), out
     assert "hiii u" in out["suggestions"], out
 
 

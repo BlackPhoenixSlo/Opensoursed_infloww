@@ -34,7 +34,7 @@ Run: ./venv/bin/python service/tests/test_full_ai_caption_chat.py  (exit 0 = pas
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 from _full_ai_sell_helpers import (  # noqa: E402
     A, NANO, OPENROUTER, OWNER_A, PICS, PRICED, TURN, _body, _guarded, _hot, _picks, _ppvs, _put_draft,
@@ -103,7 +103,6 @@ def _texts(parts: list[dict]) -> list[str]:
 
 
 def _sells(fw, i: int) -> bool:
-    """Request `i`'s prompt carries an item, a price or the marker (today's sell prompt)."""
     s = _sys(fw, i)
     return any(x in s for x in ("CONTENT YOU CAN ACTUALLY SEND HIM", "THE PRICE", ">>OFFER", "$"))
 
@@ -112,10 +111,9 @@ def _outcomes(attempts: list[dict]) -> list[tuple]:
     return [(a["writer"], a["outcome"], a.get("rewrite", False)) for a in attempts]
 
 
-ASK = (_hot(wants_content=0.9), 1.0)       # Heat 2: the $10 photo 101
+ASK = (_hot(wants_content=0.9), 1.0)
 
 
-# ── Turns ─────────────────────────────────────────────────────────────
 
 def case_default_chat_unchanged():
     pair = "c-default"

@@ -1,24 +1,3 @@
-"""promo_list — Profile promotions' "Add fans to list" (promo_list_settings)
-
-Backs service/link_metrics.py's promotion List: Infloww's account-level switch
-and list on its Profile promotion page. While enabled, every promotion's
-claimers go into the chosen OnlyFans list through OF's own add-to-list.
-
-  promo_list_settings.account_id  PK, FK accounts.id ON DELETE CASCADE
-  promo_list_settings.enabled     the switch
-  promo_list_settings.list_id     OF's custom list id (a number, kept as text)
-  promo_list_settings.list_name   its name when picked
-  promo_list_settings.updated_at
-
-The ORM model in db/models.py declares the same table, so `init_db()`'s
-create_all brings it to a booting box; this revision keeps the alembic chain
-canonical. Idempotent (inspector-guarded, house convention). Downgrade drops
-the table; that loses only the setting (the fans already in the list stay on OF).
-
-Revision ID: 0076_promo_list
-Revises: 0075_clock_last_seen
-Create Date: 2026-10-19
-"""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,21 +1,3 @@
-"""ai_decisions.offer_attempt_at — the Full AI Offer carrier's POST was attempted
-
-`full_ai_ppv.send_priced` stamps it (conditionally, once) right before the
-carrier's POST. Only an attempted row may be linked to an OF message by the
-timeout readback or `full_ai_settle`'s heuristic, and an attempted, unresolved
-priced Offer keeps its media reserved. One nullable DateTime column.
-
-Backfill (`backfill`, W30 C4): a legacy live priced row that may have POSTed
-(`sending`, or `sent` / `unconfirmed` with no `offer_message_id`, unresolved) gets
-`offer_attempt_at = created_at`, so reap keeps it and settle may still link it.
-Run when this step adds the column; db.engine's init_db runs it once, on the boot
-whose catch-up added the column (`data_migrations` marker). Guarded: a later
-manual `alembic upgrade head` must not re-add the column.
-
-Revision ID: 0130_ai_decisions_offer_attempt
-Revises: 0129_keep_running_rules_heal
-Create Date: 2026-11-22
-"""
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -42,11 +24,10 @@ BACKFILL = (
 
 
 def backfill(conn) -> int:
-    """Stamp the legacy rows that may have POSTed (`BACKFILL`); `conn` is a sync connection
-    in the caller's transaction. Returns rows stamped."""
     return conn.execute(sa.text(BACKFILL)).rowcount or 0
 
 
+# Guarded + backfill once: init_db runs backfill on the boot whose catch-up added the column.
 def upgrade() -> None:
     cols = _cols(sa.inspect(op.get_bind()), "ai_decisions")
     if cols and "offer_attempt_at" not in cols:

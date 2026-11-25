@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
-"""service/scripts/promo_keep_restamp.py — the Host fence's failover re-stamp (ADR-0041):
-
-  case_refuses_empty_env         PROMO_CREATE_HOST_ID empty: exit 2, nothing written.
-  case_dry_run_then_apply        dry run prints each Kept campaign off this box's stamp and the
-                                 count, writes nothing; --apply stamps only those (never an
-                                 unticked campaign); a second --apply stamps 0.
-  case_rv_r1_restamp_reports_unlimited_trials  a Kept free trial with no Offer limit is
-                                 reported (limit_needed) even when already stamped; a capped
-                                 one with no Re-create limit is not (owner 11-21: indefinite).
-
-Run: ./venv/bin/python service/tests/test_promo_keep_restamp.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -37,7 +25,6 @@ BOX = "box-b"
 async def _seed() -> dict[str, int]:
     ids = {}
     async with get_session() as s:
-        # One Creator per Kept campaign (uq_promo_keep_one).
         for key, auto, stamp in (("other", True, "box-a"), ("pre0126", True, None), ("empty", True, ""),
                                  ("mine", True, BOX), ("unticked", False, "box-a")):
             s.add(Account(id=f"rs-{key}"))

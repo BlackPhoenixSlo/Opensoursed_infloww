@@ -1,12 +1,3 @@
-"""A deferred chat's Click read starts its history backfill (phase-03).
-
-The thread_click_read hook (a plain head read, or a landed single-chat
-mark-as-read: an open served from a peeked warm page; a peeked Background read
-never fires it) is registered once at import; it is sync and does no I/O: it
-only spawns webhook_dispatch.backfill_if_deferred in the background, so the
-route answers as fast as without it. The Click read already marked the chat read
-on OF, so the backfill's asc pass costs the chat nothing.
-"""
 from __future__ import annotations
 
 import logging
@@ -18,10 +9,11 @@ import relay_hooks
 log = logging.getLogger("of-relay.events")
 
 
+# Sync, no I/O: only spawns the backfill so the route answers as fast as without it.
 def _on_click_read(account_id: str, chat_id: int, at: int) -> None:
     coro = None
     try:
-        import webhook_dispatch   # lazy: it pulls in the executor
+        import webhook_dispatch  # lazy: it pulls in the executor
         coro = webhook_dispatch.backfill_if_deferred(str(account_id), int(chat_id), at)
         relay_host.spawn_bg(coro, "deferred-history")
     except Exception:

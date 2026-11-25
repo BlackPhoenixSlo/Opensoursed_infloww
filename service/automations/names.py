@@ -109,6 +109,36 @@ def name_token(s: str | None, *, last: bool = False) -> str:
 
 
 def resolve_fan_name(f) -> str:
+    """Single source of truth for 'what real first name do we greet this fan by'.
+
+    Why this exists: OF *message* payloads carry only `fromUser:{id}` — no name — so
+    `of_username`/`of_display_name` are empty for ~80% of fans, and the WS pump used
+    to clobber them to NULL on every message. The team-curated `custom_nickname`
+    ('John/City/Tag') is then the most reliable name signal we hold, but the senders
+    never consulted it and emitted a literal 'Babe'.
+
+    Precedence: real_name → custom_nickname → generated_nickname → of_display_name.
+    CURATED BEATS RAW: `custom_nickname` is the CRM label the whole UI shows, so it
+    outranks OF's own display name — on 154 prod fans the chat greeted "hey
+    surferdude" / "hey Gym Guy" while the team had typed 'Marcus' / 'Dave', and
+    send_welcome had always ordered it this way. Note the column is NOT purely
+    hand-typed: `push_nick_and_notes` mirrors `build_structured_nickname` back into
+    it, so ~1.6k of 2k prod values are our own structured push. That is why it sits
+    ABOVE generated_nickname rather than below — measured, the two orders disagree on
+    exactly ONE fan in 8,550, so the mirror never robs the AI label of a better name.
+    `of_username` is deliberately excluded — handles like 'u123' / 'alexnielsen'
+    aren't greetable names. Returns '' when we truly have nothing; callers keep their
+    own soft 'babe' fallback.
+
+    BOTH nickname columns hold a STRUCTURED LABEL, not a name: gen_info builds
+    `Name/City,Country/Age/Job/Tag` and, when it can't find a usable name, blanks the
+    first slot — `_clean_nickname` then drops the empty slot so the LOCATION slides
+    into first position ('Vancouver,Canada/39', 'USA/Free'). generated_nickname used
+    to be returned verbatim, so those labels reached the chat engines as the fan's
+    name and she greeted people with "hey Kentucky,USA u still there?". Both now go
+    through `name_token`, which keeps a real name slot and rejects a location one.
+
+    `f` may be a Fan ORM row or a dict of the same fields."""
     def _g(attr: str) -> str:
         if f is None:
             return ""
@@ -121,7 +151,6 @@ def resolve_fan_name(f) -> str:
                   name_token(_g("custom_nickname")),
                   name_token(_g("generated_nickname"), last=True),
                   _g("of_display_name"))
-    # Curated custom_nickname outranks OF's display name (the team's label); last=True only on the AI label, the curated one is 'First Last'.
     return next((n for n in candidates if is_greetable_name(n, here=here)), "")
 
 

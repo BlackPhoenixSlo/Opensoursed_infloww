@@ -13,14 +13,17 @@ INFO_FIELDS: tuple[str, ...] = _EXTRACT_FIELDS
 DEFAULTS: dict[str, Any] = {
     "version": 1,
     "reply_speed": "0-2m",
+    # The human-texting layers (all on = the old `text_style: "girl"`): texting = the texting-style prompt
+    # block and bubbles, nonnative = the u/ur rewrite, spacing = a space before ?/!, typos = thumb typos +
+    # `*fix`, painful = the painful-texting prompt block.
     "style": {"texting": True, "nonnative": True, "spacing": True, "typos": True, "painful": True},
     "gifs": False,
     "sell_on": False,
     "sext_on": True,
     "sext_scene": True,
     "lead_in": True,
-    "folders": {"include": [], "exclude": []},
-    "draft_questions": True,
+    "folders": {"include": [], "exclude": []},   # 03b: Content folders, empty include = all
+    "draft_questions": True,    # 03b: DRAFT Router questions count (test + live, ticket 47); Sell group switch "Unasked offers" (on, owner 2026-11-14)
     "writers": ["euryale-v2.3", "euryale-v2.2", "hermes-4-405b", "deepseek-v4-flash"],
     "writer_timeout_s": 45,
     "writer_timeouts": {},
@@ -31,7 +34,11 @@ DEFAULTS: dict[str, Any] = {
     "reply_by_webhook": True,
     "typing_sign": True,
     "typing_notification": True,
-    "caption_writer": "chat",
+    "caption_writer": "chat",   # "chat" = the chat Writer's last bubble; "caption" = its own call; page "PPV caption"
+    # Test + live (`full_ai_mode.full`), Shadow ignores: a sell ask nothing in the vault matches sells the nearest piece (same subject,
+    # then same format, then anything) instead of no PPV. "off" = no_match as before; "plain" = the
+    # caption as today; "note" = the Writer also plays his ask out as a story from what the piece shows (NEW-140).
+    # Sell group switch "Nearest piece" (on = "note", off = "off").
     "sell_nearest": "note",
     "sell_bundle": "fill",
     "sell_count": True,
@@ -45,14 +52,18 @@ DEFAULTS: dict[str, Any] = {
     "ask_implied": True,
     "info_wide": True,
     "strip_emojis": False,
+    # Live only (04b): a Fan whose lifetime spend reaches this many cents is left to humans; 0 = no
+    # limit. Page box "Top spend limit" (in dollars).
     "top_spend_cents": 100000,
+    # Live only (04b): the Fans list, OF fan-list ids. Full AI claims a Fan on an include list (empty
+    # include = every Fan) and never one on an exclude list. Page row "Fans" (a dialog over the OF lists).
     "fans": {"include": [], "exclude": []},
     "catchup_minutes": {"after_live": [0, 5, 15], "then_every": 15},
 }
 
 
-REPLY_SPEEDS: tuple[str, ...] = ("0-2m", "0-15-60")
-TEXT_STYLES: tuple[str, ...] = ("girl", "formal")
+REPLY_SPEEDS: tuple[str, ...] = ("0-2m", "0-15-60")     # full_ai_test._SPEEDS draws them
+TEXT_STYLES: tuple[str, ...] = ("girl", "formal")      # the legacy `text_style` alias's values
 STYLE_LAYERS: tuple[str, ...] = tuple(DEFAULTS["style"])
 LEGACY_KEYS: tuple[str, ...] = ("text_style",)
 RETIRED: dict[str, str] = {
@@ -87,6 +98,7 @@ _FOLDER_KEYS = ("include", "exclude")
 _BOOLS = ("gifs", "sext_on", "sext_scene", "lead_in", "sell_on", "draft_questions", "floor_on", "reply_by_webhook", "typing_sign", "typing_notification",
           "describe_fan_photos", "sell_spacing", "he_likes", "chat_tease", "ask_implied",
           "info_wide", "sell_count", "strip_emojis")
+# Chat tease prices: 1-12 distinct prices in cents, each 0 (a free photo) or $3-$200.
 TEASE_PRICES = (1, 12)
 TEASE_CENTS = (300, 20000)
 CATCHUP_PASSES = (1, 6)
@@ -392,14 +404,17 @@ def loaded(raw: str | None) -> dict[str, Any] | None:
         return None
 
 
+# Who live answers, not how the AI behaves: one value on every side, set only by `put_audience`.
 AUDIENCE_KEYS: tuple[str, ...] = ("fans", "top_spend_cents")
 
 
 def _audience_of(cfg: dict, src: dict) -> dict[str, Any]:
+    """`cfg` holding `src`'s `AUDIENCE_KEYS` values (the stored ones: only `put_audience` changes them)."""
     return {**cfg, **{k: copy.deepcopy(src[k]) for k in AUDIENCE_KEYS}}
 
 
 def _no_audience(cfg: Any) -> Any:
+    """A write's body without `AUDIENCE_KEYS` (validated and stored without them: the stored ones are carried over)."""
     return {k: v for k, v in cfg.items() if k not in AUDIENCE_KEYS} if isinstance(cfg, dict) else cfg
 
 
@@ -458,6 +473,7 @@ def put_audience(stored: dict | None, patch: dict[str, Any]) -> dict[str, Any]:
             "rev": cur["rev"] + 1}
 
 
+# Router Jev 10 s (`_router_jev.TIMEOUT_S`, retries included) + info Jev 10 s.
 _JEV_STAGES_S = 20
 
 

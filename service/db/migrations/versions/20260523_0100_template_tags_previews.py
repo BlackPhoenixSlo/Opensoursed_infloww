@@ -1,16 +1,3 @@
-"""saved_replies: add tagged_users_json + previews_json
-
-Revision ID: 0018_template_tags_previews
-Revises: 0017_phase_g_messages_dir_index
-Create Date: 2026-05-23
-
-Saved replies now carry tagging and free-preview data so the template
-picker can fully reconstitute a paid-message + tag-creators payload from
-a single click. `tagged_users_json` is a JSON list of OF user ids;
-`previews_json` is a JSON list of vault-media ids that should ride along
-UNLOCKED when the template's price > 0. Both default to [] for legacy
-rows.
-"""
 from __future__ import annotations
 
 from typing import Sequence

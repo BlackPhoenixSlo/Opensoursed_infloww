@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""The chatter identity cache (why and how: service/chatter_identity_cache.py).
-
-Each case warms the victim session's entry first (asserted cached by counting
-the identity reads of a request), makes the change through the real endpoint,
-and checks the very next request.
-
-    ./venv/bin/python service/tests/test_chatter_identity_cache.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 _harness.bootstrap()
 
@@ -29,11 +21,11 @@ from db.engine import engine, get_session  # noqa: E402
 from db.models import Account, Chatter, ChatterUser, UserAccount  # noqa: E402
 
 IDS = fx.seed_two_agencies()
-CREATOR_A2 = "1000011"  # Agency A's second Creator, so a restriction can leave one
+CREATOR_A2 = "1000011"
 
 IDENTITY_TABLES = ("chatters", "chatter_users", "user_accounts", "chatter_account_access")
 _sql: list[str] = []
-_invalidate_on_access_read = False  # armed by the race case: one invalidate() mid-load
+_invalidate_on_access_read = False
 
 
 @sa_event.listens_for(engine.sync_engine, "before_cursor_execute")
@@ -43,11 +35,10 @@ def _record(_conn, _cursor, statement, *_a):
     if (_invalidate_on_access_read and statement.lstrip().upper().startswith("SELECT")
             and "chatter_account_access" in statement):
         _invalidate_on_access_read = False
-        identity_cache.invalidate()  # a write commits while the load is in flight
+        identity_cache.invalidate()
 
 
 def _identity_reads() -> int:
-    """SELECTs on the identity's tables since the last call."""
     n = sum(1 for q in _sql if q.lstrip().upper().startswith("SELECT")
             and any(f" {t}" in q or f'"{t}"' in q for t in IDENTITY_TABLES))
     _sql.clear()
@@ -55,19 +46,16 @@ def _identity_reads() -> int:
 
 
 def _reads_of_one_request(client) -> int:
-    """Identity-table SELECTs of one request whose route reads none of them
-    (folder-access, Creator A): 0 = the identity came from the cache,
-    LOAD_READS = the middleware loaded it."""
     _identity_reads()
     client.get(f"/chatter/me/folder-access?account_id={IDS['creator_a']}")
     return _identity_reads()
 
 
-LOAD_READS = 4  # chatters, chatter_users, user_accounts IN, chatter_account_access
+LOAD_READS = 4
 
 
 def _assert_cached(client) -> None:
-    _reads_of_one_request(client)  # loads it, unless already cached
+    _reads_of_one_request(client)
     assert _reads_of_one_request(client) == 0, "the next request must be served from the cache"
 
 
@@ -80,15 +68,13 @@ async def _seed_a2() -> None:
         s.add(Account(id=CREATOR_A2, nickname="creator_a2", color="#aaaaaa"))
     async with get_session() as s:
         s.add(UserAccount(user_id=IDS["agency_a_owner"], account_id=CREATOR_A2))
-    account_registry.upsert_account(CREATOR_A2, nickname="creator_a2")  # the founder grant reads the registry
+    account_registry.upsert_account(CREATOR_A2, nickname="creator_a2")
 
 
 _db(_seed_a2)
 
 
 def _new_chatter(owners=("agency_a_owner",)) -> tuple[str, str]:
-    """A fresh login linked to `owners`: (username, chatter id). Fresh per case so
-    no case inherits another's grants or revocations."""
     name = f"cic_{uuid.uuid4().hex[:8]}"
     cid = uuid.uuid4().hex
 
@@ -116,8 +102,6 @@ def _accounts(client) -> set[str]:
 
 
 def _direct(client, aid: str):
-    """A direct read gated by the identity's account set alone (no role gate):
-    (status, detail)."""
     r = client.get(f"/chatter/me/folder-access?account_id={aid}")
     return r.status_code, (r.json().get("detail") if r.status_code != 200 else None)
 
@@ -136,7 +120,6 @@ def _employee_id(owner, name: str) -> int:
     return rows[0]["id"]
 
 
-# ── cases ────────────────────────────────────────────────────────────
 
 def case_second_request_reads_no_identity_table():
     name, _cid = _new_chatter()
@@ -150,13 +133,13 @@ def case_second_request_reads_no_identity_table():
 
 def case_ttl_expiry_rereads_a_direct_db_change():
     saved = identity_cache.TTL_S
-    identity_cache.TTL_S = 0.3  # CHATTERLY_CHATTER_IDENTITY_TTL_S's value
+    identity_cache.TTL_S = 0.3
     try:
         name, cid = _new_chatter()
         c = _login(name)
         assert _accounts(c) == {IDS["creator_a"], CREATOR_A2}
 
-        async def _drop_link():  # a direct write with no event: only the TTL can see it
+        async def _drop_link():
             async with get_session() as s:
                 await s.execute(ChatterUser.__table__.delete().where(ChatterUser.chatter_id == cid))
         _db(_drop_link)
@@ -262,8 +245,8 @@ def case_a_load_racing_an_invalidation_is_not_stored():
     c = _login(name)
     assert c.get("/chatter/me").json()["username"] == name
     assert identity_cache.get(cid) is not None, "control: a plain request stores the identity"
-    identity_cache.invalidate()  # the next request loads
-    _invalidate_on_access_read = True  # fires on the load's last read (chatter_account_access)
+    identity_cache.invalidate()
+    _invalidate_on_access_read = True
     try:
         assert c.get("/chatter/me").json()["username"] == name
         assert not _invalidate_on_access_read, "the load must read chatter_account_access"
@@ -285,19 +268,16 @@ def case_last_seen_touch_keeps_the_300s_rule():
     async def _stamp():
         async with get_session() as s:
             return (await s.execute(select(Chatter.last_seen_at).where(Chatter.id == cid))).scalar_one()
-    # Stale in both the row and the cache: a hit writes it, as the row read did.
     _db(lambda: _age(old))
     identity_cache.get(cid).last_seen_at = old
     assert c.get("/chatter/me").json()["username"] == name
     assert _db(_stamp) > old + timedelta(seconds=300), "a hit older than 300 s must bump last_seen_at"
-    # The cache stale, the row fresh (a sign-in bumped it): no write, the entry re-reads.
     fresh = datetime.utcnow() - timedelta(seconds=10)
     _db(lambda: _age(fresh))
     identity_cache.get(cid).last_seen_at = old
     assert c.get("/chatter/me").json()["username"] == name
     assert _db(_stamp) == fresh, "a row bumped within 300 s must not be written again"
     assert identity_cache.get(cid) is None
-    # Fresh in the cache: no write at all.
     assert c.get("/chatter/me").json()["username"] == name
     _sql.clear()
     assert c.get("/chatter/me").json()["username"] == name
@@ -306,7 +286,7 @@ def case_last_seen_touch_keeps_the_300s_rule():
 
 def case_ttl_zero_is_off():
     saved = identity_cache.TTL_S
-    identity_cache.TTL_S = 0  # CHATTERLY_CHATTER_IDENTITY_TTL_S's value
+    identity_cache.TTL_S = 0
     try:
         name, cid = _new_chatter()
         c = _login(name)

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Owner-tokens migration (0118) matches create_all on temp SQLite, is idempotent, and downgrades."""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness  # MUST be first: binds temp DB
 
 import os  # noqa: E402
 import sqlite3  # noqa: E402
@@ -59,7 +58,6 @@ def case_upgrade_and_downgrade():
         _alembic(url, command.downgrade, PREV)
         assert "owner_tokens" not in sa.inspect(engine).get_table_names()
         assert "via" not in {c["name"] for c in sa.inspect(engine).get_columns("actions")}
-        # Inspector guard: a DB that create_all already brought up upgrades without error.
         with engine.begin() as con:
             con.execute(sa.text("DROP TABLE actions"))
             con.execute(sa.text("DROP TABLE users"))

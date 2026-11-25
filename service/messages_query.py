@@ -1,14 +1,3 @@
-"""
-messages_query.py — the read model behind GET /admin/paid-messages (the
-Message dashboard / PPV tab): the shared SELECT builder, the dashboard's row
-filters, the keyset cursor + page merge, the JSON/CSV row shapers and the
-collapsed mass-broadcast summaries.
-
-The route itself (param parsing, validation) stays in messages.py, which
-re-exports these names. This module must not import messages at its top
-(messages imports it); the one call back (`local_mass_sales`) is lazy.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -41,19 +30,7 @@ def _build_messages_query(
     sender_type: str = "any",
     kind: str = "all",
 ):
-    """Shared SELECT builder for both JSON paginated + CSV streaming paths.
-
-    `for_csv=True` returns full `Message` ORM rows with `Fan`/`Employee`
-    eager-loaded via `selectinload` (separate IN-query, not a join) so
-    the row stream stays a tight Message-only scan. The JSON path keeps
-    its narrow column list to avoid pulling `raw_json`/`media_ids` text.
-    """
     if for_csv:
-        # No ORM relationships are declared on Message → Fan/Employee
-        # (see db/models.py Message class), so we can't use selectinload.
-        # Instead we explicit-join here and let `s.stream()` iterate row
-        # tuples; memory stays bounded because the consumer flushes each
-        # row's CSV bytes before pulling the next.
         q = (
             select(
                 Message.account_id,
@@ -82,12 +59,6 @@ def _build_messages_query(
             .outerjoin(Employee, Employee.id == Message.sent_by_employee_id)
         )
     else:
-        # Reply time (Infloww's): when the message before an outbound direct row
-        # in its thread is the fan's, that message's time — else NULL (a
-        # follow-up to our own message, or the opener). One correlated seek per
-        # row on ix_messages_chat_seq. Mass rows sit out on both sides:
-        # a blast is not a reply, and one landing between the fan's message and
-        # ours does not make ours any less of one.
         prev = aliased(Message)
         prev_in_at = (
             select(case((prev.direction == "in", prev.created_at)))
@@ -157,9 +128,8 @@ def _build_messages_query(
         q = q.where(Message.fan_id == fan_id)
     if status == "paid" and type_ != "free":
         q = q.where(Message.is_paid.is_(True))
+    # NULL is_paid coexists with price_cents>0 on legacy rows (OF didn't always echo the flag): NULL counts as unpaid.
     elif status == "unpaid" and type_ != "free":
-        # NULL is_paid coexists with price_cents>0 on legacy rows
-        # (OF didn't always echo the flag) — treat NULL as unpaid.
         q = q.where(or_(Message.is_paid.is_(False), Message.is_paid.is_(None)))
     if fan_query:
         like = f"%{fan_query}%"
@@ -185,17 +155,8 @@ def _apply_dashboard_filters(
     unsent_only: bool,
     sender_type: str,
 ):
-    """The Message dashboard's row filters (Infloww's Search message text,
-    Price min/max, Status = unsent, Type = Employee / AI), shared by the
-    per-row query and the collapsed mass summaries so both halves of a page
-    answer the same question.
-
-    `sender_type`: "employee" = an outbound row no automation stamped
-    (`automation_kind IS NULL` — a human typed or picked it, Copilot
-    suggestions included, since the chatter sends those by hand);
-    "automation" = an automation sent it. Either one implies outbound."""
     if text_query:
-        # autoescape: a typed `%` or `_` is a character to find, not a wildcard.
+        # autoescape: a typed % or _ is a character to find, not a wildcard.
         q = q.where(Message.body.contains(text_query, autoescape=True))
     if min_price_cents is not None:
         q = q.where(Message.price_cents >= min_price_cents)
@@ -211,10 +172,6 @@ def _apply_dashboard_filters(
 
 
 def _keyset_where(q, *, before: tuple[datetime, int] | None, before_id: int | None):
-    """The page cursor on the per-row query: strictly below `before` on the
-    `(sent_at, message_id)` DESC keyset, else (an old client that omitted
-    before_sent_at) the legacy single-key `message_id < before_id`. The mass
-    summaries apply the same `before` in Python (`_collapsed_mass_rows`)."""
     if before is not None:
         b_at, b_id = before
         return q.where(
@@ -224,13 +181,11 @@ def _keyset_where(q, *, before: tuple[datetime, int] | None, before_id: int | No
             )
         )
     if before_id is not None:
-        # Legacy single-key cursor (old client that omitted before_sent_at).
         return q.where(Message.message_id < before_id)
     return q
 
 
 def _paid_row(r: Any, body_cap: int) -> dict[str, Any]:
-    """One per-row query result → its JSON row (`body` cut at `body_cap`)."""
     body = r.body or ""
     return {
         "account_id": r.account_id,
@@ -268,15 +223,6 @@ def _paid_row(r: Any, body_cap: int) -> dict[str, Any]:
 def _page(
     items: list[dict[str, Any]], mass_rows: list[dict[str, Any]], limit: int,
 ) -> dict[str, Any]:
-    """The response page: per-row items merged with the mass summaries, re-cut
-    to `limit`, plus the next cursor. Consumes `items` (extended in place).
-
-    Merges the two (sent_at, message_id)-keyset streams (both fetched with the
-    same `< (before_sent_at, before_id)` cursor, both DESC) and re-cuts to the
-    page size. The smallest kept (sent_at, id) becomes the next cursor; the
-    rows we drop here are all below it and reappear on the next page's fetch —
-    no gaps, no dupes. sent_at is an ISO string (uniform naive-UTC isoformat),
-    so a lexical compare is the same as a datetime compare."""
     if mass_rows:
         items.extend(mass_rows)
         items.sort(key=lambda r: (r["sent_at"] or "", r["message_id"]), reverse=True)
@@ -296,8 +242,6 @@ def _page(
     }
 
 
-# CSV export columns; the cap, streaming and TRUNCATED sentinel live in
-# csv_export.py (shared with the Sales records export).
 _CSV_HEADER = [
     "message_id",
     "account_id",
@@ -320,7 +264,6 @@ _CSV_HEADER = [
 
 
 def _csv_row(row: Any, account_nicknames: dict[str, str]) -> list[Any]:
-    """One paid-messages CSV line, in `_CSV_HEADER` order."""
     return [
         row.message_id,
         row.account_id,
@@ -330,7 +273,7 @@ def _csv_row(row: Any, account_nicknames: dict[str, str]) -> list[Any]:
         row.of_display_name or "",
         row.direction,
         row.created_at.isoformat() if row.created_at else "",
-        of_plain(row.body)[:2000],  # OF markup: the text a fan read, cut after the tags are gone
+        of_plain(row.body)[:2000],
         row.media_count,
         row.price_cents,
         "" if row.is_paid is None else ("true" if row.is_paid else "false"),
@@ -358,38 +301,7 @@ async def _collapsed_mass_rows(
     unsent_only: bool = False,
     sender_type: str = "any",
 ) -> list[dict[str, Any]]:
-    """One summary dict per mass broadcast (mass_run) that produced outbound
-    rows in the window — the collapse that replaces N per-fan rows with a
-    single "sent to N fans" row in the All-Messages tab.
-
-    Synthetic `message_id = mass_placeholder_message_id(run_id)` (5e15 + run_id)
-    is the row's stable, collision-free React key / sort tiebreaker — NOT the
-    sort key. Rows interleave with normal messages by send TIME (`created_at`),
-    so a 6d-old broadcast sits in its true chronological slot, not pinned to the
-    top. The caller paginates on a `(sent_at, message_id)` keyset; `before` is
-    that composite cursor (rows must sort strictly below it).
-
-    `recipient_count` (and `viewed_count`) come from `mass_broadcast_cache`
-    (OF's `/users/me/stats/messages/group` — "126 sent · 21 viewed"), joined by
-    `MassRun.queue_id`. That cache may lag a brand-new broadcast, so the count
-    falls back: `cache.sent_count` → `MassRun.recipient_count` →
-    COUNT(DISTINCT fan_id) placeholder. The placeholder is usually 1 for an
-    explicit-userIds send (one optimistic row persisted), so the cache is the
-    real fan-out.
-
-    Direction is always "out" (a broadcast). `status` is intentionally NOT
-    applied — paid/unpaid is per-recipient on a broadcast, not a property of
-    the summary. `type=free|paid` filters on the broadcast's own price.
-
-    The filters (window, sender, type and the dashboard's) only PICK the runs;
-    every figure is then over all of a run's copies, so a text or unsent filter
-    narrows the list without shrinking a broadcast's recipient count or sales.
-
-    `purchased_count` / `earnings_cents` are the run's sales from LOCAL rows
-    (`local_mass_sales` — the same count the sent list shows).
-    """
     from attribution import mass_placeholder_message_id
-    # local: messages imports this module at its top.
     from messages import local_mass_sales
 
     picked = (
@@ -423,8 +335,6 @@ async def _collapsed_mass_rows(
             func.max(Message.body).label("body"),
             func.max(Message.price_cents).label("price_cents"),
             func.max(Message.media_count).label("media_count"),
-            # The broadcast's own copies only: a funnel follow-up rides the
-            # run's id and must not move the row's send time.
             func.coalesce(
                 func.max(case((Message.funnel_step.is_(None), Message.created_at))),
                 func.max(Message.created_at),
@@ -437,8 +347,6 @@ async def _collapsed_mass_rows(
             func.max(MassMessageFunnel.name).label("funnel_name"),
             func.max(MassRun.recipient_count).label("run_recipient_count"),
             func.max(MassRun.queue_id).label("queue_id"),
-            # Source of truth for "N sent · M viewed" — keyed on the run's OF
-            # queue_id (one cache row per run, so max() just unwraps it).
             func.max(MassBroadcastCache.sent_count).label("cache_sent"),
             func.max(MassBroadcastCache.viewed_count).label("cache_viewed"),
             func.max(MassRun.unsent_at).label("run_unsent_at"),
@@ -468,8 +376,6 @@ async def _collapsed_mass_rows(
         run_info[int(g.mass_run_id)] = g
         synth_id = mass_placeholder_message_id(int(g.mass_run_id))
         created_at = g.created_at
-        # Keyset on (created_at, synth_id): only runs strictly below the
-        # cursor belong on this page. Mirrors `_keyset_where`.
         if before is not None and created_at is not None:
             b_at, b_id = before
             if not (created_at < b_at or (created_at == b_at and synth_id < b_id)):
@@ -477,7 +383,7 @@ async def _collapsed_mass_rows(
         body = g.body or ""
         out.append({
             "account_id": g.account_id,
-            "fan_id": 0,  # no single fan — distinct (account, synth_id) keeps the React key unique
+            "fan_id": 0,
             "message_id": synth_id,
             "fan": {"username": None, "display_name": None, "avatar_url": None},
             "body": body[:2000],
@@ -489,20 +395,13 @@ async def _collapsed_mass_rows(
             "is_tip": False,
             "sent_at": created_at.isoformat() if created_at else None,
             "purchased_at": None,
-            # Unsent from everyone: our own cancel stamps the run, OF's history
-            # (a cancel made on OF) the cache.
             "is_unsent": g.run_unsent_at is not None or bool(g.cache_canceled),
             "sent_by_employee_id": g.sent_by_employee_id,
             "employee_name": g.employee_name,
-            # Denormalized "mass-<who>" tag stamped on the rows at send time
-            # (attribution.mass_sender_tag); the summary row prefers it over the
-            # Employee join so it survives an employee delete.
             "sender_name": g.sender_name,
             "automation_kind": g.automation_kind,
-            # Mass-summary extras — the row renderer switches on is_mass_summary.
             "is_mass_summary": True,
             "mass_run_id": int(g.mass_run_id),
-            # Cache is the truth; fall back when the stats poll hasn't run yet.
             "recipient_count": int(
                 g.cache_sent or g.run_recipient_count or g.recipient_count or 0
             ),
@@ -512,13 +411,9 @@ async def _collapsed_mass_rows(
             "reply_seconds": None,
             "funnel_name": g.funnel_name,
         })
-    # Newest broadcast first by send TIME (synth_id tiebreaker); cap to the
-    # page size (caller merges with the non-mass page and re-cuts, so an
-    # over-fetch here is harmless).
     out.sort(key=lambda r: (r["sent_at"] or "", r["message_id"]), reverse=True)
     out = out[:limit]
 
-    # Sales for the page's runs only, one read per account on the page.
     by_account: dict[str, list[int]] = {}
     for row in out:
         by_account.setdefault(row["account_id"], []).append(row["mass_run_id"])

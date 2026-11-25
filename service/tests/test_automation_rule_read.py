@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""automation_rule_read — the per-kind rule read the config APIs share.
-
-  case_rules_of_kind:  only the account's rows of the kind, oldest first; none → [].
-  case_primary_rule:   none → None; disabled-only → first; an enabled row wins over
-                       an older disabled one; two enabled → the oldest.
-  case_rule_steps:     None rule / None / "" / bad JSON / non-dict JSON → {}; a dict reads back.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness
 
 _harness.bootstrap()
 

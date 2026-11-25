@@ -1,45 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_setup — Full AI Chat one-click setup (spec phase-03c).
-
-Persona draft (ticket 52): `POST /admin/full-ai/persona/draft` drafts the Model
-info text from her OF name and her existing describe text, and saves nothing.
-
-Seams (spec › Testing Decisions): the LLM faked at the wire
-(`llm_client.httpx.AsyncClient`, every request body captured, high cost cap);
-OF behind one recording fake at both client factories (`client_pool.get`,
-`ax._make_client`; any send raises); the HTTP API through `_harness.make_client()`
-sessions on the temp DB; pure table tests for `clean_name`, `clamp_age`,
-`us_city`, `scrub`.
-
-  case_clean_name_table             "Kay 🍒 TOP 0.1%" → "Kay"
-  case_age_table                    17 → 19, 49 → 49, "twenty" → 22, 140 → 22
-  case_city_table                   Austin kept; Toronto / Buenos Aires / Bogota / Paris replaced; stable per account
-  case_scrub_table                  explicit clauses dropped, 160-char cut
-  case_compose_leaves_out_an_empty_looks_line   no bare `Looks:` reaches the live persona
-  case_persona_draft_shape          Name / Age / From / Looks / blank Won't do; explicit item never sent;
-                                    no kinks, limits, tattoos; survives compose_persona; 0 OF calls
-  case_no_save_until_save           config row byte-identical; grok_calls +1
-  case_zero_described_lines         need_describe, text "", 0 wire calls
-  case_inputs_read_past_the_first_page  a safe line behind BATCH explicit ones is found
-  case_owner_only                   chatter 403 and unowned 403, 0 wire calls
-Guards (ticket 53):
-  case_wont_do_from_current_text    the textarea's Won't-do line, never the stored one
-  case_locked_facts                 stored age / home city / location over the guess; age < 19 → 19 + note
-  case_no_name                      no usable OF name → blank Name: + note
-  case_cap_and_bad_reply            429 / 502, config row unchanged
-Gap describe (ticket 54): the vault describe runs for real (`_describe_and_flag`), vision
-faked at the same wire (answered by purpose), Jev at `vault_jev_pass.one`:
-  case_gap_describe_fills_the_draft  1 sfw + 5 undescribed → 5 describe calls (never explicit /
-                                    removed / clip), then 1 text call holding the new lines;
-                                    mirror hit 0 OF calls, miss only CDN fetch + re-sign; up to 6 newest
-  case_no_gap_with_three_lines      3 sfw lines → 0 describe calls, 0 OF calls
-  case_no_photo_or_every_describe_fails  need_describe, text "", 0 text calls; a vision cap is a 200
-
-Run: ./venv/bin/python service/tests/test_full_ai_setup.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -71,12 +33,12 @@ from db.engine import get_session  # noqa: E402
 from db.models import AccountAiConfig, GrokCall, Message, VaultItem, VaultSend  # noqa: E402
 
 IDS = fx.seed_two_agencies()
-AID = IDS["creator_a"]           # Agency A's Creator
-THEIRS = IDS["creator_b"]        # Agency B's: not Agency A's owner's
+AID = IDS["creator_a"]
+THEIRS = IDS["creator_b"]
 OWNER = fx.login_owner("agency_a_owner")
 CHATTER = fx.login_chatter("chatter_a")
 ROUTE = "/admin/full-ai/persona/draft"
-MARKER = "zebracorn"             # only in the explicit item's describe text
+MARKER = "zebracorn"
 T0 = datetime(2026, 11, 1, 12, 0, 0)
 
 asyncio.run(tenant_keys.set_keys(IDS["agency_a_owner"], {"deepseek": "sk-test-agency-a",
@@ -91,7 +53,6 @@ JPEG = _buf.getvalue()
 VISION_MODEL = llm_client.MODELS["qwen3-vl-30b"].api_model
 
 
-# ── Seams ─────────────────────────────────────────────────────────────
 
 class _Resp:
     status_code = 200
@@ -107,17 +68,13 @@ class _Resp:
 
 
 class Wire:
-    """`llm_client.httpx.AsyncClient`: records every request body and answers by
-    purpose: a vision describe (the Qwen-VL model) gets a prose describe numbered
-    per call, anything else `reply` as the model's message content."""
 
     bodies: list[dict] = []
-    reply: dict | str = {}   # a str is sent as the raw content (a bad reply)
+    reply: dict | str = {}
     LOOK = "Auburn ponytail and a denim jacket, look {n}."
 
     @staticmethod
     def by(purpose: str) -> list[dict]:
-        """The captured bodies of one purpose: `describe_media` or `text` (the persona call)."""
         return [b for b in Wire.bodies if (b.get("model") == VISION_MODEL) == (purpose == "describe_media")]
 
     def __init__(self, *a, **k):
@@ -144,11 +101,6 @@ _json = json
 
 
 class FakeOF:
-    """One recording OF client behind both factories: every OF call recorded in
-    `calls` (the CDN byte fetch `http.get`, the one-media re-sign
-    `vault_media_by_id`, anything else by name); any send recorded in `sends`
-    and raised. A stored url (`/stale/`) answers 403, a re-signed one (`/fresh/`)
-    the still; `resign=False` makes the re-sign find nothing (a failed fetch)."""
 
     timeout_s = 5
 
@@ -182,8 +134,6 @@ class FakeOF:
 
 
 class Jev:
-    """`vault_jev_pass.one`: stamps a current free-lane photo `_jev` (and its flags,
-    `_sync_flags`) when `ok`, else answers a failed reading and stamps nothing."""
 
     calls: list[int] = []
     ok = True
@@ -216,8 +166,8 @@ def seams(reply: dict | str, *, jev_ok: bool = True, resign: bool = True):
         gets.append(aid)
         return of
 
-    def _make(aid, *a, **k):   # building the client is no OF contact (`vault_frames._collect` builds one
-        made.append(aid)       # before its disk read), but a draft with no gap builds none
+    def _make(aid, *a, **k):
+        made.append(aid)
         return of
 
     client_pool.get, ax._make_client = _get, _make
@@ -227,7 +177,6 @@ def seams(reply: dict | str, *, jev_ok: bool = True, resign: bool = True):
         llm_client.httpx.AsyncClient, client_pool.get, ax._make_client, vault_jev_pass.one = saved
 
 
-# ── Seeding ───────────────────────────────────────────────────────────
 
 def _seed_config(aid: str, **kw) -> None:
     async def _go():
@@ -242,7 +191,6 @@ def _seed_config(aid: str, **kw) -> None:
 
 
 def _seed_vault(aid: str, items: list[tuple[str | None, str | None]]) -> None:
-    """Replace her vault with `items` = [(description, tier)], newest first."""
     async def _go():
         async with get_session() as s:
             await s.execute(delete(VaultItem).where(VaultItem.account_id == aid))
@@ -285,7 +233,6 @@ def _lines(text: str) -> dict[str, str]:
     return out
 
 
-# ── Pure tables ───────────────────────────────────────────────────────
 
 def case_clean_name_table():
     for raw, want in (("Kay 🍒 TOP 0.1%", "Kay"), ("", ""), ("🍒🍒", ""), (None, "")):
@@ -304,7 +251,6 @@ def case_city_table():
         for aid in ("a1", "a2", "777"):
             got = fp.us_city(foreign, aid)
             assert got in fp.US_CITIES, (foreign, got)
-            # The same account always gets the same pick.
             assert got == fp.us_city(foreign, aid) == fp.us_city(None, aid), (foreign, aid, got)
     assert 30 <= len(fp.US_CITIES) <= 50, len(fp.US_CITIES)
 
@@ -316,7 +262,6 @@ def case_scrub_table():
     assert len(fp.scrub("tall, " * 60)) <= 160
 
 
-# ── The route ─────────────────────────────────────────────────────────
 
 def case_persona_draft_shape():
     accounts.upsert_account(AID, name="Kay 🍒 TOP 0.1%")
@@ -341,15 +286,13 @@ def case_persona_draft_shape():
     assert not {"kinks", "limits", "tattoos"} & set(body), body
     assert body["need_describe"] is False and body["name"] == "Kay" and body["age"] == 19, body
     assert body["city"] == lines["From"], body
-    # The exact duplicate is dropped: 4 distinct safe lines.
     assert body["images_used"] == 4, body
 
-    # One JSON-mode call; what the model saw lacks the explicit item.
     assert len(Wire.bodies) == 1, Wire.bodies
     req = Wire.bodies[0]
     sent = json.dumps(req["messages"])
     assert MARKER not in sent, sent
-    assert SAFE[2][0] in sent and "x" * 301 not in sent, sent   # each line cut to 300 chars
+    assert SAFE[2][0] in sent and "x" * 301 not in sent, sent
     assert req["model"] == "deepseek-v4-flash" and req["temperature"] == 0.4, req
     assert req["response_format"] == {"type": "json_object"}, req
     system = req["messages"][0]["content"]
@@ -397,10 +340,8 @@ def case_no_save_until_save():
 
 def case_zero_described_lines():
     _seed_config(AID, model_notes=None)
-    # Undescribed, removed or not-safe items give no line.
     _seed_vault(AID, [(None, "sfw"), ("  ", "sfw"), EXPLICIT, ("lace bodysuit", "hardcore"), ("smiling", None)])
     calls = _grok_calls(AID)
-    # The two blank photos are gap candidates (ticket 54); with no Jev reading neither is described.
     with seams(MODEL_OUT, jev_ok=False) as of:
         r = OWNER.post(ROUTE, json={"account_id": AID, "current_text": ""})
     assert r.status_code == 200, r.text
@@ -411,7 +352,6 @@ def case_zero_described_lines():
 
 
 def case_inputs_read_past_the_first_page():
-    # BATCH explicit items newer than the one safe line: the read pages on instead of loading the vault at once.
     _seed_vault(AID, [EXPLICIT] * fp.BATCH + [SAFE[0]])
     got = asyncio.run(fp.inputs(AID))
     assert got.descs == [SAFE[0][0]], got.descs
@@ -429,7 +369,6 @@ def case_owner_only():
 
 
 
-# ── Guards (ticket 53) ────────────────────────────────────────────────
 
 def _draft(current_text: str = "", reply: dict | str = MODEL_OUT):
     with seams(reply) as of:
@@ -448,7 +387,6 @@ def case_wont_do_from_current_text():
     assert r.status_code == 200, r.text
     assert _lines(r.json()["text"])["Won't do (hard limits)"] == "no face", r.json()["text"]
     assert "meetups" not in r.json()["text"] and "anal" not in r.json()["text"], r.json()["text"]
-    # No Won't-do line in the box → blank, never invented.
     r = _draft("Name: Kay", reply)
     assert _lines(r.json()["text"])["Won't do (hard limits)"] == "", r.json()["text"]
 
@@ -462,7 +400,6 @@ def case_locked_facts():
     body, lines = r.json(), _lines(r.json()["text"])
     assert lines["Age"] == "24" and lines["From"] == "Austin", lines
     assert body["age"] == 24 and body["city"] == "Austin" and body["notes"] == [], body
-    # What the model saw: the stored facts as already confirmed.
     user = json.loads(Wire.bodies[0]["messages"][1]["content"])
     assert user["already_confirmed"] == {"age": 24, "home_city": "Austin"}, user
 
@@ -473,12 +410,10 @@ def case_locked_facts():
     assert body["notes"] == ["Stored age 18 is under 19; the draft uses 19."], body
     assert "already_confirmed" not in json.loads(Wire.bodies[0]["messages"][1]["content"]), Wire.bodies[0]
 
-    # A stored age with no number counts as unset: the floored guess, never "seventeen".
     _seed_config(AID, persona_facts_json=json.dumps({"age": "seventeen"}))
     r = _draft(reply={**MODEL_OUT, "age": 17})
     assert _lines(r.json()["text"])["Age"] == "19" and r.json()["age"] == 19, r.json()["text"]
 
-    # Stored location with no home city is her From.
     _seed_config(AID, persona_facts_json=None, location="Columbus, Ohio")
     r = _draft(reply={**MODEL_OUT, "from": "Denver"})
     assert _lines(r.json()["text"])["From"] == "Columbus, Ohio", r.json()["text"]
@@ -504,7 +439,7 @@ def case_cap_and_bad_reply():
     before = _config_row(AID)
     r = _draft("Name: Mia")
     assert r.status_code == 429, r.text
-    assert Wire.bodies == [], Wire.bodies   # refused before the wire
+    assert Wire.bodies == [], Wire.bodies
     assert _config_row(AID) == before, (_config_row(AID), before)
 
     _seed_config(AID, daily_cost_cap_cents=1_000_000)
@@ -515,13 +450,8 @@ def case_cap_and_bad_reply():
     assert _config_row(AID) == before, (_config_row(AID), before)
 
 
-# ── Gap describe (ticket 54) ──────────────────────────────────────────
 
 def _seed_gap(aid: str, *, described: int, undescribed: int, mirror: bool, base: int) -> tuple[list[int], list[int]]:
-    """Her vault, newest first: a removed blank photo, an `explicit`-tiered blank photo and a blank clip (never
-    gap photos; newest, so a sloppy pick takes them), then `undescribed` photos whose stored url is stale (their
-    stills on the temp mirror when `mirror`), then `described` sfw items. Returns (gap photo ids newest first,
-    the three never-candidates' ids)."""
     raw = lambda mid: json.dumps({"id": mid, "type": "photo",  # noqa: E731
                                   "files": {"preview": {"url": f"https://cdn.example/stale/{mid}.jpg"}}})
     never = [base, base + 1, base + 2]
@@ -568,7 +498,6 @@ def _gap_draft(**kw):
         r = OWNER.post(ROUTE, json={"account_id": AID, "current_text": ""})
     assert r.status_code == 200, r.text
     assert of.gets == [] and of.of.sends == [], (of.gets, of.of.sends)
-    # Client builds only for gap photos: `_collect` builds one, a mirror miss's re-sign one more.
     assert len(of.made) <= 2 * len(Jev.calls), (of.made, Jev.calls)
     return r.json(), of.of
 
@@ -585,9 +514,8 @@ def case_gap_describe_fills_the_draft():
         rows = _rows(AID, gap + never)
         new = [rows[mid][0] for mid in gap]
         assert all(new) and all(rows[mid][1] in fp.SAFE_TIERS for mid in gap), (mirror, rows)
-        assert all(rows[mid][:3] == (None, rows[mid][1], None) for mid in never), (mirror, rows)  # never touched
+        assert all(rows[mid][:3] == (None, rows[mid][1], None) for mid in never), (mirror, rows)
         assert rows[never[1]][1] == "explicit", rows
-        # Then 1 persona text call whose request holds the newly described lines.
         text = Wire.by("text")
         assert len(text) == 1, (mirror, len(text))
         notes = json.loads(text[0]["messages"][1]["content"])["image_notes"]
@@ -595,8 +523,8 @@ def case_gap_describe_fills_the_draft():
         assert body["images_described"] == 5 and body["images_used"] == 6, (mirror, body)
         assert body["need_describe"] is False and body["text"].startswith("Name: Kay"), (mirror, body)
         if mirror:
-            assert of.calls == [], of.calls   # a mirror hit makes no OF call of any kind
-        else:   # only the CDN fetch + the one-media re-sign, at most one set per gap photo
+            assert of.calls == [], of.calls
+        else:
             assert {c[0] for c in of.calls} <= {"http.get", "vault_media_by_id"}, of.calls
             for mid in gap:
                 mine = [c for c in of.calls if str(mid) in str(c[1])]
@@ -605,7 +533,6 @@ def case_gap_describe_fills_the_draft():
         assert _config_row(AID) == cfg, (mirror, _config_row(AID), cfg)
         assert _sends() == sent, (mirror, _sends(), sent)
 
-    # Up to 6 newest undescribed photos.
     gap, _ = _seed_gap(AID, described=0, undescribed=8, mirror=True, base=4000)
     body, of = _gap_draft()
     assert sorted(Jev.calls) == sorted(gap[:6]), (Jev.calls, gap)
@@ -628,7 +555,6 @@ def case_no_photo_or_every_describe_fails():
         assert body["need_describe"] is True and body["text"] == "" and body["images_described"] == 0, body
         assert Wire.by("text") == [], Wire.by("text")
 
-    # No photo at all (an empty vault), and none that may be described (removed, explicit, a clip).
     for described, base in ((None, 6000), (0, 6100)):
         if described is None:
             _seed_vault(AID, [])
@@ -638,20 +564,17 @@ def case_no_photo_or_every_describe_fails():
         _empty(body)
         assert Wire.bodies == [] and Jev.calls == [] and of.calls == [], (Jev.calls, of.calls)
 
-    # Every gap describe fails: no Jev reading ...
     gap, _ = _seed_gap(AID, described=0, undescribed=3, mirror=True, base=6200)
     body, of = _gap_draft(jev_ok=False)
     _empty(body)
     assert sorted(Jev.calls) == sorted(gap) and Wire.bodies == [], (Jev.calls, len(Wire.bodies))
 
-    # ... the fetch failed (stale url, the re-sign finds nothing) ...
     gap, _ = _seed_gap(AID, described=0, undescribed=3, mirror=False, base=6300)
     body, of = _gap_draft(resign=False)
     _empty(body)
     assert Wire.bodies == [] and len(of.calls) == 2 * len(gap), of.calls
     assert {r[3] for r in _rows(AID, gap).values()} == {"fetch_failed"}, _rows(AID, gap)
 
-    # ... the vision cap: not an error, no call at all ...
     _seed_gap(AID, described=0, undescribed=3, mirror=True, base=6400)
     _seed_config(AID, daily_cost_cap_cents=0)
     body, of = _gap_draft()

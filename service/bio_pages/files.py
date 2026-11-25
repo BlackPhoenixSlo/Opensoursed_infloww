@@ -1,8 +1,3 @@
-"""Bio file storage shared by the public bio app (reads) and the relay's owner admin API (writes).
-
-Layout `<files_dir>/<collection>/<row id>/<filename>` (PocketBase's), collection `profiles` or `links`. One
-containment rule for every reader: `safe_path`.
-"""
 from __future__ import annotations
 
 import os
@@ -20,21 +15,18 @@ log = logging.getLogger("of-relay.bio-files")
 
 
 class WriteFailed(OSError):
-    """A staged file could not be written."""
+    pass
 
 
 def new_id(n: int) -> str:
-    """A PocketBase-style id: `n` lowercase letters or digits."""
     return "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(n))
 
 
 def files_dir() -> Path:
-    """BIO_FILES_DIR, else service/bio_files."""
     return Path(os.environ.get("BIO_FILES_DIR") or Path(__file__).resolve().parents[1] / "bio_files")
 
 
 def safe_path(base: Path, collection: str, rid: str, filename: str) -> Path | None:
-    """The regular file a request names beneath `base`, or None (bad collection/id/name, dotfile, symlink out)."""
     if (collection in decide.FILE_COLLECTIONS and decide.RECORD_ID.fullmatch(rid)
             and decide.FILENAME.fullmatch(filename) and not filename.startswith(".")):
         return contained_file(base, collection, rid, filename)
@@ -42,7 +34,6 @@ def safe_path(base: Path, collection: str, rid: str, filename: str) -> Path | No
 
 
 def write(base: Path, collection: str, rid: str, filename: str, data: bytes) -> Path:
-    """Atomically write `data` (tmp + rename) as a new file; returns its path."""
     d = base / collection / rid
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / f".{filename}.tmp"
@@ -55,7 +46,6 @@ def write(base: Path, collection: str, rid: str, filename: str, data: bytes) -> 
 
 
 async def discard(collection: str, rid: str, name: str | None = None) -> None:
-    """Best-effort cleanup after a committed replacement or a failed staged write."""
     try:
         await asyncio.to_thread(remove, files_dir(), collection, rid, name)
     except OSError:
@@ -64,7 +54,6 @@ async def discard(collection: str, rid: str, name: str | None = None) -> None:
 
 @asynccontextmanager
 async def staged(collection: str, rid: str, name: str, data: bytes | None):
-    """Write a candidate off-loop and remove it, including its empty row dir, on failure."""
     try:
         if data is not None:
             try:
@@ -83,7 +72,6 @@ async def staged(collection: str, rid: str, name: str, data: bytes | None):
 
 
 def remove(base: Path, collection: str, rid: str, filename: str | None = None) -> None:
-    """Delete one file, or the row's whole dir with `filename=None`; a missing one is fine. Raises OSError."""
     if not decide.RECORD_ID.fullmatch(rid):
         return
     if filename is None:

@@ -1,29 +1,3 @@
-"""tests/test_capture_links_owner.py — a captured account must get an owner.
-
-`POST /admin/session/bootstrap` writes the session to disk, mirrors it into
-SQL (that import is what creates the `accounts` row), and links the account
-to the signed-in user. Those last two used to be two separate fire-and-forget
-tasks with nothing ordering them, so the link routinely ran while `accounts`
-was still empty for that id.
-
-`user_accounts.account_id` carries a real FK and `PRAGMA foreign_keys=ON` is
-wired at connect, so that insert raised IntegrityError for FOREIGN KEY — and
-the handler caught IntegrityError as though it could only mean "duplicate",
-rolled back, and answered 200. A captured account owned by nobody, no error,
-no log line. Measured 2026-08-22 on the live box: Blake1, Blake2 and 80000112
-— the three most recently captured accounts — were the exact three carrying
-zero `user_accounts` rows.
-
-The fix is ORDERING, not defensive parent-creation: creating the `accounts`
-row here would invent a DB account with no registry folder, which is the
-21-vs-6 divergence scripts/purge_stale.py exists to clean up.
-
-So this guards the ordering itself, plus the two properties the old code got
-wrong:
-  • the bootstrap path syncs BEFORE it links (the regression),
-  • a missing parent now RAISES instead of passing silently,
-  • re-capturing is still idempotent.
-"""
 import _harness  # noqa: F401 — MUST be first (binds a throwaway temp DB)
 
 import asyncio  # noqa: E402
@@ -60,14 +34,13 @@ async def _seed(account_id: str | None = None) -> None:
 
 
 async def _repo_contract() -> None:
-    # Parent present: the link lands, and a second call is a no-op.
     await _seed("9990001")
     await ensure_user_account_link(UID, "9990001")
     assert await _count_links("9990001") == 1, "link must land"
     await ensure_user_account_link(UID, "9990001")
     assert await _count_links("9990001") == 1, "re-capture must not duplicate"
 
-    # Parent missing: must RAISE. Silence here is the entire bug.
+    # Parent missing must raise; silence is the bug.
     try:
         await ensure_user_account_link(UID, "9999999")
     except IntegrityError:
@@ -78,11 +51,10 @@ async def _repo_contract() -> None:
 
 
 def _ordering() -> None:
-    """The bootstrap path must sync before it links, in one task."""
     calls: list[str] = []
 
     async def fake_sync() -> dict:
-        await asyncio.sleep(0)          # yield: a racing link would slot in here
+        await asyncio.sleep(0)
         calls.append("sync")
         return {}
 

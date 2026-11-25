@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""push_decide (pure): should_push matrix, outcome table, retry delays, SSRF guard, Seen LRU/TTL.
-Run: venv/bin/python -m pytest service/tests/test_push_decide.py -q"""
-import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # pytest: tests/ is a package
+import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _harness  # noqa: E402,F401  (first: temp DB)
 
 from types import SimpleNamespace as NS
@@ -52,7 +50,6 @@ def test_endpoint_allowed():
     ok = ["https://fcm.googleapis.com/fcm/send/abc", "https://web.push.apple.com/QK",
           "https://api.push.apple.com/x", "https://wns2-par02p.notify.windows.com/w/?token=1",
           "https://updates.push.services.mozilla.com/wpush/v2/x", "https://fcm.googleapis.com:443/x"]
-    # userinfo URLs built with {}: a literal user@host reads as an email to the public leak gate
     bad = ["http://fcm.googleapis.com/x", "https://fcm.googleapis.com:8443/x",
            *(f"https://{ui}@fcm.googleapis.com/x" for ui in ("user", "a:b")),
            "https://fcm.googleapis.com.evil.com/x", "https://evilfcm.googleapis.com/x",

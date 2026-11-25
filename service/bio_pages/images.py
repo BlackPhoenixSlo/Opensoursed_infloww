@@ -1,8 +1,3 @@
-"""Owner uploads → WebP: pure bytes in, bytes out (Pillow; run it off the event loop).
-
-v2 parity ($V2/app/src/image.js TARGETS): avatar 512, background 1080 max side, never enlarged; frame 0; EXIF
-orientation applied, then no EXIF/ICC kept; alpha kept only when the image has some.
-"""
 from __future__ import annotations
 
 from io import BytesIO
@@ -16,7 +11,6 @@ REFUSED = "Pick a JPG, PNG, GIF or WebP image."
 
 
 class Refused(Exception):
-    """Not an image we take: `status` 415 (format/size) or 413 (output too big)."""
 
     def __init__(self, status: int, msg: str = REFUSED):
         super().__init__(msg)

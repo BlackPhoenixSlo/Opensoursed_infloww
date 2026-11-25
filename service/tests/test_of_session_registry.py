@@ -1,5 +1,3 @@
-"""Idle sweeper keeps reclaiming after one handle-close failure (W30 #27)."""
-
 import _harness  # noqa: F401  (first: temp DB + sys.path)
 
 import time
@@ -53,8 +51,6 @@ def case_sweeper_survives_close_failure():
 
 
 def case_drain_gives_up_at_its_deadline():
-    """W30 #15: a native owner that never finishes can't hold shutdown: drain(timeout) returns
-    False at its deadline, force-closes nothing; a drained registry returns True."""
     reg = Registry(age=0, interval=0.01)
     try:
         stuck = Slot(Life())
@@ -67,7 +63,7 @@ def case_drain_gives_up_at_its_deadline():
     finally:
         reg.stop_event.set()
         reg.thread.join(2)
-    quiet = Registry(age=0, interval=0.01)   # a timed-out drain is terminal (stop flag): a fresh one drains
+    quiet = Registry(age=0, interval=0.01)
     try:
         quiet.add(Slot(Life()))
         assert quiet.drain(timeout=2.0) is True
@@ -77,8 +73,6 @@ def case_drain_gives_up_at_its_deadline():
 
 
 def case_drain_timeout_stops_the_sweeper():
-    """W30 #30: a timed-out drain skips shutdown(), so it must stop the idle sweeper itself:
-    it would keep retiring slots through the persist flush and DB dispose that follow."""
     reg = Registry(age=0, interval=0.01)
     try:
         stuck = Slot(Life())
@@ -94,14 +88,12 @@ def case_drain_timeout_stops_the_sweeper():
 
 
 def case_sweeper_checks_stop_before_each_retirement():
-    """W30 #33: a drain timeout sets the stop flag while the sweeper is mid-batch: it closes no
-    further handle (it used to finish the batch, closing handles during the persist flush)."""
     reg = Registry(age=0, interval=0.3)
     try:
         class _StopsSweeper(_Curl):
             def close(self):
                 super().close()
-                reg.stop_event.set()      # a drain timed out while this handle closed
+                reg.stop_event.set()
 
         first, second = _StopsSweeper(), _Curl()
         _idle_slot(reg, first)
@@ -115,8 +107,6 @@ def case_sweeper_checks_stop_before_each_retirement():
 
 
 def case_abandoned_drain_never_shuts_down():
-    """W30 #33 r4: the shutdown caller gave up (stop flag set) while a session close blocked the drain
-    thread; once the close returns, that thread must not go on to shutdown() and retire handles."""
     import threading
     reg = Registry(age=0, interval=60)
     gate = threading.Event()
@@ -125,7 +115,7 @@ def case_abandoned_drain_never_shuts_down():
         drained = False
 
         def close(self):
-            gate.wait(2)               # native close stuck past the caller's bound
+            gate.wait(2)
 
         def drain(self, timeout=None):
             self.drained = True
@@ -138,7 +128,7 @@ def case_abandoned_drain_never_shuts_down():
     try:
         t.start()
         time.sleep(0.05)
-        reg.stop_event.set()           # the caller's wait_for timed out
+        reg.stop_event.set()
         gate.set()
         t.join(3)
         assert out == [False], out

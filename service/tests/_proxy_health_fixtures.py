@@ -1,10 +1,3 @@
-"""service/tests/_proxy_health_fixtures.py — the proxy-health bench shared by test_proxy_health.py,
-test_proxy_failover.py and test_proxy_probe.py: a temp registry (`_registry`: hu-1 + spare; `_pool`: three
-Inflowwww pool proxies, Creators 1..6), the watcher inline on a fake clock with a scripted probe (`_Watch`),
-the event recorder (`_Events`), and the state helpers (`_fail`, `_bad`, `_spread_refusals`).
-
-NOT a test file: no `case_*`, no `_harness.run()`. Importers bootstrap `_harness` FIRST, then import this.
-"""
 from __future__ import annotations
 
 import tempfile
@@ -28,11 +21,9 @@ def _registry() -> None:
     proxy_health._state.clear()
     proxy_health._watchers.clear()
     proxy_health._tele.clear()
-    proxy_health.verify_pick = lambda p, **_: True   # a new binding's probe: answers unless a case scripts it
+    proxy_health.verify_pick = lambda p, **_: True
 
 
-# The watcher's clock inside `_Watch`: a fake `_sleep` advances it, so the
-# confirm's deadline loop sees its wait pass.
 _CLOCK = [0.0]
 
 
@@ -41,8 +32,6 @@ def _advance(s: float) -> None:
 
 
 def _then(*steps):
-    """A `_sleep` that runs steps[i] at its i-th wait (None: just returns).
-    Wait 0 is the confirm's (CONFIRM_GAP_S after the first error), then the rechecks'."""
     it = iter(steps)
 
     def sleep(_s):
@@ -56,9 +45,6 @@ def _then(*steps):
 _REAL_VERIFY = proxy_health.verify_pick
 
 
-# The watcher inline and without waits; the probe answers from a script
-# (True = answers; True once it runs out) and is logged per label; a label in
-# `dead` never answers and takes nothing from the script. `_Watch(False, False, True)`.
 class _Watch:
     def __init__(self, *answers: bool, geo: dict[str, str] | None = None, dead: set[str] = frozenset()):
         self.answers, self.probed, self.slept, self.geo = list(answers), [], [], geo or {}
@@ -76,8 +62,6 @@ class _Watch:
             _advance(s)
         proxy_health._sleep = _sleep
 
-        # The health probe (probe_of: no ip/geo, its real shape) answers from the script; the trace
-        # (`note_trace`'s region, uncounted) always answers with `geo` and is logged apart.
         def _probe(p, timeout_s=15):
             self.probed.append(p["label"])
             ok = False if p["label"] in self.dead else (self.answers.pop(0) if self.answers else True)
@@ -114,8 +98,6 @@ class _Events:
 
 
 def _pool(n: int = 3, tier_break: int | None = None) -> list[str]:
-    """Three Inflowwww pool proxies; Creators 1..6 spread two per proxy. `tier_break`: the env's
-    POOL_TIER_BREAK before that proxy (the ones from it on are the failover's next tier)."""
     proxies.REGISTRY_PATH = Path(tempfile.mkdtemp(prefix="proxyfail_")) / "proxies.json"
     items = [f"socks5://pool-{i}.invalid:{9000 + i}" for i in range(n)]
     if tier_break is not None:
@@ -127,7 +109,7 @@ def _pool(n: int = 3, tier_break: int | None = None) -> list[str]:
     proxy_health._state.clear()
     proxy_health._watchers.clear()
     proxy_health._tele.clear()
-    proxy_health.verify_pick = _REAL_VERIFY   # probes go through _Watch's scripted proxy_probe.probe_of
+    proxy_health.verify_pick = _REAL_VERIFY
     return labels
 
 
@@ -141,7 +123,6 @@ def _bad(label: str, due: bool = False) -> None:
 
 
 def _spread_refusals(label: str, ok: int, refused: int, buckets: int = 3) -> None:
-    """`ok` answers, then `refused` refusals spread over `buckets` tenths of the window (the clock moves)."""
     for _ in range(ok):
         proxy_health._sample(label, False)
     for i in range(refused):

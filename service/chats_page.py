@@ -1,10 +1,3 @@
-"""
-chats_page.py — one logical page of a model's OF chats, read from /chats.
-
-Shared by the inbox list, roster badge, and paged chat readers. A cut-short
-page carries OF's own error and the partial rows already read.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -16,23 +9,16 @@ from of_client import OFAPIError, OFClient
 
 log = logging.getLogger(__name__)
 
-# A 429 mid-page: OF asks "Please allow 1 seconds". Wait that (when this short) and
-# re-read the same offset once, instead of failing the whole page: a failed page
-# was re-asked by the UI every few seconds, each ask tripping OF's limit again
-# (public prod 2026-11-14: one Creator's offset=100 page failed 143x in 12 h).
+# OF 429 mid-page says "Please allow 1 seconds": wait that (when short) and re-read once; a failed page was re-asked by the UI and re-tripped OF.
 IN_PAGE_RETRY_MAX_S = 2.0
-_sleep = time.sleep  # tests swap it
+_sleep = time.sleep
 
-# A page that still ended in OF's 429 is not cached (a short page would hide the rest), so
-# every re-ask (UI retry, 90s poll, a second tab) went straight back to OF and 429'd again
-# (AE 2026-11-14: one Creator's chats route 99.87 429s/h). Hold that 429 per page key for
-# OF's asked wait, clamped: long enough to absorb the re-asks, short enough to never matter.
 HOLD_MIN_S = 1.0
 HOLD_MAX_S = 5.0
 
 
+# A page that ended in 429 is not cached, so every re-ask hit OF again: hold the 429 per page key for OF's asked wait.
 class ThrottleHold:
-    """Per-key memo of OF's last 429: `check` returns it while its hold runs, else None."""
 
     def __init__(self, clock: Any = time.monotonic):
         self._clock = clock
@@ -41,7 +27,7 @@ class ThrottleHold:
     def hold(self, key: Any, exc: BaseException, wait: float) -> float:
         now = self._clock()
         for k in [k for k, (until, _) in self._held.items() if until <= now]:
-            del self._held[k]  # prune on write: the map only ever holds live keys
+            del self._held[k]
         secs = min(max(wait, HOLD_MIN_S), HOLD_MAX_S)
         self._held[key] = (now + secs, exc)
         return secs
@@ -58,22 +44,14 @@ class ThrottleHold:
 
 class ChatsPage(NamedTuple):
     rows: list[dict[str, Any]]
-    # OF's hasMore as last read, or the rows overflowed `limit`.
     has_more: bool
-    # Cut short: OF's 429 after some rows (`throttled`), or a dup-only read
-    # (OF serving a window again). Either way not the end of history, and
-    # paging on past it only ends in OF's 429.
     partial: bool
-    # The 429 that cut the page short, for a caller that serves it as OF's error.
     throttled: OFAPIError | None
 
 
 def _read_429_once(
     read: Any, *, rows_so_far: int, offset: int, may_retry: bool,
 ) -> tuple[dict[str, Any] | None, OFAPIError | None]:
-    """One upstream read. (value, None) on success. A 429 with rows already read:
-    (value, the 429) after one short wait-and-retry worked, (None, the 429) when it
-    did not or was not allowed. Anything else raises (a 429 before any row too)."""
     try:
         return read(), None
     except OFAPIError as e:
@@ -94,6 +72,7 @@ def _read_429_once(
         return None, e
 
 
+# OF caps /chats at ~10 rows per response regardless of `limit`: loop on hasMore and advance by rows RECEIVED, or ranks ~10-24 are skipped.
 def assemble_chats_page(
     client: OFClient,
     *,
@@ -104,21 +83,6 @@ def assemble_chats_page(
     list_id: str | None = None,
     q: str | None = None,
 ) -> ChatsPage:
-    """Blocking: assemble ONE logical page of `limit` conversations from OF.
-
-    OF caps /chats at ~10 rows per response regardless of `limit` (same cap
-    the roster scan and automation_executor's chat scrape work around), so a
-    single upstream call for limit=25 silently returned ~10 rows — and the
-    frontend, which advances its next offset by the 25 it ASKED for, then
-    requested offset=25 and permanently skipped conversations ranked ~10-24:
-    an unread fan in that band was visible to the roster badge (which pages
-    by 10) but structurally unreachable by the chat list ("badge says 3, list
-    shows 2"). Loop on hasMore, advancing by rows RECEIVED, until the logical
-    page is full; dedupe fans that shift ranks between page reads.
-
-    An OF 429 before any row raises; after some, the page stops there,
-    `partial`. One short wait-and-retry first (IN_PAGE_RETRY_MAX_S): the caller
-    holds a lane slot for the whole call, so never a long one."""
     rows: list[dict[str, Any]] = []
     seen: set[Any] = set()
     cur = int(offset)
@@ -126,10 +90,7 @@ def assemble_chats_page(
     partial = False
     throttled: OFAPIError | None = None
     retried = False
-    # Hard cap on upstream reads: ~3 for a 25-row page at OF's 10-row cap, with
-    # slack for rank churn. If OF ever serves repeating pages with hasMore=true,
-    # this bounds the loop instead of wedging the per-account lane + per-key
-    # cache lock (every future /chats and badge read for this key) forever.
+    # Hard cap on reads: repeating pages with hasMore=true must not wedge the lane and cache lock.
     for _ in range((limit // 10) + 3):
         if len(rows) >= limit or not has_more:
             break
@@ -148,16 +109,11 @@ def assemble_chats_page(
                 partial, throttled = True, err
                 break
         page = r.get("list") or r.get("chats") or []
-        # OF's hasMore is authoritative and must be read BEFORE the empty-page
-        # break: an empty read past end-of-history (or a zero-match filter /
-        # empty inbox) carries hasMore=false, and returning the loop's True
-        # initializer instead gets cached for the full TTL and feeds the
-        # frontend's owe-reply scan / infinite scroll a "more available" lie
-        # it can never satisfy — an unbounded loadMore loop against live OF.
+        # Read hasMore BEFORE the empty-page break: an empty read past the end carries false, and the True initializer would be cached and loop loadMore against OF.
         has_more = bool(r.get("hasMore"))
         if not page:
             break
-        cur += len(page)  # advance by RECEIVED, never by requested
+        cur += len(page)
         added = 0
         for ch in page:
             fid = (ch.get("withUser") or {}).get("id")
@@ -167,9 +123,8 @@ def assemble_chats_page(
                 seen.add(fid)
             rows.append(ch)
             added += 1
+        # Dup-only page: OF offset clamp or rank churn; stop rather than spin the lane.
         if added == 0:
-            # Dup-only page: pagination isn't progressing (heavy rank churn or
-            # an OF offset clamp). Stop rather than spin the lane.
             log.warning("assemble_chats_page: no progress at offset=%s (%d dup rows, limit=%s)",
                         cur - len(page), len(page), limit)
             partial = True

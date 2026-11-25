@@ -1,33 +1,7 @@
 #!/usr/bin/env python3
-"""
-paid-messages — mass-summary row tests (Messages → All/PPV tab).
-
-Covers the two bugs fixed in `messages.py` _collapsed_mass_rows + the
-`/admin/paid-messages` keyset:
-
-  case_counts_come_from_cache:
-      a broadcast with mass_broadcast_cache sent=126/viewed=21 surfaces those
-      numbers on the summary row — NOT the optimistic placeholder count (1).
-  case_no_cache_falls_back_to_placeholder:
-      a broadcast with no cache row (stats poll hasn't run) falls back through
-      MassRun.recipient_count → distinct-fan placeholder count; never crashes,
-      viewed_count = 0.
-  case_mass_interleaves_by_time:
-      a 6d-old broadcast sorts BELOW a 2h-old normal row and ABOVE an 8d-old
-      normal row — it interleaves by send time instead of pinning to page 1
-      (the old synthetic-5e15-id-as-sort-key bug).
-  case_time_keyset_paginates:
-      the (sent_at, message_id) cursor walks pages correctly across the
-      interleaved set — no dupes, no gaps, mass row appears exactly once.
-  case_csv_fan_query_keeps_only_matching_fans:
-      format=csv + fan_query streams only the matching fans' rows (the CSV
-      fan filter used to 500: its subquery auto-correlated away its FROM).
-
-Run: ./venv/bin/python service/tests/test_paid_messages_mass.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -47,7 +21,6 @@ _FROM = (_NOW - timedelta(days=60)).isoformat()
 _TO = (_NOW + timedelta(days=1)).isoformat()
 
 
-# ── seed helpers ──────────────────────────────────────────────────────
 async def _seed_account(aid: str) -> None:
     async with get_session() as s:
         if await s.get(Account, aid) is None:
@@ -67,8 +40,6 @@ async def _add_broadcast(
     cache_sent: int | None, cache_viewed: int | None,
     run_recipient: int = 0, placeholder_fans: list[int] | None = None,
 ) -> int:
-    """Create a mass_run, its per-fan placeholder Message rows, and (optionally)
-    a mass_broadcast_cache row. Returns the synthetic summary message_id."""
     placeholder_fans = placeholder_fans or [1]
     synth = mass_placeholder_message_id(run_id)
     async with get_session() as s:
@@ -109,12 +80,9 @@ def _mass_row(rows: list[dict]) -> dict:
     return next(r for r in rows if r.get("is_mass_summary"))
 
 
-# ── BUG 2: counts from cache ──────────────────────────────────────────
 async def case_counts_come_from_cache():
     aid = "pm_cache"
     await _seed_account(aid)
-    # 126 sent / 21 viewed lives in the cache; only ONE optimistic placeholder
-    # Message row persisted (the explicit-userIds case).
     await _add_broadcast(
         aid, run_id=101, queue_id=9001, age=timedelta(days=6),
         cache_sent=126, cache_viewed=21, placeholder_fans=[1],
@@ -126,11 +94,9 @@ async def case_counts_come_from_cache():
     assert m["recipient_count"] != 1, "placeholder count leaked instead of cache"
 
 
-# ── BUG 2 fallback: no cache yet ──────────────────────────────────────
 async def case_no_cache_falls_back_to_placeholder():
     aid = "pm_nocache"
     await _seed_account(aid)
-    # No cache row, MassRun.recipient_count=0 → falls to distinct-fan count (2).
     await _add_broadcast(
         aid, run_id=201, queue_id=9101, age=timedelta(days=2),
         cache_sent=None, cache_viewed=None, run_recipient=0,
@@ -142,7 +108,6 @@ async def case_no_cache_falls_back_to_placeholder():
     assert m["viewed_count"] == 0, f"want 0 viewed, got {m['viewed_count']}"
 
 
-# ── BUG 1: time interleave ────────────────────────────────────────────
 async def case_mass_interleaves_by_time():
     aid = "pm_sort"
     await _seed_account(aid)
@@ -154,13 +119,11 @@ async def case_mass_interleaves_by_time():
     )
     rows = (await _fetch(aid))["rows"]
     assert len(rows) == 3, f"want 3 rows, got {len(rows)}"
-    # newest first by TIME: 2h normal, then 6d mass, then 8d normal.
     assert not rows[0]["is_mass_summary"], "2h normal row should be first, not the 6d mass row"
     assert rows[1]["is_mass_summary"], "6d mass row should interleave in the middle slot"
     assert rows[2]["message_id"] == 5002, "8d normal row should sort last"
 
 
-# ── BUG 1: cursor walks the interleaved pages ─────────────────────────
 async def case_time_keyset_paginates():
     aid = "pm_page"
     await _seed_account(aid)
@@ -184,12 +147,10 @@ async def case_time_keyset_paginates():
     )
     ids2 = [r["message_id"] for r in page2["rows"]]
     assert ids2 == [6002], f"page2 should be just the 8d normal row, got {ids2}"
-    # No dupes across the seam.
     assert synth not in ids2, "mass row duplicated onto page 2"
     assert page2["next_before_id"] is None, "short page → cursor exhausted"
 
 
-# ── CSV + fan_query ───────────────────────────────────────────────────
 async def case_csv_fan_query_keeps_only_matching_fans():
     aid = "pm_csvfan"
     await _seed_account(aid)
@@ -215,9 +176,6 @@ async def case_csv_fan_query_keeps_only_matching_fans():
 
 
 async def case_cache_is_stale_once_a_mass_run_is_newer():
-    """The Mass messages tab refetches after our own sends: a cache fetched
-    before the account's latest mass_runs row (minted at send, `started_at`, or
-    stamped with OF's `sent_at` at close) is stale; a refetch makes it fresh."""
     import mass_broadcast_cache as cache
     aid = "pm_stale"
     await _seed_account(aid)

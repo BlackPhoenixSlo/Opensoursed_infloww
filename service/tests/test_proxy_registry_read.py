@@ -1,32 +1,6 @@
-"""
-A proxies.json read while `save` rewrites it in place (truncate, write, fsync: the
-bind mount forbids a rename) must never send a proxied Creator's traffic direct.
-
-  case_egress_table                      proxies.egress: Ok / Torn x last good yes / no x
-                                         proxied / unproxied -> Proxy / Direct / Refuse
-  case_registry_reads                    missing file: empty Ok; empty, half-written, not a
-                                         registry: Torn with the last good read (or None);
-                                         `save` itself is a good read; load() never empty
-                                         once one was good; each caller its own copy
-  case_read_overtaken_by_save            a read that a save lands in the middle of does not
-                                         store its older text as the last good
-  case_writers_on_torn                   every writer (and sync_pool) on any torn read, with
-                                         or without a last good: RegistryUnreadable (sync:
-                                         skipped), file untouched
-  case_torn_logged_once_per_run          a run of torn reads logs one warning; the good read
-                                         ending it one info
-  case_from_session_file                 torn with a last good: the proxied client; torn
-                                         with none: EgressRefused, no client; Ok unproxied:
-                                         direct
-  case_save_loop_vs_concurrent_load      `save` in a loop thread vs load() / egress() in
-                                         another: never an empty registry, never Direct for
-                                         the proxied account (N reads, torn ones counted)
-
-Run: ./venv/bin/python service/tests/test_proxy_registry_read.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness
 
 _harness.bootstrap()
 
@@ -49,8 +23,8 @@ ENTRY = {"label": "hu-1", "scheme": "http", "host": "h.invalid", "port": 8080,
 GOOD = {"proxies": [ENTRY]}
 
 
+# `save` truncates and rewrites in place (the bind mount forbids a rename), so a concurrent read can see a torn file.
 def _fresh(text: str | None) -> None:
-    """The file as `text` (None: no file) and no good read remembered."""
     proxy_registry._last_good_text = None
     proxy_registry._torn_logged = False
     if text is None:
@@ -60,19 +34,17 @@ def _fresh(text: str | None) -> None:
 
 
 def case_egress_table() -> None:
-    # (registry, account) -> egress
     for reg, aid, want in [
         (Ok(GOOD), PROXIED, Proxy(ENTRY)),
         (Ok(GOOD), UNPROXIED, Direct()),
         (Ok({"proxies": []}), PROXIED, Direct()),
-        (Torn(GOOD), PROXIED, Proxy(ENTRY)),      # torn, last good: answers from it
+        (Torn(GOOD), PROXIED, Proxy(ENTRY)),
         (Torn(GOOD), UNPROXIED, Direct()),
-        (Torn(None), PROXIED, Refuse),            # torn, none before: never direct
-        (Torn(None), UNPROXIED, Refuse),          # nothing tells it apart (inferred: no marker exists)
+        (Torn(None), PROXIED, Refuse),
+        (Torn(None), UNPROXIED, Refuse),
     ]:
         got = egress(reg, aid)
         assert (isinstance(got, Refuse) if want is Refuse else got == want), (reg, aid, got)
-    # The legacy per-session-file binding, through either registry.
     legacy = {"proxies": [{**ENTRY, "assigned_account_ids": [], "assigned_session": "s.json"}]}
     for reg in (Ok(legacy), Torn(legacy)):
         assert egress(reg, UNPROXIED, "s.json") == Proxy(legacy["proxies"][0])
@@ -85,19 +57,17 @@ def case_registry_reads() -> None:
     for torn in ("", json.dumps(GOOD)[:17], "[]", '{"proxies": 3}', "{}"):
         _fresh(torn)
         assert proxy_registry.registry() == Torn(None), torn
-        assert proxy_registry.load() == {"proxies": []}, torn    # nothing better ever read
+        assert proxy_registry.load() == {"proxies": []}, torn
         _fresh(json.dumps(GOOD))
         assert proxy_registry.registry() == Ok(GOOD)
         proxy_registry.REGISTRY_PATH.write_text(torn)
         assert proxy_registry.registry() == Torn(GOOD), torn
         assert proxy_registry.load() == GOOD, torn
-    # save is a good read too (the process's own write); a later torn read answers from it.
     _fresh("")
     newer = {"proxies": [{**ENTRY, "port": 9090}]}
     proxy_registry.save(newer)
     proxy_registry.REGISTRY_PATH.write_text("")
     assert proxy_registry.load() == newer
-    # Each caller its own copy: mutating one does not change the next.
     proxy_registry.load()["proxies"].clear()
     assert proxy_registry.load() == newer
 
@@ -105,7 +75,7 @@ def case_registry_reads() -> None:
 def case_read_overtaken_by_save() -> None:
     real, newer = proxy_registry.REGISTRY_PATH, {"proxies": [{**ENTRY, "port": 9090}]}
 
-    class SaveMidRead:              # read the old text, then a save lands before the read returns
+    class SaveMidRead:
         def exists(self):
             return real.exists()
 
@@ -118,7 +88,7 @@ def case_read_overtaken_by_save() -> None:
     _fresh(json.dumps(GOOD))
     proxy_registry.REGISTRY_PATH = SaveMidRead()
     try:
-        assert proxy_registry.registry() == Ok(GOOD)   # the read itself is what it read
+        assert proxy_registry.registry() == Ok(GOOD)
     finally:
         proxy_registry.REGISTRY_PATH = real
     real.write_text("")
@@ -139,8 +109,6 @@ def case_writers_on_torn() -> None:
         ("record_verification", lambda: proxy_registry.record_verification("hu-1", ip="1.2.3.4", geo="HU", ok=True)),
     ]
     torn = json.dumps(two)[:40]
-    # Torn with none before, or with a last good (another process mid-write: last good +
-    # our edit would drop its write): refuse, file untouched.
     for last_good in (False, True):
         for name, w in writers:
             _fresh(json.dumps(two))
@@ -195,12 +163,12 @@ def _session(aid: str) -> Path:
 def case_from_session_file() -> None:
     sp, su = _session(PROXIED), _session(UNPROXIED)
     _fresh(json.dumps(GOOD))
-    proxy_registry.registry()                       # the relay read it whole once
+    proxy_registry.registry()
     proxy_registry.REGISTRY_PATH.write_text('{"proxies": [{"lab')
     c = of_client.OFClient.from_session_file(sp)
     assert c.proxy_label == "hu-1" and c.proxy_url, (c.proxy_label, c.proxy_url)
     assert of_client.OFClient.from_session_file(su).proxy_url is None
-    _fresh('{"proxies": [{"lab')                    # never read whole: refuse, never direct
+    _fresh('{"proxies": [{"lab')
     for p in (sp, su):
         try:
             of_client.OFClient.from_session_file(p)

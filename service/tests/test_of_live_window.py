@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""test_of_live_window.py — the desktop Go live window's session read (ticket 127, D28).
-
-`POST /api/of/live-window/session` hands the desktop's main process a Creator's
-OnlyFans cookies (never Cloudflare's) and x_bc, for a signed-in owner of that
-Creator; every chatter is refused, whatever their role grants. No captured
-session answers `{"session": null}` (the desktop's login-page mode); a broken
-one stays a 503. Both routes are 404 while OF_LIVE_WINDOW_ENABLED is off. The
-pooled client is faked (`of_live_window._client_for`): no session file is read,
-no OF is called.
-
-Run:  ./venv/bin/python service/tests/test_of_live_window.py
-"""
 import _harness  # noqa: F401 — MUST be first
 
 _harness.bootstrap()
@@ -50,7 +38,6 @@ _ROWS = [
 ]
 
 
-# account id -> the HTTPException `_load_client` would raise for it (no session file, a broken one).
 _LOAD_ERRORS: dict = {}
 
 
@@ -177,11 +164,8 @@ def case_owner_access_token_refused():
 
 
 def case_chatter_with_go_live_page_403():
-    # Enforcement off grants every chatter every page, Go live included
-    # (permissions.py): the page alone never hands out a Creator's session.
     with _roles({"enforce": False}), _switch("1"):
         chatter = fx.login_chatter("chatter_a")
-        # The page is granted, yet the probe refuses too: a chatter's Start stays disabled.
         assert chatter.get("/api/of/live-window").status_code == 403
         r = _post(chatter, A)
         assert r.status_code == 403, (r.status_code, r.text)
@@ -221,7 +205,7 @@ def case_in_scope_session_without_cloudflare_no_store():
             by = {c["name"]: c for c in body["cookies"]}
             assert by["sess"] == {"name": "sess", "value": SESS, "domain": ".onlyfans.com", "path": "/",
                                   "secure": True, "httpOnly": True, "expires": FAR}
-            assert by["fp"]["domain"] == "onlyfans.com"   # host-only stays host-only
+            assert by["fp"]["domain"] == "onlyfans.com"
             assert by["auth_id"]["expires"] is None
 
 
