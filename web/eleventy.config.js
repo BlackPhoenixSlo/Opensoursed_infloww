@@ -1,20 +1,14 @@
-// Eleventy builds src/ into dist/. The Tailwind CLI writes dist/assets/main.css
-// first (see package.json), so Eleventy only renders HTML and copies files.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { HtmlBasePlugin } from "@11ty/eleventy";
 
-// The nine blog buckets, in index order. Only these get /blog/tag/<tag>/ pages.
 const buckets = JSON.parse(readFileSync(new URL("./src/_data/buckets.json", import.meta.url), "utf8"));
 const bucketIndex = new Map(buckets.map((bucket, i) => [bucket.tag, i]));
-// Writers put the bucket first in `tags`; take the first tag that is a bucket to be safe.
 const bucketTagOf = (tags = []) => tags.find((tag) => bucketIndex.has(tag));
 const bucketRank = (post) => bucketIndex.get(bucketTagOf(post.data.tags)) ?? buckets.length;
-// The second tag names a post's series (taxes, reddit, fansly...).
 const topicOf = (post) => post.data.tags?.[1] ?? "";
-// All posts share one date, so the index sorts by bucket, then title, to stay stable; then each series
-// moves up to its first title, so a bucket's tax posts sit together and prev/next walks them.
 function sortPosts(posts) {
+  // All posts share one date, so sort by bucket then title to stay stable.
   const byTitle = [...posts].sort(
     (a, b) => bucketRank(a) - bucketRank(b) || a.data.title.localeCompare(b.data.title, "en"),
   );
@@ -28,10 +22,6 @@ function sortPosts(posts) {
 }
 const TAG_PAGE_SIZE = 20;
 
-// One screenshot figure from public/img (sizes in public/img/README.md); the file name picks the srcset:
-// `<screen>-combo.webp` 1440x900 with `-combo-720`, `<screen>-phone.webp` 390x844 with `-phone-780` for 2x,
-// any other `<screen>.webp` 1280x800 with `-640`. Posts call it as {% shot "vault-pro.webp", "alt", "caption" %}.
-// The output is one line, so Markdown passes it through as a single HTML block.
 const escapeHtml = (text = "") =>
   String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 function shotFigure(file, alt, caption = "", figureClass = "") {
@@ -47,8 +37,6 @@ function shotFigure(file, alt, caption = "", figureClass = "") {
   return `<figure${cls}>${img} alt="${escapeHtml(alt)}" loading="lazy" decoding="async">${figcaption}</figure>`;
 }
 
-// The index's featured post: the beginners' guide, a general read for a newcomer; else the first
-// post outside the Product bucket, so the blog never opens on our own docs; else the first post.
 function pickFeatured(sorted) {
   return (
     sorted.find((post) => post.fileSlug === "onlyfans-for-beginners") ??
@@ -57,8 +45,6 @@ function pickFeatured(sorted) {
   );
 }
 
-// A bucket's "Start here" posts: the slugs in buckets.json `startHere` that are still in the
-// bucket, topped up from the bucket's first posts so a renamed or moved post never leaves a gap.
 function startHerePosts(bucket, bucketPosts, count = 3) {
   const picked = (bucket.startHere ?? [])
     .map((slug) => bucketPosts.find((post) => post.fileSlug === slug))
@@ -68,21 +54,13 @@ function startHerePosts(bucket, bucketPosts, count = 3) {
 }
 
 export default function (eleventyConfig) {
-  // GitHub Pages serves the site under /<repo>/ (PATH_PREFIX). The base plugin adds that prefix to every
-  // root-relative href, src and srcset in the HTML output, including plain Markdown links like
-  // [text](/blog/slug/). It does not skip URLs that already carry the prefix, so the `url` filter is a
-  // pass-through here, kept only so the 40+ templates that pipe through `| url` need no edit.
-  // Absolute URLs (site.url, canonical, og, feed) are untouched.
   eleventyConfig.addPlugin(HtmlBasePlugin);
+  // GitHub Pages serves under /<repo>/ and the base plugin already prefixes root-relative URLs (not skipping ones that carry it), so `url` is a pass-through.
   eleventyConfig.addFilter("url", (url) => url);
 
-  // public/img/README.md documents the screenshots; it is not part of the site.
   eleventyConfig.addPassthroughCopy({ public: "/" }, { filter: (path) => !path.endsWith("img/README.md") });
   eleventyConfig.addPassthroughCopy({ "src/main.js": "assets/main.js" });
-  // The host caches /assets/* for a week, so base.njk appends ?v=<hash of both files>: a deploy that
-  // changes them changes the URL (else old CSS lingers, e.g. the #demo iframe fell back to 150px).
-  // `build` runs Tailwind first, so a missing main.css there is a broken build: fail. `dev` starts both at
-  // once (the CSS may not exist yet): warn and use a throwaway version.
+  // The host caches /assets/* for a week: a hash in ?v= makes a changed stylesheet a new URL. A missing main.css fails `build`, only warns in dev.
   eleventyConfig.addGlobalData("assetVersion", () => {
     const hash = createHash("sha256");
     for (const file of ["./dist/assets/main.css", "./src/main.js"]) {
@@ -98,13 +76,9 @@ export default function (eleventyConfig) {
     }
     return hash.digest("hex").slice(0, 10);
   });
-  // `eleventy --serve` reloads when Tailwind rewrites the stylesheet.
   eleventyConfig.setServerOptions({ watch: ["dist/assets/*.css"] });
 
   const postIndex = (api) => sortPosts(api.getFilteredByGlob("src/blog/*.md"));
-  // One entry per bucket that has posts, in bucket order: its posts and its "Start here" picks.
-  // `own` is the posts filed in the bucket (prev/next and "More in" walk it, so they never leave it);
-  // `posts` is own first, then posts filed elsewhere that carry its tag (tag pages and counts).
   const bucketGroups = (api) => {
     const sorted = postIndex(api);
     return buckets.flatMap((bucket) => {
@@ -117,15 +91,12 @@ export default function (eleventyConfig) {
   eleventyConfig.addCollection("caseStudy", (api) => api.getFilteredByGlob("src/case-studies/*.md"));
   eleventyConfig.addCollection("postIndex", postIndex);
   eleventyConfig.addCollection("featuredPost", (api) => pickFeatured(postIndex(api)) ?? null);
-  // The /blog/ grid: every post except the featured one, which sits above the grid.
   eleventyConfig.addCollection("blogIndex", (api) => {
     const sorted = postIndex(api);
     const featured = pickFeatured(sorted);
     return sorted.filter((post) => post !== featured);
   });
-  // /blog/ category chips and "Start here" rows, and each post's prev/next and "More in".
   eleventyConfig.addCollection("bucketHubs", bucketGroups);
-  // One entry per /blog/tag/<bucket>/ page, TAG_PAGE_SIZE posts each.
   eleventyConfig.addCollection("bucketPages", (api) =>
     bucketGroups(api).flatMap((group) => {
       const hrefs = Array.from(
@@ -143,11 +114,8 @@ export default function (eleventyConfig) {
     }),
   );
 
-  // Newest first, without mutating the shared collection array (case studies; posts share one date).
   eleventyConfig.addFilter("newestFirst", (items) => [...items].sort((a, b) => b.date - a.date));
   eleventyConfig.addFilter("bucketFor", (tags) => buckets[bucketIndex.get(bucketTagOf(tags))]);
-  // Up to `count` other posts from a bucket list, after the current post, same series first. When the
-  // bucket is big enough, skip the previous and next posts, which the prev/next links already show.
   eleventyConfig.addFilter("moreInBucket", (items, url, count = 3) => {
     const i = items.findIndex((item) => item.url === url);
     const others = [...items.slice(i + 1), ...items.slice(0, Math.max(i, 0))];
@@ -173,7 +141,6 @@ export default function (eleventyConfig) {
     templateFormats: ["njk", "md"],
     markdownTemplateEngine: "njk",
     htmlTemplateEngine: "njk",
-    // GitHub Pages serves the project under /<repo>/; the workflow sets PATH_PREFIX.
     pathPrefix: process.env.PATH_PREFIX || "/",
   };
 }
